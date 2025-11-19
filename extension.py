@@ -1,5 +1,6 @@
 import node_helpers
 import math
+import random
 from comfy.utils import common_upscale
 from typing_extensions import override
 from folder_paths import get_output_directory
@@ -19,6 +20,7 @@ from pydantic import BaseModel, ConfigDict
 try:
     import kornia
     import kornia.enhance as KE
+    import kornia.filters as KF
     _HAS_KORNIA = True
 except Exception:
     _HAS_KORNIA = False
@@ -84,6 +86,45 @@ def make_empty_image(batch=1, height=64, width=64, channels=3):
     - Values: 0.0 (black) in range [0.0, 1.0]
     """
     return torch.zeros((batch, height, width, channels), dtype=torch.float32)
+
+def make_placeholder_tensor(h, w, channels=3, color=(0, 0, 0)):
+    """Create a [1, H, W, C] tensor filled with a solid color (default: black)."""
+    arr = np.full((h, w, channels), color, dtype=np.float32) / 255.0
+    return torch.from_numpy(arr).unsqueeze(0)  # [1, H, W, C]
+
+def normalize_image_tensor(img_tensor, target_h, target_w):
+    """Ensure img_tensor is [1, target_h, target_w, 3]. Resize or replace if needed."""
+    if img_tensor is None:
+        return make_placeholder_tensor(target_h, target_w)
+
+    # Handle batch dim
+    if img_tensor.ndim == 4:
+        B, H, W, C = img_tensor.shape
+        if B != 1:
+            img_tensor = img_tensor[:1]  # take first
+        if H == target_h and W == target_w and C in (1, 3, 4):
+            # Normalize channels to 3 (if grayscale, repeat)
+            if C == 1:
+                img_tensor = img_tensor.repeat(1, 1, 1, 3)
+            elif C == 4:
+                img_tensor = img_tensor[..., :3]
+            return img_tensor
+        else:
+            # Optional: resize using PIL (preserves aspect ratio or not)
+            pil_img = Image.fromarray(
+                np.clip(img_tensor[0].cpu().numpy() * 255, 0, 255).astype(np.uint8)
+            )
+            # Resize to exact target (distorts if needed)
+            pil_img = pil_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            resized = np.array(pil_img).astype(np.float32) / 255.0
+            if resized.ndim == 2:
+                resized = np.stack([resized] * 3, axis=-1)
+            return torch.from_numpy(resized).unsqueeze(0)
+    else:
+        # Unexpected shape — use placeholder
+        print(f"Warning: unexpected tensor shape {img_tensor.shape}, using placeholder")
+    
+    return make_placeholder_tensor(target_h, target_w)
 
 def save_image_comfyui(image_tensor, save_path):
     """Save ComfyUI IMAGE tensor [1,H,W,C] float32 0..1 to disk as PNG."""
@@ -152,7 +193,8 @@ def kornia_unsharp(img_nhwc, radius=1.5, amount=0.5):
     x = _nhwc_to_nchw(rgb)  # -> [B,3,H,W]
     # gaussian blur (sigma ~ radius), then unsharp
     sigma = max(0.1, float(radius))
-    k = KE.gaussian_blur2d(x, kernel_size=int(2*round(3*sigma)+1), sigma=(sigma, sigma))
+
+    k = KF.gaussian_blur2d(x, kernel_size=int(2*round(3*sigma)+1), sigma=(sigma, sigma))
     sharp = torch.clamp(x + amount*(x - k), 0, 1)
     out = _nchw_to_nhwc(sharp)
     if has_a:
@@ -234,7 +276,7 @@ def _compute_ref_stats(frames: List[torch.Tensor], window: int) -> Tuple[torch.T
     mean_luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).item()  # scalar in [0,1]
     return mean_c, std_c, mean_luma
 
-def _pick_ref_image(frames: List[torch.Tensor], window: int) -> torch.Tensor:
+def _pick_ref_image(frames: List[torch.Tensor], window: int) -> Optional[torch.Tensor]:
     """Pick one frame (the median index of the last `window`) as histogram reference."""
     if not frames:
         return None
@@ -292,7 +334,7 @@ def proc_unsharp(img: torch.Tensor, radius: float, amount: float) -> torch.Tenso
     x = img[...,:3].permute(0,3,1,2).contiguous()  # NCHW
     sigma = max(0.1, float(radius))
     ksize = int(2*round(3*sigma)+1)
-    blur = KE.gaussian_blur2d(x, kernel_size=ksize, sigma=(sigma, sigma))
+    blur = KF.gaussian_blur2d(x, kernel_size=ksize, sigma=(sigma, sigma))
     sharp = (x + amount*(x - blur)).clamp(0,1)
     out = sharp.permute(0,2,3,1).contiguous()
     return torch.cat([out, img[...,3:4]], dim=3) if img.shape[3]==4 else out
@@ -317,7 +359,7 @@ def get_first_subdirectory(parent_dir: str) -> str:
             return ""
         subdirs = [p for p in path.iterdir() if p.is_dir()]
         subdirs.sort()
-        return subdirs[0] if subdirs else ""
+        return subdirs[0].name if subdirs else ""
 
     except FileNotFoundError:
         print(f"Directory '{parent_dir}' not found.")
@@ -640,7 +682,7 @@ class OpaqueAlpha(io.ComfyNode):
         if c == 4:
             if force_replace_alpha:
                 # Replace existing alpha channel
-                image_rgba = image.clone
+                image_rgba = image.clone()
                 image_rgba[:, :, :, 3:4] = mask
             else:
                 # Keep existing alpha channel
@@ -715,7 +757,7 @@ class SubdirLister(io.ComfyNode):
 
 class SceneInfo(BaseModel):
     #metadata
-    save_dir: str
+    pose_dir: str
     pose_name: str
     girl_pos: str
     male_pos: str
@@ -737,60 +779,7 @@ class SceneInfo(BaseModel):
     
     model_config = ConfigDict(arbitrary_types_allowed=True, from_attributes=True)
 
-@io.comfytype(io_type="POSE_COMBO")
-class PoseCombo(io.ComfyTypeIO):
-    Type = str
-    class Input(io.WidgetInput):
-        """Pose Combo input (dropdown)."""
-        Type = str
-        def __init__(
-            self,
-            id: str,
-            options: list[str] | list[int] | type[io.Enum] = None,
-            display_name: str=None,
-            optional=False,
-            tooltip: str=None,
-            lazy: bool=None,
-            default: str | int | io.Enum = None,
-            control_after_generate: bool=None,
-            upload: io.UploadType=None,
-            pose_folder: io.FolderType=None,
-            remote: io.RemoteOptions=None,
-            socketless: bool=None,
-        ):
-            if isinstance(options, type) and issubclass(options, io.Enum):
-                options = [v.value for v in options]
-            if isinstance(default, io.Enum):
-                default = default.value
-            super().__init__(id, display_name, optional, tooltip, lazy, default, socketless)
-            self.multiselect = False
-            self.options = options
-            self.control_after_generate = control_after_generate
-            self.upload = upload
-            self.pose_folder = pose_folder
-            self.remote = remote
-            self.default: str
-
-        def as_dict(self):
-            return super().as_dict() | io.prune_dict({
-                "multiselect": self.multiselect,
-                "options": self.options,
-                "control_after_generate": self.control_after_generate,
-                **({self.upload.value: True} if self.upload is not None else {}),
-                "pose_folder": self.pose_folder.value if self.pose_folder else None,
-                "remote": self.remote.as_dict() if self.remote else None,
-            })
-
-    class Output(io.Output):
-        def __init__(self, id: str=None, display_name: str=None, options: list[str]=None, tooltip: str=None, is_output_list=False):
-            super().__init__(id, display_name, tooltip, is_output_list)
-            self.options = options if options is not None else []
-
-        @property
-        def io_type(self):
-            return self.options
-
-class SelectScene(io.ComfyNode):
+class SceneSelect(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         output_dir = get_output_directory()
@@ -810,10 +799,12 @@ class SelectScene(io.ComfyNode):
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.String.Input("poses_dir", default=default_dir, tooltip="Directory containing pose subdirectories"),
-                io.Combo.Input('selected_pose', options=default_options, default=default_pose, tooltip="Select a pose directory"),
+                io.Combo.Input('selected_pose', options=default_options, default=default_pose, tooltip="Select a pose name"),
             ],
             outputs=[
-                io.Custom("ScenePipe").Output(id="scene_pipe", display_name="scene_pipe", tooltip="Scene information and images"),
+                io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene information and images"),
+                io.String.Output(id="pose_name", display_name="pose_name", tooltip="Name of the selected pose"),
+                io.String.Output(id="pose_dir", display_name="pose_dir", tooltip="Directory of the selected pose"),
             ],
         )
     
@@ -882,8 +873,8 @@ class SelectScene(io.ComfyNode):
         upscale_image_path = os.path.join(pose_dir, "upscale.png")
         upscale_image = load_image_comfyui(upscale_image_path)
 
-        return io.NodeOutput(ScenePipe(
-            save_dir=pose_dir,
+        scene_info = SceneInfo(
+            pose_dir=pose_dir,
             pose_name=selected_pose,
             girl_pos=girl_pos,
             male_pos=male_pos,
@@ -899,9 +890,115 @@ class SelectScene(io.ComfyNode):
             pose_face_image=pose_face_image,
             pose_open_image=pose_open_image,
             canny_image=canny_image,
-            upscale_image=upscale_image,
-        ))
+            upscale_image=upscale_image,                       
+        )
+        return io.NodeOutput(
+            scene_info,
+            selected_pose,
+            pose_dir,
+        )
 
+default_depth_options = {
+    "depth": "depth_image",
+    "depth_any": "depth_any_image",
+    "midas": "depth_midas_image",
+    "zoe": "depth_zoe_image",
+    "zoe_any": "depth_zoe_any_image",
+}
+
+default_pose_options = {
+    "dense": "pose_dense_image",
+    "dw": "pose_dw_image",
+    "edit": "pose_edit_image",
+    "face": "pose_face_image",
+    "open": "pose_open_image",
+}
+
+class SceneView(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="SceneView",
+            category="🧊 frost-byte/Scene",
+            inputs=[
+                io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Information" ),
+                io.Combo.Input(
+                    id="depth_type", options=list(default_depth_options.keys())
+                ),
+                io.Combo.Input(
+                    id="pose_type", options=list(default_pose_options.keys())
+                ),
+            ],
+            outputs=[
+                io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Selected Depth Image"),
+                io.Image.Output(id="pose_image", display_name="pose_image", tooltip="Selected Pose Image"),
+                io.String.Output(id="pose_name", display_name="pose_name", tooltip="Name of the selected pose"),
+                io.String.Output(id="pose_dir", display_name="pose_dir", tooltip="Directory of the selected pose"),
+                io.String.Output(id="girl_pos", display_name="girl_pos", tooltip="The positive prompt for the girl in the scene"),
+                io.String.Output(id="male_pos", display_name="male_pos", tooltip="The positive prompt for the male(s) in the scene"),
+            ],
+            is_output_node=True,
+        )
+    
+    @classmethod
+    async def execute(
+        cls,
+        scene_info=None,
+        depth_type="depth",
+        pose_type="dense",
+    ) -> io.NodeOutput:
+        if scene_info is None:
+            print("SceneView: scene_info is None")
+            return io.NodeOutput(None, None)
+        
+        depth_attr = default_depth_options.get(depth_type, "depth_image")
+        pose_attr = default_pose_options.get(pose_type, "pose_dense_image")
+        girl_pos = getattr(scene_info, "girl_pos", "")
+        male_pos = getattr(scene_info, "male_pos", "")
+        pose_name = getattr(scene_info, "pose_name", "")
+        pose_dir = getattr(scene_info, "pose_dir", "")
+        depth_any_image = getattr(scene_info, "depth_any_image", None)
+
+        if depth_any_image is None:
+            H, W = 512, 512
+            depth_any_image = make_placeholder_tensor(H, W)
+        else:
+            H, W = depth_any_image.shape[1], depth_any_image.shape[2]
+
+        depth_image = getattr(scene_info, depth_attr, make_empty_image())
+        pose_image = getattr(scene_info, pose_attr, make_empty_image())
+        depth_image = normalize_image_tensor(depth_image, H, W)
+        pose_image = normalize_image_tensor(pose_image, H, W)
+
+        combined_batch = torch.cat([depth_image, pose_image], dim=0)
+        preview_ui = ui.PreviewImage(image=combined_batch)
+
+        combined_prompt = f"Girl Positive Prompt: {girl_pos}\nMale Positive Prompt: {male_pos}"
+        text_ui = ui.PreviewText(value=combined_prompt)
+        combined_ui = {
+            "text": text_ui.as_dict().get("text", ''),
+            "images": preview_ui.as_dict().get("images", []),
+            "animated": preview_ui.as_dict().get("animated", False),
+        }
+
+        print(
+            f"SceneView: depth_type='{depth_type}'; pose_type='{pose_type}'; "
+            f"depth_any_image shape: {depth_any_image.shape if depth_any_image is not None else 'None'}; "
+            f"depth_image shape: {depth_image.shape if depth_image is not None else 'None'}; "
+            f"pose_image shape: {pose_image.shape if pose_image is not None else 'None'}; "
+            f"{combined_prompt}"
+        )
+
+        return io.NodeOutput(
+            depth_image,
+            pose_image,
+            pose_name,
+            pose_dir,
+            girl_pos,
+            male_pos,
+            ui=combined_ui
+        )
+ 
 class SceneOutput(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -909,10 +1006,10 @@ class SceneOutput(io.ComfyNode):
             node_id="SceneOutput",
             category="🧊 frost-byte/Scene",
             inputs=[
-                io.Custom("SCENE_INFO").Input("scene_info"),
+                io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Information" ),
             ],
             outputs=[
-                io.String.Output("save_dir", display_name="save_dir", tooltip="Directory where the scene is saved"),
+                io.String.Output("pose_dir", display_name="pose_dir", tooltip="Directory where the scene is saved"),
                 io.String.Output("pose_name", display_name="pose_name", tooltip="Name of the pose"),
                 io.String.Output("girl_pos", display_name="girl_pos", tooltip="Girl Positive Prompt"),
                 io.String.Output("male_pos", display_name="male_pos", tooltip="Male Positive Prompt"),
@@ -942,14 +1039,14 @@ class SceneOutput(io.ComfyNode):
             return io.NodeOutput(("", "", "", "", "", None, None, None, None, None, None, None, None, None, None, None, None))
         
         print(
-            f"SceneOutput: scene_info.save_dir='{scene_info.save_dir}', "
+            f"SceneOutput: scene_info.pose_dir='{scene_info.pose_dir}', "
             f"pose_name='{scene_info.pose_name}', "
             f"girl_pos='{scene_info.girl_pos}', "
             f"male_pos='{scene_info.male_pos}', "
             f"depth_image shape: {scene_info.depth_image.shape if scene_info.depth_image is not None else 'None'}"
         )
         return io.NodeOutput(
-            scene_info.save_dir,
+            scene_info.pose_dir,
             scene_info.pose_name,
             scene_info.girl_pos,
             scene_info.male_pos,
@@ -968,30 +1065,15 @@ class SceneOutput(io.ComfyNode):
             scene_info.upscale_image,
         )
 
-class SaveScene(io.ComfyNode):
+class SceneSave(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
             node_id="SaveScene",
             category="🧊 frost-byte/Scene",
             inputs=[
-                io.String.Input("save_dir", optional=True, multiline=False, default=""),
-                io.String.Input("pose_name", optional=True, multiline=False, default=""),
-                io.String.Input("girl_pos", optional=True, multiline=True, default=""),
-                io.String.Input("male_pos", optional=True, multiline=True, default=""),
-                io.String.Input("pose_json", optional=True, multiline=True, default=""),
-                io.Image.Input("depth_image", optional=True),
-                io.Image.Input("depth_any_image", optional=True),
-                io.Image.Input("depth_midas_image", optional=True),
-                io.Image.Input("depth_zoe_image", optional=True),
-                io.Image.Input("depth_zoe_any_image", optional=True),
-                io.Image.Input("pose_dense_image", optional=True),
-                io.Image.Input("pose_dw_image", optional=True),
-                io.Image.Input("pose_edit_image", optional=True),
-                io.Image.Input("pose_face_image", optional=True),
-                io.Image.Input("pose_open_image", optional=True),
-                io.Image.Input("canny_image", optional=True),
-                io.Image.Input("upscale_image", optional=True),
+                io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Info Input"),
+                io.String.Input(id="pose_dir", display_name="pose_dir", optional=True, tooltip="The Pose directory for the scene, overrides the scene_info", multiline=False, default=""),
             ],
             outputs=[],
             is_output_node=True,
@@ -1000,7 +1082,113 @@ class SaveScene(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        save_dir="",
+        scene_info=None,
+        pose_dir="",
+    ) -> io.NodeOutput:
+        pose_name = scene_info.pose_name if scene_info else ""
+        if pose_name == "" or scene_info is None:
+            print("SaveScene: scene_info is None or pose_name is empty")
+            return io.NodeOutput(None)
+
+        pose_dir = pose_dir if pose_dir else scene_info.pose_dir
+        if not pose_dir:
+            pose_dir = Path(get_output_directory()) / "poses"
+
+        pose_dir = Path(pose_dir) / pose_name
+        print(f"SaveScene: pose_dir='{pose_dir}'; pose_name='{pose_name}'; dest_dir='{pose_dir}'")
+        if pose_dir and not os.path.isdir(pose_dir):
+            os.makedirs(pose_dir, exist_ok=True)
+            print(f"SaveScene: Created directory '{pose_dir}' for saving scene data")
+        if pose_name == "":
+            print("SaveScene: pose_name is empty, cannot save pose files")
+            return io.NodeOutput(None)
+        
+        if scene_info.depth_image is not None:
+            depth_path = pose_dir / "depth.png"
+            save_image_comfyui(scene_info.depth_image, depth_path)
+        if scene_info.depth_any_image is not None:
+            depth_any_path = pose_dir / "depth_any.png"
+            save_image_comfyui(scene_info.depth_any_image, depth_any_path)
+        if scene_info.depth_midas_image is not None:
+            depth_midas_path = pose_dir / "depth_midas.png"
+            save_image_comfyui(scene_info.depth_midas_image, depth_midas_path)
+        if scene_info.depth_zoe_image is not None:
+            depth_zoe_path = pose_dir / "depth_zoe.png"
+            save_image_comfyui(scene_info.depth_zoe_image, depth_zoe_path)
+        if scene_info.depth_zoe_any_image is not None:
+            depth_zoe_any_path = pose_dir / "depth_zoe_any.png"
+            save_image_comfyui(scene_info.depth_zoe_any_image, depth_zoe_any_path)
+        if scene_info.pose_dense_image is not None:
+            pose_dense_path = pose_dir / "pose_dense.png"
+            save_image_comfyui(scene_info.pose_dense_image, pose_dense_path)
+        if scene_info.pose_dw_image is not None:
+            pose_dw_path = pose_dir / "pose_dw.png"
+            save_image_comfyui(scene_info.pose_dw_image, pose_dw_path)
+        if scene_info.pose_edit_image is not None:
+            pose_edit_path = pose_dir / "pose_edit.png"
+            save_image_comfyui(scene_info.pose_edit_image, pose_edit_path)
+        if scene_info.pose_face_image is not None:
+            pose_face_path = pose_dir / "pose_face.png"
+            save_image_comfyui(scene_info.pose_face_image, pose_face_path)
+        if scene_info.pose_open_image is not None:
+            pose_open_path = pose_dir / "pose_open.png"
+            save_image_comfyui(scene_info.pose_open_image, pose_open_path)
+        if scene_info.canny_image is not None:
+            canny_path = pose_dir / "canny.png"
+            save_image_comfyui(scene_info.canny_image, canny_path)
+        if scene_info.upscale_image is not None:
+            upscale_path = pose_dir / "upscale.png"
+            save_image_comfyui(scene_info.upscale_image, upscale_path)
+        if scene_info.pose_json:
+            pose_json_path = pose_dir / "pose.json"
+            save_json_file(pose_json_path, json.loads(scene_info.pose_json))
+            
+        girl_pos = scene_info.girl_pos if scene_info.girl_pos else ""
+        male_pos = scene_info.male_pos if scene_info.male_pos else ""
+        prompts_path = pose_dir / "prompts.json"
+        prompt_data = {
+            "girl_pos": girl_pos,
+            "male_pos": male_pos,
+        }
+        save_json_file(prompts_path, prompt_data)   
+        return io.NodeOutput(
+            ui=ui.PreviewText(f"Scene saved to '{pose_dir}' with prompt='The girl {scene_info.girl_pos}, The male {scene_info.male_pos}'"),
+        )
+
+class SceneInput(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="SceneInput",
+            category="🧊 frost-byte/Scene",
+            inputs=[
+                io.String.Input(id="pose_dir", display_name="pose_dir", tooltip="Directory where the scene is saved", multiline=False, default=""),
+                io.String.Input(id="pose_name", display_name="pose_name", tooltip="Name of the pose", multiline=False, default=""),
+                io.String.Input(id="girl_pos", display_name="girl_pos", tooltip="The prompt for the girl in the scene", multiline=True, default=""),
+                io.String.Input(id="male_pos", display_name="male_pos", tooltip="The prompt for the male(s) in the scene", multiline=True, default=""),
+                io.String.Input(id="pose_json", display_name="pose_json", tooltip="Pose JSON data", multiline=True, default=""),
+                io.Image.Input(id="depth_image", display_name="depth_image", tooltip="Depth Image", optional=True),
+                io.Image.Input(id="depth_any_image", display_name="depth_any_image", tooltip="Depth Any Image", optional=True),
+                io.Image.Input(id="depth_midas_image", display_name="depth_midas_image", tooltip="Depth Midas Image", optional=True),
+                io.Image.Input(id="depth_zoe_image", display_name="depth_zoe_image", tooltip="Depth Zoe Image", optional=True),
+                io.Image.Input(id="depth_zoe_any_image", display_name="depth_zoe_any_image", tooltip="Depth Zoe Any Image", optional=True),
+                io.Image.Input(id="pose_dense_image", display_name="pose_dense_image", tooltip="Pose Dense Image", optional=True),
+                io.Image.Input(id="pose_dw_image", display_name="pose_dw_image", tooltip="Pose DW Image", optional=True),
+                io.Image.Input(id="pose_edit_image", display_name="pose_edit_image", tooltip="Pose Edit Image", optional=True),
+                io.Image.Input(id="pose_face_image", display_name="pose_face_image", tooltip="Pose Face Image", optional=True),
+                io.Image.Input(id="pose_open_image", display_name="pose_open_image", tooltip="Pose Open Image", optional=True),
+                io.Image.Input(id="canny_image", display_name="canny_image", tooltip="Canny Image", optional=True),
+                io.Image.Input(id="upscale_image", display_name="upscale_image", tooltip="Upscale Image", optional=True),
+            ],
+            outputs=[
+                io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene information and images"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        pose_dir="",
         pose_name="",
         girl_pos="",
         male_pos="",
@@ -1018,192 +1206,34 @@ class SaveScene(io.ComfyNode):
         canny_image=None,
         upscale_image=None,
     ) -> io.NodeOutput:
-        dest_dir = Path(save_dir) / pose_name
-        print(f"SaveScene: save_dir='{save_dir}'; pose_name='{pose_name}'; dest_dir='{dest_dir}'")
-        if dest_dir and not os.path.isdir(dest_dir):
-            os.makedirs(dest_dir, exist_ok=True)
-            print(f"SaveScene: Created directory '{dest_dir}' for saving scene data")
-        if pose_name == "":
-            print("SaveScene: pose_name is empty, cannot save pose files")
+        if not pose_dir or not os.path.isdir(pose_dir):
+            print(f"SceneInput: pose_dir '{pose_dir}' is invalid")
             return io.NodeOutput(None)
-        
-        if depth_image is not None:
-            depth_path = dest_dir / "depth.png"
-            save_image_comfyui(depth_image, depth_path)
-        if depth_any_image is not None:
-            depth_any_path = dest_dir / "depth_any.png"
-            save_image_comfyui(depth_any_image, depth_any_path)
-        if depth_midas_image is not None:
-            depth_midas_path = dest_dir / "depth_midas.png"
-            save_image_comfyui(depth_midas_image, depth_midas_path)
-        if depth_zoe_image is not None:
-            depth_zoe_path = dest_dir / "depth_zoe.png"
-            save_image_comfyui(depth_zoe_image, depth_zoe_path)
-        if depth_zoe_any_image is not None:
-            depth_zoe_any_path = dest_dir / "depth_zoe_any.png"
-            save_image_comfyui(depth_zoe_any_image, depth_zoe_any_path)
-        if pose_dense_image is not None:
-            pose_dense_path = dest_dir / "pose_dense.png"
-            save_image_comfyui(pose_dense_image, pose_dense_path)
-        if pose_dw_image is not None:
-            pose_dw_path = dest_dir / "pose_dw.png"
-            save_image_comfyui(pose_dw_image, pose_dw_path)
-        if pose_edit_image is not None:
-            pose_edit_path = dest_dir / "pose_edit.png"
-            save_image_comfyui(pose_edit_image, pose_edit_path)
-        if pose_face_image is not None:
-            pose_face_path = dest_dir / "pose_face.png"
-            save_image_comfyui(pose_face_image, pose_face_path)
-        if pose_open_image is not None:
-            pose_open_path = dest_dir / "pose_open.png"
-            save_image_comfyui(pose_open_image, pose_open_path)
-        if canny_image is not None:
-            canny_path = dest_dir / "canny.png"
-            save_image_comfyui(canny_image, canny_path)
-        if upscale_image is not None:
-            upscale_path = dest_dir / "upscale.png"
-            save_image_comfyui(upscale_image, upscale_path)
-        if pose_json:
-            pose_json_path = dest_dir / "pose.json"
-            save_json_file(pose_json_path, json.loads(pose_json))
-        prompts_path = dest_dir / "prompts.json"
-        prompt_data = {
-            "girl_pos": girl_pos,
-            "male_pos": male_pos,
-        }
-        save_json_file(prompts_path, prompt_data)   
-        return io.NodeOutput(
-            ui=ui.PreviewText(f"Scene saved to '{save_dir}' with prompt='The girl {girl_pos}, The male {male_pos}'"),
+
+        print(f"SceneInput: pose_dir='{pose_dir}'; pose_name='{pose_name}'")
+
+        scene_info = SceneInfo(
+            pose_dir=pose_dir,
+            pose_name=pose_name,
+            girl_pos=girl_pos,
+            male_pos=male_pos,
+            pose_json=pose_json,
+            depth_image=depth_image,
+            depth_any_image=depth_any_image,
+            depth_midas_image=depth_midas_image,
+            depth_zoe_image=depth_zoe_image,
+            depth_zoe_any_image=depth_zoe_any_image,
+            pose_dense_image=pose_dense_image,
+            pose_dw_image=pose_dw_image,
+            pose_edit_image=pose_edit_image,
+            pose_face_image=pose_face_image,
+            pose_open_image=pose_open_image,
+            canny_image=canny_image,
+            upscale_image=upscale_image,
         )
 
-class ScenePipe(io.ComfyNode):
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="ScenePipe",
-            category="🧊 frost-byte/Scene",
-            inputs=[
-                io.Custom("ScenePipe").Input(id="scene_pipe_in", display_name="scene_pipe", tooltip="Scene Pipe Input", optional=True),
-                io.String.Input(id="pose_name", display_name="pose_name", tooltip="The Pose Name", optional=True, multiline=False, default=""),
-                io.String.Input(id="pose_dir", display_name="pose_dir", tooltip="The Pose Directory", optional=True, multiline=False, default=""),
-                io.Image.Input(id="depth_image", display_name="depth_image", tooltip="Depth Image", optional=True),
-                io.Image.Input(id="depth_any_image", display_name="depth_any_image", tooltip="Depth Any Image", optional=True),
-                io.Image.Input(id="depth_midas_image", display_name="depth_midas_image", tooltip="Depth Midas Image", optional=True),
-                io.Image.Input(id="depth_zoe_image", display_name="depth_zoe_image", tooltip="Depth Zoe Image", optional=True),
-                io.Image.Input(id="depth_zoe_any_image", display_name="depth_zoe_any_image", tooltip="Depth Zoe Any Image", optional=True),
-                io.Image.Input(id="pose_dense_image", display_name="pose_dense_image", tooltip="Pose Dense Image", optional=True),
-                io.Image.Input(id="pose_dw_image", display_name="pose_dw_image", tooltip="Pose DW Image", optional=True),
-                io.Image.Input(id="pose_edit_image", display_name="pose_edit_image", tooltip="Pose Edit Image", optional=True),
-                io.Image.Input(id="pose_face_image", display_name="pose_face_image", tooltip="Pose Face Image", optional=True),
-                io.Image.Input(id="pose_open_image", display_name="pose_open_image", tooltip="Pose Open Image", optional=True),
-                io.Image.Input(id="canny_image", display_name="canny_image", tooltip="Canny Image", optional=True),
-                io.Image.Input(id="upscale_image", display_name="upscale_image", tooltip="Upscale Image", optional=True),
-                io.String.Input(id="pose_json", display_name="pose_json", tooltip="Pose JSON", optional=True, multiline=True, default=""),
-                io.Custom("DICT").Input(id="scene_dict", display_name="scene_dict", tooltip="Scene Dictionary", optional=True),
-            ],
-            outputs=[
-                io.Custom("ScenePipe").Output(id="scene_pipe_out",display_name="scene_pipe", tooltip="Scene Pipe Output"),
-                io.String.Output(id="pose_name_out", display_name="pose_name", tooltip="The Pose Name"),
-                io.String.Output(id="pose_dir_out", display_name="pose_dir", tooltip="The Pose Directory"),
-                io.Image.Output(id="depth_image_out", display_name="depth_image", tooltip="Depth Image"),
-                io.Image.Output(id="depth_any_image_out", display_name="depth_any_image", tooltip="Depth Any Image"),
-                io.Image.Output(id="depth_midas_image_out", display_name="depth_midas_image", tooltip="Depth Midas Image"),
-                io.Image.Output(id="depth_zoe_image_out", display_name="depth_zoe_image", tooltip="Depth Zoe Image"),
-                io.Image.Output(id="depth_zoe_any_image_out", display_name="depth_zoe_any_image", tooltip="Depth Zoe Any Image"),
-                io.Image.Output(id="pose_dense_image_out", display_name="pose_dense_image", tooltip="Pose Dense Image"),
-                io.Image.Output(id="pose_dw_image_out", display_name="pose_dw_image", tooltip="Pose DW Image"),
-                io.Image.Output(id="pose_edit_image_out", display_name="pose_edit_image", tooltip="Pose Edit Image"),
-                io.Image.Output(id="pose_face_image_out", display_name="pose_face_image", tooltip="Pose Face Image"),
-                io.Image.Output(id="pose_open_image_out", display_name="pose_open_image", tooltip="Pose Open Image"),
-                io.Image.Output(id="canny_image_out", display_name="canny_image", tooltip="Canny Image"),
-                io.Image.Output(id="upscale_image_out", display_name="upscale_image", tooltip="Upscale Image"),
-                io.String.Output(id="pose_json_out", display_name="pose_json", tooltip="Pose JSON"),
-                io.Custom("DICT").Output(id="scene_dict_out", display_name="scene_dict", tooltip="Scene Dictionary"),
-            ],
-        )        
-
-    @classmethod
-    def execute(
-        cls,
-        scene_pipe_in=None,
-        pose_name="",
-        pose_dir="",
-        depth_image=None,
-        depth_any_image=None,
-        depth_midas_image=None,
-        depth_zoe_image=None,
-        depth_zoe_any_image=None,
-        pose_dense_image=None,
-        pose_dw_image=None,
-        pose_edit_image=None,
-        pose_face_image=None,
-        pose_open_image=None,
-        canny_image=None,
-        upscale_image=None,
-        pose_json="",
-        scene_dict={"girl_pos": "", "male_pos": ""},
-    ) -> io.NodeOutput:
-        if pose_dir and not os.path.isdir(pose_dir):
-            pose_dir = ""
-            print(f"ScenePipe: pose_dir '{pose_dir}' is not a valid directory, resetting to empty")
-        
-        if pose_name == "":
-            print("ScenePipe: pose_name is empty, cannot load pose files")
-
-        depth_image_out = depth_image if depth_image is not None else scene_pipe_in.get("depth_image") if scene_pipe_in else None
-        depth_any_image_out = depth_any_image if depth_any_image is not None else scene_pipe_in.get("depth_any_image") if scene_pipe_in else None
-        depth_midas_image_out = depth_midas_image if depth_midas_image is not None else scene_pipe_in.get("depth_midas_image") if scene_pipe_in else None
-        depth_zoe_image_out = depth_zoe_image if depth_zoe_image is not None else scene_pipe_in.get("depth_zoe_image") if scene_pipe_in else None
-        depth_zoe_any_image_out = depth_zoe_any_image if depth_zoe_any_image is not None else scene_pipe_in.get("depth_zoe_any_image") if scene_pipe_in else None
-        pose_dense_image_out = pose_dense_image if pose_dense_image is not None else scene_pipe_in.get("pose_dense_image") if scene_pipe_in else None
-        pose_dw_image_out = pose_dw_image if pose_dw_image is not None else scene_pipe_in.get("pose_dw_image") if scene_pipe_in else None
-        pose_edit_image_out = pose_edit_image if pose_edit_image is not None else scene_pipe_in.get("pose_edit_image") if scene_pipe_in else None
-        pose_face_image_out = pose_face_image if pose_face_image is not None else scene_pipe_in.get("pose_face_image") if scene_pipe_in else None
-        pose_open_image_out = pose_open_image if pose_open_image is not None else scene_pipe_in.get("pose_open_image") if scene_pipe_in else None
-        canny_image_out = canny_image if canny_image is not None else scene_pipe_in.get("canny_image") if scene_pipe_in else None
-        upscale_image_out = upscale_image if upscale_image is not None else scene_pipe_in.get("upscale_image") if scene_pipe_in else None
-        pose_json_out = pose_json if pose_json else scene_pipe_in.get("pose_json") if scene_pipe_in else ""
-        scene_dict_out = scene_dict if scene_dict else scene_pipe_in.get("scene_dict") if scene_pipe_in else {"girl_pos": "", "male_pos": ""}
-        pose_name = pose_name if pose_name else scene_pipe_in.get("pose_name") if scene_pipe_in else ""
-        pose_dir = pose_dir if pose_dir else scene_pipe_in.get("pose_dir") if scene_pipe_in else ""
-
-        scene_pipe_out = {
-            "pose_name": pose_name,
-            "pose_dir": pose_dir,
-            "depth_image": depth_image_out,
-            "depth_any_image": depth_any_image_out,
-            "depth_midas_image": depth_midas_image_out,
-            "depth_zoe_image": depth_zoe_image_out,
-            "depth_zoe_any_image": depth_zoe_any_image_out,
-            "pose_dense_image": pose_dense_image_out,
-            "pose_dw_image": pose_dw_image_out,
-            "pose_edit_image": pose_edit_image_out,
-            "pose_face_image": pose_face_image_out,
-            "pose_open_image": pose_open_image_out,
-            "canny_image": canny_image_out,
-            "upscale_image": upscale_image_out,
-            "pose_json": pose_json_out,
-            "scene_dict": scene_dict_out,
-        }
-        
         return io.NodeOutput(
-            scene_pipe_out,
-            pose_name,
-            pose_dir,
-            depth_image_out,
-            depth_any_image_out,
-            depth_midas_image_out,
-            depth_zoe_image_out,
-            depth_zoe_any_image_out,
-            pose_dense_image_out,
-            pose_dw_image_out,
-            pose_edit_image_out,
-            pose_face_image_out,
-            pose_open_image_out,
-            canny_image_out,
-            upscale_image_out,
-            pose_json_out,
-            scene_dict_out,
+            scene_info
         )
 
 class FBTextEncodeQwenImageEditPlus(io.ComfyNode):
@@ -1276,10 +1306,11 @@ class FBToolsExtension(ComfyExtension):
             FBTextEncodeQwenImageEditPlus,
             SAMPreprocessNHWC,
             SubdirLister,
-            ScenePipe,
-            SaveScene,
+            SceneSave,
+            SceneInput,
             SceneOutput,
-            SelectScene,
+            SceneView,
+            SceneSelect,
             OpaqueAlpha,
             TailSplit,
             TailEnhancePro,
