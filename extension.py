@@ -1,369 +1,86 @@
 import node_helpers
 import math
-import random
 from comfy.utils import common_upscale
+import comfy.model_management as model_management
+
 from typing_extensions import override
 from folder_paths import get_output_directory
+from nodes import ImageScaleBy
+from .utils.util import draw_pose_json, draw_pose, extend_scalelist, pose_normalized
+from .utils.io import save_json_file, load_prompt_json, load_json_file
+from .utils.images import image_resize_ess
+from .utils.pose import estimate_dwpose, dense_pose, depth_anything, depth_anything_v2, zoe, zoe_any, openpose, midas, canny
 
+from .utils.images import make_empty_image, _compute_ref_stats, _pick_ref_image, proc_deflicker_luma, proc_deflicker_clahe, proc_color_histmatch, proc_color_meanstd, proc_bilateral_cv2, proc_unsharp, _stack_if_same_shape
+from .utils.images import _HAS_KORNIA, _HAS_SKIMAGE, _HAS_CV2, load_image_comfyui, save_image_comfyui, make_placeholder_tensor, normalize_image_tensor
 from comfy_api.latest import ComfyExtension, io, ui
 from inspect import cleandoc
 import torch
 import torch.nn.functional as F
-from typing import List, Tuple, Any, Optional
+import numpy as np
+from typing import Optional
 import os
 from pathlib import Path
 import json
-from PIL import Image, ImageOps, ImageSequence
-from PIL.PngImagePlugin import PngInfo
 from pydantic import BaseModel, ConfigDict
 
 try:
-    import kornia
-    import kornia.enhance as KE
-    import kornia.filters as KF
-    _HAS_KORNIA = True
+    from westNeighbor_comfyui_ultimate_openpose_editor.openpose_editor_nodes import OpenposeEditorNode  # type: ignore
 except Exception:
-    _HAS_KORNIA = False
-    
-try:
-    import numpy as np
-    from skimage.exposure import match_histograms
-    _HAS_SKIMAGE = True
-except Exception:
-    _HAS_SKIMAGE = False
-    
-try:
-    import cv2
-    _HAS_CV2 = True
-except Exception:
-    _HAS_CV2 = False
+    OpenposeEditorNode = None
 
 
+OpenposeJSON = dict
 
-def save_json_file(json_path, data):
-    try:
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"fbTools: Saved JSON to '{json_path}'")
-    except Exception as e:
-        print(f"fbTools: Error saving JSON to '{json_path}': {e}")
+def load_pose(
+    show_body=True,
+    show_face=True,
+    show_hands=True,
+    resolution_x=-1,
+    pose_marker_size=4,
+    face_marker_size=3,
+    hand_marker_size=2,
+    hands_scale=1.0,
+    body_scale=1.0,
+    head_scale=1.0,
+    overall_scale=1.0,
+    scalelist_behavior="poses",
+    match_scalelist_method="loop extend",
+    only_scale_pose_index=99,
+    POSE_KEYPOINT=None
+):
+    if POSE_KEYPOINT is not None:
+        POSE_JSON = json.dumps(POSE_KEYPOINT,indent=4).replace("'",'"').replace('None','[]')
+        hands_scalelist, body_scalelist, head_scalelist, overall_scalelist = extend_scalelist(
+            scalelist_behavior, POSE_JSON, hands_scale, body_scale, head_scale, overall_scale,
+            match_scalelist_method, only_scale_pose_index)
+        normalized_pose_json = pose_normalized(POSE_JSON)
+        pose_imgs, POSE_SCALED = draw_pose_json(normalized_pose_json, resolution_x, show_body, show_face, show_hands, pose_marker_size, face_marker_size, hand_marker_size, hands_scalelist, body_scalelist, head_scalelist, overall_scalelist)
+        if pose_imgs:
+            pose_imgs_np = np.array(pose_imgs).astype(np.float32) / 255
+            return {
+                "ui": {"POSE_JSON": [json.dumps(POSE_SCALED, indent=4)]},
+                "result": (torch.from_numpy(pose_imgs_np), POSE_SCALED, json.dumps(POSE_SCALED, indent=4))
+            }
 
-def load_prompt_json(prompt_json_path):
-    if not os.path.isfile(prompt_json_path):
-        print(f"fbTools: prompt_json_path '{prompt_json_path}' is not a valid file")
-        return {"girl_pos": "", "male_pos": ""}
+    # otherwise output blank images
+    W=512
+    H=768
+    pose_draw = dict(bodies={'candidate':[], 'subset':[]}, faces=[], hands=[])
+    pose_out = dict(pose_keypoints_2d=[], face_keypoints_2d=[], hand_left_keypoints_2d=[], hand_right_keypoints_2d=[])
+    people=[dict(people=[pose_out], canvas_height=H, canvas_width=W)]
 
-    output = {}
-    try:
-        with open(prompt_json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        output["girl_pos"] = data.get("girl_pos", "")
-        output["male_pos"] = data.get("male_pos", "")
-        return output
-    except Exception as e:
-        print(f"fbTools: Error loading prompt JSON from '{prompt_json_path}': {e}")
-        return {"girl_pos": "", "male_pos": ""}
+    W_scaled = resolution_x
+    if resolution_x < 64:
+        W_scaled = W
+    H_scaled = int(H*(W_scaled*1.0/W))
+    pose_img = [draw_pose(pose_draw, H_scaled, W_scaled, pose_marker_size, face_marker_size, hand_marker_size)]
+    pose_img_np = np.array(pose_img).astype(np.float32) / 255
 
-def load_json_file(json_path):
-    if not os.path.isfile(json_path):
-        print(f"fbTools: json_path '{json_path}' is not a valid file")
-        return "{}"
-
-    try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data = f.read()
-        return data
-    except Exception as e:
-        print(f"fbTools: Error loading JSON from '{json_path}': {e}")
-        return ""
-
-def make_empty_image(batch=1, height=64, width=64, channels=3):
-    """
-    Returns a blank image tensor in ComfyUI format:
-    - Shape: [B, H, W, C]
-    - Dtype: torch.float32
-    - Values: 0.0 (black) in range [0.0, 1.0]
-    """
-    return torch.zeros((batch, height, width, channels), dtype=torch.float32)
-
-def make_placeholder_tensor(h, w, channels=3, color=(0, 0, 0)):
-    """Create a [1, H, W, C] tensor filled with a solid color (default: black)."""
-    arr = np.full((h, w, channels), color, dtype=np.float32) / 255.0
-    return torch.from_numpy(arr).unsqueeze(0)  # [1, H, W, C]
-
-def normalize_image_tensor(img_tensor, target_h, target_w):
-    """Ensure img_tensor is [1, target_h, target_w, 3]. Resize or replace if needed."""
-    if img_tensor is None:
-        return make_placeholder_tensor(target_h, target_w)
-
-    # Handle batch dim
-    if img_tensor.ndim == 4:
-        B, H, W, C = img_tensor.shape
-        if B != 1:
-            img_tensor = img_tensor[:1]  # take first
-        if H == target_h and W == target_w and C in (1, 3, 4):
-            # Normalize channels to 3 (if grayscale, repeat)
-            if C == 1:
-                img_tensor = img_tensor.repeat(1, 1, 1, 3)
-            elif C == 4:
-                img_tensor = img_tensor[..., :3]
-            return img_tensor
-        else:
-            # Optional: resize using PIL (preserves aspect ratio or not)
-            pil_img = Image.fromarray(
-                np.clip(img_tensor[0].cpu().numpy() * 255, 0, 255).astype(np.uint8)
-            )
-            # Resize to exact target (distorts if needed)
-            pil_img = pil_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-            resized = np.array(pil_img).astype(np.float32) / 255.0
-            if resized.ndim == 2:
-                resized = np.stack([resized] * 3, axis=-1)
-            return torch.from_numpy(resized).unsqueeze(0)
-    else:
-        # Unexpected shape — use placeholder
-        print(f"Warning: unexpected tensor shape {img_tensor.shape}, using placeholder")
-    
-    return make_placeholder_tensor(target_h, target_w)
-
-def save_image_comfyui(image_tensor, save_path):
-    """Save ComfyUI IMAGE tensor [1,H,W,C] float32 0..1 to disk as PNG."""
-    print(f"fbTools: save_image_comfyui: '{save_path}'; shape {image_tensor.shape}")
-    
-    if image_tensor.ndim != 4:
-        raise ValueError("image_tensor must be 4D [B,H,W,C]")
-    
-    B, H, W, C = image_tensor.shape
-    if B != 1:
-        print(f"image_tensor batch size > 1; saving only first image of {B}")
-        image_tensor = image_tensor[0:1]  # take first image only
-        
-    if H == 1 or W == 1:
-        raise ValueError("image_tensor height and width must be > 1")
-
-    try:
-        img = (image_tensor[0] * 255.0).clamp(0, 255).to(torch.uint8).cpu().numpy()  # [H,W,C] uint8
-        print(f"Saving image to '{save_path}' with shape {img.shape}")
-        Image.fromarray(img).save(save_path, format='PNG', compress_level=4)
-    except Exception as e:
-        print(f"Error saving image to '{save_path}': {e}")
-
-def load_image_comfyui(image_path):
-    """Load image from disk into ComfyUI IMAGE format [1,H,W,C] float32 0..1"""
-    output_images = []
-    w, h = None, None
-    excluded_formats = ['MPO']
-
-    try:
-        img = Image.open(image_path)
-        for i in ImageSequence.Iterator(img):
-            i = ImageOps.exif_transpose(i)
-            
-            if i.mode == 'I':
-                i = i.point(lambda i: i * (1 / 255))
-            image = i.convert('RGB')
-            
-            if len(output_images) == 0:
-                w = image.size[0]
-                h = image.size[1]
-            
-            image = np.array(image).astype(np.float32) / 255.0  # [H,W,C] float32 0..1
-            image = torch.from_numpy(image)[None,]  # [1,H,W,C]
-            output_images.append(image)
-            
-            if len(output_images) > 1 and img.format not in excluded_formats:
-                output_image = torch.cat(output_images, dim=0)  # [B,H,W,C]
-            else:
-                output_image = output_images[0]  # [1,H,W,C]
-    except (FileNotFoundError, OSError, AttributeError) as e:
-        output_image = make_empty_image()
-        
-    return output_image
-
-def _nhwc_to_nchw(x: torch.Tensor) -> torch.Tensor:
-    return x.permute(0, 3, 1, 2).contiguous()
-
-def _nchw_to_nhwc(x: torch.Tensor) -> torch.Tensor:
-    return x.permute(0, 2, 3, 1).contiguous()
-
-def kornia_unsharp(img_nhwc, radius=1.5, amount=0.5):
-    # img_nhwc: [B,H,W,C] in 0..1, C=3 or 4
-    has_a = (img_nhwc.shape[-1] == 4)
-    rgb = img_nhwc[...,:3]
-    x = _nhwc_to_nchw(rgb)  # -> [B,3,H,W]
-    # gaussian blur (sigma ~ radius), then unsharp
-    sigma = max(0.1, float(radius))
-
-    k = KF.gaussian_blur2d(x, kernel_size=int(2*round(3*sigma)+1), sigma=(sigma, sigma))
-    sharp = torch.clamp(x + amount*(x - k), 0, 1)
-    out = _nchw_to_nhwc(sharp)
-    if has_a:
-        out = torch.cat([out, img_nhwc[...,3:4]], dim=3)
-    return out
-
-def kornia_clahe(img_nhwc, clip_limit=2.0, grid=(8,8)):
-    x = _nhwc_to_nchw(img_nhwc[...,:3])
-    y = KE.equalize_clahe(x, clip_limit=clip_limit, grid_size=grid)
-    out = _nchw_to_nhwc(y)
-    return torch.cat([out, img_nhwc[...,3:4]], dim=3) if img_nhwc.shape[-1]==4 else out
-
-def skimage_match_hist(img_nhwc, ref_nhwc, multichannel=True, amount=1.0):
-    # Move to CPU/HWC uint8
-    def to_u8(hwc):
-        if hwc.dtype.is_floating_point:
-            hwc = (hwc.clamp(0,1)*255.0).to(torch.uint8)
-        return hwc
-
-    i = to_u8(img_nhwc[0,...,:3].detach().cpu())   # [H,W,3]
-    r = to_u8(ref_nhwc[0,...,:3].detach().cpu())
-
-    matched = match_histograms(i.numpy(), r.numpy(), channel_axis=-1 if multichannel else None)
-    matched = torch.from_numpy(matched).to(dtype=torch.float32)/255.0
-    matched = matched.unsqueeze(0)  # [1,H,W,3]
-
-    if img_nhwc.shape[-1] == 4:
-        matched = torch.cat([matched, img_nhwc[... ,3:4].detach().cpu()], dim=3)
-
-    # blend with original if amount<1
-    out = img_nhwc.detach().cpu()
-    out[...,:3] = out[...,:3].lerp(matched[...,:3], float(amount))
-    return out.to(img_nhwc.device, dtype=img_nhwc.dtype)
-
-def _stack_if_same_shape(frames: List[torch.Tensor]) -> torch.Tensor:
-    if len(frames) == 0 or frames is None:
-        raise ValueError("No frames to stack")
-    h0, w0, c0 = frames[0].shape[1], frames[0].shape[2], frames[0].shape[3]
-
-    for f in frames:
-        hCur, wCur, cCur = f.shape[1], f.shape[2], f.shape[3]
-        if f.ndim != 4 or hCur != h0 or wCur != w0 or cCur != c0:
-            raise ValueError("All frames must have the same shape to stack")
-    return torch.cat(frames, dim=0) # should this use torch.stack?  # [B, H, W, C]
-
-def _compute_ref_stats(frames: List[torch.Tensor], window: int) -> Tuple[torch.Tensor, torch.Tensor, float]:
-    """
-    Compute per-channel mean/std (RGB) and luma mean over the last `window` frames of the list.
-    Each frame is [1,H,W,C] NHWC in [0,1].
-
-    Args:
-        frames (List[torch.Tensor]): _description_
-        window (int): _description_
-
-    Raises:
-        ValueError: _description_
-        ValueError: _description_
-        ValueError: _description_
-        ValueError: _description_
-
-    Returns:
-        mean_c: [1,1,1,3] mean per channel RGB
-        std_c: [1,1,1,3] std per channel RGB (clamped to >= 1e-6)
-        mean_luma: float mean luma Y in [0,1]
-    """
-    if not frames:
-        # Fallback to neutral stats
-        mean_c = torch.tensor([[[[0.5, 0.5, 0.5]]]], dtype=torch.float32)
-        std_c = torch.tensor([[[[0.25, 0.25, 0.25]]]], dtype=torch.float32)
-        mean_luma = 0.5
-        return mean_c, std_c, mean_luma
-    
-    sub = frames[-window:] if window > 0 else frames
-    batch = torch.cat(sub, dim=0)  # [B, H, W, C]
-    mean_c = batch.mean(dim=[0,1,2], keepdim=True)  # [1,1,1,C]
-    std_c = batch.std(dim=[0,1,2], keepdim=True).clamp_min(1e-6)  # [1,1,1,C]
-    
-    r, g, b = mean_c[..., 0], mean_c[..., 1], mean_c[..., 2]
-    mean_luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).item()  # scalar in [0,1]
-    return mean_c, std_c, mean_luma
-
-def _pick_ref_image(frames: List[torch.Tensor], window: int) -> Optional[torch.Tensor]:
-    """Pick one frame (the median index of the last `window`) as histogram reference."""
-    if not frames:
-        return None
-
-    sub = frames[-window:] if window > 0 else frames
-    idx = len(sub) // 2
-    return sub[idx]  # [1,H,W,C]
-
-
-# ------------------ Processing primitives (NHWC) ------------------
-
-def proc_deflicker_luma(img: torch.Tensor, target_luma: float, strength: float) -> torch.Tensor:
-    # scale RGB together to match target mean luma
-    r, g, b = img[...,:3].unbind(dim=3)
-    luma = 0.2126*r + 0.7152*g + 0.0722*b
-    mean = luma.mean().item()
-    if mean <= 1e-6:
-        return img
-    s = 1.0 + strength * (target_luma/mean - 1.0)
-    out_rgb = (img[...,:3] * s).clamp(0,1)
-    return torch.cat([out_rgb, img[...,3:4]], dim=3) if img.shape[3] == 4 else out_rgb
-
-def proc_deflicker_clahe(img: torch.Tensor, clip_limit: float, grid_w: int, grid_h: int) -> torch.Tensor:
-    if not _HAS_KORNIA:
-        return img  # fallback silently if kornia missing
-    # CLAHE works best per-channel in NCHW
-    x = img[...,:3].permute(0,3,1,2).contiguous()  # [B,3,H,W]
-    y = KE.equalize_clahe(x, clip_limit=float(clip_limit), grid_size=(int(grid_h), int(grid_w)))
-    out = y.permute(0,2,3,1).contiguous()
-    return torch.cat([out, img[...,3:4]], dim=3) if img.shape[3]==4 else out
-
-def proc_color_meanstd(img: torch.Tensor, tgt_mean: torch.Tensor, tgt_std: torch.Tensor, amount: float) -> torch.Tensor:
-    x = img[...,:3]
-    im_mean = x.mean(dim=(0,1,2), keepdim=True)
-    im_std  = x.std(dim=(0,1,2), keepdim=True).clamp_min(1e-6)
-    matched = ((x - im_mean)/im_std) * tgt_std.to(x) + tgt_mean.to(x)
-    out = x.lerp(matched, float(amount)).clamp(0,1)
-    return torch.cat([out, img[...,3:4]], dim=3) if img.shape[3]==4 else out
-
-def proc_color_histmatch(img: torch.Tensor, ref: torch.Tensor, amount: float) -> torch.Tensor:
-    if not _HAS_SKIMAGE:
-        return img
-    # to CPU uint8 HWC
-    i = img[0,...,:3].detach().clamp(0,1).mul(255).to(torch.uint8).cpu().numpy()  # HWC
-    r = ref[0,...,:3].detach().clamp(0,1).mul(255).to(torch.uint8).cpu().numpy()
-    matched = match_histograms(i, r, channel_axis=-1)
-    matched = torch.from_numpy(matched).to(dtype=torch.float32)/255.0
-    matched = matched.unsqueeze(0)  # [1,H,W,3]
-    out_rgb = img[...,:3].lerp(matched.to(img.device, img.dtype), float(amount)).clamp(0,1)
-    return torch.cat([out_rgb, img[...,3:4]], dim=3) if img.shape[3]==4 else out_rgb
-
-def proc_unsharp(img: torch.Tensor, radius: float, amount: float) -> torch.Tensor:
-    if not _HAS_KORNIA:
-        return img
-    x = img[...,:3].permute(0,3,1,2).contiguous()  # NCHW
-    sigma = max(0.1, float(radius))
-    ksize = int(2*round(3*sigma)+1)
-    blur = KF.gaussian_blur2d(x, kernel_size=ksize, sigma=(sigma, sigma))
-    sharp = (x + amount*(x - blur)).clamp(0,1)
-    out = sharp.permute(0,2,3,1).contiguous()
-    return torch.cat([out, img[...,3:4]], dim=3) if img.shape[3]==4 else out
-
-def proc_bilateral_cv2(img: torch.Tensor, d: int, sigma_color: float, sigma_space: float) -> torch.Tensor:
-    if not _HAS_CV2:
-        return img
-    # CPU path for cv2
-    hwc = img[0].detach().clamp(0,1).cpu().numpy()
-    rgb = (hwc[...,:3]*255.0).astype('uint8')
-    out = cv2.bilateralFilter(rgb, d=int(d), sigmaColor=float(sigma_color), sigmaSpace=float(sigma_space))
-    out = torch.from_numpy(out).to(dtype=img.dtype)/255.0
-    out = out.unsqueeze(0)  # [1,H,W,3]
-    return torch.cat([out, img[...,3:4].detach().cpu()], dim=3).to(img.device, img.dtype) if img.shape[3]==4 else out.to(img.device, img.dtype)
-
-def get_first_subdirectory(parent_dir: str) -> str:
-    """Return the name of the first subdirectory in the given parent directory."""
-    try:
-        path = Path(parent_dir)
-        if not path.is_dir():
-            print(f"'{parent_dir}' is not a valid directory.")
-            return ""
-        subdirs = [p for p in path.iterdir() if p.is_dir()]
-        subdirs.sort()
-        return subdirs[0].name if subdirs else ""
-
-    except FileNotFoundError:
-        print(f"Directory '{parent_dir}' not found.")
-    return ""
+    return {
+        "ui": {"POSE_JSON": people},
+        "result": (torch.from_numpy(pose_img_np), people, json.dumps(people))
+    }
 
 @io.comfytype(io_type="DICT")
 class DictType:
@@ -755,6 +472,14 @@ class SubdirLister(io.ComfyNode):
             "dir_names": list(subdir_dict.keys()) if subdir_dict else []
         })
 
+def default_poses_dir():
+    output_dir = get_output_directory()
+    default_dir = os.path.join(output_dir, "poses")
+    if not os.path.exists(default_dir):
+        os.makedirs(default_dir, exist_ok=True)
+        os.makedirs(os.path.join(default_dir, "default_pose"), exist_ok=True)
+    return default_dir
+
 class SceneInfo(BaseModel):
     #metadata
     pose_dir: str
@@ -776,7 +501,7 @@ class SceneInfo(BaseModel):
     pose_open_image: Optional[torch.Tensor] = None
     canny_image: Optional[torch.Tensor] = None
     upscale_image: Optional[torch.Tensor] = None
-    
+
     model_config = ConfigDict(arbitrary_types_allowed=True, from_attributes=True)
 
 class SceneSelect(io.ComfyNode):
@@ -817,7 +542,7 @@ class SceneSelect(io.ComfyNode):
     ) -> io.NodeOutput:
         print(f"SelectScene: Executing with poses_dir='{poses_dir}'; selected_pose='{selected_pose}'")
         if not poses_dir:
-            poses_dir = Path(get_output_directory()) / "poses"
+            poses_dir = default_poses_dir()
 
         if not poses_dir or not selected_pose:
             print("SelectScene: poses_dir or selected_pose is empty")
@@ -913,6 +638,398 @@ default_pose_options = {
     "face": "pose_face_image",
     "open": "pose_open_image",
 }
+
+class SceneCreate(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="SceneCreate",
+            category="🧊 frost-byte/Scene",
+            inputs=[
+                io.String.Input(id="poses_dir", display_name="poses_dir", tooltip="Root Directory where all scene subdirectories are saved"),
+                io.String.Input(id="pose_name", display_name="pose_name", tooltip="Name of the pose"),
+                io.Int.Input(id="resolution", display_name="resolution", tooltip="Resolution for the pose, depth and other images", default=512),
+                io.Combo.Input(
+                    id="upscale_method",
+                    display_name="upscale_method",
+                    options=["lanczos", "nearest-exact", "bilinear", "area", "bicubic"],
+                    default="nearest-exact",
+                    tooltip="Method to use for upscaling the base image"
+                ),
+                io.Float.Input(
+                    id="upscale_factor", 
+                    display_name="upscale_factor", 
+                    tooltip="Factor to upscale the base image by", 
+                    default=1.0, min=0.1, max=10.0, step=0.1
+                ),
+                io.Combo.Input(
+                    id="densepose_model", 
+                    display_name="densepose_model",
+                    options=["densepose_r50_fpn_dl.torchscript", "densepose_r101_fpn_dl.torchscript"], 
+                    default="densepose_r50_fpn_dl.torchscript", 
+                    tooltip="DensePose model to use"
+                ),
+                io.Combo.Input(
+                    id="densepose_cmap",
+                    display_name="densepose_cmap",
+                    options=["viridis", "parula"],
+                    default="viridis",
+                    tooltip="Color map to use for DensePose visualization"
+                ),
+                io.Combo.Input(
+                    id="depth_any_ckpt",
+                    display_name="depth_any_ckpt",
+                    options=["depth_anything_vitl14.pth", "depth_anything_vitb14.pth", "depth_anything_vits14.pth"],
+                    default="depth_anything_vitl14.pth",
+                    tooltip="Checkpoint for Depth Any model"
+                ),
+                io.Combo.Input(
+                    id="depth_any_v2_ckpt",
+                    display_name="depth_any_v2_ckpt",
+                    options=["depth_anything_v2_vitg.pth", "depth_anything_v2_vitl.pth", "depth_anything_v2_vitb.pth", "depth_anything_v2_vits.pth"],
+                    default="depth_anything_v2_vitl.pth",
+                    tooltip="Checkpoint for Depth Any v2 model"
+                ),
+                io.Float.Input(
+                    id="midas_a",
+                    display_name="midas_a",
+                    tooltip="MiDas parameter A for depth scaling",
+                    default=np.pi * 2.0, min=0.0, max=np.pi * 5.0, step=0.1
+                ),
+                io.Float.Input(
+                    id="midas_bg_thresh",
+                    display_name="midas_bg_thresh",
+                    tooltip="MiDas parameter Bg threshold for depth scaling",
+                    default=0.1, min=0.1, max=np.pi * 5.0, step=0.1
+                ),
+                io.Combo.Input(
+                    id="zoe_environment",
+                    display_name="zoe_environment",
+                    options=["indoor", "outdoor"],
+                    default="indoor",
+                    tooltip="Environment setting for Zoe Any model"
+                ),
+                io.Int.Input(
+                    id="canny_low_threshold",
+                    display_name="canny_low_threshold",
+                    tooltip="Canny edge detector low threshold",
+                    default=100, min=0, max=255, step=1
+                ),
+                io.Int.Input(
+                    id="canny_high_threshold",
+                    display_name="canny_high_threshold",
+                    tooltip="Canny edge detector high threshold",
+                    default=200, min=0, max=255, step=1
+                ),
+                io.String.Input(id="girl_pos", display_name="girl_pos", placeholder="Provide the positive prompt for the female in the scene", tooltip="Positive prompt for the girl", multiline=True),
+                io.String.Input(id="male_pos", display_name="male_pos", placeholder="Provide the positive prompt for the male(s) in the scene", tooltip="Positive prompt for the male(s)", multiline=True),
+                io.Image.Input(id="base_image", display_name="base_image", tooltip="Base image for the scene"),
+            ],
+            outputs=[
+                io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene Information"),
+            ],
+        )
+
+    @classmethod
+    async def execute(
+        cls,
+        poses_dir="",
+        pose_name="default_pose",
+        resolution=512,
+        upscale_method="nearest-exact",
+        upscale_factor=1.0,
+        densepose_model="densepose_r50_fpn_dl.torchscript",
+        densepose_cmap="viridis",
+        depth_any_ckpt="depth_anything_vitl14.pth",
+        depth_any_v2_ckpt="depth_anything_v2_vitl.pth",
+        midas_a=np.pi * 2.0,
+        midas_bg_thresh=0.1,
+        zoe_environment="indoor",
+        canny_low_threshold=100,
+        canny_high_threshold=200,
+        girl_pos="",
+        male_pos="",
+        base_image=None,
+    ) -> io.NodeOutput:
+        if base_image is None:
+            print("SceneCreate: base_image is None")
+            return io.NodeOutput(None)
+        
+        if not poses_dir:
+            poses_dir = default_poses_dir()
+        
+        pose_dir = os.path.join(poses_dir, pose_name)
+        if not os.path.exists(pose_dir):
+            os.makedirs(pose_dir, exist_ok=True)
+            print(f"SceneCreate: Created pose_dir='{pose_dir}'")
+        
+        if not pose_name:
+            pose_name = "default_pose"
+            
+        if not girl_pos:
+            girl_pos = ""
+        if not male_pos:
+            male_pos = ""
+        
+        upscale_image, = ImageScaleBy().upscale(base_image, upscale_method=upscale_method, scale_by=upscale_factor)
+        print(f"SceneCreate: upscale_image is of type: {type(upscale_image)} with shape {upscale_image.shape if torch.is_tensor(upscale_image) else 'N/A'}")
+        torch_device = model_management.get_torch_device()
+
+        # DensePose
+        dense_pose_image = dense_pose(upscale_image, densepose_model, densepose_cmap, resolution)
+
+        # Depth Anything
+        depth_any_image = depth_anything(upscale_image, ckpt=depth_any_ckpt, resolution=resolution)
+        
+        # Depth Anything V2
+        depth_image = depth_anything_v2(upscale_image, ckpt=depth_any_v2_ckpt, resolution=resolution)
+
+        # MiDas
+        midas_depth_image = midas(upscale_image, a=midas_a, bg_thresh=midas_bg_thresh)
+
+        # Zoe
+        depth_zoe_image = zoe(upscale_image, resolution=resolution)
+        
+        # Zoe Any
+        depth_zoe_any_image = zoe_any(upscale_image, environment=zoe_environment, resolution=resolution)
+
+        H, W = depth_any_image.shape[1], depth_any_image.shape[2]
+        pose_dw_image, pose_json = estimate_dwpose(upscale_image, resolution=resolution)
+        normalized_upscale_image = image_resize_ess(upscale_image, W, H, method="keep proportion", interpolation="nearest", multiple_of=16)
+
+        pose_open_image = openpose(normalized_upscale_image, resolution=resolution)
+        canny_image = canny(upscale_image, low_threshold=canny_low_threshold, high_threshold=canny_high_threshold, resolution=resolution)
+
+        # todo: consider whether or not the Face Detection using onnx is even worth it (WanAnimatePreprocess (v2) modified based upon post on github)
+        # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
+        
+        scene_info = SceneInfo(
+            pose_dir=pose_dir,
+            pose_name=pose_name,
+            resolution=resolution,
+            girl_pos=girl_pos,
+            male_pos=male_pos,
+            upscale_image=upscale_image,
+            depth_image=depth_image,
+            depth_any_image=depth_any_image,
+            depth_midas_image=midas_depth_image,
+            depth_zoe_image=depth_zoe_image,
+            depth_zoe_any_image=depth_zoe_any_image,
+            pose_dense_image=dense_pose_image,
+            pose_dw_image=pose_dw_image,
+            pose_edit_image=pose_dw_image,
+            pose_dwpose_json=pose_json,
+            pose_open_image=pose_open_image,
+            pose_face_image=pose_dw_image,
+            pose_json=pose_json,
+            canny_image=canny_image,
+        )
+        return io.NodeOutput(
+            scene_info,
+        )
+
+class SceneUpdate(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="SceneUpdate",
+            category="🧊 frost-byte/Scene",
+            inputs=[
+                io.Custom("SCENE_INFO").Input(id="scene_info_in", display_name="scene_info", tooltip="Scene Information" ),
+                io.String.Input(id="girl_pos", display_name="girl_pos", tooltip="The positive prompt for the girl in the scene"),
+                io.String.Input(id="male_pos", display_name="male_pos", tooltip="The positive prompt for the male(s) in the scene"),
+                io.Boolean.Input(id="update_prompts", display_name="update_prompts", tooltip="If true, will update the prompts in the scene_info", default=True),
+                io.Boolean.Input(id="update_zoe", display_name="update_zoe", tooltip="If true, will update the Zoe depth images in the scene_info", default=False),
+                io.Boolean.Input(id="update_depth", display_name="update_depth", tooltip="If true, will update the Depth Anything images in the scene_info", default=False),
+                io.Boolean.Input(id="update_densepose", display_name="update_densepose", tooltip="If true, will update the DensePose image in the scene_info", default=False),
+                io.Boolean.Input(id="update_openpose", display_name="update_openpose", tooltip="If true, will update the OpenPose image in the scene_info", default=False),
+                io.Boolean.Input(id="update_midas", display_name="update_midas", tooltip="If true, will update the MiDas depth image in the scene_info", default=False),
+                io.Boolean.Input(id="update_canny", display_name="update_canny", tooltip="If true, will update the Canny edge image in the scene_info", default=False),
+                io.Boolean.Input(id="update_upscale", display_name="update_upscale", tooltip="If true, will update the Upscale image in the scene_info", default=False),
+                io.Boolean.Input(id="update_pose_json", display_name="update_pose_json", tooltip="If true, will update the pose_json in the scene_info", default=False),
+                io.Boolean.Input(id="update_facepose", display_name="update_facepose", tooltip="If true, will update the Face Pose image in the scene_info", default=False),
+                io.Boolean.Input(id="update_editpose", display_name="update_editpose", tooltip="If true, will update the Edit Pose image in the scene_info", default=False),
+                io.Boolean.Input(id="update_dwpose", display_name="update_dwpose", tooltip="If true, will update the DensePose image in the scene_info", default=False),
+                io.String.Input(id="pose_json", display_name="pose_json", tooltip="JSON string for the pose keypoints"),
+                io.Int.Input(id="resolution", display_name="resolution", tooltip="Resolution for the pose, depth and other images", default=512),
+                io.Combo.Input(
+                    id="upscale_method",
+                    display_name="upscale_method",
+                    options=["lanczos", "nearest-exact", "bilinear", "area", "bicubic"],
+                    default="nearest-exact",
+                    tooltip="Method to use for upscaling the base image"
+                ),
+                io.Float.Input(
+                    id="upscale_factor", 
+                    display_name="upscale_factor", 
+                    tooltip="Factor to upscale the base image by", 
+                    default=1.0, min=0.1, max=10.0, step=0.1
+                ),
+                io.Combo.Input(
+                    id="densepose_model", 
+                    display_name="densepose_model",
+                    options=["densepose_r50_fpn_dl.torchscript", "densepose_r101_fpn_dl.torchscript"], 
+                    default="densepose_r50_fpn_dl.torchscript", 
+                    tooltip="DensePose model to use"
+                ),
+                io.Combo.Input(
+                    id="densepose_cmap",
+                    display_name="densepose_cmap",
+                    options=["viridis", "parula"],
+                    default="viridis",
+                    tooltip="Color map to use for DensePose visualization"
+                ),
+                io.Combo.Input(
+                    id="depth_any_ckpt",
+                    display_name="depth_any_ckpt",
+                    options=["depth_anything_vitl14.pth", "depth_anything_vitb14.pth", "depth_anything_vits14.pth"],
+                    default="depth_anything_vitl14.pth",
+                    tooltip="Checkpoint for Depth Any model"
+                ),
+                io.Combo.Input(
+                    id="depth_any_v2_ckpt",
+                    display_name="depth_any_v2_ckpt",
+                    options=["depth_anything_v2_vitg.pth", "depth_anything_v2_vitl.pth", "depth_anything_v2_vitb.pth", "depth_anything_v2_vits.pth"],
+                    default="depth_anything_v2_vitl.pth",
+                    tooltip="Checkpoint for Depth Any v2 model"
+                ),
+                io.Float.Input(
+                    id="midas_a",
+                    display_name="midas_a",
+                    tooltip="MiDas parameter A for depth scaling",
+                    default=np.pi * 2.0, min=0.0, max=np.pi * 5.0, step=0.1
+                ),
+                io.Float.Input(
+                    id="midas_bg_thresh",
+                    display_name="midas_bg_thresh",
+                    tooltip="MiDas parameter Bg threshold for depth scaling",
+                    default=0.1, min=0.1, max=np.pi * 5.0, step=0.1
+                ),
+                io.Combo.Input(
+                    id="zoe_environment",
+                    display_name="zoe_environment",
+                    options=["indoor", "outdoor"],
+                    default="indoor",
+                    tooltip="Environment setting for Zoe Any model"
+                ),
+                io.Int.Input(
+                    id="canny_low_threshold",
+                    display_name="canny_low_threshold",
+                    tooltip="Canny edge detector low threshold",
+                    default=100, min=0, max=255, step=1
+                ),
+                io.Int.Input(
+                    id="canny_high_threshold",
+                    display_name="canny_high_threshold",
+                    tooltip="Canny edge detector high threshold",
+                    default=200, min=0, max=255, step=1
+                ),
+            ],
+            outputs=[
+                io.Custom("SCENE_INFO").Output(id="scene_info_out", display_name="scene_info", tooltip="Updated Scene Information"),
+            ],
+        )
+        
+    @classmethod
+    async def execute(
+        cls,
+        scene_info_in=None,
+        girl_pos=None,
+        male_pos=None,
+        update_prompts=True,
+        update_zoe=False,
+        update_depth=False,
+        update_densepose=False,
+        update_openpose=False,
+        update_midas=False,
+        update_canny=False,
+        update_upscale=False,
+        update_pose_json=False,
+        update_facepose=False,
+        update_editpose=False,
+        update_dwpose=False,
+        pose_json="[]",
+        resolution=512,
+        upscale_method="nearest-exact",
+        upscale_factor=1.0,
+        densepose_model="densepose_r50_fpn_dl.torchscript",
+        densepose_cmap="viridis",
+        depth_any_ckpt="depth_anything_vitl14.pth",
+        depth_any_v2_ckpt="depth_anything_v2_vitl.pth",
+        midas_a=np.pi * 2.0,
+        midas_bg_thresh=0.1,
+        zoe_environment="indoor",
+        canny_low_threshold=100,
+        canny_high_threshold=200,
+
+    ):
+        if scene_info_in is None:
+            print("SceneUpdate: scene_info is None")
+            return io.NodeOutput(None)
+
+        scene_info_out = scene_info_in
+        if update_prompts:
+            if girl_pos is not None:
+                scene_info_out.girl_pos = girl_pos
+            if male_pos is not None:
+                scene_info_out.male_pos = male_pos
+                
+        base_image = scene_info_in.upscale_image
+
+        if base_image is None:
+            print("SceneUpdate: base_image is None in scene_info")
+            return io.NodeOutput(scene_info_out)
+
+        if update_upscale:
+            upscale_image = ImageScaleBy().upscale(base_image, upscale_method=upscale_method, scale_by=upscale_factor)
+            scene_info_out.upscale_image = upscale_image
+
+        if update_densepose:
+            scene_info_out.pose_dense_image = dense_pose(upscale_image, densepose_model, densepose_cmap, resolution)
+
+        if update_depth:
+            # Depth Anything
+            scene_info_out.depth_any_image = depth_anything(upscale_image, ckpt=depth_any_ckpt, resolution=resolution)
+            scene_info_out.depth_image = depth_anything_v2(upscale_image, ckpt=depth_any_v2_ckpt, resolution=resolution)
+
+        # MiDas
+        if update_midas:
+            scene_info_out.depth_midas_image = midas(upscale_image, a=midas_a, bg_thresh=midas_bg_thresh)
+
+        # Zoe
+        if update_zoe:
+            depth_zoe_image = zoe(upscale_image, resolution=resolution)
+            scene_info_out.depth_zoe_image = depth_zoe_image
+            depth_zoe_any_image = zoe_any(upscale_image, environment=zoe_environment, resolution=resolution)
+            scene_info_out.depth_zoe_any_image = depth_zoe_any_image
+
+        # Pose Json
+        if update_pose_json:
+            scene_info_out.pose_json = pose_json
+        
+        if update_canny:
+            canny_image = canny(upscale_image, low_threshold=canny_low_threshold, high_threshold=canny_high_threshold, resolution=resolution)
+
+        if update_dwpose:
+            pose_dw_image, pose_json = estimate_dwpose(upscale_image, resolution=resolution)
+            scene_info_out.pose_dw_image = pose_dw_image
+            #scene_info_out.pose_json = pose_json
+
+        depth_any_image = scene_info_out.depth_any_image
+        H, W = depth_any_image.shape[1], depth_any_image.shape[2]
+
+        normalized_upscale_image = image_resize_ess(upscale_image, W, H, method="keep proportion", interpolation="nearest", multiple_of=16)
+
+        if update_openpose or update_editpose:
+            pose_open_image = openpose(normalized_upscale_image, resolution=resolution)
+            scene_info_out.pose_open_image = pose_open_image
+
+        # todo: consider whether or not the Face Detection using onnx is even worth it (WanAnimatePreprocess (v2) modified based upon post on github)
+        # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
+        
+        return io.NodeOutput(
+            scene_info_out,
+        )
 
 class SceneView(io.ComfyNode):
     @classmethod
@@ -1092,9 +1209,8 @@ class SceneSave(io.ComfyNode):
 
         pose_dir = pose_dir if pose_dir else scene_info.pose_dir
         if not pose_dir:
-            pose_dir = Path(get_output_directory()) / "poses"
+            pose_dir = Path(default_poses_dir()) / pose_name
 
-        pose_dir = Path(pose_dir) / pose_name
         print(f"SaveScene: pose_dir='{pose_dir}'; pose_name='{pose_name}'; dest_dir='{pose_dir}'")
         if pose_dir and not os.path.isdir(pose_dir):
             os.makedirs(pose_dir, exist_ok=True)
@@ -1306,6 +1422,8 @@ class FBToolsExtension(ComfyExtension):
             FBTextEncodeQwenImageEditPlus,
             SAMPreprocessNHWC,
             SubdirLister,
+            SceneCreate,
+            SceneUpdate,
             SceneSave,
             SceneInput,
             SceneOutput,

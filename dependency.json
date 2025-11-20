@@ -1,0 +1,7 @@
+{
+    "custom_nodes": [{
+        "name": "comfyui_controlnet_aux",
+        "url": "https://github.com/Mikubill/comfyui_controlnet_aux",
+        "description": "Required for Depth Detection: DepthAnythingV2, MiDaS, ZoeDepth, and more."
+    }]
+}
