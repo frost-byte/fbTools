@@ -6,7 +6,7 @@ import comfy.model_management as model_management
 from typing_extensions import override
 from folder_paths import get_output_directory
 from nodes import ImageScaleBy
-from .utils.util import draw_pose_json, draw_pose, extend_scalelist, pose_normalized
+from .utils.util import draw_pose_json, draw_pose, extend_scalelist, pose_normalized, select_text_by_action, update_ui_widget
 from .utils.io import save_json_file, load_prompt_json, load_json_file
 from .utils.images import image_resize_ess
 from .utils.pose import estimate_dwpose, dense_pose, depth_anything, depth_anything_v2, zoe, zoe_any, openpose, midas, canny
@@ -487,6 +487,7 @@ class SceneInfo(BaseModel):
     girl_pos: str
     male_pos: str
     pose_json: str
+    resolution: int
 
     # Image Tensors (ComfyUI uses torch.Tensor with shape [B,H,W,C] for IMAGE)
     depth_image: Optional[torch.Tensor] = None
@@ -496,6 +497,7 @@ class SceneInfo(BaseModel):
     depth_zoe_any_image: Optional[torch.Tensor] = None
     pose_dense_image: Optional[torch.Tensor] = None
     pose_dw_image: Optional[torch.Tensor] = None
+    pose_dwpose_json: Optional[str] = None
     pose_edit_image: Optional[torch.Tensor] = None
     pose_face_image: Optional[torch.Tensor] = None
     pose_open_image: Optional[torch.Tensor] = None
@@ -525,12 +527,23 @@ class SceneSelect(io.ComfyNode):
             inputs=[
                 io.String.Input("poses_dir", default=default_dir, tooltip="Directory containing pose subdirectories"),
                 io.Combo.Input('selected_pose', options=default_options, default=default_pose, tooltip="Select a pose name"),
+                io.String.Input(id="girl_pos_in", display_name="girl_pos", multiline=True, default="", tooltip="The positive prompt for the girl"),
+                io.Combo.Input(id="girl_action", display_name="action", options=["use_file", "use_edit"], default="use_file", tooltip="Action for the girl prompt"),
+                io.String.Input(id="male_pos_in", display_name="male_pos", multiline=True, default="", tooltip="The positive prompt for the male"),
+                io.Combo.Input(id="male_action", display_name="action", options=["use_file", "use_edit"], default="use_file", tooltip="Action for the male prompt"),
             ],
             outputs=[
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene information and images"),
                 io.String.Output(id="pose_name", display_name="pose_name", tooltip="Name of the selected pose"),
                 io.String.Output(id="pose_dir", display_name="pose_dir", tooltip="Directory of the selected pose"),
+                io.String.Output(id="girl_pos", display_name="girl_pos", tooltip="Girl's positive prompt"),
+                io.String.Output(id="male_pos", display_name="male_pos", tooltip="Male's positive prompt"),
             ],
+            hidden=[
+                io.Hidden.unique_id,
+                io.Hidden.extra_pnginfo 
+            ],
+            is_output_node=True,
         )
     
     @classmethod
@@ -538,44 +551,93 @@ class SceneSelect(io.ComfyNode):
         cls,
         poses_dir="",
         selected_pose="default_pose",
-        **kwargs
+        girl_pos_in="",
+        girl_action="use_file",
+        male_pos_in="",
+        male_action="use_file"
     ) -> io.NodeOutput:
-        print(f"SelectScene: Executing with poses_dir='{poses_dir}'; selected_pose='{selected_pose}'")
+        className = cls.__name__
+        input_types = cls.INPUT_TYPES()
+        unique_id = cls.hidden.unique_id
+        extra_pnginfo = cls.hidden.extra_pnginfo
+        print(f"{className}: unique_id ='{unique_id}'; extra_pnginfo='{extra_pnginfo}'")
+
+        if (type(input_types) is dict):
+            inputs = input_types.get('required', {})
+        elif (type(input_types) is tuple):
+            inputs = input_types[0] if input_types else {}
+
+        print(f"{className}: Type of INPUT_TYPES ='{type(inputs)}'; INPUTS ='{inputs}'")
+        num_inputs = len(inputs)
+        print(f"{className}: INPUT_TYPES ='{input_types}; num_inputs={num_inputs}")
+        print(f"{className}: Executing with poses_dir='{poses_dir}'; selected_pose='{selected_pose}'")
         if not poses_dir:
             poses_dir = default_poses_dir()
 
         if not poses_dir or not selected_pose:
-            print("SelectScene: poses_dir or selected_pose is empty")
+            print(f"{className}: poses_dir or selected_pose is empty")
             return io.NodeOutput(None)
         
         pose_dir = os.path.join(poses_dir, selected_pose)
-        print(f"SelectScene: pose_dir='{pose_dir}'")
+        print(f"{className}: pose_dir='{pose_dir}'")
 
         if not os.path.isdir(pose_dir):
-            print(f"SelectScene: pose_dir '{pose_dir}' is not a valid directory")
+            print(f"{className}: pose_dir '{pose_dir}' is not a valid directory")
             return io.NodeOutput(None)
         
         prompt_json_path = os.path.join(pose_dir, "prompts.json")
         prompt_data = load_prompt_json(prompt_json_path)
-        print(f"SelectScene: Loaded prompt_data: {prompt_data}")
+        print(f"{className}: Loaded prompt_data: {prompt_data}")
         pose_json_path = os.path.join(pose_dir, "pose.json")
         pose_json = load_json_file(pose_json_path)
         if not pose_json:
             pose_json = "[]"
-        print(f"SelectScene: Loaded pose_json: {pose_json}")
 
-        girl_pos = prompt_data.get("girl_pos", "")
-        male_pos = prompt_data.get("male_pos", "")
+        girl_file_text = prompt_data.get("girl_pos", "")
+        girl_pos, girl_widget_text = select_text_by_action(
+            girl_pos_in, 
+            girl_file_text, 
+            girl_action, 
+            className
+        )
+
+        if girl_widget_text is not None:
+            print(f"{className}: Updating UI widget for girl_pos_in with text: '{girl_widget_text[:32]}...'")
+            update_ui_widget(className, unique_id, extra_pnginfo, girl_widget_text,"girl_pos_in", inputs)
+
+        girl_pos_ui_text = girl_widget_text if girl_widget_text is not None else girl_file_text
+
+        male_file_text = prompt_data.get("male_pos", "")
+        male_pos, male_widget_text = select_text_by_action(
+            male_pos_in, 
+            male_file_text, 
+            male_action, 
+            className
+        )
+
+        if male_widget_text is not None:
+            print(f"{className}: Updating UI widget for male_pos_in with text: '{male_widget_text[:32]}...'")
+            update_ui_widget(className, unique_id, extra_pnginfo, male_widget_text,"male_pos_in", inputs)
+
+        male_pos_ui_text = male_widget_text if male_widget_text is not None else male_file_text
+
+        print(f"{className}: girl_pos: '{girl_pos}'; male_pos: '{male_pos}'")
 
         depth_image_path = os.path.join(pose_dir, "depth.png")
         if not os.path.exists(depth_image_path):
-            print(f"SelectScene: depth_image_path '{depth_image_path}' does not exist")
+            print(f"{className}: depth_image_path '{depth_image_path}' does not exist")
         depth_image = load_image_comfyui(depth_image_path)
-        print(f"SelectScene: depth_image shape: {depth_image.shape if depth_image is not None else 'None'} ")
+        print(f"{className}: depth_image shape: {depth_image.shape if depth_image is not None else 'None'} ")
+        
+        if not depth_image is None:
+            H, W = depth_image.shape[1], depth_image.shape[2]
+        else:
+            H, W = (512, 512)
+        resolution = max(H, W)
 
         depth_any_image_path = os.path.join(pose_dir, "depth_any.png")
         if not os.path.exists(depth_any_image_path):
-            print(f"SelectScene: depth_any_image_path '{depth_any_image_path}' does not exist")
+            print(f"{className}: depth_any_image_path '{depth_any_image_path}' does not exist")
         depth_any_image = load_image_comfyui(depth_any_image_path)
         depth_midas_image_path = os.path.join(pose_dir, "depth_midas.png")
         depth_midas_image = load_image_comfyui(depth_midas_image_path)
@@ -596,14 +658,26 @@ class SceneSelect(io.ComfyNode):
         canny_image_path = os.path.join(pose_dir, "canny.png")
         canny_image = load_image_comfyui(canny_image_path)
         upscale_image_path = os.path.join(pose_dir, "upscale.png")
-        upscale_image = load_image_comfyui(upscale_image_path)
 
+        if (not os.path.exists(upscale_image_path)):
+            print(f"{className}: upscale_image_path '{upscale_image_path}' does not exist")
+        upscale_image = load_image_comfyui(upscale_image_path)
+        print(f"{className}: upscale_image shape: {upscale_image.shape if upscale_image is not None else 'None'} ")
+
+        preview_image = ui.PreviewImage(image=upscale_image) if upscale_image is not None else None
+
+        ui_data = {
+            "images": preview_image.as_dict().get("images", []) if preview_image else None,
+            "animated": preview_image.as_dict().get("animated", False) if preview_image else False,
+            "text": [str(girl_pos_ui_text), str(male_pos_ui_text)],
+        }
         scene_info = SceneInfo(
             pose_dir=pose_dir,
             pose_name=selected_pose,
             girl_pos=girl_pos,
             male_pos=male_pos,
             pose_json=pose_json,
+            resolution=resolution,
             depth_image=depth_image,
             depth_any_image=depth_any_image,
             depth_midas_image=depth_midas_image,
@@ -617,10 +691,14 @@ class SceneSelect(io.ComfyNode):
             canny_image=canny_image,
             upscale_image=upscale_image,                       
         )
+
         return io.NodeOutput(
             scene_info,
             selected_pose,
             pose_dir,
+            girl_pos,
+            male_pos,
+            ui=ui_data
         )
 
 default_depth_options = {
@@ -793,7 +871,11 @@ class SceneCreate(io.ComfyNode):
         # Zoe Any
         depth_zoe_any_image = zoe_any(upscale_image, environment=zoe_environment, resolution=resolution)
 
-        H, W = depth_any_image.shape[1], depth_any_image.shape[2]
+        if type(depth_any_image) is not torch.Tensor:
+            H = 512
+            W = 512
+        elif not depth_any_image is None and type(depth_any_image) is torch.Tensor:
+            H, W = depth_any_image.shape[1], depth_any_image.shape[2]
         pose_dw_image, pose_json = estimate_dwpose(upscale_image, resolution=resolution)
         normalized_upscale_image = image_resize_ess(upscale_image, W, H, method="keep proportion", interpolation="nearest", multiple_of=16)
 
@@ -802,7 +884,8 @@ class SceneCreate(io.ComfyNode):
 
         # todo: consider whether or not the Face Detection using onnx is even worth it (WanAnimatePreprocess (v2) modified based upon post on github)
         # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
-        
+        pose_dwpose_json = json.dumps(pose_json)
+
         scene_info = SceneInfo(
             pose_dir=pose_dir,
             pose_name=pose_name,
@@ -818,7 +901,7 @@ class SceneCreate(io.ComfyNode):
             pose_dense_image=dense_pose_image,
             pose_dw_image=pose_dw_image,
             pose_edit_image=pose_dw_image,
-            pose_dwpose_json=pose_json,
+            pose_dwpose_json=pose_dwpose_json,
             pose_open_image=pose_open_image,
             pose_face_image=pose_dw_image,
             pose_json=pose_json,
@@ -836,8 +919,8 @@ class SceneUpdate(io.ComfyNode):
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info_in", display_name="scene_info", tooltip="Scene Information" ),
-                io.String.Input(id="girl_pos", display_name="girl_pos", tooltip="The positive prompt for the girl in the scene"),
-                io.String.Input(id="male_pos", display_name="male_pos", tooltip="The positive prompt for the male(s) in the scene"),
+                io.String.Input(id="girl_pos", multiline=True, display_name="girl_pos", tooltip="The positive prompt for the girl in the scene"),
+                io.String.Input(id="male_pos", multiline=True, display_name="male_pos", tooltip="The positive prompt for the male(s) in the scene"),
                 io.Boolean.Input(id="update_prompts", display_name="update_prompts", tooltip="If true, will update the prompts in the scene_info", default=True),
                 io.Boolean.Input(id="update_zoe", display_name="update_zoe", tooltip="If true, will update the Zoe depth images in the scene_info", default=False),
                 io.Boolean.Input(id="update_depth", display_name="update_depth", tooltip="If true, will update the Depth Anything images in the scene_info", default=False),
@@ -967,6 +1050,7 @@ class SceneUpdate(io.ComfyNode):
             print("SceneUpdate: scene_info is None")
             return io.NodeOutput(None)
 
+        print(f"SceneUpdate: Scene Info In is of type: {type(scene_info_in)} with attributes: {dir(scene_info_in)}")
         scene_info_out = scene_info_in
         if update_prompts:
             if girl_pos is not None:
@@ -974,15 +1058,19 @@ class SceneUpdate(io.ComfyNode):
             if male_pos is not None:
                 scene_info_out.male_pos = male_pos
                 
-        base_image = scene_info_in.upscale_image
+        upscale_image = scene_info_in.upscale_image
 
-        if base_image is None:
-            print("SceneUpdate: base_image is None in scene_info")
+        if upscale_image is None:
+            print("SceneUpdate: base upscale_image is None in scene_info")
             return io.NodeOutput(scene_info_out)
 
         if update_upscale:
-            upscale_image = ImageScaleBy().upscale(base_image, upscale_method=upscale_method, scale_by=upscale_factor)
+            upscale_image, = ImageScaleBy().upscale(upscale_image, upscale_method=upscale_method, scale_by=upscale_factor)
             scene_info_out.upscale_image = upscale_image
+
+        if upscale_image is None:
+            print("SceneUpdate: upscale_image is None after upscaling")
+            return io.NodeOutput(scene_info_out)
 
         if update_densepose:
             scene_info_out.pose_dense_image = dense_pose(upscale_image, densepose_model, densepose_cmap, resolution)
@@ -1016,7 +1104,12 @@ class SceneUpdate(io.ComfyNode):
             #scene_info_out.pose_json = pose_json
 
         depth_any_image = scene_info_out.depth_any_image
-        H, W = depth_any_image.shape[1], depth_any_image.shape[2]
+        
+        if type(depth_any_image) is not torch.Tensor or depth_any_image is None:
+            H = 512
+            W = 512
+        elif type(depth_any_image) is torch.Tensor and not depth_any_image is None:
+            H, W = depth_any_image.shape[1], depth_any_image.shape[2]
 
         normalized_upscale_image = image_resize_ess(upscale_image, W, H, method="keep proportion", interpolation="nearest", multiple_of=16)
 
@@ -1218,50 +1311,50 @@ class SceneSave(io.ComfyNode):
         if pose_name == "":
             print("SaveScene: pose_name is empty, cannot save pose files")
             return io.NodeOutput(None)
-        
+        pose_path = Path(pose_dir)
         if scene_info.depth_image is not None:
-            depth_path = pose_dir / "depth.png"
+            depth_path = pose_path / "depth.png"
             save_image_comfyui(scene_info.depth_image, depth_path)
         if scene_info.depth_any_image is not None:
-            depth_any_path = pose_dir / "depth_any.png"
+            depth_any_path = pose_path / "depth_any.png"
             save_image_comfyui(scene_info.depth_any_image, depth_any_path)
         if scene_info.depth_midas_image is not None:
-            depth_midas_path = pose_dir / "depth_midas.png"
+            depth_midas_path = pose_path / "depth_midas.png"
             save_image_comfyui(scene_info.depth_midas_image, depth_midas_path)
         if scene_info.depth_zoe_image is not None:
-            depth_zoe_path = pose_dir / "depth_zoe.png"
+            depth_zoe_path = pose_path / "depth_zoe.png"
             save_image_comfyui(scene_info.depth_zoe_image, depth_zoe_path)
         if scene_info.depth_zoe_any_image is not None:
-            depth_zoe_any_path = pose_dir / "depth_zoe_any.png"
+            depth_zoe_any_path = pose_path / "depth_zoe_any.png"
             save_image_comfyui(scene_info.depth_zoe_any_image, depth_zoe_any_path)
         if scene_info.pose_dense_image is not None:
-            pose_dense_path = pose_dir / "pose_dense.png"
+            pose_dense_path = pose_path / "pose_dense.png"
             save_image_comfyui(scene_info.pose_dense_image, pose_dense_path)
         if scene_info.pose_dw_image is not None:
-            pose_dw_path = pose_dir / "pose_dw.png"
+            pose_dw_path = pose_path / "pose_dw.png"
             save_image_comfyui(scene_info.pose_dw_image, pose_dw_path)
         if scene_info.pose_edit_image is not None:
-            pose_edit_path = pose_dir / "pose_edit.png"
+            pose_edit_path = pose_path   / "pose_edit.png"
             save_image_comfyui(scene_info.pose_edit_image, pose_edit_path)
         if scene_info.pose_face_image is not None:
-            pose_face_path = pose_dir / "pose_face.png"
+            pose_face_path = pose_path / "pose_face.png"
             save_image_comfyui(scene_info.pose_face_image, pose_face_path)
         if scene_info.pose_open_image is not None:
-            pose_open_path = pose_dir / "pose_open.png"
+            pose_open_path = pose_path / "pose_open.png"
             save_image_comfyui(scene_info.pose_open_image, pose_open_path)
         if scene_info.canny_image is not None:
-            canny_path = pose_dir / "canny.png"
+            canny_path = pose_path / "canny.png"
             save_image_comfyui(scene_info.canny_image, canny_path)
         if scene_info.upscale_image is not None:
-            upscale_path = pose_dir / "upscale.png"
+            upscale_path = pose_path / "upscale.png"
             save_image_comfyui(scene_info.upscale_image, upscale_path)
         if scene_info.pose_json:
-            pose_json_path = pose_dir / "pose.json"
+            pose_json_path = pose_path / "pose.json"
             save_json_file(pose_json_path, json.loads(scene_info.pose_json))
             
         girl_pos = scene_info.girl_pos if scene_info.girl_pos else ""
         male_pos = scene_info.male_pos if scene_info.male_pos else ""
-        prompts_path = pose_dir / "prompts.json"
+        prompts_path = pose_path / "prompts.json"
         prompt_data = {
             "girl_pos": girl_pos,
             "male_pos": male_pos,

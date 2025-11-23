@@ -4,9 +4,128 @@ import numpy as np
 import matplotlib
 import cv2
 from comfy.utils import ProgressBar
+from comfy_api.latest import io, ui
 from typing import List, Dict
 
 eps = 0.01
+
+def select_text_by_action(
+    editable_text: str,
+    file_text: str,
+    action: str,
+    class_name: str,
+    default_input: str = ""
+) -> tuple[str, str|None]:
+
+    output_text = ""
+    text_for_widget_update = None
+
+    effective_file_text = file_text if file_text is not None else ""
+
+    print(f"[{class_name}] Action: '{action}'; editable_text: '{editable_text[:60]}...'; file_text: '{effective_file_text[:60]}...'")
+
+    if action == "use_file":
+        output_text = effective_file_text
+        text_for_widget_update = effective_file_text
+        if file_text is None:
+            print(f"[{class_name}] Warning: input_text is None, using empty string as default.")
+        elif file_text == default_input:
+            print(f"[{class_name}] Info: input_text matches default input, may indicate disconnected or muted upstream.")
+        else:
+            print(f"[{class_name}] Chose 'use_file'. Outputting file text ('{output_text[:60]}...'). Attempting UI widget update.")
+
+    elif action == "use_edit":
+        output_text = editable_text
+        text_for_widget_update = output_text
+        print(f"[{class_name}] Chose 'use_edit'. Outputting widget text ('{output_text[:60]}...').")
+    else:  # unknown action
+        print(f"[{class_name}] Warning: Unknown action '{action}'. Defaulting to editable text.")
+        output_text = editable_text
+
+    return output_text, text_for_widget_update
+
+def get_total_inputs(node_info: io.NodeInfoV3) -> int:
+    return len(node_info.input)
+
+def update_ui_widget(
+    class_name: str,
+    unique_id,
+    extra_pnginfo,
+    text_for_widget_update: str,
+    widget_name: str,
+    inputs: Dict
+) -> bool:
+    node_data_updated = False
+    num_widgets = len(inputs) if inputs is not None else 0
+    print(f"[{class_name}] Inputs: {inputs}; Total inputs (widgets) count: {num_widgets}; unique_id: {unique_id}; widget_name: '{widget_name}'")
+    if text_for_widget_update is not None and num_widgets > 0 and unique_id and extra_pnginfo:
+        print(f"[{class_name}] Attempting UI widget update for node {unique_id}; type of extra_pnginfo: {type(extra_pnginfo)}") 
+
+        if isinstance(extra_pnginfo, dict):
+            current_workflow_info = extra_pnginfo.get("workflow", None)
+
+        nodes_data = current_workflow_info.get("nodes", None)
+
+        print(f"[{class_name}] Current workflow info type: {type(current_workflow_info)}; node_info: {nodes_data}")
+
+        if not nodes_data is None:
+            print(f"[{class_name}] Proceeding to find node by ID: {unique_id} and update widget '{widget_name}'")
+            node_data = find_node_by_id(class_name, unique_id, nodes_data)
+
+            if node_data:
+                print(f"[{class_name}] Searching for widget with name '{widget_name}': {inputs}")
+                widget_index = find_widget_index(class_name, widget_name, inputs)
+                if widget_index is not None:
+                    print(f"[{class_name}] Found widget: {widget_index}; searching widgets_values: {node_data.get('widgets_values', 'Empty Widgets Values')}")
+                    if "widgets_values" not in node_data or not isinstance(node_data["widgets_values"], list):
+                        node_data["widgets_values"] = ["" for _ in range(num_widgets)]
+                    # Ensure the widgets_values list is long enough
+                    while len(node_data["widgets_values"]) <= widget_index:
+                        node_data["widgets_values"].append("")
+
+                    current_widget_val = node_data["widgets_values"][widget_index]
+                    
+                    if current_widget_val != text_for_widget_update:
+                        print(f"[{class_name}] Updating widget '{widget_name}' (index {widget_index}) to '{text_for_widget_update[:32]}...'")
+                        node_data["widgets_values"][widget_index] = text_for_widget_update
+                        node_data_updated = True
+                    else:
+                        print(f"[{class_name}] Info: Widget '{widget_name}' already has the desired value; no update needed.")
+                else:
+                    print(f"[{class_name}] Error: Widget index for '{widget_name}' not found.")
+            else:
+                print(f"[{class_name}] Error: Node data for ID '{unique_id}' not found in workflow.")
+        elif text_for_widget_update is not None:
+            print(f"[{class_name}] Error: Invalid workflow_info; cannot update UI widget.")
+            
+        # if node_data_updated:
+        #     print(f"[{class_name}] UI widget '{widget_name}' updated successfully.")
+        #     current_workflow_info["nodes"] = nodes_data
+    
+    return node_data_updated
+
+# from custom_nodes/ComfyUI-IMGNR-Utils/catch_edit_text.py
+def find_node_by_id(clsName, unique_id, nodes_data):
+    if not nodes_data:
+        print(f"[{clsName}] Helper Error: nodes_data is None or empty.")
+        return None
+    target_id = str(unique_id) if isinstance(unique_id, list) else str(unique_id)
+    for node_data in nodes_data:
+        if str(node_data.get("id")) == target_id:
+            print(f"[{clsName}] Helper Info: Found node with ID {target_id}.")
+            return node_data
+    print(f"[{clsName}] Helper Error: Node ID {target_id} not found in nodes data."); return None 
+
+def find_widget_index(clsName, widget_name, inputs: Dict):
+    all_keys = list(inputs.keys())
+    try:
+        idx = all_keys.index(widget_name)
+        print(f"[{clsName}] Found widget '{widget_name}' at combined index {idx}.") # Optional log
+        return idx
+    except ValueError:
+        print(f"[{clsName}] Helper Error: Widget '{widget_name}' not found in INPUT_TYPES keys: {all_keys}") 
+        return None
+
 # from westNeighbor_ComfyUI-ultimate-openpose-editor
 def extend_scalelist(scalelist_behavior, pose_json, hands_scale, body_scale, head_scale, overall_scale, match_scalelist_method, only_scale_pose_index) -> List[list]:
     if pose_json.startswith('{'):
@@ -357,7 +476,7 @@ def draw_bodypose(canvas, candidate, subset, pose_marker_size):
             length = ((X[0] - X[1]) ** 2 + (Y[0] - Y[1]) ** 2) ** 0.5
             angle = math.degrees(math.atan2(X[0] - X[1], Y[0] - Y[1]))
             polygon = cv2.ellipse2Poly((int(mY), int(mX)), (int(length / 2), pose_marker_size), int(angle), 0, 360, 1)
-            cv2.fillConvexPoly(canvas, polygon, colors[i])
+            cv2.fillConvexPoly(canvas, np.array(polygon, dtype=np.int32), colors[i])
 
     canvas = (canvas * 0.6).astype(np.uint8)
 
@@ -372,7 +491,6 @@ def draw_bodypose(canvas, candidate, subset, pose_marker_size):
             cv2.circle(canvas, (int(x), int(y)), pose_marker_size, colors[i], thickness=-1)
 
     return canvas
-
 
 def draw_handpose(canvas, all_hand_peaks, hand_marker_size):
     H, W, C = canvas.shape
@@ -405,7 +523,6 @@ def draw_handpose(canvas, all_hand_peaks, hand_marker_size):
             if x > eps and y > eps:
                 cv2.circle(canvas, (x, y), joint_size, (0, 0, 255), thickness=-1)
     return canvas
-
 
 def draw_facepose(canvas, all_lmks, face_marker_size):
     H, W, C = canvas.shape
