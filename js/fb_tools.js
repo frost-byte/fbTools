@@ -281,6 +281,40 @@ app.registerExtension({
         return ["fb_tools.extract-node-json"];
     },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeData.name === "SceneSelect" && nodeData.category.indexOf("frost-byte") >= 0) {
+            console.log("fb_tools -> SceneSelect node detected");
+            const onOriginalExecuted = nodeType.prototype.onExecuted;
+            nodeType.prototype.onExecuted = function (message) {
+                if (onOriginalExecuted) {
+                    onOriginalExecuted.apply(this, arguments);
+                }
+
+                if (message?.text?.[0]) {
+                    console.log("fbTools -> SceneSelect: girl_pos detected, applying to widget");
+                    const girlWidget = this.widgets.find((w) => w.name === "girl_pos_in");
+                    if (girlWidget) {
+                        girlWidget.value = message.text[0];
+                        girlWidget.inputEl.value = message.text[0];
+                    }
+                }
+
+                if (message?.text?.[1]) {
+                    console.log("fbTools -> SceneSelect: male_pos detected, applying to widget");
+                    const maleWidget = this.widgets.find((w) => w.name === "male_pos_in");
+                    if (maleWidget) {
+                        maleWidget.value = message.text[1];
+                        maleWidget.inputEl.value = message.text[1];
+                    }
+                }
+                requestAnimationFrame(() => {
+                    const sz = this.computeSize();
+                    if (sz[0] < this.size[0]) sz[0] = this.size[0];
+                    if (sz[1] < this.size[1]) sz[1] = this.size[1];
+                    this.onResize?.(sz);
+                    app.graph.setDirtyCanvas(true, false);
+                });
+            };
+        }
         addMenuHandler(nodeType, function (_, options) {
             options.push({
                 content: "Extract Node as JSON",

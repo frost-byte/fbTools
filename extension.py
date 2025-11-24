@@ -519,10 +519,10 @@ class SceneSelect(io.ComfyNode):
         default_options = sorted(subdir_dict.keys()) if subdir_dict else ["default_pose"]
         default_pose = default_options[0]
 
-        # print(f"SelectScene: default poses_dir='{default_dir}'; default_pose='{default_pose}'; default_options={default_options}")
+        # print(f"SceneSelect: default poses_dir='{default_dir}'; default_pose='{default_pose}'; default_options={default_options}")
 
         return io.Schema(
-            node_id="SelectScene",
+            node_id="SceneSelect",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.String.Input("poses_dir", default=default_dir, tooltip="Directory containing pose subdirectories"),
