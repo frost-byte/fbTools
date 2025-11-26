@@ -8,7 +8,7 @@ from folder_paths import get_output_directory
 from nodes import ImageScaleBy
 from .utils.util import draw_pose_json, draw_pose, extend_scalelist, pose_normalized, select_text_by_action, update_ui_widget
 from .utils.io import save_json_file, load_prompt_json, load_json_file
-from .utils.images import image_resize_ess
+from .utils.images import image_resize_ess, find_nearest_qwen_aspect_ratio
 from .utils.pose import estimate_dwpose, dense_pose, depth_anything, depth_anything_v2, zoe, zoe_any, openpose, midas, canny
 
 from .utils.images import make_empty_image, _compute_ref_stats, _pick_ref_image, proc_deflicker_luma, proc_deflicker_clahe, proc_color_histmatch, proc_color_meanstd, proc_bilateral_cv2, proc_unsharp, _stack_if_same_shape
@@ -479,6 +479,62 @@ def default_poses_dir():
         os.makedirs(default_dir, exist_ok=True)
         os.makedirs(os.path.join(default_dir, "default_pose"), exist_ok=True)
     return default_dir
+
+class QwenAspectRatio(io.ComfyNode):
+    """
+    QwenAspectRatio:
+      - Computes aspect ratio string for Qwen input from IMAGE dimensions.
+      - Outputs recommended width and height based upon standard aspect ratios.
+      - Outputs the layout type based upon the aspect ratio, e.g., "portrait", "landscape", "square".
+      - Outputs string like "16:9" or "4:3".
+      - Outputs the float value of the aspect ratio (width / height).
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            description=cleandoc("""
+            Computes recommended width and height based upon the aspect ratio of the input IMAGE.
+            Also provides the layout type (e.g., 'portrait', 'landscape', 'square'), aspect ratio string (e.g., '16:9'),
+            and the float value of the aspect ratio (width / height).
+            """),
+            node_id="QwenAspectRatio",
+            category="🧊 frost-byte/Image Processing",
+            inputs=[
+                io.Image.Input("input_image", tooltip="Input IMAGE to compute aspect ratio from"),
+            ],
+            outputs=[
+                io.Int.Output(id="width", display_name="width", tooltip="Recommended width for Qwen based on aspect ratio"),
+                io.Int.Output(id="height", display_name="height", tooltip="Recommended height for Qwen based on aspect ratio"),
+                io.String.Output(id="layout", display_name="layout", tooltip="Layout type based on aspect ratio (e.g., 'portrait', 'landscape', 'square')"),
+                io.String.Output(id="aspect_ratio", display_name="aspect_ratio", tooltip="Aspect ratio string for Qwen (e.g., '16:9')"),
+                io.Float.Output(id="aspect_ratio_float", display_name="aspect_ratio_float", tooltip="Float value of the aspect ratio (width / height)"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        input_image,
+    ):
+        if input_image is None:
+            w, h = 512, 512
+        elif input_image.ndim == 3:
+            b, h, w = input_image.shape
+        else:
+            b, h, w, c = input_image.shape
+
+        print(f"QwenAspectRatio: input image shape={input_image.shape} -> w={w}, h={h}")
+        recommended_w, recommended_h, layout, aspect_ratio_str, aspect_ratio_float = find_nearest_qwen_aspect_ratio(w, h)
+        print(f"QwenAspectRatio: recommended_w={recommended_w}, recommended_h={recommended_h}, layout={layout}, aspect_ratio_str={aspect_ratio_str}, aspect_ratio_float={aspect_ratio_float}")
+
+        return io.NodeOutput(
+            recommended_w,
+            recommended_h,
+            layout,
+            aspect_ratio_str,
+            aspect_ratio_float
+        )
 
 class SceneInfo(BaseModel):
     #metadata
@@ -1420,6 +1476,7 @@ class SceneInput(io.ComfyNode):
             return io.NodeOutput(None)
 
         print(f"SceneInput: pose_dir='{pose_dir}'; pose_name='{pose_name}'")
+        resolution = min(depth_image.shape[1], depth_image.shape[2]) if depth_image is not None else 512
 
         scene_info = SceneInfo(
             pose_dir=pose_dir,
@@ -1439,6 +1496,7 @@ class SceneInput(io.ComfyNode):
             pose_open_image=pose_open_image,
             canny_image=canny_image,
             upscale_image=upscale_image,
+            resolution=resolution,
         )
 
         return io.NodeOutput(
@@ -1514,6 +1572,7 @@ class FBToolsExtension(ComfyExtension):
         return [
             FBTextEncodeQwenImageEditPlus,
             SAMPreprocessNHWC,
+            QwenAspectRatio,
             SubdirLister,
             SceneCreate,
             SceneUpdate,

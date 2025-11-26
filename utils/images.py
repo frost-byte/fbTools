@@ -2,12 +2,13 @@
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.v2 as T
-
+import comfy.utils
 from typing import List, Tuple, Optional
 from pathlib import Path
 from PIL import Image, ImageOps, ImageSequence
 import numpy as np
 from skimage.exposure import match_histograms
+from nodes import MAX_RESOLUTION
 
 try:
     import kornia
@@ -29,6 +30,55 @@ try:
     _HAS_CV2 = True
 except Exception:
     _HAS_CV2 = False
+
+STANDARD_ASPECT_RATIOS = {
+    "1:1": 1.0,
+    "2:3": 2/3,
+    "3:4": 3/4,
+    "3:5": 3/5,
+    "9:16": 9/16,
+    "9:21": 9/21,
+    "21:9": 21/9,
+    "16:9": 16/9,
+    "5:3": 5/3,
+    "4:3": 4/3,
+    "3:2": 3/2,
+}
+
+# divisible by 16
+QWEN_ASPECT_RATIOS = {
+    "9:21": (672, 1568),
+    "9:20": (688, 1504),
+    "9:18": (720, 1452), # chinese math is interesting...
+    "3:5": (800, 1328),
+    "1:1": (1024, 1024),
+    "4:5": (704, 880),
+    "3:4": (864, 1152),
+    "2:3": (832, 1248), # supposedly the preferred aspect ratio for qwen
+    "9:16": (720, 1280),
+    "16:9": (1280, 720),
+    "5:4": (880, 704),
+    "4:3": (1152, 864),
+    "3:2": (1248, 832),
+}
+
+def find_nearest_qwen_aspect_ratio(width: int, height: int) -> Tuple[int, int, str, str, float]:
+    round_to = 16
+    w_rounded = round_to * round(width / round_to)
+    h_rounded = round_to * round(height / round_to)
+    input_ratio = w_rounded / h_rounded
+    
+    best_match = min(
+        STANDARD_ASPECT_RATIOS.items(),
+        key=lambda x: abs(x[1] - input_ratio)
+    )
+    matched_name = best_match[0]
+    matched_ratio = best_match[1]
+    qwen_x, qwen_y = QWEN_ASPECT_RATIOS[matched_name]
+
+    layout = "landscape" if input_ratio > 1 else "portrait" if input_ratio < 1 else "square"
+
+    return (qwen_x, qwen_y, layout, matched_name, matched_ratio)
 
 def make_empty_image(batch=1, height=64, width=64, channels=3):
     """
