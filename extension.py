@@ -1,6 +1,7 @@
 import node_helpers
 import math
 from comfy.utils import common_upscale
+import folder_paths
 import comfy.model_management as model_management
 
 from typing_extensions import override
@@ -542,6 +543,7 @@ class SceneInfo(BaseModel):
     pose_name: str
     girl_pos: str
     male_pos: str
+    wan_prompt: str
     pose_json: str
     resolution: int
 
@@ -559,8 +561,109 @@ class SceneInfo(BaseModel):
     pose_open_image: Optional[torch.Tensor] = None
     canny_image: Optional[torch.Tensor] = None
     upscale_image: Optional[torch.Tensor] = None
+    loras_high: Optional[list] = None
+    loras_low: Optional[list] = None
+
+    # masks
+    girl_mask_bkgd_image: Optional[torch.Tensor] = None
+    male_mask_bkgd_image: Optional[torch.Tensor] = None
+    combined_mask_bkgd_image: Optional[torch.Tensor] = None
+    girl_mask_no_bkgd_image: Optional[torch.Tensor] = None
+    male_mask_no_bkgd_image: Optional[torch.Tensor] = None
+    combined_mask_no_bkgd_image: Optional[torch.Tensor] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True, from_attributes=True)
+
+def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
+    if os.path.isfile(loras_json_path):
+        data = load_json_file(loras_json_path)
+        print(f"load_loras: loaded data from {loras_json_path}: {data}")
+        loras_high = []
+        loras_low = []
+
+        for lora_type in ["high", "low"]:
+            preset = data.get(lora_type, "")
+            if not preset:
+                continue
+            for item in preset:
+                lora_name = item["lora_name"]
+                strength = item["strength"]
+                low_mem_load = item.get("low_mem_load", False)
+                merge_loras = item.get("merge_loras", False)
+
+                if not lora_name or lora_name == "none" or strength == 0.0:
+                    continue
+                try:
+                    full_path = folder_paths.get_full_path_or_raise("loras", lora_name)
+                except Exception as e:
+                    log.warning(f"Could not resolve path for LoRA '{lora_name}': {e}")
+                    continue
+
+                # Use saved blocks/layer_filter if present
+                saved_blocks = item.get("blocks", {})
+                saved_layer_filter = item.get("layer_filter", "")
+
+                if lora_type == "low":
+                    target_list = loras_low
+                else:
+                    target_list = loras_high
+
+                target_list.append({
+                    "path": full_path,
+                    "strength": strength,
+                    "name": os.path.splitext(lora_name)[0],
+                    "blocks": saved_blocks,
+                    "layer_filter": saved_layer_filter,
+                    "low_mem_load": low_mem_load,
+                    "merge_loras": merge_loras,
+                })
+
+        return (loras_high, loras_low)
+    
+    return (None,None)        
+
+def save_loras(loras_high: list, loras_low: list, loras_json_path: str):
+    high = []
+    low = []
+
+    for lora in loras_high:
+        lora_name = os.path.basename(lora["path"])
+        strength = lora["strength"]
+        blocks = lora.get("blocks", {})
+        layer_filter = lora.get("layer_filter", "")
+        low_mem_load = lora.get("low_mem_load", False)
+        merge_loras = lora.get("merge_loras", False)
+
+        high.append({
+            "lora_name": lora_name,
+            "strength": strength,
+            "blocks": blocks,
+            "layer_filter": layer_filter,
+            "low_mem_load": low_mem_load,
+            "merge_loras": merge_loras,
+        })
+    for lora in loras_low:
+        lora_name = os.path.basename(lora["path"])
+        strength = lora["strength"]
+        blocks = lora.get("blocks", {})
+        layer_filter = lora.get("layer_filter", "")
+        low_mem_load = lora.get("low_mem_load", False)
+        merge_loras = lora.get("merge_loras", False)
+
+        low.append({
+            "lora_name": lora_name,
+            "strength": strength,
+            "blocks": blocks,
+            "layer_filter": layer_filter,
+            "low_mem_load": low_mem_load,
+            "merge_loras": merge_loras,
+        })
+
+    data =  {
+        "high": high,
+        "low": low
+    }
+    save_json_file(loras_json_path, data)
 
 class SceneSelect(io.ComfyNode):
     @classmethod
@@ -574,6 +677,8 @@ class SceneSelect(io.ComfyNode):
         subdir_dict = get_subdirectories(default_dir)
         default_options = sorted(subdir_dict.keys()) if subdir_dict else ["default_pose"]
         default_pose = default_options[0]
+        pose_options = list(default_pose_options.keys())
+        depth_options = list(default_depth_options.keys())
 
         # print(f"SceneSelect: default poses_dir='{default_dir}'; default_pose='{default_pose}'; default_options={default_options}")
 
@@ -587,6 +692,14 @@ class SceneSelect(io.ComfyNode):
                 io.Combo.Input(id="girl_action", display_name="action", options=["use_file", "use_edit"], default="use_file", tooltip="Action for the girl prompt"),
                 io.String.Input(id="male_pos_in", display_name="male_pos", multiline=True, default="", tooltip="The positive prompt for the male"),
                 io.Combo.Input(id="male_action", display_name="action", options=["use_file", "use_edit"], default="use_file", tooltip="Action for the male prompt"),
+                io.String.Input(id="loras_high_in", display_name="loras_high", multiline=True, default="", tooltip="LoRAs list in JSON format to override pose defaults"),
+                io.String.Input(id="loras_low_in", display_name="loras_low", multiline=True, default="", tooltip="Low-memory LoRAs list in JSON format to override pose defaults"),
+                io.String.Input(id="wan_prompt_in", display_name="wan_prompt", placeholder="Provide the Wan prompt for the scene", tooltip="WanVideoWrapper prompt for the scene", multiline=True),
+                io.Combo.Input(id="wan_prompt_action", display_name="wan_prompt_action", options=["use_file", "use_edit"], default="use_file", tooltip="Action for the Wan prompt"),
+                io.Combo.Input(id="depth_image_type", display_name="depth_image_type", options=depth_options, default="depth", tooltip="Type of depth image to generate from the pose"),
+                io.Combo.Input(id="pose_image_type", display_name="pose_image_type", options=pose_options, default="open", tooltip="Type of pose image to generate from the pose"),
+                io.Boolean.Input(id="mask_background", display_name="mask_background", default=True, tooltip="Whether to mask the background in the scene"),
+                io.Combo.Input(id="mask_type", display_name="mask_type", options=["girl", "male", "combined"], default="combined", tooltip="Subject mask to apply"),
             ],
             outputs=[
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene information and images"),
@@ -594,6 +707,13 @@ class SceneSelect(io.ComfyNode):
                 io.String.Output(id="pose_dir", display_name="pose_dir", tooltip="Directory of the selected pose"),
                 io.String.Output(id="girl_pos", display_name="girl_pos", tooltip="Girl's positive prompt"),
                 io.String.Output(id="male_pos", display_name="male_pos", tooltip="Male's positive prompt"),
+                io.String.Output(id="wan_prompt_out", display_name="wan_prompt", tooltip="Combined WAN prompt from the pose"),
+                io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Depth IMAGE from the pose"),
+                io.Image.Output(id="mask_image", display_name="mask_image", tooltip="Mask IMAGE from the pose"),
+                io.Image.Output(id='canny_image', display_name='canny_image', tooltip='Canny IMAGE from the pose'),
+                io.Image.Output(id='pose_image', display_name='pose_image', tooltip='Pose IMAGE from the pose'),
+                io.Custom("WANVIDLORA").Output(id="loras_high_out", display_name="loras_high", tooltip="WanVideoWrapper Multi-Lora list" ),
+                io.Custom("WANVIDLORA").Output(id="loras_low_out", display_name="loras_low", tooltip="WanVideoWrapper Multi-Lora list" ),
             ],
             hidden=[
                 io.Hidden.unique_id,
@@ -610,7 +730,15 @@ class SceneSelect(io.ComfyNode):
         girl_pos_in="",
         girl_action="use_file",
         male_pos_in="",
-        male_action="use_file"
+        male_action="use_file",
+        loras_high_in="",
+        loras_low_in="",
+        wan_prompt_in="",
+        wan_prompt_action="use_file",
+        depth_image_type="depth",
+        pose_image_type="open",
+        mask_background=True,
+        mask_type="combined",
     ) -> io.NodeOutput:
         className = cls.__name__
         input_types = cls.INPUT_TYPES()
@@ -648,6 +776,18 @@ class SceneSelect(io.ComfyNode):
         pose_json = load_json_file(pose_json_path)
         if not pose_json:
             pose_json = "[]"
+        else:
+            pose_json = json.dumps(pose_json)
+
+        loras_path = os.path.join(pose_dir, "loras.json")
+        
+        loras = None
+        if not os.path.isfile(loras_path):
+            print(f"{className}: loras.json not found at '{loras_path}'")
+        else:
+            loras_high, loras_low = load_loras(os.path.join(pose_dir, "loras.json"))
+            
+        print(f"{className}: Loaded loras: {loras_high}, {loras_low}")
 
         girl_file_text = prompt_data.get("girl_pos", "")
         girl_pos, girl_widget_text = select_text_by_action(
@@ -677,7 +817,47 @@ class SceneSelect(io.ComfyNode):
 
         male_pos_ui_text = male_widget_text if male_widget_text is not None else male_file_text
 
-        print(f"{className}: girl_pos: '{girl_pos}'; male_pos: '{male_pos}'")
+        wan_file_text = prompt_data.get("wan_prompt", "")
+        wan_prompt, wan_widget_text = select_text_by_action(
+            wan_prompt_in, 
+            wan_file_text, 
+            wan_prompt_action, 
+            className
+        )
+
+        if wan_widget_text is not None:
+            print(f"{className}: Updating UI widget for wan_prompt with text: '{wan_widget_text[:32]}...'")
+            update_ui_widget(className, unique_id, extra_pnginfo, wan_widget_text, "wan_prompt_in", inputs)
+            
+        wan_prompt_ui_text = wan_widget_text if wan_widget_text is not None else wan_file_text
+        print(f"{className}: girl_pos: '{girl_pos}'; male_pos: '{male_pos}'; wan_prompt: '{wan_prompt}'")
+
+        loras_low_file_text = json.dumps(loras_low, indent=2) if loras_low else "[]"
+        loras_low_text, loras_low_widget_text = select_text_by_action(
+            loras_low_in, 
+            loras_low_file_text,
+            "use_file",
+            className
+        )
+        if loras_low_widget_text is not None:
+            print(f"{className}: Updating UI widget for loras_low_in with text: '{loras_low_widget_text[:32]}...'")
+            update_ui_widget(className, unique_id, extra_pnginfo, loras_low_widget_text, "loras_low_in", inputs)
+
+        loras_low_ui_text = loras_low_widget_text if loras_low_widget_text is not None else loras_low_file_text
+        
+        loras_high_file_text = json.dumps(loras_high, indent=2) if loras_high else "[]"
+        loras_high_text, loras_high_widget_text = select_text_by_action(
+            loras_high_in, 
+            loras_high_file_text,
+            "use_file",
+            className
+        )
+
+        if loras_high_widget_text is not None:
+            print(f"{className}: Updating UI widget for loras_high_in with text: '{loras_high_widget_text[:32]}...'")
+            update_ui_widget(className, unique_id, extra_pnginfo, loras_high_widget_text, "loras_high_in", inputs)
+        
+        loras_high_ui_text = loras_high_widget_text if loras_high_widget_text is not None else loras_high_file_text
 
         depth_image_path = os.path.join(pose_dir, "depth.png")
         if not os.path.exists(depth_image_path):
@@ -715,6 +895,25 @@ class SceneSelect(io.ComfyNode):
         canny_image = load_image_comfyui(canny_image_path)
         upscale_image_path = os.path.join(pose_dir, "upscale.png")
 
+        pose_image = None
+        if pose_image_type == "dense":
+            pose_image = pose_dense_image
+        elif pose_image_type == "dw":
+            pose_image = pose_dw_image
+        elif pose_image_type == "edit":
+            pose_image = pose_edit_image
+        elif pose_image_type == "face":
+            pose_image = pose_face_image
+        elif pose_image_type == "open":
+            pose_image = pose_open_image
+        
+        mask_image = None
+        mask_key = mask_type + ("_no_bg" if not mask_background else "")
+        mask_prefix = default_mask_options.get(mask_key, "combined")
+        print(f"{className}: mask_key='{mask_key}'; mask_prefix='{mask_prefix}'")
+        mask_image_path = os.path.join(pose_dir, f"{mask_prefix}.png")
+        mask_image = load_image_comfyui(mask_image_path)
+
         if (not os.path.exists(upscale_image_path)):
             print(f"{className}: upscale_image_path '{upscale_image_path}' does not exist")
         upscale_image = load_image_comfyui(upscale_image_path)
@@ -725,13 +924,21 @@ class SceneSelect(io.ComfyNode):
         ui_data = {
             "images": preview_image.as_dict().get("images", []) if preview_image else None,
             "animated": preview_image.as_dict().get("animated", False) if preview_image else False,
-            "text": [str(girl_pos_ui_text), str(male_pos_ui_text)],
+            "text": [
+                str(girl_pos_ui_text), 
+                str(male_pos_ui_text),
+                str(loras_high_ui_text),
+                str(loras_low_ui_text),
+                str(wan_prompt_ui_text),
+            ],
         }
+
         scene_info = SceneInfo(
             pose_dir=pose_dir,
             pose_name=selected_pose,
             girl_pos=girl_pos,
             male_pos=male_pos,
+            wan_prompt=wan_prompt,
             pose_json=pose_json,
             resolution=resolution,
             depth_image=depth_image,
@@ -745,7 +952,9 @@ class SceneSelect(io.ComfyNode):
             pose_face_image=pose_face_image,
             pose_open_image=pose_open_image,
             canny_image=canny_image,
-            upscale_image=upscale_image,                       
+            upscale_image=upscale_image,
+            loras_high=loras_high,
+            loras_low=loras_low,
         )
 
         return io.NodeOutput(
@@ -754,6 +963,13 @@ class SceneSelect(io.ComfyNode):
             pose_dir,
             girl_pos,
             male_pos,
+            wan_prompt,
+            depth_image,
+            mask_image,
+            canny_image,
+            pose_image,
+            loras_high,
+            loras_low,
             ui=ui_data
         )
 
@@ -772,6 +988,66 @@ default_pose_options = {
     "face": "pose_face_image",
     "open": "pose_open_image",
 }
+
+default_mask_options = {
+    "girl": "girl_mask_bkgd",
+    "male": "male_mask_bkgd",
+    "combined": "combined_mask_bkgd",
+    "girl_no_bg": "girl_mask_no_bkgd",
+    "male_no_bg": "male_mask_no_bkgd",
+    "combined_no_bg": "combined_mask_no_bkgd",
+}
+
+class SceneWanVideoLoraMultiSave(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="SceneWanVideoLoraMultiSave",
+            category="🧊 frost-byte/Scene",
+            description=cleandoc("""
+                                 Saves the name, weights, layer filter and blocks of multiple LoRA models using the
+                                 output from WanVideoWrapper's WanVideoLoraSelectMulti node to the directory for the given scene.
+            """),
+            inputs=[
+                io.Custom("SCENE_INFO").Input(id="info_in", display_name="scene_info", tooltip="SceneInfo, which provides the path to save the LoRA information to"),
+                io.Custom("WANVIDLORA").Input(id="loras_high", display_name="lora", tooltip="WanVideoSelectMulti output with multiple High LoRA entries"),
+                io.Custom("WANVIDLORA").Input(id="loras_low", display_name="lora", tooltip="WanVideoSelectMulti output with multiple Low LoRA entries"),
+            ],
+            outputs=[
+                io.Custom("SCENE_INFO").Output(id="info_out", display_name="scene_info", tooltip="Save operation information"),
+            ],
+        )
+
+    @classmethod
+    async def execute(
+        cls,
+        info_in,
+        loras_high=None,
+        loras_low=None,
+    ) -> io.NodeOutput:
+        className = cls.__name__
+
+        if info_in is None or loras_high is None or loras_low is None:
+            return io.NodeOutput(None)
+
+        pose_dir = info_in.pose_dir
+        if not pose_dir or not os.path.isdir(pose_dir):
+            print(f"{className}: Invalid pose_dir '{pose_dir}' in SceneInfo")
+            return io.NodeOutput(None)
+
+        if not loras_high is None:
+            print(f"{className}: Saving {len(loras_high)} High LoRA entries to pose_dir '{pose_dir}'")
+            loras_high_path = os.path.join(pose_dir, "loras_high.json")
+            save_loras(loras_high, loras_high_path)
+            print(f"Saved High LoRA preset to: {loras_high_path}")        
+
+        if not loras_low is None:
+            print(f"{className}: Saving {len(loras_low)} Low LoRA entries to pose_dir '{pose_dir}'")
+            loras_low_path = os.path.join(pose_dir, "loras_low.json")
+            save_loras(loras_low, loras_low_path)
+            print(f"Saved Low LoRA preset to: {loras_low_path}")        
+
+        return io.NodeOutput(info_in)
 
 class SceneCreate(io.ComfyNode):
     @classmethod
@@ -857,7 +1133,10 @@ class SceneCreate(io.ComfyNode):
                 ),
                 io.String.Input(id="girl_pos", display_name="girl_pos", placeholder="Provide the positive prompt for the female in the scene", tooltip="Positive prompt for the girl", multiline=True),
                 io.String.Input(id="male_pos", display_name="male_pos", placeholder="Provide the positive prompt for the male(s) in the scene", tooltip="Positive prompt for the male(s)", multiline=True),
+                io.String.Input(id="wan_prompt", display_name="wan_prompt", placeholder="Provide the Wan prompt for the scene", tooltip="WanVideoWrapper prompt for the scene", multiline=True),
                 io.Image.Input(id="base_image", display_name="base_image", tooltip="Base image for the scene"),
+                io.Custom("WANVIDLORA").Input(id="loras_high", display_name="loras_high", tooltip="WanVideoWrapper High Multi-Lora list" ),
+                io.Custom("WANVIDLORA").Input(id="loras_low", display_name="loras_low", tooltip="WanVideoWrapper Low Multi-Lora list" ),
             ],
             outputs=[
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene Information"),
@@ -883,7 +1162,10 @@ class SceneCreate(io.ComfyNode):
         canny_high_threshold=200,
         girl_pos="",
         male_pos="",
+        wan_prompt="",
         base_image=None,
+        loras_high=None,
+        loras_low=None,
     ) -> io.NodeOutput:
         if base_image is None:
             print("SceneCreate: base_image is None")
@@ -892,19 +1174,31 @@ class SceneCreate(io.ComfyNode):
         if not poses_dir:
             poses_dir = default_poses_dir()
         
+        if not pose_name:
+            pose_name = "default_pose"
+
         pose_dir = os.path.join(poses_dir, pose_name)
         if not os.path.exists(pose_dir):
             os.makedirs(pose_dir, exist_ok=True)
             print(f"SceneCreate: Created pose_dir='{pose_dir}'")
-        
-        if not pose_name:
-            pose_name = "default_pose"
+
+        input_dir = os.path.join(pose_dir, "input")        
+        if not os.path.exists(input_dir):
+            os.makedirs(input_dir, exist_ok=True)
+            print(f"SceneCreate: Created input_dir='{input_dir}'")
+            
+        output_dir = os.path.join(pose_dir, "output")        
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"SceneCreate: Created output_dir='{output_dir}'")
             
         if not girl_pos:
             girl_pos = ""
         if not male_pos:
             male_pos = ""
-        
+        if not wan_prompt:
+            wan_prompt = ""
+
         upscale_image, = ImageScaleBy().upscale(base_image, upscale_method=upscale_method, scale_by=upscale_factor)
         print(f"SceneCreate: upscale_image is of type: {type(upscale_image)} with shape {upscale_image.shape if torch.is_tensor(upscale_image) else 'N/A'}")
         torch_device = model_management.get_torch_device()
@@ -942,12 +1236,18 @@ class SceneCreate(io.ComfyNode):
         # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
         pose_dwpose_json = json.dumps(pose_json)
 
+        if not loras_high is None and not loras_low is None:
+            loras_path = os.path.join(pose_dir, "loras.json")
+            save_loras(loras_high, loras_low, loras_path)
+            print(f"SceneCreate: Saved LoRA preset to: {loras_path}")
+
         scene_info = SceneInfo(
             pose_dir=pose_dir,
             pose_name=pose_name,
             resolution=resolution,
             girl_pos=girl_pos,
             male_pos=male_pos,
+            wan_prompt=wan_prompt,
             upscale_image=upscale_image,
             depth_image=depth_image,
             depth_any_image=depth_any_image,
@@ -962,6 +1262,8 @@ class SceneCreate(io.ComfyNode):
             pose_face_image=pose_dw_image,
             pose_json=pose_json,
             canny_image=canny_image,
+            loras_high=loras_high,
+            loras_low=loras_low,
         )
         return io.NodeOutput(
             scene_info,
@@ -989,6 +1291,8 @@ class SceneUpdate(io.ComfyNode):
                 io.Boolean.Input(id="update_facepose", display_name="update_facepose", tooltip="If true, will update the Face Pose image in the scene_info", default=False),
                 io.Boolean.Input(id="update_editpose", display_name="update_editpose", tooltip="If true, will update the Edit Pose image in the scene_info", default=False),
                 io.Boolean.Input(id="update_dwpose", display_name="update_dwpose", tooltip="If true, will update the DensePose image in the scene_info", default=False),
+                io.Boolean.Input(id="update_high_loras", display_name="update_high_loras", tooltip="If true, will update the High LoRAs list in the scene_info", default=False),
+                io.Boolean.Input(id="update_low_loras", display_name="update_low_loras", tooltip="If true, will update the Low LoRAs list in the scene_info", default=False),
                 io.String.Input(id="pose_json", display_name="pose_json", tooltip="JSON string for the pose keypoints"),
                 io.Int.Input(id="resolution", display_name="resolution", tooltip="Resolution for the pose, depth and other images", default=512),
                 io.Combo.Input(
@@ -1063,6 +1367,8 @@ class SceneUpdate(io.ComfyNode):
                     tooltip="Canny edge detector high threshold",
                     default=200, min=0, max=255, step=1
                 ),
+                io.Custom("WANVIDLORA").Input(id="high_loras", display_name="high_loras", tooltip="WanVideoWrapper Multi-Lora list", optional=True ),
+                io.Custom("WANVIDLORA").Input(id="low_loras", display_name="low_loras", tooltip="WanVideoWrapper Multi-Lora list", optional=True ),
             ],
             outputs=[
                 io.Custom("SCENE_INFO").Output(id="scene_info_out", display_name="scene_info", tooltip="Updated Scene Information"),
@@ -1087,6 +1393,8 @@ class SceneUpdate(io.ComfyNode):
         update_facepose=False,
         update_editpose=False,
         update_dwpose=False,
+        update_high_loras=False,
+        update_low_loras=False,
         pose_json="[]",
         resolution=512,
         upscale_method="nearest-exact",
@@ -1100,7 +1408,8 @@ class SceneUpdate(io.ComfyNode):
         zoe_environment="indoor",
         canny_low_threshold=100,
         canny_high_threshold=200,
-
+        high_loras=None,
+        low_loras=None,
     ):
         if scene_info_in is None:
             print("SceneUpdate: scene_info is None")
@@ -1175,7 +1484,22 @@ class SceneUpdate(io.ComfyNode):
 
         # todo: consider whether or not the Face Detection using onnx is even worth it (WanAnimatePreprocess (v2) modified based upon post on github)
         # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
-        
+        loras_path = os.path.join(scene_info_in.pose_dir, "loras.json")
+
+        if update_high_loras and not high_loras is None:
+            scene_info_out.loras_high = high_loras
+        else:
+            high_loras = scene_info_in.loras_high
+
+        if update_low_loras and not low_loras is None:
+            scene_info_out.loras_low = low_loras
+        else:
+            low_loras = scene_info_in.loras_low
+            
+        if (update_high_loras or update_low_loras) and (not high_loras is None or not low_loras is None):
+            save_loras(high_loras, low_loras, loras_path)
+            print(f"SceneUpdate: Saved LoRA presets to: {loras_path}")
+
         return io.NodeOutput(
             scene_info_out,
         )
@@ -1272,26 +1596,35 @@ class SceneOutput(io.ComfyNode):
             node_id="SceneOutput",
             category="🧊 frost-byte/Scene",
             inputs=[
-                io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Information" ),
+                io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Information"),
             ],
             outputs=[
-                io.String.Output("pose_dir", display_name="pose_dir", tooltip="Directory where the scene is saved"),
-                io.String.Output("pose_name", display_name="pose_name", tooltip="Name of the pose"),
-                io.String.Output("girl_pos", display_name="girl_pos", tooltip="Girl Positive Prompt"),
-                io.String.Output("male_pos", display_name="male_pos", tooltip="Male Positive Prompt"),
-                io.String.Output("pose_json", display_name="pose_json", tooltip="Pose JSON data"),
-                io.Image.Output("depth_image", display_name="depth_image", tooltip="Depth Image"),
-                io.Image.Output("depth_any_image", display_name="depth_any_image", tooltip="Depth Any Image"),
-                io.Image.Output("depth_midas_image", display_name="depth_midas_image", tooltip="Depth Midas Image"),
-                io.Image.Output("depth_zoe_image", display_name="depth_zoe_image", tooltip="Depth Zoe Image"),
-                io.Image.Output("depth_zoe_any_image", display_name="depth_zoe_any_image", tooltip="Depth Zoe Any Image"),
-                io.Image.Output("pose_dense_image", display_name="pose_dense_image", tooltip="Pose Dense Image"),
-                io.Image.Output("pose_dw_image", display_name="pose_dw_image", tooltip="Pose DW Image"),
-                io.Image.Output("pose_edit_image", display_name="pose_edit_image", tooltip="Pose Edit Image"),
-                io.Image.Output("pose_face_image", display_name="pose_face_image", tooltip="Pose Face Image"),
-                io.Image.Output("pose_open_image", display_name="pose_open_image", tooltip="Pose Open Image"),
-                io.Image.Output("canny_image", display_name="canny_image", tooltip="Canny Image"),
-                io.Image.Output("upscale_image", display_name="upscale_image", tooltip="Upscale Image"),
+                io.String.Output(id="pose_dir", display_name="pose_dir", tooltip="Directory where the scene is saved"),
+                io.String.Output(id="pose_name", display_name="pose_name", tooltip="Name of the pose"),
+                io.String.Output(id="girl_pos", display_name="girl_pos", tooltip="Girl Positive Prompt"),
+                io.String.Output(id="male_pos", display_name="male_pos", tooltip="Male Positive Prompt"),
+                io.String.Output(id="wan_prompt", display_name="wan_prompt", tooltip="Wan Prompt"),
+                io.String.Output(id="pose_json", display_name="pose_json", tooltip="Pose JSON data"),
+                io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Depth Image"),
+                io.Image.Output(id="depth_any_image", display_name="depth_any_image", tooltip="Depth Any Image"),
+                io.Image.Output(id="depth_midas_image", display_name="depth_midas_image", tooltip="Depth Midas Image"),
+                io.Image.Output(id="depth_zoe_image", display_name="depth_zoe_image", tooltip="Depth Zoe Image"),
+                io.Image.Output(id="depth_zoe_any_image", display_name="depth_zoe_any_image", tooltip="Depth Zoe Any Image"),
+                io.Image.Output(id="pose_dense_image", display_name="pose_dense_image", tooltip="Pose Dense Image"),
+                io.Image.Output(id="pose_dw_image", display_name="pose_dw_image", tooltip="Pose DW Image"),
+                io.Image.Output(id="pose_edit_image", display_name="pose_edit_image", tooltip="Pose Edit Image"),
+                io.Image.Output(id="pose_face_image", display_name="pose_face_image", tooltip="Pose Face Image"),
+                io.Image.Output(id="pose_open_image", display_name="pose_open_image", tooltip="Pose Open Image"),
+                io.Image.Output(id="canny_image", display_name="canny_image", tooltip="Canny Image"),
+                io.Image.Output(id="upscale_image", display_name="upscale_image", tooltip="Upscale Image"),
+                io.Image.Output(id="girl_mask_image", display_name="girl_mask_image", tooltip="Girl Mask Image, with background"),
+                io.Image.Output(id="male_mask_image", display_name="male_mask_image", tooltip="Male Mask Image, with background"),
+                io.Image.Output(id="combined_mask_image", display_name="combined_mask_image", tooltip="Combined Mask Image, with background"),
+                io.Image.Output(id="girl_mask_nobg_image", display_name="girl_mask_nobg_image", tooltip="Girl Mask Image, no background"),
+                io.Image.Output(id="male_mask_nobg_image", display_name="male_mask_nobg_image", tooltip="Male Mask Image, no background"),
+                io.Image.Output(id="combined_mask_nobg_image", display_name="combined_mask_nobg_image", tooltip="Combined Mask Image, no background"),
+                io.Custom("WANVIDLORA").Output(id="high_loras", display_name="high_loras", tooltip="WanVideoWrapper High Multi-Lora list"),
+                io.Custom("WANVIDLORA").Output(id="low_loras", display_name="low_loras", tooltip="WanVideoWrapper Low Multi-Lora list"),
             ],
         )
 
@@ -1302,13 +1635,40 @@ class SceneOutput(io.ComfyNode):
     ) -> io.NodeOutput:
         if scene_info is None:
             print("SceneOutput: scene_info is None")
-            return io.NodeOutput(("", "", "", "", "", None, None, None, None, None, None, None, None, None, None, None, None))
+            return io.NodeOutput((
+                "",
+                "",
+                "",
+                "",
+                "",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ))
         
         print(
             f"SceneOutput: scene_info.pose_dir='{scene_info.pose_dir}', "
             f"pose_name='{scene_info.pose_name}', "
             f"girl_pos='{scene_info.girl_pos}', "
             f"male_pos='{scene_info.male_pos}', "
+            f"wan_prompt='{scene_info.wan_prompt}', "
             f"depth_image shape: {scene_info.depth_image.shape if scene_info.depth_image is not None else 'None'}"
         )
         return io.NodeOutput(
@@ -1316,6 +1676,7 @@ class SceneOutput(io.ComfyNode):
             scene_info.pose_name,
             scene_info.girl_pos,
             scene_info.male_pos,
+            scene_info.wan_prompt,
             scene_info.pose_json,
             scene_info.depth_image,
             scene_info.depth_any_image,
@@ -1329,6 +1690,14 @@ class SceneOutput(io.ComfyNode):
             scene_info.pose_open_image,
             scene_info.canny_image,
             scene_info.upscale_image,
+            scene_info.girl_mask_bkgd_image,
+            scene_info.male_mask_bkgd_image,
+            scene_info.combined_mask_bkgd_image,
+            scene_info.girl_mask_no_bkgd_image,
+            scene_info.male_mask_no_bkgd_image,
+            scene_info.combined_mask_no_bkgd_image,
+            scene_info.high_loras,
+            scene_info.low_loras,
         )
 
 class SceneSave(io.ComfyNode):
@@ -1408,14 +1777,45 @@ class SceneSave(io.ComfyNode):
             pose_json_path = pose_path / "pose.json"
             save_json_file(pose_json_path, json.loads(scene_info.pose_json))
             
+        if scene_info.girl_mask_bkgd_image is not None:
+            girl_mask_path = pose_path / "girl_mask_bkgd.png"
+            save_image_comfyui(scene_info.girl_mask_bkgd_image, girl_mask_path)
+            
+        if scene_info.male_mask_bkgd_image is not None:
+            male_mask_path = pose_path / "male_mask_bkgd.png"
+            save_image_comfyui(scene_info.male_mask_bkgd_image, male_mask_path)
+            
+        if scene_info.combined_mask_bkgd_image is not None:
+            combined_mask_path = pose_path / "combined_mask_bkgd.png"
+            save_image_comfyui(scene_info.combined_mask_bkgd_image, combined_mask_path)
+
+        if scene_info.girl_mask_no_bkgd_image is not None:
+            girl_mask_nobg_path = pose_path / "girl_mask_no_bkgd.png"
+            save_image_comfyui(scene_info.girl_mask_no_bkgd_image, girl_mask_nobg_path)
+
+        if scene_info.male_mask_no_bkgd_image is not None:
+            male_mask_nobg_path = pose_path / "male_mask_no_bkgd.png"
+            save_image_comfyui(scene_info.male_mask_no_bkgd_image, male_mask_nobg_path)
+        if scene_info.combined_mask_no_bkgd_image is not None:
+            combined_mask_nobg_path = pose_path / "combined_mask_no_bkgd.png"
+            save_image_comfyui(scene_info.combined_mask_no_bkgd_image, combined_mask_nobg_path)
+
         girl_pos = scene_info.girl_pos if scene_info.girl_pos else ""
         male_pos = scene_info.male_pos if scene_info.male_pos else ""
+        wan_prompt = scene_info.wan_prompt if scene_info.wan_prompt else ""
         prompts_path = pose_path / "prompts.json"
         prompt_data = {
             "girl_pos": girl_pos,
             "male_pos": male_pos,
+            "wan_prompt": wan_prompt,
         }
         save_json_file(prompts_path, prompt_data)   
+        
+        if scene_info.loras_high is not None or scene_info.loras_low is not None:
+            loras_path = pose_path / "loras.json"
+            save_loras(scene_info.loras_high, scene_info.loras_low, loras_path)
+            print(f"SaveScene: Saved LoRA presets to: {loras_path}")
+
         return io.NodeOutput(
             ui=ui.PreviewText(f"Scene saved to '{pose_dir}' with prompt='The girl {scene_info.girl_pos}, The male {scene_info.male_pos}'"),
         )
@@ -1431,6 +1831,7 @@ class SceneInput(io.ComfyNode):
                 io.String.Input(id="pose_name", display_name="pose_name", tooltip="Name of the pose", multiline=False, default=""),
                 io.String.Input(id="girl_pos", display_name="girl_pos", tooltip="The prompt for the girl in the scene", multiline=True, default=""),
                 io.String.Input(id="male_pos", display_name="male_pos", tooltip="The prompt for the male(s) in the scene", multiline=True, default=""),
+                io.String.Input(id="wan_prompt", display_name="wan_prompt", tooltip="The Wan prompt for the scene", multiline=True, default=""),
                 io.String.Input(id="pose_json", display_name="pose_json", tooltip="Pose JSON data", multiline=True, default=""),
                 io.Image.Input(id="depth_image", display_name="depth_image", tooltip="Depth Image", optional=True),
                 io.Image.Input(id="depth_any_image", display_name="depth_any_image", tooltip="Depth Any Image", optional=True),
@@ -1444,6 +1845,14 @@ class SceneInput(io.ComfyNode):
                 io.Image.Input(id="pose_open_image", display_name="pose_open_image", tooltip="Pose Open Image", optional=True),
                 io.Image.Input(id="canny_image", display_name="canny_image", tooltip="Canny Image", optional=True),
                 io.Image.Input(id="upscale_image", display_name="upscale_image", tooltip="Upscale Image", optional=True),
+                io.Image.Input(id="girl_mask_image", display_name="girl_mask_image", tooltip="Girl Mask Image, with background", optional=True),
+                io.Image.Input(id="male_mask_image", display_name="male_mask_image", tooltip="Male Mask Image, with background", optional=True),
+                io.Image.Input(id="combined_mask_image", display_name="combined_mask_image", tooltip="Combined Mask Image, with background", optional=True),
+                io.Image.Input(id="girl_mask_nobg_image", display_name="girl_mask_nobg_image", tooltip="Girl Mask Image, no background", optional=True),
+                io.Image.Input(id="male_mask_nobg_image", display_name="male_mask_nobg_image", tooltip="Male Mask Image, no background", optional=True),
+                io.Image.Input(id="combined_mask_nobg_image", display_name="combined_mask_nobg_image", tooltip="Combined Mask Image, no background", optional=True),
+                io.Custom("WANVIDLORA").Input(id="high_loras", display_name="high_loras", tooltip="WanVideoWrapper High Multi-Lora list", optional=True ),
+                io.Custom("WANVIDLORA").Input(id="low_loras", display_name="low_loras", tooltip="WanVideoWrapper Low Multi-Lora list", optional=True),
             ],
             outputs=[
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene information and images"),
@@ -1457,6 +1866,7 @@ class SceneInput(io.ComfyNode):
         pose_name="",
         girl_pos="",
         male_pos="",
+        wan_prompt="",
         pose_json="",
         depth_image=None,
         depth_any_image=None,
@@ -1483,6 +1893,7 @@ class SceneInput(io.ComfyNode):
             pose_name=pose_name,
             girl_pos=girl_pos,
             male_pos=male_pos,
+            wan_prompt=wan_prompt,
             pose_json=pose_json,
             depth_image=depth_image,
             depth_any_image=depth_any_image,
@@ -1494,8 +1905,16 @@ class SceneInput(io.ComfyNode):
             pose_edit_image=pose_edit_image,
             pose_face_image=pose_face_image,
             pose_open_image=pose_open_image,
+            girl_mask_bkgd_image=girl_mask_image,
+            male_mask_bkgd_image=male_mask_image,
+            combined_mask_bkgd_image=combined_mask_image,
+            girl_mask_no_bkgd_image=girl_mask_no_bkgd_image,
+            male_mask_no_bkgd_image=male_mask_no_bkgd_image,
+            combined_mask_no_bkgd_image=combined_mask_no_bkgd_image,
             canny_image=canny_image,
             upscale_image=upscale_image,
+            high_loras=high_loras,
+            low_loras=low_loras,
             resolution=resolution,
         )
 

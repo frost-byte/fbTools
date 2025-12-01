@@ -306,6 +306,34 @@ app.registerExtension({
                         maleWidget.inputEl.value = message.text[1];
                     }
                 }
+
+                if (message?.text?.[2]) {
+                    console.log("fbTools -> SceneSelect: loras_high detected, applying to widget");
+                    const lorasWidget = this.widgets.find((w) => w.name === "loras_high_in");
+                    if (lorasWidget) {
+                        lorasWidget.value = message.text[2];
+                        lorasWidget.inputEl.value = message.text[2];
+                    }
+                }
+
+                if (message?.text?.[3]) {
+                    console.log("fbTools -> SceneSelect: loras_low detected, applying to widget");
+                    const lorasLowWidget = this.widgets.find((w) => w.name === "loras_low_in");
+                    if (lorasLowWidget) {
+                        lorasLowWidget.value = message.text[3];
+                        lorasLowWidget.inputEl.value = message.text[3];
+                    }
+                }
+
+                if (message?.text?.[4]) {
+                    console.log("fbTools -> SceneSelect: wan_prompt detected, applying to widget");
+                    const wanPromptWidget = this.widgets.find((w) => w.name === "wan_prompt_in");
+                    if (wanPromptWidget) {
+                        wanPromptWidget.value = message.text[4];
+                        wanPromptWidget.inputEl.value = message.text[4];
+                    }
+                }
+
                 requestAnimationFrame(() => {
                     const sz = this.computeSize();
                     if (sz[0] < this.size[0]) sz[0] = this.size[0];

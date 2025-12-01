@@ -21,10 +21,11 @@ def load_prompt_json(prompt_json_path):
         
         output["girl_pos"] = data.get("girl_pos", "")
         output["male_pos"] = data.get("male_pos", "")
+        output["wan_prompt"] = data.get("wan_prompt", "")
         return output
     except Exception as e:
         print(f"fbTools: Error loading prompt JSON from '{prompt_json_path}': {e}")
-        return {"girl_pos": "", "male_pos": ""}
+        return {"girl_pos": "", "male_pos": "", "wan_prompt": ""}
 
 def load_json_file(json_path):
     if not os.path.isfile(json_path):
@@ -33,7 +34,7 @@ def load_json_file(json_path):
 
     try:
         with open(json_path, 'r', encoding='utf-8') as f:
-            data = f.read()
+            data = json.load(f)
         return data
     except Exception as e:
         print(f"fbTools: Error loading JSON from '{json_path}': {e}")
