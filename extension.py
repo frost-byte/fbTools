@@ -1437,6 +1437,10 @@ class SceneUpdate(io.ComfyNode):
             print("SceneUpdate: upscale_image is None after upscaling")
             return io.NodeOutput(scene_info_out)
 
+        #if update_facepose:
+            #pose_face_image, pose_json = face(upscale_image, resolution=resolution)
+            #scene_info_out.pose_face_image = pose_face_image
+            #scene_info_out.pose_json = pose_json
         if update_densepose:
             scene_info_out.pose_dense_image = dense_pose(upscale_image, densepose_model, densepose_cmap, resolution)
 
@@ -1462,6 +1466,7 @@ class SceneUpdate(io.ComfyNode):
         
         if update_canny:
             canny_image = canny(upscale_image, low_threshold=canny_low_threshold, high_threshold=canny_high_threshold, resolution=resolution)
+            scene_info_out.canny_image = canny_image
 
         if update_dwpose:
             pose_dw_image, pose_json = estimate_dwpose(upscale_image, resolution=resolution)
