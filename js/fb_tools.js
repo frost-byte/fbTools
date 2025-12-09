@@ -236,10 +236,10 @@ app.registerExtension({
     name: "FBToolsContextMenu",
     setup() {
         JSONView.ensureLoaded().then(() => {
-            console.log("fb_tools -> JSNView loaded:", JSONView.JSONView);
+            console.log("fb_tools -> JSONView loaded:", JSONView.JSONView);
             _isLoaded = true;
         }).catch((e) => {
-            console.error("fb_tools -> Failed to load JSNView:", e);
+            console.error("fb_tools -> Failed to load JSONView:", e);
         });
     },
     bottomPanelTabs: [
@@ -334,6 +334,23 @@ app.registerExtension({
                     }
                 }
 
+                if (message?.text?.[5]) {
+                    console.log("fbTools -> SceneSelect: wan_low_prompt detected, applying to widget");
+                    const wanLowPromptWidget = this.widgets.find((w) => w.name === "wan_low_prompt_in");
+                    if (wanLowPromptWidget) {
+                        wanLowPromptWidget.value = message.text[5];
+                        wanLowPromptWidget.inputEl.value = message.text[5];
+                    }
+                }
+
+                if (message?.text?.[6]) {
+                    console.log("fbTools -> SceneSelect: four_image_prompt detected, applying to widget");
+                    const fourImagePromptWidget = this.widgets.find((w) => w.name === "four_image_prompt_in");
+                    if (fourImagePromptWidget) {
+                        fourImagePromptWidget.value = message.text[6];
+                        fourImagePromptWidget.inputEl.value = message.text[6];
+                    }
+                }
                 requestAnimationFrame(() => {
                     const sz = this.computeSize();
                     if (sz[0] < this.size[0]) sz[0] = this.size[0];

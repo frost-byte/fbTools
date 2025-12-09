@@ -7,12 +7,37 @@ import comfy.model_management as model_management
 from typing_extensions import override
 from folder_paths import get_output_directory
 from nodes import ImageScaleBy
-from .utils.util import draw_pose_json, draw_pose, extend_scalelist, pose_normalized, select_text_by_action, update_ui_widget
+from .utils.util import (
+    draw_pose_json,
+    draw_pose,
+    extend_scalelist,
+    pose_normalized,
+    select_text_by_action,
+    update_ui_widget,
+    get_workflow_all_nodes,
+    listify_nodes_data,
+    listify_node_inputs,
+    node_input_details,
+    find_node_by_id,
+    get_node_inputs
+)
 from .utils.io import save_json_file, load_prompt_json, load_json_file
 from .utils.images import image_resize_ess, find_nearest_qwen_aspect_ratio
 from .utils.pose import estimate_dwpose, dense_pose, depth_anything, depth_anything_v2, zoe, zoe_any, openpose, midas, canny
 
-from .utils.images import make_empty_image, _compute_ref_stats, _pick_ref_image, proc_deflicker_luma, proc_deflicker_clahe, proc_color_histmatch, proc_color_meanstd, proc_bilateral_cv2, proc_unsharp, _stack_if_same_shape
+from .utils.images import (
+    make_empty_image,
+    _compute_ref_stats,
+    _pick_ref_image,
+    proc_deflicker_luma,
+    proc_deflicker_clahe,
+    proc_color_histmatch,
+    proc_color_meanstd,
+    proc_bilateral_cv2,
+    proc_unsharp,
+    _stack_if_same_shape
+)
+
 from .utils.images import _HAS_KORNIA, _HAS_SKIMAGE, _HAS_CV2, load_image_comfyui, save_image_comfyui, make_placeholder_tensor, normalize_image_tensor
 from comfy_api.latest import ComfyExtension, io, ui
 from inspect import cleandoc
@@ -544,6 +569,8 @@ class SceneInfo(BaseModel):
     girl_pos: str
     male_pos: str
     wan_prompt: str
+    wan_low_prompt: str
+    four_image_prompt: str
     pose_json: str
     resolution: int
 
@@ -572,6 +599,18 @@ class SceneInfo(BaseModel):
     male_mask_no_bkgd_image: Optional[torch.Tensor] = None
     combined_mask_no_bkgd_image: Optional[torch.Tensor] = None
 
+    def three_image_prompt(self) -> str:
+        return f"{self.girl_pos} {self.male_pos}"
+
+    def input_img_glob(self) -> str:
+        return os.path.join(self.pose_dir, "input") + "/*.png"
+
+    def input_img_dir(self) -> str:
+        return f"poses/{self.pose_name}/input/img"
+
+    def output_dir(self) -> str:
+        return f"poses/{self.pose_name}/output"
+
     model_config = ConfigDict(arbitrary_types_allowed=True, from_attributes=True)
 
 def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
@@ -580,6 +619,8 @@ def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
         print(f"load_loras: loaded data from {loras_json_path}: {data}")
         loras_high = []
         loras_low = []
+        if not data or not isinstance(data, dict):
+            return (loras_high, loras_low)
 
         for lora_type in ["high", "low"]:
             preset = data.get(lora_type, "")
@@ -596,7 +637,7 @@ def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
                 try:
                     full_path = folder_paths.get_full_path_or_raise("loras", lora_name)
                 except Exception as e:
-                    log.warning(f"Could not resolve path for LoRA '{lora_name}': {e}")
+                    print(f"Could not resolve path for LoRA '{lora_name}': {e}")
                     continue
 
                 # Use saved blocks/layer_filter if present
@@ -665,6 +706,145 @@ def save_loras(loras_high: list, loras_low: list, loras_json_path: str):
     }
     save_json_file(loras_json_path, data)
 
+class NodeInputSelect(io.ComfyNode):
+    """
+    NodeInputSelect:
+      - The user is presented with a dropdown list of available nodes - a string containing the node id and type, separated using an _.
+      - The user is presented with a dropdown list of available names for the inputs in the selected node.
+      - A node that allows selection of a input from a list of available inputs.
+      - Outputs the selected input name
+      - Outputs the selected input id as a string.
+      - Outputs the selected input value as a string.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        node_data = None
+        input_name = "unknown_input"        
+        default_inputs = ["unknown_input"]
+        # All nodes for the workflow
+        nodes_data = get_workflow_all_nodes(cls.__name__)
+        
+        # List of node names for the dropdown
+        nodes = listify_nodes_data(nodes_data)
+        nodes = nodes if nodes is not None else []
+        # The selected node, default to the first node if available
+        first_node_key = list(nodes_data.keys())[0] if nodes_data and isinstance(nodes_data, dict) and len(nodes_data) > 0 else None
+
+        if isinstance(nodes_data, dict) and first_node_key:
+            node_data = nodes_data.get(first_node_key, None)
+
+        default_node_name = nodes[0] if nodes and len(nodes) > 0 else "1_Unknown_Node"
+        #print(f"{cls.__name__}: available nodes={nodes}; default_node_name='{default_node_name}'; first_node_key='{first_node_key}'")
+        node_inputs = node_input_details(cls.__name__, node_data) if node_data else []
+        
+        if isinstance(node_inputs, dict):
+            default_inputs = listify_node_inputs(node_inputs)
+        
+        if not default_inputs:
+            default_inputs = ["unknown_input"]
+
+        if node_inputs and isinstance(node_inputs, dict) and len(node_inputs) > 0:
+            input_name = list(node_inputs.keys())[0]
+    
+        return io.Schema(
+            node_id="NodeInputSelect",
+            category="🧊 frost-byte/Nodes",
+            inputs=[
+                io.Combo.Input(
+                    id="node_name",
+                    display_name="node_name",
+                    options=nodes,
+                    default=default_node_name,
+                    tooltip="Select a node from the available nodes"
+                ),
+                io.Combo.Input(
+                    id="input_name_in",
+                    display_name="input_name",
+                    options=default_inputs,
+                    default=input_name,
+                    tooltip="Select a widget from the available options"
+                ),
+            ],
+            outputs=[
+                io.String.Output(id="input_name_out", display_name="input_name", tooltip="Name of the selected input"),
+                io.String.Output(id="input_value", display_name="input_value", tooltip="Value of the selected input"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        node_name: str = "1_Unknown_Node",
+        input_name_in: str = "unknown_input",
+    ):
+        class_name = cls.__name__
+        input_name_out= "No Inputs"
+        input_value = ""
+
+        print(f"{class_name}: node='{node_name}'; input_name_in='{input_name_in}'")
+
+        # All nodes for the workflow
+        nodes_data = get_workflow_all_nodes(cls.__name__)
+
+        if nodes_data is None or not isinstance(nodes_data, dict) or len(nodes_data) == 0:
+            print(f"{class_name}: No nodes available.")
+            return io.NodeOutput(
+                input_name_in,
+                ""
+            )
+
+        print(f"{class_name}: nodes_data keys={list(nodes_data.keys()) if nodes_data else 'None'}")
+
+        # List of node names for the dropdown
+        nodes = listify_nodes_data(nodes_data)
+        print(f"{class_name}: available nodes={nodes}")
+
+        # The default is the first node, if available
+        node_id = list(nodes_data.keys())[0] if nodes_data and len(nodes_data) > 0 else None
+
+        # If a node name is provided, extract the node id
+        if node_name != "1_Unknown_Node":
+            node_id = node_name.split("_", 1)[0] if "_" in node_name else None
+
+        if node_id is None:
+            print(f"{class_name}: Could not determine node_id from node_name='{node_name}'")
+            return io.NodeOutput(
+                input_name_in,
+                ""
+            )
+
+        print(f"{class_name}: selected node_id={node_id}")
+
+        if isinstance(nodes_data, dict):
+            node_data = nodes_data.get(str(node_id), None)
+            
+            if node_data is None:
+                print(f"{class_name}: No data found for node_id={node_id}")
+                return io.NodeOutput(
+                    input_name_in,
+                    ""
+                )
+
+            node_inputs = node_input_details(cls.__name__, node_data)
+
+            if node_inputs and isinstance(node_inputs, dict):
+                print(f"{class_name}: node_inputs keys={list(node_inputs.keys())}")
+                input_name_out = input_name_in if input_name_in and input_name_in in node_inputs.keys() else None
+                
+                # If the specified input name is not found, default to the first input
+                if input_name_out == "No Inputs" or input_name_out is None:
+                    input_name_out = list(node_inputs.keys())[0]
+
+                input_value = node_inputs.get(input_name_out, "")
+
+        print(f"{class_name}: selected input_name='{input_name_out}'; input_value='{input_value}'")
+
+        return io.NodeOutput(
+            input_name_out,
+            input_value,
+        )
+
 class SceneSelect(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -692,9 +872,12 @@ class SceneSelect(io.ComfyNode):
                 io.Combo.Input(id="girl_action", display_name="action", options=["use_file", "use_edit"], default="use_file", tooltip="Action for the girl prompt"),
                 io.String.Input(id="male_pos_in", display_name="male_pos", multiline=True, default="", tooltip="The positive prompt for the male"),
                 io.Combo.Input(id="male_action", display_name="action", options=["use_file", "use_edit"], default="use_file", tooltip="Action for the male prompt"),
+                io.String.Input(id="four_image_prompt_in", display_name="four_image_prompt", multiline=True, default="", tooltip="The four image prompt for the scene"),
+                io.Combo.Input(id="four_image_prompt_action", display_name="four_image_prompt_action", options=["use_file", "use_edit"], default="use_file", tooltip="Action for the four image prompt"),
                 io.String.Input(id="loras_high_in", display_name="loras_high", multiline=True, default="", tooltip="LoRAs list in JSON format to override pose defaults"),
                 io.String.Input(id="loras_low_in", display_name="loras_low", multiline=True, default="", tooltip="Low-memory LoRAs list in JSON format to override pose defaults"),
-                io.String.Input(id="wan_prompt_in", display_name="wan_prompt", placeholder="Provide the Wan prompt for the scene", tooltip="WanVideoWrapper prompt for the scene", multiline=True),
+                io.String.Input(id="wan_prompt_in", display_name="wan_prompt", placeholder="Provide the Wan high positive prompt for the scene", tooltip="WanVideoWrapper high prompt for the scene", multiline=True),
+                io.String.Input(id="wan_low_prompt_in", display_name="wan_low_prompt", placeholder="Provide the Wan low positive prompt for the scene", tooltip="WanVideoWrapper low prompt for the scene", multiline=True),
                 io.Combo.Input(id="wan_prompt_action", display_name="wan_prompt_action", options=["use_file", "use_edit"], default="use_file", tooltip="Action for the Wan prompt"),
                 io.Combo.Input(id="depth_image_type", display_name="depth_image_type", options=depth_options, default="depth", tooltip="Type of depth image to generate from the pose"),
                 io.Combo.Input(id="pose_image_type", display_name="pose_image_type", options=pose_options, default="open", tooltip="Type of pose image to generate from the pose"),
@@ -705,9 +888,14 @@ class SceneSelect(io.ComfyNode):
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene information and images"),
                 io.String.Output(id="pose_name", display_name="pose_name", tooltip="Name of the selected pose"),
                 io.String.Output(id="pose_dir", display_name="pose_dir", tooltip="Directory of the selected pose"),
+                io.String.Output(id="input_img_glob", display_name="input_img_glob", tooltip="Input image glob pattern for the pose"),
+                io.String.Output(id="output_image_prefix", display_name="output_image_prefix", tooltip="Output image prefix for the scene"),
+                io.String.Output(id="output_video_prefix", display_name="output_video_prefix", tooltip="Output video prefix for the scene"),
                 io.String.Output(id="girl_pos", display_name="girl_pos", tooltip="Girl's positive prompt"),
                 io.String.Output(id="male_pos", display_name="male_pos", tooltip="Male's positive prompt"),
-                io.String.Output(id="wan_prompt_out", display_name="wan_prompt", tooltip="Combined WAN prompt from the pose"),
+                io.String.Output(id="four_image_prompt", display_name="four_image_prompt", tooltip="Four image prompt for the scene"),
+                io.String.Output(id="wan_prompt_out", display_name="wan_prompt", tooltip="WAN prompt, (high positive) from the pose"),
+                io.String.Output(id="wan_low_prompt_out", display_name="wan_low_prompt", tooltip="WAN low prompt, (low positive) from the pose"),
                 io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Depth IMAGE from the pose"),
                 io.Image.Output(id="mask_image", display_name="mask_image", tooltip="Mask IMAGE from the pose"),
                 io.Image.Output(id='canny_image', display_name='canny_image', tooltip='Canny IMAGE from the pose'),
@@ -731,9 +919,12 @@ class SceneSelect(io.ComfyNode):
         girl_action="use_file",
         male_pos_in="",
         male_action="use_file",
+        four_image_prompt_in="",
+        four_image_prompt_action="use_file",
         loras_high_in="",
         loras_low_in="",
         wan_prompt_in="",
+        wan_low_prompt_in="",
         wan_prompt_action="use_file",
         depth_image_type="depth",
         pose_image_type="open",
@@ -817,6 +1008,21 @@ class SceneSelect(io.ComfyNode):
 
         male_pos_ui_text = male_widget_text if male_widget_text is not None else male_file_text
 
+        # four_image_prompt
+        four_image_file_text = prompt_data.get("four_image_prompt", "")
+        four_image_prompt, four_image_widget_text = select_text_by_action(
+            four_image_prompt_in, 
+            four_image_file_text, 
+            four_image_prompt_action, 
+            className
+        )
+        
+        if four_image_widget_text is not None:
+            print(f"{className}: Updating UI widget for four_image_prompt_in with text: '{four_image_widget_text[:32]}...'")
+            update_ui_widget(className, unique_id, extra_pnginfo, four_image_widget_text,"four_image_prompt_in", inputs)
+        four_image_prompt_ui_text = four_image_widget_text if four_image_widget_text is not None else four_image_file_text
+
+        # wan_prompt - high positive prompt
         wan_file_text = prompt_data.get("wan_prompt", "")
         wan_prompt, wan_widget_text = select_text_by_action(
             wan_prompt_in, 
@@ -830,7 +1036,21 @@ class SceneSelect(io.ComfyNode):
             update_ui_widget(className, unique_id, extra_pnginfo, wan_widget_text, "wan_prompt_in", inputs)
             
         wan_prompt_ui_text = wan_widget_text if wan_widget_text is not None else wan_file_text
-        print(f"{className}: girl_pos: '{girl_pos}'; male_pos: '{male_pos}'; wan_prompt: '{wan_prompt}'")
+
+        # wan_low_prompt - low positive prompt
+        wan_low_file_text = prompt_data.get("wan_low_prompt", "")
+        wan_low_prompt, wan_low_widget_text = select_text_by_action(
+            wan_low_prompt_in, 
+            wan_low_file_text,
+            wan_prompt_action, 
+            className
+        )
+
+        if wan_low_widget_text is not None:
+            print(f"{className}: Updating UI widget for wan_low_prompt with text: '{wan_low_widget_text[:32]}...'")
+            update_ui_widget(className, unique_id, extra_pnginfo, wan_low_widget_text, "wan_low_prompt_in", inputs)
+
+        wan_low_prompt_ui_text = wan_low_widget_text if wan_low_widget_text is not None else wan_low_file_text
 
         loras_low_file_text = json.dumps(loras_low, indent=2) if loras_low else "[]"
         loras_low_text, loras_low_widget_text = select_text_by_action(
@@ -881,6 +1101,19 @@ class SceneSelect(io.ComfyNode):
         depth_zoe_image = load_image_comfyui(depth_zoe_image_path)
         depth_zoe_any_image_path = os.path.join(pose_dir, "depth_zoe_any.png")
         depth_zoe_any_image = load_image_comfyui(depth_zoe_any_image_path)
+        
+        selected_depth_image = None
+        if depth_image_type == "depth":
+            selected_depth_image = depth_image
+        elif depth_image_type == "depth_any":
+            selected_depth_image = depth_any_image
+        elif depth_image_type == "midas":
+            selected_depth_image = depth_midas_image
+        elif depth_image_type == "zoe":
+            selected_depth_image = depth_zoe_image
+        elif depth_image_type == "zoe_any":
+            selected_depth_image = depth_zoe_any_image
+
         pose_dense_image_path = os.path.join(pose_dir, "pose_dense.png")
         pose_dense_image = load_image_comfyui(pose_dense_image_path)
         pose_dw_image_path = os.path.join(pose_dir, "pose_dw.png")
@@ -930,6 +1163,8 @@ class SceneSelect(io.ComfyNode):
                 str(loras_high_ui_text),
                 str(loras_low_ui_text),
                 str(wan_prompt_ui_text),
+                str(wan_low_prompt_ui_text),
+                str(four_image_prompt_ui_text),
             ],
         }
 
@@ -938,7 +1173,9 @@ class SceneSelect(io.ComfyNode):
             pose_name=selected_pose,
             girl_pos=girl_pos,
             male_pos=male_pos,
+            four_image_prompt=four_image_prompt,
             wan_prompt=wan_prompt,
+            wan_low_prompt=wan_low_prompt,
             pose_json=pose_json,
             resolution=resolution,
             depth_image=depth_image,
@@ -961,10 +1198,15 @@ class SceneSelect(io.ComfyNode):
             scene_info,
             selected_pose,
             pose_dir,
+            scene_info.input_img_glob(),
+            scene_info.input_img_dir(),
+            os.path.join(scene_info.output_dir(), "vid_"),
             girl_pos,
             male_pos,
+            four_image_prompt,
             wan_prompt,
-            depth_image,
+            wan_low_prompt,
+            selected_depth_image,
             mask_image,
             canny_image,
             pose_image,
@@ -1038,14 +1280,17 @@ class SceneWanVideoLoraMultiSave(io.ComfyNode):
         if not loras_high is None:
             print(f"{className}: Saving {len(loras_high)} High LoRA entries to pose_dir '{pose_dir}'")
             loras_high_path = os.path.join(pose_dir, "loras_high.json")
-            save_loras(loras_high, loras_high_path)
-            print(f"Saved High LoRA preset to: {loras_high_path}")        
-
+        else:
+            loras_high = []
         if not loras_low is None:
             print(f"{className}: Saving {len(loras_low)} Low LoRA entries to pose_dir '{pose_dir}'")
             loras_low_path = os.path.join(pose_dir, "loras_low.json")
-            save_loras(loras_low, loras_low_path)
-            print(f"Saved Low LoRA preset to: {loras_low_path}")        
+        else:
+            loras_low = []
+
+        loras_path = os.path.join(pose_dir, "loras.json")
+        save_loras(loras_high, loras_low, loras_path)
+        print(f"Saved LoRA preset to: {loras_path}")
 
         return io.NodeOutput(info_in)
 
@@ -1133,7 +1378,9 @@ class SceneCreate(io.ComfyNode):
                 ),
                 io.String.Input(id="girl_pos", display_name="girl_pos", placeholder="Provide the positive prompt for the female in the scene", tooltip="Positive prompt for the girl", multiline=True),
                 io.String.Input(id="male_pos", display_name="male_pos", placeholder="Provide the positive prompt for the male(s) in the scene", tooltip="Positive prompt for the male(s)", multiline=True),
-                io.String.Input(id="wan_prompt", display_name="wan_prompt", placeholder="Provide the Wan prompt for the scene", tooltip="WanVideoWrapper prompt for the scene", multiline=True),
+                io.String.Input(id="four_image_prompt", display_name="four_image_prompt", placeholder="Provide the four image prompt for the scene", tooltip="Four image prompt for the scene", multiline=True),
+                io.String.Input(id="wan_prompt", display_name="wan_prompt", placeholder="Provide the Wan high positive prompt for the scene", tooltip="WanVideoWrapper high positive prompt for the scene", multiline=True),
+                io.String.Input(id="wan_low_prompt", display_name="wan_low_prompt", placeholder="Provide the Wan low positive prompt for the scene", tooltip="WanVideoWrapper low positive prompt for the scene", multiline=True),
                 io.Image.Input(id="base_image", display_name="base_image", tooltip="Base image for the scene"),
                 io.Custom("WANVIDLORA").Input(id="loras_high", display_name="loras_high", tooltip="WanVideoWrapper High Multi-Lora list" ),
                 io.Custom("WANVIDLORA").Input(id="loras_low", display_name="loras_low", tooltip="WanVideoWrapper Low Multi-Lora list" ),
@@ -1162,7 +1409,9 @@ class SceneCreate(io.ComfyNode):
         canny_high_threshold=200,
         girl_pos="",
         male_pos="",
+        four_image_prompt="",
         wan_prompt="",
+        wan_low_prompt="",
         base_image=None,
         loras_high=None,
         loras_low=None,
@@ -1196,12 +1445,15 @@ class SceneCreate(io.ComfyNode):
             girl_pos = ""
         if not male_pos:
             male_pos = ""
+        if not four_image_prompt:
+            four_image_prompt = ""
         if not wan_prompt:
             wan_prompt = ""
+        if not wan_low_prompt:
+            wan_low_prompt = ""
 
         upscale_image, = ImageScaleBy().upscale(base_image, upscale_method=upscale_method, scale_by=upscale_factor)
         print(f"SceneCreate: upscale_image is of type: {type(upscale_image)} with shape {upscale_image.shape if torch.is_tensor(upscale_image) else 'N/A'}")
-        torch_device = model_management.get_torch_device()
 
         # DensePose
         dense_pose_image = dense_pose(upscale_image, densepose_model, densepose_cmap, resolution)
@@ -1248,6 +1500,8 @@ class SceneCreate(io.ComfyNode):
             girl_pos=girl_pos,
             male_pos=male_pos,
             wan_prompt=wan_prompt,
+            wan_low_prompt=wan_low_prompt,
+            four_image_prompt=four_image_prompt,
             upscale_image=upscale_image,
             depth_image=depth_image,
             depth_any_image=depth_any_image,
@@ -1415,14 +1669,15 @@ class SceneUpdate(io.ComfyNode):
             print("SceneUpdate: scene_info is None")
             return io.NodeOutput(None)
 
-        print(f"SceneUpdate: Scene Info In is of type: {type(scene_info_in)} with attributes: {dir(scene_info_in)}")
         scene_info_out = scene_info_in
         if update_prompts:
             if girl_pos is not None:
                 scene_info_out.girl_pos = girl_pos
             if male_pos is not None:
                 scene_info_out.male_pos = male_pos
-                
+
+        print(f"SceneUpdate: Wan Low Prompt -> {scene_info_in.wan_low_prompt[:32]}...")                
+
         upscale_image = scene_info_in.upscale_image
 
         if upscale_image is None:
@@ -1608,7 +1863,9 @@ class SceneOutput(io.ComfyNode):
                 io.String.Output(id="pose_name", display_name="pose_name", tooltip="Name of the pose"),
                 io.String.Output(id="girl_pos", display_name="girl_pos", tooltip="Girl Positive Prompt"),
                 io.String.Output(id="male_pos", display_name="male_pos", tooltip="Male Positive Prompt"),
-                io.String.Output(id="wan_prompt", display_name="wan_prompt", tooltip="Wan Prompt"),
+                io.String.Output(id="four_image_prompt", display_name="four_image_prompt", tooltip="Four Image Prompt"),
+                io.String.Output(id="wan_prompt", display_name="wan_prompt", tooltip="Wan High Positive Prompt"),
+                io.String.Output(id="wan_low_prompt", display_name="wan_low_prompt", tooltip="Wan Low Positive Prompt"),
                 io.String.Output(id="pose_json", display_name="pose_json", tooltip="Pose JSON data"),
                 io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Depth Image"),
                 io.Image.Output(id="depth_any_image", display_name="depth_any_image", tooltip="Depth Any Image"),
@@ -1646,6 +1903,8 @@ class SceneOutput(io.ComfyNode):
                 "",
                 "",
                 "",
+                "",
+                "",
                 None,
                 None,
                 None,
@@ -1671,9 +1930,10 @@ class SceneOutput(io.ComfyNode):
         print(
             f"SceneOutput: scene_info.pose_dir='{scene_info.pose_dir}', "
             f"pose_name='{scene_info.pose_name}', "
-            f"girl_pos='{scene_info.girl_pos}', "
-            f"male_pos='{scene_info.male_pos}', "
-            f"wan_prompt='{scene_info.wan_prompt}', "
+            f"girl_pos='{scene_info.girl_pos[:32]}', "
+            f"male_pos='{scene_info.male_pos[:32]}', "
+            f"wan_prompt='{scene_info.wan_prompt[:32]}', "
+            f"wan_low_prompt='{scene_info.wan_low_prompt[:32]}', "
             f"depth_image shape: {scene_info.depth_image.shape if scene_info.depth_image is not None else 'None'}"
         )
         return io.NodeOutput(
@@ -1681,7 +1941,9 @@ class SceneOutput(io.ComfyNode):
             scene_info.pose_name,
             scene_info.girl_pos,
             scene_info.male_pos,
+            scene_info.four_image_prompt,
             scene_info.wan_prompt,
+            scene_info.wan_low_prompt,
             scene_info.pose_json,
             scene_info.depth_image,
             scene_info.depth_any_image,
@@ -1709,7 +1971,7 @@ class SceneSave(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SaveScene",
+            node_id="SceneSave",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Info Input"),
@@ -1807,18 +2069,22 @@ class SceneSave(io.ComfyNode):
 
         girl_pos = scene_info.girl_pos if scene_info.girl_pos else ""
         male_pos = scene_info.male_pos if scene_info.male_pos else ""
+        four_image_prompt = scene_info.four_image_prompt if scene_info.four_image_prompt else ""
         wan_prompt = scene_info.wan_prompt if scene_info.wan_prompt else ""
+        wan_low_prompt = scene_info.wan_low_prompt if scene_info.wan_low_prompt else ""
         prompts_path = pose_path / "prompts.json"
         prompt_data = {
             "girl_pos": girl_pos,
             "male_pos": male_pos,
             "wan_prompt": wan_prompt,
+            "wan_low_prompt": wan_low_prompt,
+            "four_image_prompt": four_image_prompt,
         }
         save_json_file(prompts_path, prompt_data)   
         
         if scene_info.loras_high is not None or scene_info.loras_low is not None:
             loras_path = pose_path / "loras.json"
-            save_loras(scene_info.loras_high, scene_info.loras_low, loras_path)
+            save_loras(scene_info.loras_high, scene_info.loras_low, str(loras_path))
             print(f"SaveScene: Saved LoRA presets to: {loras_path}")
 
         return io.NodeOutput(
@@ -1836,7 +2102,9 @@ class SceneInput(io.ComfyNode):
                 io.String.Input(id="pose_name", display_name="pose_name", tooltip="Name of the pose", multiline=False, default=""),
                 io.String.Input(id="girl_pos", display_name="girl_pos", tooltip="The prompt for the girl in the scene", multiline=True, default=""),
                 io.String.Input(id="male_pos", display_name="male_pos", tooltip="The prompt for the male(s) in the scene", multiline=True, default=""),
-                io.String.Input(id="wan_prompt", display_name="wan_prompt", tooltip="The Wan prompt for the scene", multiline=True, default=""),
+                io.String.Input(id="four_image_prompt", display_name="four_image_prompt", tooltip="The Four Image prompt for the scene", multiline=True, default=""),
+                io.String.Input(id="wan_prompt", display_name="wan_prompt", tooltip="The Wan High positive prompt for the scene", multiline=True, default=""),
+                io.String.Input(id="wan_low_prompt", display_name="wan_low_prompt", tooltip="The Wan Low positive prompt for the scene", multiline=True, default=""),
                 io.String.Input(id="pose_json", display_name="pose_json", tooltip="Pose JSON data", multiline=True, default=""),
                 io.Image.Input(id="depth_image", display_name="depth_image", tooltip="Depth Image", optional=True),
                 io.Image.Input(id="depth_any_image", display_name="depth_any_image", tooltip="Depth Any Image", optional=True),
@@ -1871,7 +2139,9 @@ class SceneInput(io.ComfyNode):
         pose_name="",
         girl_pos="",
         male_pos="",
+        four_image_prompt="",
         wan_prompt="",
+        wan_low_prompt="",
         pose_json="",
         depth_image=None,
         depth_any_image=None,
@@ -1885,6 +2155,14 @@ class SceneInput(io.ComfyNode):
         pose_open_image=None,
         canny_image=None,
         upscale_image=None,
+        girl_mask_image=None,
+        male_mask_image=None,
+        combined_mask_image=None,
+        girl_mask_no_bkgd_image=None,
+        male_mask_no_bkgd_image=None,
+        combined_mask_no_bkgd_image=None,
+        high_loras=None,
+        low_loras=None,
     ) -> io.NodeOutput:
         if not pose_dir or not os.path.isdir(pose_dir):
             print(f"SceneInput: pose_dir '{pose_dir}' is invalid")
@@ -1898,7 +2176,9 @@ class SceneInput(io.ComfyNode):
             pose_name=pose_name,
             girl_pos=girl_pos,
             male_pos=male_pos,
+            four_image_prompt=four_image_prompt,
             wan_prompt=wan_prompt,
+            wan_low_prompt=wan_low_prompt,
             pose_json=pose_json,
             depth_image=depth_image,
             depth_any_image=depth_any_image,
@@ -1918,8 +2198,8 @@ class SceneInput(io.ComfyNode):
             combined_mask_no_bkgd_image=combined_mask_no_bkgd_image,
             canny_image=canny_image,
             upscale_image=upscale_image,
-            high_loras=high_loras,
-            low_loras=low_loras,
+            loras_high=high_loras,
+            loras_low=low_loras,
             resolution=resolution,
         )
 
@@ -1998,6 +2278,7 @@ class FBToolsExtension(ComfyExtension):
             SAMPreprocessNHWC,
             QwenAspectRatio,
             SubdirLister,
+            NodeInputSelect,
             SceneCreate,
             SceneUpdate,
             SceneSave,

@@ -6,7 +6,7 @@ import cv2
 from comfy.utils import ProgressBar
 from comfy_api.latest import io, ui
 from typing import List, Dict
-
+from server import PromptServer
 eps = 0.01
 
 def select_text_by_action(
@@ -47,6 +47,117 @@ def select_text_by_action(
 def get_total_inputs(node_info: io.NodeInfoV3) -> int:
     return len(node_info.input)
 
+def get_workflow_nodes(class_name: str, extra_pnginfo) -> List[Dict]|None:
+    nodes_data = None
+    if isinstance(extra_pnginfo, dict):
+        current_workflow_info = extra_pnginfo.get("workflow", None)
+        if current_workflow_info is not None and isinstance(current_workflow_info, dict):
+            nodes_data = current_workflow_info.get("nodes", None)
+
+    # print(f"[{class_name}] Current workflow info type: {type(current_workflow_info)}; node_info: {nodes_data}")
+
+    return nodes_data
+
+def get_workflow_all_nodes(class_name: str) -> Dict|None:
+    nodes_data = None
+    queue_prompt = PromptServer.instance.prompt_queue.get_history(max_items=1)
+
+    if queue_prompt is not None and isinstance(queue_prompt, dict):
+        # print(f"[{class_name}] Retrieved last queue prompt from PromptServer.")
+        keys = list(queue_prompt.keys())
+        guid = keys[0] if len(keys) > 0 else None
+        # print(f"[{class_name}] guid: {guid}")
+        
+        if guid is not None:
+            workflow = queue_prompt.get(guid, None)
+            
+            if workflow is not None and isinstance(workflow, dict):
+                # print(f"[{class_name}] Retrieved workflow for guid: {guid} with keys: {list(workflow.keys())}")
+                prompt = workflow.get("prompt", None)
+                # print(f"[{class_name}] Retrieved prompt: {prompt}")
+                
+                if prompt is not None:
+                    # print(f"[{class_name}] Processing prompt of type {type(prompt)} and length {len(prompt)} for guid: {guid}")
+                    if isinstance(prompt, tuple) and len(prompt) >= 3:
+                        nodes_data = prompt[2]
+                        #print(f"[{class_name}] -> last queued workflow with guid: {guid}; found: {len(nodes_data)} nodes...")
+    return nodes_data
+
+def listify_nodes_data(nodes_data: Dict|None) -> List[str]|None:
+    """ Generate a list of nodes names that includes the includes each nodes id, followed by its type (separated by an underscore)
+
+    Args:
+        nodes_data (List[Dict] | None): The list of nodes found in a workflow
+
+    Returns:
+        List[str]|None: List of node names containing their id
+    """
+    output = []
+    if nodes_data is not None and isinstance(nodes_data, dict):
+        for id, node in nodes_data:
+            if isinstance(node, dict):
+                _meta = node.get("_meta", None)
+                title = "unknown_title"
+
+                if _meta is not None and isinstance(_meta, dict):
+                    title = _meta.get("title", "unknown_title")
+
+                identifier = f"{id}_{title}"
+                output.append(identifier)
+    return output
+
+def node_input_details(class_name: str, node_data: Dict|None) -> Dict[str,str]|None:
+    output = {}
+
+    if node_data is not None and isinstance(node_data, dict):
+        inputs = node_data.get("inputs", None)
+
+        if inputs is not None and isinstance(inputs, dict):
+            
+            for name, item in inputs.items():
+                input_value = str(item)
+
+                if name is not None:
+                    output[name] = input_value
+    return output
+
+def get_node_inputs(class_name: str, nodes_data: Dict|None, id: str|int) -> Dict[str,str]|None:
+    """ Retrieve inputs and their values for a given node by its ID
+
+    Args:
+        class_name (str): The name of the class that called the method
+        nodes_data (Dict | None): Dictionary of nodes and their properties
+        id (str | int): The id of the node to look up
+
+    Returns:
+        List[Dict]|None: A list of inputs for the node, each entry defines a subset of the node's properties
+    """
+    nodes_data = None
+    output = {}
+    
+    if nodes_data is not None and isinstance(nodes_data, dict):
+        node_data = nodes_data.get(str(id), None)
+        output = node_input_details(class_name, node_data)
+    return output
+
+# Create a list of input names with their indices for a given node's inputs
+def listify_node_inputs(inputs: Dict[str,str]|None) -> List[str]|None:
+    """Create a list of input names with their indices for each of the inputs for a node
+
+    Args:
+        inputs (List[Dict] | None): This list of a inputs for a node
+
+    Returns:
+        List[str]|None: List of the node's input names and ids
+    """
+    output = []
+    if inputs is not None and isinstance(inputs, dict):
+        for input_item in inputs:
+            if isinstance(input_item, dict):
+                name = input_item.get("name", "unknown_name")
+                output.append(name)
+    return output
+
 def update_ui_widget(
     class_name: str,
     unique_id,
@@ -61,12 +172,7 @@ def update_ui_widget(
     if text_for_widget_update is not None and num_widgets > 0 and unique_id and extra_pnginfo:
         print(f"[{class_name}] Attempting UI widget update for node {unique_id}; type of extra_pnginfo: {type(extra_pnginfo)}") 
 
-        if isinstance(extra_pnginfo, dict):
-            current_workflow_info = extra_pnginfo.get("workflow", None)
-
-        nodes_data = current_workflow_info.get("nodes", None)
-
-        print(f"[{class_name}] Current workflow info type: {type(current_workflow_info)}; node_info: {nodes_data}")
+        nodes_data = get_workflow_nodes(class_name, extra_pnginfo)
 
         if not nodes_data is None:
             print(f"[{class_name}] Proceeding to find node by ID: {unique_id} and update widget '{widget_name}'")
@@ -107,20 +213,20 @@ def update_ui_widget(
 # from custom_nodes/ComfyUI-IMGNR-Utils/catch_edit_text.py
 def find_node_by_id(clsName, unique_id, nodes_data):
     if not nodes_data:
-        print(f"[{clsName}] Helper Error: nodes_data is None or empty.")
+        # print(f"[{clsName}] Helper Error: nodes_data is None or empty.")
         return None
     target_id = str(unique_id) if isinstance(unique_id, list) else str(unique_id)
     for node_data in nodes_data:
         if str(node_data.get("id")) == target_id:
-            print(f"[{clsName}] Helper Info: Found node with ID {target_id}.")
+            # print(f"[{clsName}] Helper Info: Found node with ID {target_id}.")
             return node_data
-    print(f"[{clsName}] Helper Error: Node ID {target_id} not found in nodes data."); return None 
+    # print(f"[{clsName}] Helper Error: Node ID {target_id} not found in nodes data."); return None 
 
 def find_widget_index(clsName, widget_name, inputs: Dict):
     all_keys = list(inputs.keys())
     try:
         idx = all_keys.index(widget_name)
-        print(f"[{clsName}] Found widget '{widget_name}' at combined index {idx}.") # Optional log
+        # print(f"[{clsName}] Found widget '{widget_name}' at combined index {idx}.") # Optional log
         return idx
     except ValueError:
         print(f"[{clsName}] Helper Error: Widget '{widget_name}' not found in INPUT_TYPES keys: {all_keys}") 
