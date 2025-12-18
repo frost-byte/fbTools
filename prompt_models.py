@@ -1,0 +1,127 @@
+"""
+Data models for prompt management system.
+
+This module contains the PromptMetadata and PromptCollection classes
+extracted to a separate file for easier testing and reusability.
+"""
+
+from typing import Optional, List
+from pydantic import BaseModel, ConfigDict
+
+
+class PromptMetadata(BaseModel):
+    """Metadata for a single prompt entry."""
+    value: str
+    category: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class PromptCollection(BaseModel):
+    """
+    Version 2 prompt system supporting unlimited named prompts.
+    Maintains backward compatibility with v1 format through v1_backup field.
+    """
+    version: int = 2
+    v1_backup: Optional[dict] = None
+    prompts: dict[str, PromptMetadata] = {}
+    
+    def get_prompt_value(self, key: str) -> Optional[str]:
+        """Get prompt value by key, returns None if not found."""
+        prompt = self.prompts.get(key)
+        return prompt.value if prompt else None
+    
+    def add_prompt(self, key: str, value: str, category: Optional[str] = None, 
+                   description: Optional[str] = None, tags: Optional[List[str]] = None):
+        """Add or update a prompt entry."""
+        self.prompts[key] = PromptMetadata(
+            value=value,
+            category=category,
+            description=description,
+            tags=tags
+        )
+    
+    def remove_prompt(self, key: str) -> bool:
+        """Remove a prompt entry. Returns True if removed, False if not found."""
+        if key in self.prompts:
+            del self.prompts[key]
+            return True
+        return False
+    
+    def list_prompt_names(self) -> List[str]:
+        """Return sorted list of all prompt keys."""
+        return sorted(self.prompts.keys())
+    
+    @classmethod
+    def from_legacy_dict(cls, legacy_data: dict) -> "PromptCollection":
+        """
+        Create PromptCollection from v1 format, preserving original data in v1_backup.
+        
+        Legacy format: {"girl_pos": "...", "male_pos": "...", ...}
+        V2 format: {"version": 2, "v1_backup": {...}, "prompts": {...}}
+        """
+        prompts = {}
+        for key, value in legacy_data.items():
+            if isinstance(value, str):
+                prompts[key] = PromptMetadata(value=value)
+        
+        return cls(
+            version=2,
+            v1_backup=legacy_data.copy(),
+            prompts=prompts
+        )
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        result = {
+            "version": self.version,
+            "prompts": {}
+        }
+        
+        if self.v1_backup is not None:
+            result["v1_backup"] = self.v1_backup
+        
+        for key, metadata in self.prompts.items():
+            result["prompts"][key] = {
+                "value": metadata.value,
+            }
+            if metadata.category:
+                result["prompts"][key]["category"] = metadata.category
+            if metadata.description:
+                result["prompts"][key]["description"] = metadata.description
+            if metadata.tags:
+                result["prompts"][key]["tags"] = metadata.tags
+        
+        return result
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> "PromptCollection":
+        """Load PromptCollection from dictionary."""
+        version = data.get("version", 1)
+        
+        # Handle v1 format - auto-migrate
+        if version == 1 or "prompts" not in data:
+            return cls.from_legacy_dict(data)
+        
+        # Handle v2 format
+        prompts = {}
+        for key, prompt_data in data.get("prompts", {}).items():
+            if isinstance(prompt_data, str):
+                prompts[key] = PromptMetadata(value=prompt_data)
+            elif isinstance(prompt_data, dict):
+                prompts[key] = PromptMetadata(
+                    value=prompt_data.get("value", ""),
+                    category=prompt_data.get("category"),
+                    description=prompt_data.get("description"),
+                    tags=prompt_data.get("tags")
+                )
+        
+        return cls(
+            version=2,
+            v1_backup=data.get("v1_backup"),
+            prompts=prompts
+        )
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
