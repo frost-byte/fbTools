@@ -710,15 +710,144 @@ class QwenAspectRatio(io.ComfyNode):
             aspect_ratio_float
         )
 
+
+# ============================================================================
+# PROMPT COLLECTION - Flexible Multi-Prompt System
+# ============================================================================
+
+class PromptMetadata(BaseModel):
+    """Metadata for a single prompt entry."""
+    value: str
+    category: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class PromptCollection(BaseModel):
+    """
+    Version 2 prompt system supporting unlimited named prompts.
+    Maintains backward compatibility with v1 format through v1_backup field.
+    """
+    version: int = 2
+    v1_backup: Optional[dict] = None
+    prompts: dict[str, PromptMetadata] = {}
+    
+    def get_prompt_value(self, key: str) -> Optional[str]:
+        """Get prompt value by key, returns None if not found."""
+        prompt = self.prompts.get(key)
+        return prompt.value if prompt else None
+    
+    def add_prompt(self, key: str, value: str, category: Optional[str] = None, 
+                   description: Optional[str] = None, tags: Optional[List[str]] = None):
+        """Add or update a prompt entry."""
+        self.prompts[key] = PromptMetadata(
+            value=value,
+            category=category,
+            description=description,
+            tags=tags
+        )
+    
+    def remove_prompt(self, key: str) -> bool:
+        """Remove a prompt entry. Returns True if removed, False if not found."""
+        if key in self.prompts:
+            del self.prompts[key]
+            return True
+        return False
+    
+    def list_prompt_names(self) -> List[str]:
+        """Return sorted list of all prompt keys."""
+        return sorted(self.prompts.keys())
+    
+    @classmethod
+    def from_legacy_dict(cls, legacy_data: dict) -> "PromptCollection":
+        """
+        Create PromptCollection from v1 format, preserving original data in v1_backup.
+        
+        Legacy format: {"girl_pos": "...", "male_pos": "...", ...}
+        V2 format: {"version": 2, "v1_backup": {...}, "prompts": {...}}
+        """
+        prompts = {}
+        for key, value in legacy_data.items():
+            if isinstance(value, str):
+                prompts[key] = PromptMetadata(value=value)
+        
+        return cls(
+            version=2,
+            v1_backup=legacy_data.copy(),
+            prompts=prompts
+        )
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        result = {
+            "version": self.version,
+            "prompts": {}
+        }
+        
+        if self.v1_backup is not None:
+            result["v1_backup"] = self.v1_backup
+        
+        for key, metadata in self.prompts.items():
+            result["prompts"][key] = {
+                "value": metadata.value,
+            }
+            if metadata.category:
+                result["prompts"][key]["category"] = metadata.category
+            if metadata.description:
+                result["prompts"][key]["description"] = metadata.description
+            if metadata.tags:
+                result["prompts"][key]["tags"] = metadata.tags
+        
+        return result
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> "PromptCollection":
+        """Load PromptCollection from dictionary."""
+        version = data.get("version", 1)
+        
+        # Handle v1 format - auto-migrate
+        if version == 1 or "prompts" not in data:
+            return cls.from_legacy_dict(data)
+        
+        # Handle v2 format
+        prompts = {}
+        for key, prompt_data in data.get("prompts", {}).items():
+            if isinstance(prompt_data, str):
+                prompts[key] = PromptMetadata(value=prompt_data)
+            elif isinstance(prompt_data, dict):
+                prompts[key] = PromptMetadata(
+                    value=prompt_data.get("value", ""),
+                    category=prompt_data.get("category"),
+                    description=prompt_data.get("description"),
+                    tags=prompt_data.get("tags")
+                )
+        
+        return cls(
+            version=2,
+            v1_backup=data.get("v1_backup"),
+            prompts=prompts
+        )
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 class SceneInfo(BaseModel):
     #metadata
     pose_dir: str
     pose_name: str
-    girl_pos: str
-    male_pos: str
-    wan_prompt: str
-    wan_low_prompt: str
-    four_image_prompt: str
+    
+    # Legacy individual prompt fields - maintained for backward compatibility
+    girl_pos: str = ""
+    male_pos: str = ""
+    wan_prompt: str = ""
+    wan_low_prompt: str = ""
+    four_image_prompt: str = ""
+    
+    # V2 PromptCollection - new flexible prompt system
+    prompts: Optional[PromptCollection] = None
+    
     pose_json: str
     resolution: int
 
@@ -746,6 +875,14 @@ class SceneInfo(BaseModel):
     girl_mask_no_bkgd_image: Optional[torch.Tensor] = None
     male_mask_no_bkgd_image: Optional[torch.Tensor] = None
     combined_mask_no_bkgd_image: Optional[torch.Tensor] = None
+    
+    # Backward compatibility properties - delegate to PromptCollection if present
+    def get_prompt_field(self, field_name: str, legacy_value: str) -> str:
+        """Get prompt from PromptCollection if available, else return legacy field."""
+        if self.prompts:
+            value = self.prompts.get_prompt_value(field_name)
+            return value if value is not None else legacy_value
+        return legacy_value
 
     def three_image_prompt(self) -> str:
         return f"{self.girl_pos} {self.male_pos}"
@@ -1139,20 +1276,27 @@ class SceneInfo(BaseModel):
             save_image_comfyui(self.combined_mask_no_bkgd_image, pose_path / "combined_mask_no_bkgd.png")
 
     def save_prompts(self, pose_dir: Optional[str] = None):
-        """Save all prompts to prompts.json in the pose directory"""
+        """Save prompts to prompts.json in v2 format with v1_backup"""
         from pathlib import Path
         
         pose_path = Path(pose_dir) if pose_dir else Path(self.pose_dir)
         prompts_path = pose_path / "prompts.json"
         
-        prompt_data = {
-            "girl_pos": self.girl_pos if self.girl_pos else "",
-            "male_pos": self.male_pos if self.male_pos else "",
-            "wan_prompt": self.wan_prompt if self.wan_prompt else "",
-            "wan_low_prompt": self.wan_low_prompt if self.wan_low_prompt else "",
-            "four_image_prompt": self.four_image_prompt if self.four_image_prompt else "",
-        }
-        save_json_file(prompts_path, prompt_data)
+        # If using PromptCollection, save v2 format
+        if self.prompts:
+            save_json_file(prompts_path, self.prompts.to_dict())
+        else:
+            # Legacy mode: save v1 format but wrap in v2 structure for migration
+            legacy_data = {
+                "girl_pos": self.girl_pos if self.girl_pos else "",
+                "male_pos": self.male_pos if self.male_pos else "",
+                "wan_prompt": self.wan_prompt if self.wan_prompt else "",
+                "wan_low_prompt": self.wan_low_prompt if self.wan_low_prompt else "",
+                "four_image_prompt": self.four_image_prompt if self.four_image_prompt else "",
+            }
+            # Auto-migrate to v2 format on save
+            prompt_collection = PromptCollection.from_legacy_dict(legacy_data)
+            save_json_file(prompts_path, prompt_collection.to_dict())
 
     def save_pose_json(self, pose_dir: Optional[str] = None):
         """Save pose_json to pose.json in the pose directory"""
@@ -4005,7 +4149,10 @@ class LibberEdit(io.ComfyNode):
         lib_list_items = []
         for key in libber_copy.list_libs():
             value = libber_copy.get_lib(key)
-            preview = value[:40] + "..." if len(value) > 40 else value
+            if value is None:
+                preview = "(empty)"
+            else:
+                preview = value[:40] + "..." if len(value) > 40 else value
             lib_list_items.append(f"  {key}: {preview}")
         
         lib_list = f"Libs ({len(libber_copy.libs)}):\n" + "\n".join(lib_list_items) if lib_list_items else "No libs defined"
@@ -4066,6 +4213,212 @@ class LibberApply(io.ComfyNode):
             print(f"LibberApply: {info}")
         
         return io.NodeOutput(result, info)
+
+
+# ============================================================================
+# REST API STATE MANAGERS
+# ============================================================================
+
+from server import PromptServer
+from aiohttp import web
+import time
+from datetime import datetime, timedelta
+
+class PromptCollectionStateManager:
+    """
+    Manages server-side PromptCollection instances for REST API operations.
+    Sessions expire after 30 minutes of inactivity.
+    """
+    _instance = None
+    
+    def __init__(self):
+        self.sessions = {}  # session_id -> {"collection": PromptCollection, "last_access": datetime}
+        self.ttl_minutes = 30
+    
+    @classmethod
+    def instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def cleanup_expired(self):
+        """Remove sessions older than TTL."""
+        now = datetime.now()
+        expired = [
+            sid for sid, data in self.sessions.items()
+            if now - data["last_access"] > timedelta(minutes=self.ttl_minutes)
+        ]
+        for sid in expired:
+            del self.sessions[sid]
+            print(f"PromptCollectionStateManager: Expired session {sid}")
+    
+    def create_session(self, session_id: str, collection: PromptCollection):
+        """Create or update a session with a PromptCollection."""
+        self.cleanup_expired()
+        self.sessions[session_id] = {
+            "collection": collection,
+            "last_access": datetime.now()
+        }
+        print(f"PromptCollectionStateManager: Created session {session_id}")
+    
+    def get_collection(self, session_id: str) -> Optional[PromptCollection]:
+        """Get PromptCollection for a session, updating last access time."""
+        self.cleanup_expired()
+        if session_id in self.sessions:
+            self.sessions[session_id]["last_access"] = datetime.now()
+            return self.sessions[session_id]["collection"]
+        return None
+    
+    def update_collection(self, session_id: str, collection: PromptCollection):
+        """Update the PromptCollection for a session."""
+        if session_id in self.sessions:
+            self.sessions[session_id]["collection"] = collection
+            self.sessions[session_id]["last_access"] = datetime.now()
+
+
+# Register REST API endpoints
+@PromptServer.instance.routes.post("/fbtools/prompts/create")
+async def create_prompt_collection(request):
+    """Create a new PromptCollection session."""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id", f"prompt_{int(time.time()*1000)}")
+        
+        # Create new empty collection or from legacy data
+        legacy_data = data.get("legacy_data")
+        if legacy_data:
+            collection = PromptCollection.from_legacy_dict(legacy_data)
+        else:
+            collection = PromptCollection()
+        
+        manager = PromptCollectionStateManager.instance()
+        manager.create_session(session_id, collection)
+        
+        return web.json_response({
+            "success": True,
+            "session_id": session_id,
+            "collection": collection.to_dict()
+        })
+    except Exception as e:
+        return web.json_response({
+            "success": False,
+            "error": str(e)
+        }, status=500)
+
+
+@PromptServer.instance.routes.post("/fbtools/prompts/add")
+async def add_prompt(request):
+    """Add or update a prompt in a PromptCollection."""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id")
+        prompt_name = data.get("prompt_name")
+        prompt_value = data.get("prompt_value")
+        category = data.get("category")
+        description = data.get("description")
+        tags = data.get("tags")
+        
+        if not session_id or not prompt_name:
+            return web.json_response({
+                "success": False,
+                "error": "session_id and prompt_name required"
+            }, status=400)
+        
+        manager = PromptCollectionStateManager.instance()
+        collection = manager.get_collection(session_id)
+        
+        if not collection:
+            return web.json_response({
+                "success": False,
+                "error": f"Session {session_id} not found"
+            }, status=404)
+        
+        collection.add_prompt(prompt_name, prompt_value, category, description, tags)
+        manager.update_collection(session_id, collection)
+        
+        return web.json_response({
+            "success": True,
+            "collection": collection.to_dict(),
+            "prompt_names": collection.list_prompt_names()
+        })
+    except Exception as e:
+        return web.json_response({
+            "success": False,
+            "error": str(e)
+        }, status=500)
+
+
+@PromptServer.instance.routes.post("/fbtools/prompts/remove")
+async def remove_prompt(request):
+    """Remove a prompt from a PromptCollection."""
+    try:
+        data = await request.json()
+        session_id = data.get("session_id")
+        prompt_name = data.get("prompt_name")
+        
+        if not session_id or not prompt_name:
+            return web.json_response({
+                "success": False,
+                "error": "session_id and prompt_name required"
+            }, status=400)
+        
+        manager = PromptCollectionStateManager.instance()
+        collection = manager.get_collection(session_id)
+        
+        if not collection:
+            return web.json_response({
+                "success": False,
+                "error": f"Session {session_id} not found"
+            }, status=404)
+        
+        removed = collection.remove_prompt(prompt_name)
+        if removed:
+            manager.update_collection(session_id, collection)
+        
+        return web.json_response({
+            "success": True,
+            "removed": removed,
+            "collection": collection.to_dict(),
+            "prompt_names": collection.list_prompt_names()
+        })
+    except Exception as e:
+        return web.json_response({
+            "success": False,
+            "error": str(e)
+        }, status=500)
+
+
+@PromptServer.instance.routes.get("/fbtools/prompts/list_names")
+async def list_prompt_names(request):
+    """Get list of all prompt names in a PromptCollection."""
+    try:
+        session_id = request.query.get("session_id")
+        
+        if not session_id:
+            return web.json_response({
+                "success": False,
+                "error": "session_id required"
+            }, status=400)
+        
+        manager = PromptCollectionStateManager.instance()
+        collection = manager.get_collection(session_id)
+        
+        if not collection:
+            return web.json_response({
+                "success": False,
+                "error": f"Session {session_id} not found"
+            }, status=404)
+        
+        return web.json_response({
+            "success": True,
+            "prompt_names": collection.list_prompt_names(),
+            "count": len(collection.prompts)
+        })
+    except Exception as e:
+        return web.json_response({
+            "success": False,
+            "error": str(e)
+        }, status=500)
 
 
 class FBToolsExtension(ComfyExtension):
