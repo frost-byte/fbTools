@@ -78,12 +78,12 @@ def estimate_dwpose(
         pose_repo,
         yolo_repo,
         det_filename=(None if bbox_detector == "None" else bbox_detector), pose_filename=pose_estimator,
-        torchscript_device=model_management.get_torch_device()
+        torchscript_device=str(model_management.get_torch_device())
     )
 
     openpose_dicts = []
     def func(image, **kwargs):
-        pose_img, openpose_dict = model(image, **kwargs)
+        pose_img, openpose_dict = model(image, **kwargs)  # type: ignore
         openpose_dicts.append(openpose_dict)
         return pose_img
 

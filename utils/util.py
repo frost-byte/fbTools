@@ -2,6 +2,7 @@ import math
 import json
 import numpy as np
 import matplotlib
+import matplotlib.colors
 import cv2
 from comfy.utils import ProgressBar
 from comfy_api.latest import io, ui
@@ -168,21 +169,21 @@ def update_ui_widget(
 ) -> bool:
     node_data_updated = False
     num_widgets = len(inputs) if inputs is not None else 0
-    print(f"[{class_name}] Inputs: {inputs}; Total inputs (widgets) count: {num_widgets}; unique_id: {unique_id}; widget_name: '{widget_name}'")
+    # print(f"[{class_name}] Inputs: {inputs}; Total inputs (widgets) count: {num_widgets}; unique_id: {unique_id}; widget_name: '{widget_name}'")
     if text_for_widget_update is not None and num_widgets > 0 and unique_id and extra_pnginfo:
-        print(f"[{class_name}] Attempting UI widget update for node {unique_id}; type of extra_pnginfo: {type(extra_pnginfo)}") 
+        # print(f"[{class_name}] Attempting UI widget update for node {unique_id}; type of extra_pnginfo: {type(extra_pnginfo)}") 
 
         nodes_data = get_workflow_nodes(class_name, extra_pnginfo)
 
         if not nodes_data is None:
-            print(f"[{class_name}] Proceeding to find node by ID: {unique_id} and update widget '{widget_name}'")
+            # print(f"[{class_name}] Proceeding to find node by ID: {unique_id} and update widget '{widget_name}'")
             node_data = find_node_by_id(class_name, unique_id, nodes_data)
 
             if node_data:
-                print(f"[{class_name}] Searching for widget with name '{widget_name}': {inputs}")
+                # print(f"[{class_name}] Searching for widget with name '{widget_name}': {inputs}")
                 widget_index = find_widget_index(class_name, widget_name, inputs)
                 if widget_index is not None:
-                    print(f"[{class_name}] Found widget: {widget_index}; searching widgets_values: {node_data.get('widgets_values', 'Empty Widgets Values')}")
+                    # print(f"[{class_name}] Found widget: {widget_index}; searching widgets_values: {node_data.get('widgets_values', 'Empty Widgets Values')}")
                     if "widgets_values" not in node_data or not isinstance(node_data["widgets_values"], list):
                         node_data["widgets_values"] = ["" for _ in range(num_widgets)]
                     # Ensure the widgets_values list is long enough
@@ -192,11 +193,9 @@ def update_ui_widget(
                     current_widget_val = node_data["widgets_values"][widget_index]
                     
                     if current_widget_val != text_for_widget_update:
-                        print(f"[{class_name}] Updating widget '{widget_name}' (index {widget_index}) to '{text_for_widget_update[:32]}...'")
+                        # print(f"[{class_name}] Updating widget '{widget_name}' (index {widget_index}) to '{text_for_widget_update[:32]}...'")
                         node_data["widgets_values"][widget_index] = text_for_widget_update
                         node_data_updated = True
-                    else:
-                        print(f"[{class_name}] Info: Widget '{widget_name}' already has the desired value; no update needed.")
                 else:
                     print(f"[{class_name}] Error: Widget index for '{widget_name}' not found.")
             else:
@@ -249,7 +248,7 @@ def extend_scalelist(scalelist_behavior, pose_json, hands_scale, body_scale, hea
         if 'people' in img:
             default_scale = 1.0
             default_num_person = len(img['people'])
-            subscales = [default_scale]*default_num_person
+            subscales = list([default_scale]*default_num_person)
             if scalelist_behavior == 'poses':
                 for i, scales in enumerate(scale_values):
                     if isinstance(scales, (list, tuple)):
@@ -257,7 +256,7 @@ def extend_scalelist(scalelist_behavior, pose_json, hands_scale, body_scale, hea
                             if only_scale_pose_index<default_num_person and only_scale_pose_index >= -default_num_person:
                                 subscales[only_scale_pose_index] = scales[num_poses + only_scale_pose_index]
                             else:
-                                subscales = scales[num_poses:num_poses + default_num_person]
+                                subscales = list(scales[num_poses:num_poses + default_num_person])
                         else:
                             if match_scalelist_method == 'no extend':
                                 subscales = [default_scale]*default_num_person
@@ -266,7 +265,7 @@ def extend_scalelist(scalelist_behavior, pose_json, hands_scale, body_scale, hea
                                 if only_scale_pose_index<default_num_person and only_scale_pose_index >= -default_num_person:
                                     subscales[only_scale_pose_index] = extend_scaleslist[num_poses + only_scale_pose_index]
                                 else:
-                                    subscales = extend_scaleslist[num_poses:num_poses + default_num_person]
+                                    subscales = list(extend_scaleslist[num_poses:num_poses + default_num_person])
                             elif match_scalelist_method == 'clamp extend':
                                 if only_scale_pose_index<default_num_person and only_scale_pose_index >= -default_num_person:
                                     subscales[only_scale_pose_index] = scales[-1]
@@ -286,7 +285,7 @@ def extend_scalelist(scalelist_behavior, pose_json, hands_scale, body_scale, hea
                             if only_scale_pose_index<default_num_person and only_scale_pose_index >= -default_num_person:
                                 subscales[only_scale_pose_index] = scales[num_imgs]
                             else:
-                                subscales = scales[num_poses]*default_num_person
+                                subscales = list([scales[num_poses]]*default_num_person)
                         else:
                             if match_scalelist_method == 'no extend':
                                 subscales = [default_scale]*default_num_person
@@ -295,7 +294,7 @@ def extend_scalelist(scalelist_behavior, pose_json, hands_scale, body_scale, hea
                                 if only_scale_pose_index<default_num_person and only_scale_pose_index >= -default_num_person:
                                     subscales[only_scale_pose_index] = extend_scaleslist[num_imgs]
                                 else:
-                                    subscales = extend_scaleslist[num_imgs]*default_num_person
+                                    subscales = list([extend_scaleslist[num_imgs]]*default_num_person)
                             elif match_scalelist_method == 'clamp extend':
                                 if only_scale_pose_index<default_num_person and only_scale_pose_index >= -default_num_person:
                                     subscales[only_scale_pose_index] = scales[-1]
@@ -615,7 +614,8 @@ def draw_handpose(canvas, all_hand_peaks, hand_marker_size):
             x2 = int(x2 * W)
             y2 = int(y2 * H)
             if x1 > eps and y1 > eps and x2 > eps and y2 > eps:
-                cv2.line(canvas, (x1, y1), (x2, y2), matplotlib.colors.hsv_to_rgb([ie / float(len(edges)), 1.0, 1.0]) * 255, thickness=1 if hand_marker_size == 0 else hand_marker_size)
+                color = tuple((matplotlib.colors.hsv_to_rgb([ie / float(len(edges)), 1.0, 1.0]) * 255).astype(int).tolist())
+                cv2.line(canvas, (x1, y1), (x2, y2), color, thickness=1 if hand_marker_size == 0 else hand_marker_size)
 
         joint_size=0
         if hand_marker_size < 2:

@@ -9,6 +9,7 @@ from PIL import Image, ImageOps, ImageSequence
 import numpy as np
 from skimage.exposure import match_histograms
 from nodes import MAX_RESOLUTION
+import node_helpers
 
 try:
     import kornia
@@ -150,37 +151,69 @@ def save_image_comfyui(image_tensor, save_path):
     except Exception as e:
         print(f"Error saving image to '{save_path}': {e}")
 
-def load_image_comfyui(image_path):
-    """Load image from disk into ComfyUI IMAGE format [1,H,W,C] float32 0..1"""
-    output_images = []
+def load_image_comfyui(image_path: str, include_mask: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+    """Load an image and (optionally) its alpha mask.
+
+    include_mask=True extracts the alpha channel (or palette transparency) into a mask tensor.
+    Returns `(image, mask)` where image is [B,H,W,C] float32 0..1 and mask is [B,H,W] float32.
+    When include_mask is False or alpha is missing, mask is zero.
+    """
+    output_images: list[torch.Tensor] = []
+    output_masks: list[torch.Tensor] = []
     w, h = None, None
     excluded_formats = ['MPO']
+    output_image = make_empty_image()
+    output_mask = torch.zeros((1, output_image.shape[1], output_image.shape[2]), dtype=torch.float32)
 
     try:
-        img = Image.open(image_path)
+        img = node_helpers.pillow(Image.open, image_path)
         for i in ImageSequence.Iterator(img):
-            i = ImageOps.exif_transpose(i)
-            
+            i = node_helpers.pillow(ImageOps.exif_transpose, i)
+            if i is None:
+                continue
+
             if i.mode == 'I':
                 i = i.point(lambda i: i * (1 / 255))
             image = i.convert('RGB')
-            
+
             if len(output_images) == 0:
                 w = image.size[0]
                 h = image.size[1]
-            
+
+            if image.size[0] != w or image.size[1] != h:
+                continue
+
             image = np.array(image).astype(np.float32) / 255.0  # [H,W,C] float32 0..1
             image = torch.from_numpy(image)[None,]  # [1,H,W,C]
+
+            if include_mask:
+                if 'A' in i.getbands():
+                    mask = np.array(i.getchannel('A')).astype(np.float32) / 255.0  # [H,W] float32 0..1
+                    mask = 1. - torch.from_numpy(mask)
+                elif i.mode == 'P' and 'transparency' in i.info:
+                    mask = np.array(i.convert('RGBA').getchannel('A')).astype(np.float32) / 255.0  # [H,W] float32 0..1
+                    mask = 1. - torch.from_numpy(mask)
+                else:
+                    mask = torch.zeros((image.shape[1], image.shape[2]), dtype=torch.float32, device="cpu")  # [H,W] all 0.0
+                output_masks.append(mask.unsqueeze(0))  # [1,H,W]
+
             output_images.append(image)
-            
+
             if len(output_images) > 1 and img.format not in excluded_formats:
                 output_image = torch.cat(output_images, dim=0)  # [B,H,W,C]
+                if include_mask:
+                    output_mask = torch.cat(output_masks, dim=0)  # [B,H,W]
             else:
                 output_image = output_images[0]  # [1,H,W,C]
-    except (FileNotFoundError, OSError, AttributeError) as e:
+                if include_mask:
+                    output_mask = output_masks[0]
+                else:
+                    output_mask = torch.zeros((1, output_image.shape[1], output_image.shape[2]), dtype=torch.float32, device="cpu")  # [1,H,W]
+    except (FileNotFoundError, OSError, AttributeError):
         output_image = make_empty_image()
-        
-    return output_image
+        output_mask = torch.zeros((1, output_image.shape[1], output_image.shape[2]), dtype=torch.float32)
+
+    return (output_image, output_mask)
 
 def _nhwc_to_nchw(x: torch.Tensor) -> torch.Tensor:
     return x.permute(0, 3, 1, 2).contiguous()

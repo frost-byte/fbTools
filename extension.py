@@ -44,10 +44,13 @@ from inspect import cleandoc
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import Optional
+from typing import Optional, List, Tuple
 import os
 from pathlib import Path
 import json
+import uuid
+import re
+import copy
 from pydantic import BaseModel, ConfigDict
 
 try:
@@ -57,6 +60,145 @@ except Exception:
 
 
 OpenposeJSON = dict
+
+# Extension-wide node prefix to keep node_id globally unique across ComfyUI
+EXTENSION_PREFIX = "fbt"
+
+def prefixed_node_id(display_name: str) -> str:
+    """Construct a globally-unique node_id using the shared extension prefix."""
+    return f"{EXTENSION_PREFIX}_{display_name}"
+
+
+# ============================================================================
+# LIBBER - String Template/Substitution System
+# ============================================================================
+
+class Libber:
+    """
+    Libber: A string templating system for ComfyUI prompts.
+    
+    Allows defining reusable text snippets (libs) that can be referenced
+    in other strings using a delimiter (default: %). Supports recursive
+    substitution with depth limiting to prevent infinite loops.
+    
+    Example:
+        libs = {
+            "chunky": "incredibly thick, and %yummy%",
+            "yummy": "delicious",
+            "character": "A %chunky% warrior"
+        }
+        libber = Libber(libs)
+        libber.substitute("Look at this %character%!")
+        # Result: "Look at this A incredibly thick, and delicious warrior!"
+    """
+    
+    def __init__(self, lib_dict=None, delimiter="%", max_depth=10):
+        """
+        Initialize a Libber instance.
+        
+        Args:
+            lib_dict: Dictionary of lib_key -> value mappings
+            delimiter: Character(s) used to mark lib references (default: "%")
+            max_depth: Maximum recursion depth for nested lib substitution
+        """
+        self.libs = lib_dict or {}
+        self.delimiter = delimiter
+        self.max_depth = max_depth
+    
+    def add_lib(self, key: str, value: str):
+        """Add or update a lib entry."""
+        # Normalize key to lowercase with underscores
+        normalized_key = key.lower().replace(" ", "_").replace("-", "_")
+        self.libs[normalized_key] = value
+    
+    def remove_lib(self, key: str):
+        """Remove a lib entry."""
+        normalized_key = key.lower().replace(" ", "_").replace("-", "_")
+        if normalized_key in self.libs:
+            del self.libs[normalized_key]
+            return True
+        return False
+    
+    def get_lib(self, key: str) -> Optional[str]:
+        """Get a lib value by key."""
+        normalized_key = key.lower().replace(" ", "_").replace("-", "_")
+        return self.libs.get(normalized_key)
+    
+    def list_libs(self) -> List[str]:
+        """Return a list of all lib keys."""
+        return sorted(self.libs.keys())
+    
+    def substitute(self, text: str, depth: int = 0) -> str:
+        """
+        Recursively substitute lib references in text.
+        
+        Args:
+            text: Input string containing lib references like %lib_name%
+            depth: Current recursion depth (used internally)
+            
+        Returns:
+            String with all lib references substituted
+        """
+        if depth >= self.max_depth:
+            return text
+        
+        # Pattern: delimiter + lowercase/underscore words + delimiter
+        # e.g., %chunky%, %my_lib%, %test_123%
+        pattern = re.escape(self.delimiter) + r'([a-z0-9_]+)' + re.escape(self.delimiter)
+        
+        def replacer(match):
+            lib_key = match.group(1)
+            if lib_key in self.libs:
+                # Get the value and recursively substitute
+                value = self.libs[lib_key]
+                return self.substitute(value, depth + 1)
+            # Return unchanged if not found
+            return match.group(0)
+        
+        return re.sub(pattern, replacer, text)
+    
+    def to_dict(self) -> dict:
+        """Convert Libber instance to a dictionary for serialization."""
+        return {
+            "libs": self.libs,
+            "delimiter": self.delimiter,
+            "max_depth": self.max_depth
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> "Libber":
+        """Create a Libber instance from a dictionary."""
+        return cls(
+            lib_dict=data.get("libs", {}),
+            delimiter=data.get("delimiter", "%"),
+            max_depth=data.get("max_depth", 10)
+        )
+    
+    def save(self, filepath: str):
+        """Save Libber configuration to a JSON file."""
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+    
+    @classmethod
+    def load(cls, filepath: str) -> "Libber":
+        """Load Libber configuration from a JSON file."""
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+    
+    def __repr__(self):
+        return f"Libber(libs={len(self.libs)}, delimiter='{self.delimiter}', max_depth={self.max_depth})"
+
+
+def default_libber_dir():
+    """Get default directory for storing libber files."""
+    output_dir = get_output_directory()
+    default_dir = os.path.join(output_dir, "libbers")
+    if not os.path.exists(default_dir):
+        os.makedirs(default_dir, exist_ok=True)
+    return default_dir
+
+
 
 def load_pose(
     show_body=True,
@@ -132,7 +274,8 @@ class SAMPreprocessNHWC(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SAMPreprocessNHWC",
+            node_id=prefixed_node_id("SAMPreprocessNHWC"),
+            display_name="SAMPreprocessNHWC",
             category="🧊 frost-byte/Preprocessing",
             inputs=[
                 io.Image.Input("input_image", tooltip="Input IMAGE to preprocess for SAM" ),
@@ -197,7 +340,8 @@ class TailEnhancePro(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="TailEnhancePro",
+            node_id=prefixed_node_id("TailEnhancePro"),
+            display_name="TailEnhancePro",
             category="🧊 frost-byte/Video",
             inputs=[
                 io.Image.Input("input_frames", tooltip="Input IMAGE frames to process"),
@@ -329,7 +473,8 @@ class TailSplit(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="TailSplit",
+            node_id=prefixed_node_id("TailSplit"),
+            display_name="TailSplit",
             category="🧊 frost-byte/Video",
             inputs=[
                 io.Image.Input("image", tooltip="Input image batch"),
@@ -392,7 +537,8 @@ class OpaqueAlpha(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="OpaqueAlpha",
+            node_id=prefixed_node_id("OpaqueAlpha"),
+            display_name="OpaqueAlpha",
             category="🧊 frost-byte/Image Processing",
             inputs=[
                 io.Image.Input("image", tooltip="Input image, RGB or RGBA"),
@@ -477,7 +623,8 @@ class SubdirLister(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SubdirLister",
+            node_id=prefixed_node_id("SubdirLister"),
+            display_name="SubdirLister",
             category="🧊 frost-byte/File",
             inputs=[
                 io.String.Input("directory_path", default="", tooltip="Path to the directory"),
@@ -524,7 +671,8 @@ class QwenAspectRatio(io.ComfyNode):
             Also provides the layout type (e.g., 'portrait', 'landscape', 'square'), aspect ratio string (e.g., '16:9'),
             and the float value of the aspect ratio (width / height).
             """),
-            node_id="QwenAspectRatio",
+            node_id=prefixed_node_id("QwenAspectRatio"),
+            display_name="QwenAspectRatio",
             category="🧊 frost-byte/Image Processing",
             inputs=[
                 io.Image.Input("input_image", tooltip="Input IMAGE to compute aspect ratio from"),
@@ -611,7 +759,566 @@ class SceneInfo(BaseModel):
     def output_dir(self) -> str:
         return f"poses/{self.pose_name}/output"
 
+    @classmethod
+    def load_depth_images(cls, pose_dir: str, keys: Optional[list[str]] = None) -> dict:
+        """Load depth images from a pose directory, optionally filtering by keys."""
+        mapping = {
+            'depth_image': "depth.png",
+            'depth_any_image': "depth_any.png",
+            'depth_midas_image': "depth_midas.png",
+            'depth_zoe_image': "depth_zoe.png",
+            'depth_zoe_any_image': "depth_zoe_any.png",
+        }
+
+        def _img(path: str):
+            img, _ = load_image_comfyui(path, include_mask=False)
+            return img
+
+        selected_keys = list(mapping.keys()) if keys is None else list(keys)
+        images = {}
+        for key in selected_keys:
+            filename = mapping.get(key)
+            if not filename:
+                continue
+            images[key] = _img(os.path.join(pose_dir, filename))
+        return images
+
+    @classmethod
+    def load_pose_images(cls, pose_dir: str, keys: Optional[list[str]] = None) -> dict:
+        """Load pose images from a pose directory, optionally filtering by keys."""
+        mapping = {
+            'pose_dense_image': "pose_dense.png",
+            'pose_dw_image': "pose_dw.png",
+            'pose_edit_image': "pose_edit.png",
+            'pose_face_image': "pose_face.png",
+            'pose_open_image': "pose_open.png",
+            'canny_image': "canny.png",
+            'upscale_image': "upscale.png",
+        }
+
+        def _img(path: str):
+            img, _ = load_image_comfyui(path, include_mask=False)
+            return img
+
+        selected_keys = list(mapping.keys()) if keys is None else list(keys)
+        images = {}
+        for key in selected_keys:
+            filename = mapping.get(key)
+            if not filename:
+                continue
+            images[key] = _img(os.path.join(pose_dir, filename))
+        return images
+
+    @classmethod
+    def load_mask_images(cls, pose_dir: str, keys: Optional[list[str]] = None) -> tuple[dict, dict]:
+        """Load mask images and their masks from a pose directory.
+
+        Returns a tuple `(images, masks)` where images maps mask keys to IMAGE tensors,
+        and masks maps the same keys to [B,H,W] float masks (1.0 means masked-out).
+        """
+        mapping = {
+            "girl": "girl_mask_bkgd.png",
+            "male": "male_mask_bkgd.png",
+            "combined": "combined_mask_bkgd.png",
+            "girl_no_bg": "girl_mask_no_bkgd.png",
+            "male_no_bg": "male_mask_no_bkgd.png",
+            "combined_no_bg": "combined_mask_no_bkgd.png",
+        }
+
+        images = {}
+        masks = {}
+        selected_keys = list(mapping.keys()) if keys is None else list(keys)
+
+        for key in selected_keys:
+            filename = mapping.get(key)
+            if not filename:
+                continue
+            image, mask = load_image_comfyui(os.path.join(pose_dir, filename), include_mask=True)
+            images[key] = image
+            masks[key] = mask
+
+        return images, masks
+
+    @classmethod
+    def load_all_images(cls, pose_dir: str) -> dict:
+        """Load all images (depth, pose, mask) from a pose directory"""
+        all_images = {}
+        all_images.update(cls.load_depth_images(pose_dir))
+        all_images.update(cls.load_pose_images(pose_dir))
+        mask_images, _ = cls.load_mask_images(pose_dir)
+        all_images.update(mask_images)
+        return all_images
+
+    @classmethod
+    def load_preview_assets(
+            cls,
+            pose_dir: str,
+            depth_attr: str,
+            pose_attr: str,
+            mask_type: str,
+            mask_background: bool = True,
+            include_upscale: bool = False,
+            include_canny: bool = False,
+    ) -> dict:
+        """Load a minimal, normalized bundle for preview/output (depth, pose, mask, optional upscale/canny).
+
+        Returns dict keys:
+            depth_image, pose_image, mask_image, mask (B,H,W,1), mask_preview (B,H,W,3),
+            base_image, canny_image, preview_batch (list of tensors), H, W, resolution,
+            plus raw dictionaries depth_images/pose_images/mask_images for downstream SceneInfo population.
+        """
+        mask_key = resolve_mask_key(mask_type, mask_background)
+
+        depth_keys = {depth_attr, "depth_image"}
+        pose_keys = {pose_attr, "pose_open_image"}
+        if include_upscale:
+            pose_keys.add("upscale_image")
+        if include_canny:
+            pose_keys.add("canny_image")
+        mask_keys = {mask_key, "combined"}
+
+        depth_images = cls.load_depth_images(pose_dir, keys=list(depth_keys))
+        pose_images = cls.load_pose_images(pose_dir, keys=list(pose_keys))
+        mask_images, mask_tensors = cls.load_mask_images(pose_dir, keys=list(mask_keys))
+
+        # Determine spatial size from available images
+        empty_image = make_empty_image(1, 512, 512)
+        base_image = pose_images.get("upscale_image") if include_upscale else None
+        depth_image_raw = depth_images.get("depth_image")
+        pose_image_raw = pose_images.get(pose_attr, pose_images.get("pose_open_image", empty_image))
+        mask_image_raw = mask_images.get(mask_key, mask_images.get("combined", empty_image))
+
+        if base_image is not None:
+            H, W = base_image.shape[1], base_image.shape[2]
+        elif depth_image_raw is not None:
+            H, W = depth_image_raw.shape[1], depth_image_raw.shape[2]
+        elif pose_image_raw is not None:
+            H, W = pose_image_raw.shape[1], pose_image_raw.shape[2]
+        elif mask_image_raw is not None:
+            H, W = mask_image_raw.shape[1], mask_image_raw.shape[2]
+        else:
+            H, W = 512, 512
+
+        # Normalize images to a consistent size
+        depth_image = normalize_image_tensor(depth_images.get(depth_attr, depth_images.get("depth_image", empty_image)), H, W)
+        pose_image = normalize_image_tensor(pose_image_raw, H, W)
+        base_image = normalize_image_tensor(base_image, H, W) if include_upscale else None
+        mask_image = normalize_image_tensor(mask_image_raw, H, W)
+
+        # Build mask output (single-channel) and preview (3-channel)
+        mask = None
+        mask_tensor = mask_tensors.get(mask_key)
+        unsqueeze_me = False
+        if mask_tensor is not None:
+            print(f"SceneInfo.load_preview_assets: using mask tensor for key '{mask_key}'")
+            mask = mask_tensor
+            unsqueeze_me = True
+        elif mask_image is not None:
+            print(f"SceneInfo.load_preview_assets: building empty mask matching mask_image shape")
+            b, hh, ww, _ = mask_image.shape
+            mask = torch.zeros((b, hh, ww, 1), device=mask_image.device, dtype=torch.float32)
+        else:
+            print(f"SceneInfo.load_preview_assets: building empty mask of size (1,{H},{W},1)")
+            mask = torch.zeros((1, H, W, 1), dtype=torch.float32)
+
+        if mask is not None and mask.dtype != torch.float32:
+            print(f"SceneInfo.load_preview_assets: converting mask to float32")
+            mask = mask.float()
+
+        mask_preview = None
+        if mask is not None:
+            preview_mask = mask
+            if unsqueeze_me:
+                preview_mask = mask.unsqueeze(-1)
+            if preview_mask.shape[-1] == 1:
+                preview_mask = preview_mask.repeat(1, 1, 1, 3)
+            mask_preview = normalize_image_tensor(preview_mask, H, W)
+
+        canny_image = None
+        if include_canny:
+            canny_image = normalize_image_tensor(pose_images.get("canny_image"), H, W)
+
+        preview_batch = []
+        if base_image is not None:
+            preview_batch.append(base_image)
+        if mask_image is not None:
+            preview_batch.append(mask_image)
+        if pose_image is not None:
+            preview_batch.append(pose_image)
+        if depth_image is not None:
+            preview_batch.append(depth_image)
+        if mask_preview is not None:
+            preview_batch.append(mask_preview)
+
+        resolution = max(H, W)
+
+        return {
+            "depth_image": depth_image,
+            "pose_image": pose_image,
+            "mask_image": mask_image,
+            "mask": mask,
+            "mask_preview": mask_preview,
+            "base_image": base_image,
+            "canny_image": canny_image,
+            "preview_batch": preview_batch,
+            "H": H,
+            "W": W,
+            "resolution": resolution,
+            "depth_images": depth_images,
+            "pose_images": pose_images,
+            "mask_images": mask_images,
+        }
+
+
+    @classmethod
+    def from_story_scene(
+            cls,
+            scene: "SceneInStory",
+            poses_dir: Optional[str] = None,
+            prompt_in: str = "",
+            prompt_action: str = "use_file",
+            include_upscale: bool = False,
+            include_canny: bool = False,
+            prompt_override: Optional[str] = None,
+            pose_dir_override: Optional[str] = None,
+    ) -> tuple["SceneInfo", dict, str, dict, Optional[str]]:
+        """Build SceneInfo + assets from a SceneInStory configuration.
+
+        Returns (scene_info, assets, selected_prompt, prompt_data, prompt_widget_text).
+        """
+
+        poses_dir = poses_dir or default_poses_dir()
+        pose_dir = pose_dir_override if pose_dir_override else os.path.join(poses_dir, scene.scene_name)
+
+        if not os.path.isdir(pose_dir):
+            raise ValueError(f"from_story_scene: pose_dir '{pose_dir}' is invalid")
+
+        prompt_json_path = os.path.join(pose_dir, "prompts.json")
+        prompt_data = load_prompt_json(prompt_json_path) or {}
+
+        prompt_file_text = build_positive_prompt(scene.prompt_type, prompt_data, scene.custom_prompt)
+        class_name = f"{cls.__name__}.from_story_scene"
+        selected_prompt, prompt_widget_text = select_text_by_action(
+            prompt_in,
+            prompt_file_text,
+            prompt_action,
+            class_name,
+        )
+        if prompt_override:
+            selected_prompt = prompt_override
+
+        pose_json_path = os.path.join(pose_dir, "pose.json")
+        pose_json_obj = load_json_file(pose_json_path)
+        pose_json = json.dumps(pose_json_obj) if pose_json_obj else "[]"
+
+        loras_path = os.path.join(pose_dir, "loras.json")
+        loras_high, loras_low = load_loras(loras_path) if os.path.isfile(loras_path) else (None, None)
+
+        depth_attr = default_depth_options.get(scene.depth_type, "depth_image")
+        pose_attr = default_pose_options.get(scene.pose_type, "pose_open_image")
+
+        assets = cls.load_preview_assets(
+            pose_dir,
+            depth_attr=depth_attr,
+            pose_attr=pose_attr,
+            mask_type=scene.mask_type,
+            mask_background=scene.mask_background,
+            include_upscale=include_upscale,
+            include_canny=include_canny,
+        )
+
+        depth_images = assets.get("depth_images", {})
+        pose_images = assets.get("pose_images", {})
+        mask_images = assets.get("mask_images", {})
+
+        girl_pos_val = selected_prompt if scene.prompt_type == "girl_pos" else prompt_data.get("girl_pos", "")
+        male_pos_val = selected_prompt if scene.prompt_type == "male_pos" else prompt_data.get("male_pos", "")
+        four_image_prompt_val = selected_prompt if scene.prompt_type == "four_image_prompt" else prompt_data.get("four_image_prompt", "")
+        wan_prompt_val = selected_prompt if scene.prompt_type == "wan_prompt" else prompt_data.get("wan_prompt", "")
+        wan_low_prompt_val = selected_prompt if scene.prompt_type == "wan_low_prompt" else prompt_data.get("wan_low_prompt", "")
+
+        scene_info = cls(
+            pose_dir=pose_dir,
+            pose_name=scene.scene_name,
+            girl_pos=girl_pos_val,
+            male_pos=male_pos_val,
+            four_image_prompt=four_image_prompt_val,
+            wan_prompt=wan_prompt_val,
+            wan_low_prompt=wan_low_prompt_val,
+            pose_json=pose_json,
+            resolution=assets.get("resolution", 0),
+            loras_high=loras_high,
+            loras_low=loras_low,
+            **depth_images,
+            **pose_images,
+            **mask_images,
+        )
+
+        return scene_info, assets, selected_prompt or "", prompt_data, prompt_widget_text
+
+    @classmethod
+    def from_pose_directory(cls, pose_dir: str, pose_name: str, prompt_data: Optional[dict] = None, 
+                           pose_json: str = "", loras_high: Optional[list] = None, loras_low: Optional[list] = None):
+        """Create a SceneInfo instance by loading all data from a pose directory"""
+        if prompt_data is None:
+            prompt_json_path = os.path.join(pose_dir, "prompts.json")
+            prompt_data = load_prompt_json(prompt_json_path)
+        
+        # Load all images
+        all_images = cls.load_all_images(pose_dir)
+        
+        # Determine resolution from depth_image
+        depth_image = all_images.get('depth_image')
+        if depth_image is not None:
+            H, W = depth_image.shape[1], depth_image.shape[2]
+            resolution = max(H, W)
+        else:
+            resolution = 512
+        
+        return cls(
+            pose_dir=pose_dir,
+            pose_name=pose_name,
+            girl_pos=prompt_data.get("girl_pos", ""),
+            male_pos=prompt_data.get("male_pos", ""),
+            four_image_prompt=prompt_data.get("four_image_prompt", ""),
+            wan_prompt=prompt_data.get("wan_prompt", ""),
+            wan_low_prompt=prompt_data.get("wan_low_prompt", ""),
+            pose_json=pose_json,
+            resolution=resolution,
+            loras_high=loras_high,
+            loras_low=loras_low,
+            **all_images
+        )
+
+    def save_all_images(self, pose_dir: Optional[str] = None):
+        """Save all images to the pose directory"""
+        from pathlib import Path
+        
+        pose_path = Path(pose_dir) if pose_dir else Path(self.pose_dir)
+        
+        # Save depth images
+        if self.depth_image is not None:
+            save_image_comfyui(self.depth_image, pose_path / "depth.png")
+        if self.depth_any_image is not None:
+            save_image_comfyui(self.depth_any_image, pose_path / "depth_any.png")
+        if self.depth_midas_image is not None:
+            save_image_comfyui(self.depth_midas_image, pose_path / "depth_midas.png")
+        if self.depth_zoe_image is not None:
+            save_image_comfyui(self.depth_zoe_image, pose_path / "depth_zoe.png")
+        if self.depth_zoe_any_image is not None:
+            save_image_comfyui(self.depth_zoe_any_image, pose_path / "depth_zoe_any.png")
+        
+        # Save pose images
+        if self.pose_dense_image is not None:
+            save_image_comfyui(self.pose_dense_image, pose_path / "pose_dense.png")
+        if self.pose_dw_image is not None:
+            save_image_comfyui(self.pose_dw_image, pose_path / "pose_dw.png")
+        if self.pose_edit_image is not None:
+            save_image_comfyui(self.pose_edit_image, pose_path / "pose_edit.png")
+        if self.pose_face_image is not None:
+            save_image_comfyui(self.pose_face_image, pose_path / "pose_face.png")
+        if self.pose_open_image is not None:
+            save_image_comfyui(self.pose_open_image, pose_path / "pose_open.png")
+        if self.canny_image is not None:
+            save_image_comfyui(self.canny_image, pose_path / "canny.png")
+        if self.upscale_image is not None:
+            save_image_comfyui(self.upscale_image, pose_path / "upscale.png")
+        
+        # Save mask images
+        if self.girl_mask_bkgd_image is not None:
+            save_image_comfyui(self.girl_mask_bkgd_image, pose_path / "girl_mask_bkgd.png")
+        if self.male_mask_bkgd_image is not None:
+            save_image_comfyui(self.male_mask_bkgd_image, pose_path / "male_mask_bkgd.png")
+        if self.combined_mask_bkgd_image is not None:
+            save_image_comfyui(self.combined_mask_bkgd_image, pose_path / "combined_mask_bkgd.png")
+        if self.girl_mask_no_bkgd_image is not None:
+            save_image_comfyui(self.girl_mask_no_bkgd_image, pose_path / "girl_mask_no_bkgd.png")
+        if self.male_mask_no_bkgd_image is not None:
+            save_image_comfyui(self.male_mask_no_bkgd_image, pose_path / "male_mask_no_bkgd.png")
+        if self.combined_mask_no_bkgd_image is not None:
+            save_image_comfyui(self.combined_mask_no_bkgd_image, pose_path / "combined_mask_no_bkgd.png")
+
+    def save_prompts(self, pose_dir: Optional[str] = None):
+        """Save all prompts to prompts.json in the pose directory"""
+        from pathlib import Path
+        
+        pose_path = Path(pose_dir) if pose_dir else Path(self.pose_dir)
+        prompts_path = pose_path / "prompts.json"
+        
+        prompt_data = {
+            "girl_pos": self.girl_pos if self.girl_pos else "",
+            "male_pos": self.male_pos if self.male_pos else "",
+            "wan_prompt": self.wan_prompt if self.wan_prompt else "",
+            "wan_low_prompt": self.wan_low_prompt if self.wan_low_prompt else "",
+            "four_image_prompt": self.four_image_prompt if self.four_image_prompt else "",
+        }
+        save_json_file(prompts_path, prompt_data)
+
+    def save_pose_json(self, pose_dir: Optional[str] = None):
+        """Save pose_json to pose.json in the pose directory"""
+        from pathlib import Path
+        import json
+        
+        if not self.pose_json:
+            return
+        
+        pose_path = Path(pose_dir) if pose_dir else Path(self.pose_dir)
+        pose_json_path = pose_path / "pose.json"
+        save_json_file(pose_json_path, json.loads(self.pose_json))
+
+    def save_loras(self, pose_dir: Optional[str] = None):
+        """Save LoRAs to loras.json in the pose directory"""
+        from pathlib import Path
+        
+        if self.loras_high is None and self.loras_low is None:
+            return
+        
+        pose_path = Path(pose_dir) if pose_dir else Path(self.pose_dir)
+        loras_path = pose_path / "loras.json"
+        # save_loras function handles None values, but we need to provide defaults
+        save_loras(self.loras_high or [], self.loras_low or [], str(loras_path))
+
+    def ensure_directories(self, pose_dir: Optional[str] = None):
+        """Ensure pose directory and input/output subdirectories exist"""
+        import os
+        
+        pose_path = pose_dir if pose_dir else self.pose_dir
+        
+        if not os.path.exists(pose_path):
+            os.makedirs(pose_path, exist_ok=True)
+            print(f"SceneInfo: Created pose_dir='{pose_path}'")
+        
+        input_dir = os.path.join(pose_path, "input")
+        if not os.path.exists(input_dir):
+            os.makedirs(input_dir, exist_ok=True)
+            print(f"SceneInfo: Created input_dir='{input_dir}'")
+        
+        output_dir = os.path.join(pose_path, "output")
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"SceneInfo: Created output_dir='{output_dir}'")
+
+    def save_all(self, pose_dir: Optional[str] = None):
+        """Save all scene data (images, prompts, pose_json, loras) to the pose directory"""
+        target_dir = pose_dir if pose_dir else self.pose_dir
+        self.ensure_directories(target_dir)
+        self.save_all_images(target_dir)
+        self.save_prompts(target_dir)
+        self.save_pose_json(target_dir)
+        self.save_loras(target_dir)
+
     model_config = ConfigDict(arbitrary_types_allowed=True, from_attributes=True)
+
+class SceneInStory(BaseModel):
+    """Represents a scene within a story with its configuration"""
+    scene_id: str = ""  # Unique identifier for this scene instance
+    scene_name: str
+    scene_order: int
+    mask_type: str = "combined"  # girl, male, combined, girl_no_bg, male_no_bg, combined_no_bg
+    mask_background: bool = True
+    prompt_type: str = "girl_pos"  # girl_pos, male_pos, four_image_prompt, wan_prompt, wan_low_prompt, custom
+    custom_prompt: str = ""
+    depth_type: str = "depth"
+    pose_type: str = "open"
+    
+    def __init__(self, **data):
+        if 'scene_id' not in data or not data['scene_id']:
+            import uuid
+            data['scene_id'] = str(uuid.uuid4())
+        super().__init__(**data)
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class StoryInfo(BaseModel):
+    """Contains ordered list of scenes and story metadata"""
+    story_name: str
+    story_dir: str
+    scenes: List[SceneInStory] = []
+    
+    def get_scene_by_id(self, scene_id: str) -> Optional[SceneInStory]:
+        """Get scene by unique ID"""
+        for scene in self.scenes:
+            if scene.scene_id == scene_id:
+                return scene
+        return None
+    
+    def get_scene_by_name(self, scene_name: str) -> Optional[SceneInStory]:
+        """Get first scene matching the name (multiple scenes can share same name)"""
+        for scene in self.scenes:
+            if scene.scene_name == scene_name:
+                # Ensure scene has UUID (for backward compatibility)
+                if not scene.scene_id:
+                    import uuid
+                    scene.scene_id = str(uuid.uuid4())
+                return scene
+        return None
+    
+    def get_scenes_by_name(self, scene_name: str) -> List[SceneInStory]:
+        """Get all scenes matching the name"""
+        matching_scenes = [scene for scene in self.scenes if scene.scene_name == scene_name]
+        # Ensure all scenes have UUID (for backward compatibility)
+        for scene in matching_scenes:
+            if not scene.scene_id:
+                import uuid
+                scene.scene_id = str(uuid.uuid4())
+        return matching_scenes
+    
+    def get_scene_by_order(self, order: int) -> Optional[SceneInStory]:
+        for scene in self.scenes:
+            if scene.scene_order == order:
+                # Ensure scene has UUID (for backward compatibility)
+                if not scene.scene_id:
+                    import uuid
+                    scene.scene_id = str(uuid.uuid4())
+                return scene
+        return None
+    
+    def add_scene(self, scene: SceneInStory):
+        """Add a scene to the story. Each scene gets a unique ID, allowing duplicates of same scene_name."""
+        # Ensure scene has a unique ID
+        if not scene.scene_id:
+            import uuid
+            scene.scene_id = str(uuid.uuid4())
+        
+        # Ensure unique order
+        existing_orders = [s.scene_order for s in self.scenes]
+        if scene.scene_order in existing_orders:
+            # Find next available order
+            scene.scene_order = max(existing_orders) + 1 if existing_orders else 0
+        
+        self.scenes.append(scene)
+        self.scenes.sort(key=lambda s: s.scene_order)
+    
+    def remove_scene(self, scene_identifier: str):
+        """Remove scene by ID or by name (removes first match if name)"""
+        # Try to find by ID first
+        scene_to_remove = self.get_scene_by_id(scene_identifier)
+        if not scene_to_remove:
+            # Fall back to name
+            scene_to_remove = self.get_scene_by_name(scene_identifier)
+        
+        if scene_to_remove:
+            self.scenes = [s for s in self.scenes if s.scene_id != scene_to_remove.scene_id]
+            # Reorder remaining scenes
+            for idx, scene in enumerate(sorted(self.scenes, key=lambda s: s.scene_order)):
+                scene.scene_order = idx
+    
+    def reorder_scene(self, scene_identifier: str, new_order: int):
+        """Reorder scene by ID or by name (reorders first match if name)"""
+        # Try to find by ID first
+        scene = self.get_scene_by_id(scene_identifier)
+        if not scene:
+            # Fall back to name
+            scene = self.get_scene_by_name(scene_identifier)
+        
+        if scene:
+            scene.scene_order = new_order
+            self.scenes.sort(key=lambda s: s.scene_order)
+            # Normalize orders
+            for idx, s in enumerate(self.scenes):
+                s.scene_order = idx
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
     if os.path.isfile(loras_json_path):
@@ -706,6 +1413,77 @@ def save_loras(loras_high: list, loras_low: list, loras_json_path: str):
     }
     save_json_file(loras_json_path, data)
 
+def load_story(story_json_path: str) -> Optional[StoryInfo]:
+    """Load story information from JSON file"""
+    if not os.path.isfile(story_json_path):
+        print(f"fbTools: story_json_path '{story_json_path}' is not a valid file")
+        return None
+    
+    try:
+        with open(story_json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        scenes = []
+        for scene_data in data.get("scenes", []):
+            scene = SceneInStory(
+                scene_name=scene_data.get("scene_name", ""),
+                scene_order=scene_data.get("scene_order", 0),
+                mask_type=scene_data.get("mask_type", "combined"),
+                mask_background=scene_data.get("mask_background", True),
+                prompt_type=scene_data.get("prompt_type", "girl_pos"),
+                custom_prompt=scene_data.get("custom_prompt", ""),
+                depth_type=scene_data.get("depth_type", "depth"),
+                pose_type=scene_data.get("pose_type", "open"),
+            )
+            scenes.append(scene)
+        
+        story_info = StoryInfo(
+            story_name=data.get("story_name", ""),
+            story_dir=data.get("story_dir", ""),
+            scenes=scenes
+        )
+        
+        print(f"load_story: loaded story from {story_json_path} with {len(scenes)} scenes")
+        return story_info
+    except Exception as e:
+        print(f"fbTools: Error loading story JSON from '{story_json_path}': {e}")
+        return None
+
+def save_story(story_info: StoryInfo, story_json_path: str):
+    """Save story information to JSON file"""
+    try:
+        scenes_data = []
+        for scene in story_info.scenes:
+            scene_data = {
+                "scene_name": scene.scene_name,
+                "scene_order": scene.scene_order,
+                "mask_type": scene.mask_type,
+                "mask_background": scene.mask_background,
+                "prompt_type": scene.prompt_type,
+                "custom_prompt": scene.custom_prompt,
+                "depth_type": scene.depth_type,
+                "pose_type": scene.pose_type,
+            }
+            scenes_data.append(scene_data)
+        
+        story_data = {
+            "story_name": story_info.story_name,
+            "story_dir": story_info.story_dir,
+            "scenes": scenes_data
+        }
+        
+        save_json_file(story_json_path, story_data)
+        print(f"save_story: saved story to {story_json_path} with {len(scenes_data)} scenes")
+    except Exception as e:
+        print(f"fbTools: Error saving story to '{story_json_path}': {e}")
+
+def default_stories_dir():
+    output_dir = get_output_directory()
+    default_dir = os.path.join(output_dir, "stories")
+    if not os.path.exists(default_dir):
+        os.makedirs(default_dir, exist_ok=True)
+    return default_dir
+
 class NodeInputSelect(io.ComfyNode):
     """
     NodeInputSelect:
@@ -748,7 +1526,8 @@ class NodeInputSelect(io.ComfyNode):
             input_name = list(node_inputs.keys())[0]
     
         return io.Schema(
-            node_id="NodeInputSelect",
+            node_id=prefixed_node_id("NodeInputSelect"),
+            display_name="NodeInputSelect",
             category="🧊 frost-byte/Nodes",
             inputs=[
                 io.Combo.Input(
@@ -863,7 +1642,8 @@ class SceneSelect(io.ComfyNode):
         # print(f"SceneSelect: default poses_dir='{default_dir}'; default_pose='{default_pose}'; default_options={default_options}")
 
         return io.Schema(
-            node_id="SceneSelect",
+            node_id=prefixed_node_id("SceneSelect"),
+            display_name="SceneSelect",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.String.Input("poses_dir", default=default_dir, tooltip="Directory containing pose subdirectories"),
@@ -898,6 +1678,7 @@ class SceneSelect(io.ComfyNode):
                 io.String.Output(id="wan_low_prompt_out", display_name="wan_low_prompt", tooltip="WAN low prompt, (low positive) from the pose"),
                 io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Depth IMAGE from the pose"),
                 io.Image.Output(id="mask_image", display_name="mask_image", tooltip="Mask IMAGE from the pose"),
+                io.Mask.Output(id="mask", display_name="mask", tooltip="Alpha mask derived from the selected mask image"),
                 io.Image.Output(id='canny_image', display_name='canny_image', tooltip='Canny IMAGE from the pose'),
                 io.Image.Output(id='pose_image', display_name='pose_image', tooltip='Pose IMAGE from the pose'),
                 io.Custom("WANVIDLORA").Output(id="loras_high_out", display_name="loras_high", tooltip="WanVideoWrapper Multi-Lora list" ),
@@ -942,10 +1723,6 @@ class SceneSelect(io.ComfyNode):
         elif (type(input_types) is tuple):
             inputs = input_types[0] if input_types else {}
 
-        print(f"{className}: Type of INPUT_TYPES ='{type(inputs)}'; INPUTS ='{inputs}'")
-        num_inputs = len(inputs)
-        print(f"{className}: INPUT_TYPES ='{input_types}; num_inputs={num_inputs}")
-        print(f"{className}: Executing with poses_dir='{poses_dir}'; selected_pose='{selected_pose}'")
         if not poses_dir:
             poses_dir = default_poses_dir()
 
@@ -954,7 +1731,6 @@ class SceneSelect(io.ComfyNode):
             return io.NodeOutput(None)
         
         pose_dir = os.path.join(poses_dir, selected_pose)
-        print(f"{className}: pose_dir='{pose_dir}'")
 
         if not os.path.isdir(pose_dir):
             print(f"{className}: pose_dir '{pose_dir}' is not a valid directory")
@@ -962,9 +1738,9 @@ class SceneSelect(io.ComfyNode):
         
         prompt_json_path = os.path.join(pose_dir, "prompts.json")
         prompt_data = load_prompt_json(prompt_json_path)
-        print(f"{className}: Loaded prompt_data: {prompt_data}")
         pose_json_path = os.path.join(pose_dir, "pose.json")
         pose_json = load_json_file(pose_json_path)
+        
         if not pose_json:
             pose_json = "[]"
         else:
@@ -977,8 +1753,6 @@ class SceneSelect(io.ComfyNode):
             print(f"{className}: loras.json not found at '{loras_path}'")
         else:
             loras_high, loras_low = load_loras(os.path.join(pose_dir, "loras.json"))
-            
-        print(f"{className}: Loaded loras: {loras_high}, {loras_low}")
 
         girl_file_text = prompt_data.get("girl_pos", "")
         girl_pos, girl_widget_text = select_text_by_action(
@@ -989,7 +1763,6 @@ class SceneSelect(io.ComfyNode):
         )
 
         if girl_widget_text is not None:
-            print(f"{className}: Updating UI widget for girl_pos_in with text: '{girl_widget_text[:32]}...'")
             update_ui_widget(className, unique_id, extra_pnginfo, girl_widget_text,"girl_pos_in", inputs)
 
         girl_pos_ui_text = girl_widget_text if girl_widget_text is not None else girl_file_text
@@ -1003,7 +1776,6 @@ class SceneSelect(io.ComfyNode):
         )
 
         if male_widget_text is not None:
-            print(f"{className}: Updating UI widget for male_pos_in with text: '{male_widget_text[:32]}...'")
             update_ui_widget(className, unique_id, extra_pnginfo, male_widget_text,"male_pos_in", inputs)
 
         male_pos_ui_text = male_widget_text if male_widget_text is not None else male_file_text
@@ -1018,7 +1790,6 @@ class SceneSelect(io.ComfyNode):
         )
         
         if four_image_widget_text is not None:
-            print(f"{className}: Updating UI widget for four_image_prompt_in with text: '{four_image_widget_text[:32]}...'")
             update_ui_widget(className, unique_id, extra_pnginfo, four_image_widget_text,"four_image_prompt_in", inputs)
         four_image_prompt_ui_text = four_image_widget_text if four_image_widget_text is not None else four_image_file_text
 
@@ -1032,7 +1803,6 @@ class SceneSelect(io.ComfyNode):
         )
 
         if wan_widget_text is not None:
-            print(f"{className}: Updating UI widget for wan_prompt with text: '{wan_widget_text[:32]}...'")
             update_ui_widget(className, unique_id, extra_pnginfo, wan_widget_text, "wan_prompt_in", inputs)
             
         wan_prompt_ui_text = wan_widget_text if wan_widget_text is not None else wan_file_text
@@ -1047,7 +1817,6 @@ class SceneSelect(io.ComfyNode):
         )
 
         if wan_low_widget_text is not None:
-            print(f"{className}: Updating UI widget for wan_low_prompt with text: '{wan_low_widget_text[:32]}...'")
             update_ui_widget(className, unique_id, extra_pnginfo, wan_low_widget_text, "wan_low_prompt_in", inputs)
 
         wan_low_prompt_ui_text = wan_low_widget_text if wan_low_widget_text is not None else wan_low_file_text
@@ -1060,7 +1829,6 @@ class SceneSelect(io.ComfyNode):
             className
         )
         if loras_low_widget_text is not None:
-            print(f"{className}: Updating UI widget for loras_low_in with text: '{loras_low_widget_text[:32]}...'")
             update_ui_widget(className, unique_id, extra_pnginfo, loras_low_widget_text, "loras_low_in", inputs)
 
         loras_low_ui_text = loras_low_widget_text if loras_low_widget_text is not None else loras_low_file_text
@@ -1074,85 +1842,49 @@ class SceneSelect(io.ComfyNode):
         )
 
         if loras_high_widget_text is not None:
-            print(f"{className}: Updating UI widget for loras_high_in with text: '{loras_high_widget_text[:32]}...'")
             update_ui_widget(className, unique_id, extra_pnginfo, loras_high_widget_text, "loras_high_in", inputs)
         
         loras_high_ui_text = loras_high_widget_text if loras_high_widget_text is not None else loras_high_file_text
 
-        depth_image_path = os.path.join(pose_dir, "depth.png")
-        if not os.path.exists(depth_image_path):
-            print(f"{className}: depth_image_path '{depth_image_path}' does not exist")
-        depth_image = load_image_comfyui(depth_image_path)
-        print(f"{className}: depth_image shape: {depth_image.shape if depth_image is not None else 'None'} ")
-        
-        if not depth_image is None:
-            H, W = depth_image.shape[1], depth_image.shape[2]
-        else:
-            H, W = (512, 512)
-        resolution = max(H, W)
+        # Load selected/normalized assets (and mask preview/output separation)
+        selected_depth_attr = default_depth_options.get(depth_image_type, "depth_image")
+        selected_pose_attr = default_pose_options.get(pose_image_type, "pose_open_image")
+        mask_key = resolve_mask_key(mask_type, mask_background)
+        print(f"{className}: Loading assets from pose_dir='{pose_dir}'; mask_key='{mask_key}'")
+        assets = SceneInfo.load_preview_assets(
+            pose_dir,
+            depth_attr=selected_depth_attr,
+            pose_attr=selected_pose_attr,
+            mask_type=mask_type,
+            mask_background=mask_background,
+            include_upscale=True,
+            include_canny=True,
+        )
 
-        depth_any_image_path = os.path.join(pose_dir, "depth_any.png")
-        if not os.path.exists(depth_any_image_path):
-            print(f"{className}: depth_any_image_path '{depth_any_image_path}' does not exist")
-        depth_any_image = load_image_comfyui(depth_any_image_path)
-        depth_midas_image_path = os.path.join(pose_dir, "depth_midas.png")
-        depth_midas_image = load_image_comfyui(depth_midas_image_path)
-        depth_zoe_image_path = os.path.join(pose_dir, "depth_zoe.png")
-        depth_zoe_image = load_image_comfyui(depth_zoe_image_path)
-        depth_zoe_any_image_path = os.path.join(pose_dir, "depth_zoe_any.png")
-        depth_zoe_any_image = load_image_comfyui(depth_zoe_any_image_path)
-        
-        selected_depth_image = None
-        if depth_image_type == "depth":
-            selected_depth_image = depth_image
-        elif depth_image_type == "depth_any":
-            selected_depth_image = depth_any_image
-        elif depth_image_type == "midas":
-            selected_depth_image = depth_midas_image
-        elif depth_image_type == "zoe":
-            selected_depth_image = depth_zoe_image
-        elif depth_image_type == "zoe_any":
-            selected_depth_image = depth_zoe_any_image
+        # Also load full images for SceneInfo completeness (depth variants, masks, canny)
+        depth_images_full = SceneInfo.load_depth_images(pose_dir)
+        pose_images_full = SceneInfo.load_pose_images(pose_dir)
+        mask_images_full, mask_tensors_full = SceneInfo.load_mask_images(pose_dir)
+        # Ensure canny present even if missing on disk
+        canny_image = pose_images_full.get("canny_image")
 
-        pose_dense_image_path = os.path.join(pose_dir, "pose_dense.png")
-        pose_dense_image = load_image_comfyui(pose_dense_image_path)
-        pose_dw_image_path = os.path.join(pose_dir, "pose_dw.png")
-        pose_dw_image = load_image_comfyui(pose_dw_image_path)
-        pose_edit_image_path = os.path.join(pose_dir, "pose_edit.png")
-        pose_edit_image = load_image_comfyui(pose_edit_image_path)
-        pose_face_image_path = os.path.join(pose_dir, "pose_face.png")
-        pose_face_image = load_image_comfyui(pose_face_image_path)
-        pose_open_image_path = os.path.join(pose_dir, "pose_open.png")
-        pose_open_image = load_image_comfyui(pose_open_image_path)
-        canny_image_path = os.path.join(pose_dir, "canny.png")
-        canny_image = load_image_comfyui(canny_image_path)
-        upscale_image_path = os.path.join(pose_dir, "upscale.png")
+        base_image = assets["base_image"]
+        selected_depth_image = assets["depth_image"]
+        pose_image = assets["pose_image"]
+        mask_image = assets["mask_image"]
+        mask = assets["mask"]
+        preview_mask = assets["mask_preview"]
+        H, W = assets["H"], assets["W"]
+        resolution = assets["resolution"]
 
-        pose_image = None
-        if pose_image_type == "dense":
-            pose_image = pose_dense_image
-        elif pose_image_type == "dw":
-            pose_image = pose_dw_image
-        elif pose_image_type == "edit":
-            pose_image = pose_edit_image
-        elif pose_image_type == "face":
-            pose_image = pose_face_image
-        elif pose_image_type == "open":
-            pose_image = pose_open_image
-        
-        mask_image = None
-        mask_key = mask_type + ("_no_bg" if not mask_background else "")
-        mask_prefix = default_mask_options.get(mask_key, "combined")
-        print(f"{className}: mask_key='{mask_key}'; mask_prefix='{mask_prefix}'")
-        mask_image_path = os.path.join(pose_dir, f"{mask_prefix}.png")
-        mask_image = load_image_comfyui(mask_image_path)
+        # Normalize canny to match preview size
+        canny_image = normalize_image_tensor(canny_image, H, W)
 
-        if (not os.path.exists(upscale_image_path)):
-            print(f"{className}: upscale_image_path '{upscale_image_path}' does not exist")
-        upscale_image = load_image_comfyui(upscale_image_path)
-        print(f"{className}: upscale_image shape: {upscale_image.shape if upscale_image is not None else 'None'} ")
+        print(f"{className}: depth_image shape: {selected_depth_image.shape if selected_depth_image is not None else 'None'}")
+        print(f"{className}: upscale_image shape: {base_image.shape if base_image is not None else 'None'}")
 
-        preview_image = ui.PreviewImage(image=upscale_image) if upscale_image is not None else None
+        preview_batch = assets.get("preview_batch", [])
+        preview_image = ui.PreviewImage(image=torch.cat(preview_batch, dim=0)) if preview_batch else None
 
         ui_data = {
             "images": preview_image.as_dict().get("images", []) if preview_image else None,
@@ -1178,18 +1910,24 @@ class SceneSelect(io.ComfyNode):
             wan_low_prompt=wan_low_prompt,
             pose_json=pose_json,
             resolution=resolution,
-            depth_image=depth_image,
-            depth_any_image=depth_any_image,
-            depth_midas_image=depth_midas_image,
-            depth_zoe_image=depth_zoe_image,
-            depth_zoe_any_image=depth_zoe_any_image,
-            pose_dense_image=pose_dense_image,
-            pose_dw_image=pose_dw_image,
-            pose_edit_image=pose_edit_image,
-            pose_face_image=pose_face_image,
-            pose_open_image=pose_open_image,
+            depth_image=depth_images_full.get("depth_image"),
+            depth_any_image=depth_images_full.get("depth_any_image"),
+            depth_midas_image=depth_images_full.get("depth_midas_image"),
+            depth_zoe_image=depth_images_full.get("depth_zoe_image"),
+            depth_zoe_any_image=depth_images_full.get("depth_zoe_any_image"),
+            pose_dense_image=pose_images_full.get("pose_dense_image"),
+            pose_dw_image=pose_images_full.get("pose_dw_image"),
+            pose_edit_image=pose_images_full.get("pose_edit_image"),
+            pose_face_image=pose_images_full.get("pose_face_image"),
+            pose_open_image=pose_images_full.get("pose_open_image"),
             canny_image=canny_image,
-            upscale_image=upscale_image,
+            upscale_image=pose_images_full.get("upscale_image"),
+            girl_mask_bkgd_image=mask_images_full.get('girl'),
+            male_mask_bkgd_image=mask_images_full.get('male'),
+            combined_mask_bkgd_image=mask_images_full.get('combined'),
+            girl_mask_no_bkgd_image=mask_images_full.get('girl_no_bg'),
+            male_mask_no_bkgd_image=mask_images_full.get('male_no_bg'),
+            combined_mask_no_bkgd_image=mask_images_full.get('combined_no_bg'),
             loras_high=loras_high,
             loras_low=loras_low,
         )
@@ -1208,6 +1946,7 @@ class SceneSelect(io.ComfyNode):
             wan_low_prompt,
             selected_depth_image,
             mask_image,
+            mask,
             canny_image,
             pose_image,
             loras_high,
@@ -1240,11 +1979,44 @@ default_mask_options = {
     "combined_no_bg": "combined_mask_no_bkgd",
 }
 
+def resolve_mask_key(mask_type: str, mask_background: bool) -> str:
+    """Return the mask key to use given mask type and background preference."""
+    key = mask_type or "combined"
+    if not mask_background and not key.endswith("_no_bg"):
+        key = f"{key}_no_bg"
+    return key
+
+def build_positive_prompt(prompt_type: str, prompt_data: dict, custom_prompt: str = "") -> str:
+    """Select the prompt text for a scene based on prompt_type and available prompt data."""
+    prompt_data = prompt_data or {}
+    girl = prompt_data.get("girl_pos", "") or ""
+    male = prompt_data.get("male_pos", "") or ""
+    four = prompt_data.get("four_image_prompt", "") or ""
+    wan_hi = prompt_data.get("wan_prompt", "") or ""
+    wan_low = prompt_data.get("wan_low_prompt", "") or ""
+
+    if prompt_type == "custom":
+        return custom_prompt or ""
+    if prompt_type == "combined":
+        return " ".join([p for p in [girl, male] if p]).strip()
+    if prompt_type == "girl_pos":
+        return girl
+    if prompt_type == "male_pos":
+        return male
+    if prompt_type == "four_image_prompt":
+        return four
+    if prompt_type == "wan_prompt":
+        return wan_hi
+    if prompt_type == "wan_low_prompt":
+        return wan_low
+    return girl or male or four or wan_hi or wan_low
+
 class SceneWanVideoLoraMultiSave(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SceneWanVideoLoraMultiSave",
+            node_id=prefixed_node_id("SceneWanVideoLoraMultiSave"),
+            display_name="SceneWanVideoLoraMultiSave",
             category="🧊 frost-byte/Scene",
             description=cleandoc("""
                                  Saves the name, weights, layer filter and blocks of multiple LoRA models using the
@@ -1298,7 +2070,8 @@ class SceneCreate(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SceneCreate",
+            node_id=prefixed_node_id("SceneCreate"),
+            display_name="SceneCreate",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.String.Input(id="poses_dir", display_name="poses_dir", tooltip="Root Directory where all scene subdirectories are saved"),
@@ -1427,30 +2200,13 @@ class SceneCreate(io.ComfyNode):
             pose_name = "default_pose"
 
         pose_dir = os.path.join(poses_dir, pose_name)
-        if not os.path.exists(pose_dir):
-            os.makedirs(pose_dir, exist_ok=True)
-            print(f"SceneCreate: Created pose_dir='{pose_dir}'")
-
-        input_dir = os.path.join(pose_dir, "input")        
-        if not os.path.exists(input_dir):
-            os.makedirs(input_dir, exist_ok=True)
-            print(f"SceneCreate: Created input_dir='{input_dir}'")
-            
-        output_dir = os.path.join(pose_dir, "output")        
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-            print(f"SceneCreate: Created output_dir='{output_dir}'")
-            
-        if not girl_pos:
-            girl_pos = ""
-        if not male_pos:
-            male_pos = ""
-        if not four_image_prompt:
-            four_image_prompt = ""
-        if not wan_prompt:
-            wan_prompt = ""
-        if not wan_low_prompt:
-            wan_low_prompt = ""
+        
+        # Ensure all prompt strings have defaults
+        girl_pos = girl_pos if girl_pos else ""
+        male_pos = male_pos if male_pos else ""
+        four_image_prompt = four_image_prompt if four_image_prompt else ""
+        wan_prompt = wan_prompt if wan_prompt else ""
+        wan_low_prompt = wan_low_prompt if wan_low_prompt else ""
 
         upscale_image, = ImageScaleBy().upscale(base_image, upscale_method=upscale_method, scale_by=upscale_factor)
         print(f"SceneCreate: upscale_image is of type: {type(upscale_image)} with shape {upscale_image.shape if torch.is_tensor(upscale_image) else 'N/A'}")
@@ -1488,11 +2244,6 @@ class SceneCreate(io.ComfyNode):
         # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
         pose_dwpose_json = json.dumps(pose_json)
 
-        if not loras_high is None and not loras_low is None:
-            loras_path = os.path.join(pose_dir, "loras.json")
-            save_loras(loras_high, loras_low, loras_path)
-            print(f"SceneCreate: Saved LoRA preset to: {loras_path}")
-
         scene_info = SceneInfo(
             pose_dir=pose_dir,
             pose_name=pose_name,
@@ -1519,6 +2270,11 @@ class SceneCreate(io.ComfyNode):
             loras_high=loras_high,
             loras_low=loras_low,
         )
+        
+        # Save all scene data using the helper method
+        scene_info.save_all(pose_dir)
+        print(f"SceneCreate: Saved all scene data to '{pose_dir}'")
+        
         return io.NodeOutput(
             scene_info,
         )
@@ -1527,7 +2283,8 @@ class SceneUpdate(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SceneUpdate",
+            node_id=prefixed_node_id("SceneUpdate"),
+            display_name="SceneUpdate",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info_in", display_name="scene_info", tooltip="Scene Information" ),
@@ -1744,21 +2501,18 @@ class SceneUpdate(io.ComfyNode):
 
         # todo: consider whether or not the Face Detection using onnx is even worth it (WanAnimatePreprocess (v2) modified based upon post on github)
         # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
-        loras_path = os.path.join(scene_info_in.pose_dir, "loras.json")
 
-        if update_high_loras and not high_loras is None:
+        # Update LoRAs
+        if update_high_loras and high_loras is not None:
             scene_info_out.loras_high = high_loras
-        else:
-            high_loras = scene_info_in.loras_high
-
-        if update_low_loras and not low_loras is None:
+        
+        if update_low_loras and low_loras is not None:
             scene_info_out.loras_low = low_loras
-        else:
-            low_loras = scene_info_in.loras_low
-            
-        if (update_high_loras or update_low_loras) and (not high_loras is None or not low_loras is None):
-            save_loras(high_loras, low_loras, loras_path)
-            print(f"SceneUpdate: Saved LoRA presets to: {loras_path}")
+        
+        # Save LoRAs if updated
+        if update_high_loras or update_low_loras:
+            scene_info_out.save_loras()
+            print(f"SceneUpdate: Saved LoRA presets to: {scene_info_in.pose_dir}/loras.json")
 
         return io.NodeOutput(
             scene_info_out,
@@ -1768,7 +2522,8 @@ class SceneView(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SceneView",
+            node_id=prefixed_node_id("SceneView"),
+            display_name="SceneView",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Information" ),
@@ -1778,10 +2533,14 @@ class SceneView(io.ComfyNode):
                 io.Combo.Input(
                     id="pose_type", options=list(default_pose_options.keys())
                 ),
+                io.Combo.Input(id="mask_type", display_name="mask_type", options=["girl", "male", "combined"], default="combined", tooltip="Mask to preview"),
+                io.Boolean.Input(id="include_mask_bg", display_name="include_mask_bg", default=True, tooltip="Include background in mask selection"),
             ],
             outputs=[
                 io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Selected Depth Image"),
                 io.Image.Output(id="pose_image", display_name="pose_image", tooltip="Selected Pose Image"),
+                io.Image.Output(id="mask_image", display_name="mask_image", tooltip="Selected Mask Image"),
+                io.Mask.Output(id="mask", display_name="mask", tooltip="Alpha mask derived from selected mask image"),
                 io.String.Output(id="pose_name", display_name="pose_name", tooltip="Name of the selected pose"),
                 io.String.Output(id="pose_dir", display_name="pose_dir", tooltip="Directory of the selected pose"),
                 io.String.Output(id="girl_pos", display_name="girl_pos", tooltip="The positive prompt for the girl in the scene"),
@@ -1793,67 +2552,68 @@ class SceneView(io.ComfyNode):
     @classmethod
     async def execute(
         cls,
-        scene_info=None,
+        scene_info=Optional[SceneInfo],
         depth_type="depth",
         pose_type="dense",
+        mask_type="combined",
+        include_mask_bg=True,
     ) -> io.NodeOutput:
         if scene_info is None:
             print("SceneView: scene_info is None")
-            return io.NodeOutput(None, None)
+            return io.NodeOutput(None, None, None, None, None, None, None, None)
         
-        depth_attr = default_depth_options.get(depth_type, "depth_image")
-        pose_attr = default_pose_options.get(pose_type, "pose_dense_image")
+        if not isinstance(scene_info, SceneInfo):
+            print("SceneView: scene_info is not of type SceneInfo")
+            return io.NodeOutput(None, None, None, None, None, None, None, None)
+
+        assets = scene_info.load_preview_assets(
+            scene_info.pose_dir,
+            depth_attr=depth_type,
+            pose_attr=pose_type,
+            mask_type=mask_type,
+            mask_background=include_mask_bg,
+            include_canny=True,
+        )
+
+        mask_image = assets["mask_image"]
+        mask = assets["mask"]
+        depth_image = assets["depth_image"]
+        pose_image = assets["pose_image"]
         girl_pos = getattr(scene_info, "girl_pos", "")
         male_pos = getattr(scene_info, "male_pos", "")
         pose_name = getattr(scene_info, "pose_name", "")
         pose_dir = getattr(scene_info, "pose_dir", "")
-        depth_any_image = getattr(scene_info, "depth_any_image", None)
 
-        if depth_any_image is None:
-            H, W = 512, 512
-            depth_any_image = make_placeholder_tensor(H, W)
-        else:
-            H, W = depth_any_image.shape[1], depth_any_image.shape[2]
-
-        depth_image = getattr(scene_info, depth_attr, make_empty_image())
-        pose_image = getattr(scene_info, pose_attr, make_empty_image())
-        depth_image = normalize_image_tensor(depth_image, H, W)
-        pose_image = normalize_image_tensor(pose_image, H, W)
-
-        combined_batch = torch.cat([depth_image, pose_image], dim=0)
-        preview_ui = ui.PreviewImage(image=combined_batch)
-
+        preview_batch = assets.get("preview_batch", [])
+        preview_image = ui.PreviewImage(image=torch.cat(preview_batch, dim=0)) if preview_batch else None
+        
         combined_prompt = f"Girl Positive Prompt: {girl_pos}\nMale Positive Prompt: {male_pos}"
         text_ui = ui.PreviewText(value=combined_prompt)
-        combined_ui = {
+ 
+        ui_data = {
             "text": text_ui.as_dict().get("text", ''),
-            "images": preview_ui.as_dict().get("images", []),
-            "animated": preview_ui.as_dict().get("animated", False),
+            "images": preview_image.as_dict().get("images", []) if preview_image else [],
+            "animated": preview_image.as_dict().get("animated", False) if preview_image else False,
         }
-
-        print(
-            f"SceneView: depth_type='{depth_type}'; pose_type='{pose_type}'; "
-            f"depth_any_image shape: {depth_any_image.shape if depth_any_image is not None else 'None'}; "
-            f"depth_image shape: {depth_image.shape if depth_image is not None else 'None'}; "
-            f"pose_image shape: {pose_image.shape if pose_image is not None else 'None'}; "
-            f"{combined_prompt}"
-        )
 
         return io.NodeOutput(
             depth_image,
             pose_image,
+            mask_image,
+            mask,
             pose_name,
             pose_dir,
             girl_pos,
             male_pos,
-            ui=combined_ui
+            ui=ui_data
         )
  
 class SceneOutput(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SceneOutput",
+            node_id=prefixed_node_id("SceneOutput"),
+            display_name="SceneOutput",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Information"),
@@ -1971,7 +2731,8 @@ class SceneSave(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SceneSave",
+            node_id=prefixed_node_id("SceneSave"),
+            display_name="SceneSave",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Info Input"),
@@ -1987,115 +2748,30 @@ class SceneSave(io.ComfyNode):
         scene_info=None,
         pose_dir="",
     ) -> io.NodeOutput:
-        pose_name = scene_info.pose_name if scene_info else ""
-        if pose_name == "" or scene_info is None:
+        if scene_info is None or not scene_info.pose_name:
             print("SaveScene: scene_info is None or pose_name is empty")
             return io.NodeOutput(None)
 
-        pose_dir = pose_dir if pose_dir else scene_info.pose_dir
-        if not pose_dir:
-            pose_dir = Path(default_poses_dir()) / pose_name
+        # Use provided pose_dir or fall back to scene_info's pose_dir
+        target_dir = pose_dir if pose_dir else scene_info.pose_dir
+        if not target_dir:
+            target_dir = str(Path(default_poses_dir()) / scene_info.pose_name)
 
-        print(f"SaveScene: pose_dir='{pose_dir}'; pose_name='{pose_name}'; dest_dir='{pose_dir}'")
-        if pose_dir and not os.path.isdir(pose_dir):
-            os.makedirs(pose_dir, exist_ok=True)
-            print(f"SaveScene: Created directory '{pose_dir}' for saving scene data")
-        if pose_name == "":
-            print("SaveScene: pose_name is empty, cannot save pose files")
-            return io.NodeOutput(None)
-        pose_path = Path(pose_dir)
-        if scene_info.depth_image is not None:
-            depth_path = pose_path / "depth.png"
-            save_image_comfyui(scene_info.depth_image, depth_path)
-        if scene_info.depth_any_image is not None:
-            depth_any_path = pose_path / "depth_any.png"
-            save_image_comfyui(scene_info.depth_any_image, depth_any_path)
-        if scene_info.depth_midas_image is not None:
-            depth_midas_path = pose_path / "depth_midas.png"
-            save_image_comfyui(scene_info.depth_midas_image, depth_midas_path)
-        if scene_info.depth_zoe_image is not None:
-            depth_zoe_path = pose_path / "depth_zoe.png"
-            save_image_comfyui(scene_info.depth_zoe_image, depth_zoe_path)
-        if scene_info.depth_zoe_any_image is not None:
-            depth_zoe_any_path = pose_path / "depth_zoe_any.png"
-            save_image_comfyui(scene_info.depth_zoe_any_image, depth_zoe_any_path)
-        if scene_info.pose_dense_image is not None:
-            pose_dense_path = pose_path / "pose_dense.png"
-            save_image_comfyui(scene_info.pose_dense_image, pose_dense_path)
-        if scene_info.pose_dw_image is not None:
-            pose_dw_path = pose_path / "pose_dw.png"
-            save_image_comfyui(scene_info.pose_dw_image, pose_dw_path)
-        if scene_info.pose_edit_image is not None:
-            pose_edit_path = pose_path   / "pose_edit.png"
-            save_image_comfyui(scene_info.pose_edit_image, pose_edit_path)
-        if scene_info.pose_face_image is not None:
-            pose_face_path = pose_path / "pose_face.png"
-            save_image_comfyui(scene_info.pose_face_image, pose_face_path)
-        if scene_info.pose_open_image is not None:
-            pose_open_path = pose_path / "pose_open.png"
-            save_image_comfyui(scene_info.pose_open_image, pose_open_path)
-        if scene_info.canny_image is not None:
-            canny_path = pose_path / "canny.png"
-            save_image_comfyui(scene_info.canny_image, canny_path)
-        if scene_info.upscale_image is not None:
-            upscale_path = pose_path / "upscale.png"
-            save_image_comfyui(scene_info.upscale_image, upscale_path)
-        if scene_info.pose_json:
-            pose_json_path = pose_path / "pose.json"
-            save_json_file(pose_json_path, json.loads(scene_info.pose_json))
-            
-        if scene_info.girl_mask_bkgd_image is not None:
-            girl_mask_path = pose_path / "girl_mask_bkgd.png"
-            save_image_comfyui(scene_info.girl_mask_bkgd_image, girl_mask_path)
-            
-        if scene_info.male_mask_bkgd_image is not None:
-            male_mask_path = pose_path / "male_mask_bkgd.png"
-            save_image_comfyui(scene_info.male_mask_bkgd_image, male_mask_path)
-            
-        if scene_info.combined_mask_bkgd_image is not None:
-            combined_mask_path = pose_path / "combined_mask_bkgd.png"
-            save_image_comfyui(scene_info.combined_mask_bkgd_image, combined_mask_path)
-
-        if scene_info.girl_mask_no_bkgd_image is not None:
-            girl_mask_nobg_path = pose_path / "girl_mask_no_bkgd.png"
-            save_image_comfyui(scene_info.girl_mask_no_bkgd_image, girl_mask_nobg_path)
-
-        if scene_info.male_mask_no_bkgd_image is not None:
-            male_mask_nobg_path = pose_path / "male_mask_no_bkgd.png"
-            save_image_comfyui(scene_info.male_mask_no_bkgd_image, male_mask_nobg_path)
-        if scene_info.combined_mask_no_bkgd_image is not None:
-            combined_mask_nobg_path = pose_path / "combined_mask_no_bkgd.png"
-            save_image_comfyui(scene_info.combined_mask_no_bkgd_image, combined_mask_nobg_path)
-
-        girl_pos = scene_info.girl_pos if scene_info.girl_pos else ""
-        male_pos = scene_info.male_pos if scene_info.male_pos else ""
-        four_image_prompt = scene_info.four_image_prompt if scene_info.four_image_prompt else ""
-        wan_prompt = scene_info.wan_prompt if scene_info.wan_prompt else ""
-        wan_low_prompt = scene_info.wan_low_prompt if scene_info.wan_low_prompt else ""
-        prompts_path = pose_path / "prompts.json"
-        prompt_data = {
-            "girl_pos": girl_pos,
-            "male_pos": male_pos,
-            "wan_prompt": wan_prompt,
-            "wan_low_prompt": wan_low_prompt,
-            "four_image_prompt": four_image_prompt,
-        }
-        save_json_file(prompts_path, prompt_data)   
+        print(f"SaveScene: pose_name='{scene_info.pose_name}'; dest_dir='{target_dir}'")
         
-        if scene_info.loras_high is not None or scene_info.loras_low is not None:
-            loras_path = pose_path / "loras.json"
-            save_loras(scene_info.loras_high, scene_info.loras_low, str(loras_path))
-            print(f"SaveScene: Saved LoRA presets to: {loras_path}")
+        # Use the unified save_all method
+        scene_info.save_all(target_dir)
 
         return io.NodeOutput(
-            ui=ui.PreviewText(f"Scene saved to '{pose_dir}' with prompt='The girl {scene_info.girl_pos}, The male {scene_info.male_pos}'"),
+            ui=ui.PreviewText(f"Scene saved to '{target_dir}' with prompt='The girl {scene_info.girl_pos}, The male {scene_info.male_pos}'"),
         )
 
 class SceneInput(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="SceneInput",
+            node_id=prefixed_node_id("SceneInput"),
+            display_name="SceneInput",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.String.Input(id="pose_dir", display_name="pose_dir", tooltip="Directory where the scene is saved", multiline=False, default=""),
@@ -2207,11 +2883,883 @@ class SceneInput(io.ComfyNode):
             scene_info
         )
 
+class StoryCreate(io.ComfyNode):
+    """Create a new story with an initial scene"""
+    @classmethod
+    def define_schema(cls):
+        output_dir = get_output_directory()
+        default_stories_dir_path = default_stories_dir()
+        default_poses_dir_path = default_poses_dir()
+        
+        # Get available poses
+        poses_subdir_dict = get_subdirectories(default_poses_dir_path)
+        available_poses = sorted(poses_subdir_dict.keys()) if poses_subdir_dict else ["default_pose"]
+        
+        return io.Schema(
+            node_id=prefixed_node_id("StoryCreate"),
+            display_name="StoryCreate",
+            category="🧊 frost-byte/Story",
+            inputs=[
+                io.String.Input(id="story_name", display_name="story_name", default="my_story", tooltip="Name of the story"),
+                io.String.Input(id="story_dir", display_name="story_dir", default=default_stories_dir_path, tooltip="Directory to save the story"),
+                io.Combo.Input(id="initial_scene", display_name="initial_scene", options=available_poses, default=available_poses[0], tooltip="First scene to add to the story"),
+                io.Combo.Input(id="mask_type", display_name="mask_type", options=["girl", "male", "combined", "girl_no_bg", "male_no_bg", "combined_no_bg"], default="combined", tooltip="Mask type for the scene"),
+                io.Boolean.Input(id="mask_background", display_name="mask_background", default=True, tooltip="Include background in mask"),
+                io.Combo.Input(id="prompt_type", display_name="prompt_type", options=["girl_pos", "male_pos", "combined", "four_image_prompt", "wan_prompt", "wan_low_prompt", "custom"], default="girl_pos", tooltip="Type of prompt to use"),
+                io.String.Input(id="custom_prompt", display_name="custom_prompt", default="", multiline=True, tooltip="Custom prompt (only used if prompt_type is 'custom')"),
+                io.Combo.Input(id="depth_type", display_name="depth_type", options=list(default_depth_options.keys()), default="depth", tooltip="Depth image type"),
+                io.Combo.Input(id="pose_type", display_name="pose_type", options=list(default_pose_options.keys()), default="open", tooltip="Pose image type"),
+            ],
+            outputs=[
+                io.Custom("STORY_INFO").Output(id="story_info", display_name="story_info", tooltip="Story information"),
+            ],
+        )
+    
+    @classmethod
+    def execute(
+        cls,
+        story_name="my_story",
+        story_dir="",
+        initial_scene="default_pose",
+        mask_type="combined",
+        mask_background=True,
+        prompt_type="girl_pos",
+        custom_prompt="",
+        depth_type="depth",
+        pose_type="open",
+    ) -> io.NodeOutput:
+        if not story_dir:
+            story_dir = default_stories_dir()
+        
+        # Create story directory if it doesn't exist
+        story_path = Path(story_dir) / story_name
+        os.makedirs(story_path, exist_ok=True)
+        
+        # Create initial scene
+        initial_scene_obj = SceneInStory(
+            scene_name=initial_scene,
+            scene_order=0,
+            mask_type=mask_type,
+            mask_background=mask_background,
+            prompt_type=prompt_type,
+            custom_prompt=custom_prompt,
+            depth_type=depth_type,
+            pose_type=pose_type,
+        )
+        
+        story_info = StoryInfo(
+            story_name=story_name,
+            story_dir=str(story_path),
+            scenes=[initial_scene_obj]
+        )
+        
+        print(f"StoryCreate: Created story '{story_name}' with initial scene '{initial_scene}'")
+        
+        return io.NodeOutput(story_info)
+
+class StoryEdit(io.ComfyNode):
+    """Edit a story by adding, removing, or reordering scenes"""
+    @classmethod
+    def define_schema(cls):
+        default_poses_dir_path = default_poses_dir()
+        poses_subdir_dict = get_subdirectories(default_poses_dir_path)
+        available_poses = sorted(poses_subdir_dict.keys()) if poses_subdir_dict else ["default_pose"]
+        # story_scene_selector should reflect the current story, so seed with a neutral placeholder.
+        story_scene_options = ["0: (no story scenes)"]
+        
+        return io.Schema(
+            node_id=prefixed_node_id("StoryEdit"),
+            display_name="StoryEdit",
+            category="🧊 frost-byte/Story",
+            inputs=[
+                io.Custom("STORY_INFO").Input(id="story_info", display_name="story_info", tooltip="Story to edit"),
+                io.Combo.Input(id="story_action", display_name="story_action", options=["use_file", "use_edit"], default="use_file", tooltip="Use story_info from file or from edited JSON state"),
+                io.String.Input(id="story_json_in", display_name="story_json_in", default="", multiline=True, tooltip="Serialized story state (auto-updated after each operation)"),
+                io.Combo.Input(id="operation", display_name="operation", options=["add_scene", "remove_scene", "reorder_scene", "edit_scene", "no_change"], default="no_change", tooltip="Operation to perform"),
+                io.Combo.Input(id="scene_name", display_name="scene_name", options=available_poses, default=available_poses[0], tooltip="Scene to add/remove/edit (available poses)"),
+                io.Combo.Input(id="story_scene_selector", display_name="story_scene_selector", options=story_scene_options, default=story_scene_options[0], tooltip="Select a scene in the current story by index and name"),
+                io.Int.Input(id="scene_order", display_name="scene_order", default=0, tooltip="Order position for scene (for add/reorder)"),
+                io.Combo.Input(id="mask_type", display_name="mask_type", options=["girl", "male", "combined",], default="combined", tooltip="Mask type"),
+                io.Boolean.Input(id="mask_background", display_name="mask_background", default=True, tooltip="Include background in mask"),
+                io.Combo.Input(id="prompt_type", display_name="prompt_type", options=["girl_pos", "male_pos", "combined", "four_image_prompt", "wan_prompt", "wan_low_prompt", "custom"], default="girl_pos", tooltip="Prompt type"),
+                io.String.Input(id="custom_prompt", display_name="custom_prompt", default="", multiline=True, tooltip="Shows current prompt; edit when prompt_type='custom'"),
+                io.Combo.Input(id="depth_type", display_name="depth_type", options=list(default_depth_options.keys()), default="depth", tooltip="Depth image type"),
+                io.Combo.Input(id="pose_type", display_name="pose_type", options=list(default_pose_options.keys()), default="open", tooltip="Pose image type"),
+            ],
+            outputs=[
+                io.Custom("STORY_INFO").Output(id="story_info_out", display_name="story_info", tooltip="Updated story information"),
+                io.Image.Output(id="base_image", display_name="base_image", tooltip="Base/upscale image for selected scene"),
+                io.Image.Output(id="mask_image", display_name="mask_image", tooltip="Mask image for selected scene"),
+                io.Mask.Output(id="mask", display_name="mask", tooltip="Alpha mask derived from selected mask image"),
+                io.Image.Output(id="pose_image", display_name="pose_image", tooltip="Pose image for selected scene"),
+                io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Depth image for selected scene"),
+            ],
+            is_output_node=True,
+        )
+    
+    @classmethod
+    def execute(
+        cls,
+        story_info=None,
+        story_action="use_file",
+        story_json_in="",
+        operation="no_change",
+        scene_name="default_pose",
+        story_scene_selector="0: (no story scenes)",
+        scene_order=0,
+        mask_type="combined",
+        mask_background=True,
+        prompt_type="girl_pos",
+        custom_prompt="",
+        depth_type="depth",
+        pose_type="open",
+    ) -> io.NodeOutput:
+        if story_info is None:
+            print("StoryEdit: story_info is None")
+            return io.NodeOutput(None, None, None, None, None, None)
+        
+        # Create a copy to avoid modifying the original
+        import copy
+        
+        # Determine which story state to use based on story_action
+        if story_action == "use_edit" and story_json_in:
+            # Deserialize from JSON state
+            try:
+                story_data = json.loads(story_json_in)
+                scenes = []
+                for scene_data in story_data.get("scenes", []):
+                    scenes.append(SceneInStory(
+                        scene_id=scene_data.get("scene_id", ""),
+                        scene_name=scene_data.get("scene_name", ""),
+                        scene_order=scene_data.get("scene_order", 0),
+                        mask_type=scene_data.get("mask_type", "combined"),
+                        mask_background=scene_data.get("mask_background", True),
+                        prompt_type=scene_data.get("prompt_type", "girl_pos"),
+                        custom_prompt=scene_data.get("custom_prompt", ""),
+                        depth_type=scene_data.get("depth_type", "depth"),
+                        pose_type=scene_data.get("pose_type", "open"),
+                    ))
+                story_copy = StoryInfo(
+                    story_name=story_data.get("story_name", story_info.story_name),
+                    story_dir=story_data.get("story_dir", story_info.story_dir),
+                    scenes=scenes
+                )
+                print(f"StoryEdit: Loaded story from JSON state with {len(scenes)} scenes")
+            except Exception as e:
+                print(f"StoryEdit: Error deserializing story_json_in: {e}. Falling back to story_info.")
+                story_copy = copy.deepcopy(story_info)
+        else:
+            # Use story_info from file/input
+            story_copy = copy.deepcopy(story_info)
+
+        # Ensure scenes from the incoming story_info are present (merge if JSON lacked them)
+        if story_info and getattr(story_info, "scenes", None):
+            existing_ids = {s.scene_id for s in story_copy.scenes if getattr(s, "scene_id", None)}
+            existing_names = {(s.scene_name, s.scene_order) for s in story_copy.scenes}
+            for src_scene in story_info.scenes:
+                key = getattr(src_scene, "scene_id", None)
+                name_key = (src_scene.scene_name, src_scene.scene_order)
+                if (key and key in existing_ids) or name_key in existing_names:
+                    continue
+                story_copy.scenes.append(copy.deepcopy(src_scene))
+            # Re-sort after merge so downstream indexing is stable
+            story_copy.scenes = sorted(story_copy.scenes, key=lambda s: s.scene_order)
+        
+        # Helper to pick a scene in story by index string "idx: name"
+        def get_scene_by_selector(story_obj, selector: str) -> Optional[SceneInStory]:
+            try:
+                idx_str, _ = selector.split(":", 1)
+                idx_val = int(idx_str.strip())
+            except Exception:
+                return None
+            scenes_sorted = sorted(story_obj.scenes, key=lambda s: s.scene_order)
+            if 0 <= idx_val < len(scenes_sorted):
+                return scenes_sorted[idx_val]
+            return None
+
+        target_scene = get_scene_by_selector(story_copy, story_scene_selector)
+
+        if operation == "add_scene":
+            new_scene = SceneInStory(
+                scene_name=scene_name,
+                scene_order=scene_order,
+                mask_type=mask_type,
+                mask_background=mask_background,
+                prompt_type=prompt_type,
+                custom_prompt=custom_prompt,
+                depth_type=depth_type,
+                pose_type=pose_type,
+            )
+            story_copy.add_scene(new_scene)
+            print(f"StoryEdit: Added scene '{scene_name}' at order {scene_order}")
+            
+        elif operation == "remove_scene":
+            identifier = target_scene.scene_id if target_scene else scene_name
+            story_copy.remove_scene(identifier)
+            print(f"StoryEdit: Removed scene '{identifier}'")
+            
+        elif operation == "reorder_scene":
+            identifier = target_scene.scene_id if target_scene else scene_name
+            story_copy.reorder_scene(identifier, scene_order)
+            print(f"StoryEdit: Reordered scene '{identifier}' to position {scene_order}")
+            
+        elif operation == "edit_scene":
+            existing_scene = target_scene if target_scene else story_copy.get_scene_by_name(scene_name)
+            if existing_scene:
+                existing_scene.mask_type = mask_type
+                existing_scene.mask_background = mask_background
+                existing_scene.prompt_type = prompt_type
+                existing_scene.custom_prompt = custom_prompt
+                existing_scene.depth_type = depth_type
+                existing_scene.pose_type = pose_type
+                print(f"StoryEdit: Edited scene '{existing_scene.scene_name}' (id={existing_scene.scene_id[:8]})")
+            else:
+                print(f"StoryEdit: Scene '{scene_name}' not found for editing")
+        
+        elif operation == "no_change":
+            print("StoryEdit: No operation performed")
+        
+        # Build selector options from the current story state (after any modifications)
+        scenes_sorted = sorted(story_copy.scenes, key=lambda s: s.scene_order)
+        story_scene_options = [f"{idx}: {scene.scene_name}" for idx, scene in enumerate(scenes_sorted)]
+        if not story_scene_options:
+            story_scene_options = ["0: (no story scenes)"]
+        if story_scene_selector not in story_scene_options:
+            story_scene_selector = story_scene_options[0]
+
+        # Load preview images for the selected scene
+        poses_dir = default_poses_dir()
+        # For preview, prefer the scene selected from the story (by index) if available
+        preview_scene = get_scene_by_selector(story_copy, story_scene_selector)
+        if preview_scene is None and target_scene is not None:
+            preview_scene = target_scene
+        if preview_scene is None and scenes_sorted:
+            preview_scene = scenes_sorted[0]
+        if preview_scene is None:
+            preview_scene = story_copy.get_scene_by_name(scene_name)
+        preview_scene_name = preview_scene.scene_name if preview_scene else scene_name
+        preview_mask_type = preview_scene.mask_type if preview_scene else mask_type
+        preview_mask_background = preview_scene.mask_background if preview_scene else mask_background
+        preview_prompt_type = preview_scene.prompt_type if preview_scene else prompt_type
+        preview_custom_prompt = preview_scene.custom_prompt if preview_scene else custom_prompt
+        preview_depth_type = preview_scene.depth_type if preview_scene else depth_type
+        preview_pose_type = preview_scene.pose_type if preview_scene else pose_type
+
+        pose_dir = os.path.join(poses_dir, preview_scene_name)
+        
+        base_image = None
+        mask_image = None
+        mask = None
+        preview_mask = None
+        pose_image = None
+        depth_image = None
+        selected_prompt_text = ""
+        
+        if os.path.isdir(pose_dir):
+            selected_depth_attr = default_depth_options.get(preview_depth_type, "depth_image")
+            selected_pose_attr = default_pose_options.get(preview_pose_type, "pose_open_image")
+            mask_key = resolve_mask_key(preview_mask_type, preview_mask_background)
+
+            assets = SceneInfo.load_preview_assets(
+                pose_dir,
+                depth_attr=selected_depth_attr,
+                pose_attr=selected_pose_attr,
+                mask_type=preview_mask_type,
+                mask_background=preview_mask_background,
+                include_upscale=True,
+                include_canny=False,
+            )
+
+            base_image = assets["base_image"]
+            depth_image = assets["depth_image"]
+            pose_image = assets["pose_image"]
+            mask_image = assets["mask_image"]
+            mask = assets["mask"]
+            preview_mask = assets["mask_preview"]
+            H, W = assets["H"], assets["W"]
+
+            print(f"StoryEdit: Loading mask with key '{mask_key}' (bg={preview_mask_background})")
+
+            # Load prompt text
+            prompt_json_path = os.path.join(pose_dir, "prompts.json")
+            prompt_data = load_prompt_json(prompt_json_path)
+            
+            # Determine the prompt text based on prompt_type
+            # Use custom_prompt only when prompt_type is 'custom', otherwise load from file
+            if preview_prompt_type == "custom":
+                selected_prompt_text = preview_custom_prompt
+            else:
+                selected_prompt_text = prompt_data.get(preview_prompt_type, "")
+        
+        # Create preview UI
+        preview_batch = assets.get("preview_batch", [])
+        preview_image_ui = ui.PreviewImage(image=torch.cat(preview_batch, dim=0)) if preview_batch else None
+        
+        # Create scene list text with scene IDs
+        preview_scene_id = preview_scene.scene_id if preview_scene else ""
+        scene_list_lines = []
+        selected_scene_options = []
+        scene_index = 0
+        for scene in sorted(story_copy.scenes, key=lambda s: s.scene_order):
+            marker = "▶ " if preview_scene_id and scene.scene_id == preview_scene_id else "  "
+            mask_suffix = "" if scene.mask_background else " (no bg)"
+            selected_scene_options.append(f"{scene_index}: {scene.scene_name}")
+            scene_index += 1
+            scene_line = (
+                f"{marker}{scene.scene_order}: {scene.scene_name} [{scene.scene_id[:8]}] | "
+                f"mask={scene.mask_type}{mask_suffix} | "
+                f"prompt={scene.prompt_type} | "
+                f"depth={scene.depth_type} | "
+                f"pose={scene.pose_type}"
+            )
+            if scene.prompt_type == "custom" and scene.custom_prompt:
+                scene_line += f" | custom='{scene.custom_prompt[:30]}...'"
+            scene_list_lines.append(scene_line)
+        
+        scene_list_text = "\n".join(scene_list_lines) if scene_list_lines else "No scenes"
+        
+        # Serialize story to JSON for persistence
+        scenes_data = []
+        for scene in story_copy.scenes:
+            scenes_data.append({
+                "scene_id": scene.scene_id,
+                "scene_name": scene.scene_name,
+                "scene_order": scene.scene_order,
+                "mask_type": scene.mask_type,
+                "mask_background": scene.mask_background,
+                "prompt_type": scene.prompt_type,
+                "custom_prompt": scene.custom_prompt,
+                "depth_type": scene.depth_type,
+                "pose_type": scene.pose_type,
+            })
+        
+        story_json = json.dumps({
+            "story_name": story_copy.story_name,
+            "story_dir": story_copy.story_dir,
+            "scenes": scenes_data
+        }, indent=2)
+        
+        scene_options_json = json.dumps(selected_scene_options) if selected_scene_options else "['0: (no story scenes)']"
+        # Combine UI elements - text array will contain:
+        # [0]=scene_list, [1]=selected_prompt, [2]=story_json, [3]=selector options JSON, [4]=scene options JSON
+        combined_ui = {
+            "text": [scene_list_text, selected_prompt_text, story_json, json.dumps(story_scene_options), scene_options_json],
+            "images": preview_image_ui.as_dict().get("images", []) if preview_image_ui else [],
+            "animated": preview_image_ui.as_dict().get("animated", False) if preview_image_ui else False,
+        }
+        
+        return io.NodeOutput(
+            story_copy,
+            base_image,
+            mask_image,
+            mask,
+            pose_image,
+            depth_image,
+            ui=combined_ui
+        )
+
+class StoryView(io.ComfyNode):
+    """View and select scenes from a story with preview capabilities"""
+    @classmethod
+    def define_schema(cls):
+        # Get default scene options for when no story is loaded
+        default_poses_dir_path = default_poses_dir()
+        poses_subdir_dict = get_subdirectories(default_poses_dir_path)
+        default_scene_options = sorted(poses_subdir_dict.keys()) if poses_subdir_dict else ["default_pose"]
+        
+        return io.Schema(
+            node_id=prefixed_node_id("StoryView"),
+            display_name="StoryView",
+            category="🧊 frost-byte/Story",
+            inputs=[
+                io.Custom("STORY_INFO").Input(id="story_info", display_name="story_info", tooltip="Story to view"),
+                io.Combo.Input(id="selected_scene", display_name="selected_scene", options=default_scene_options, default=default_scene_options[0], tooltip="Select a scene from the story"),
+                io.String.Input(id="prompt_in", display_name="prompt_in", multiline=True, default="", tooltip="Editable prompt text"),
+                io.Combo.Input(id="prompt_action", display_name="prompt_action", options=["use_file", "use_edit"], default="use_file", tooltip="Use file prompt or edited prompt"),
+            ],
+            outputs=[
+                io.Custom("STORY_INFO").Output(id="story_info_out", display_name="story_info", tooltip="Story information (pass-through for chaining to StorySave)"),
+                io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene information for selected scene"),
+                io.String.Output(id="story_name", display_name="story_name", tooltip="Name of the story"),
+                io.String.Output(id="story_dir", display_name="story_dir", tooltip="Directory of the story"),
+                io.Int.Output(id="scene_count", display_name="scene_count", tooltip="Number of scenes in the story"),
+                io.String.Output(id="scene_name", display_name="scene_name", tooltip="Name of the selected scene"),
+                io.String.Output(id="selected_prompt", display_name="selected_prompt", tooltip="The selected prompt text"),
+                io.Image.Output(id="pose_image", display_name="pose_image", tooltip="Pose image for selected scene"),
+                io.Image.Output(id="mask_image", display_name="mask_image", tooltip="Mask image for selected scene"),
+                io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Depth image for selected scene"),
+            ],
+            hidden=[
+                io.Hidden.unique_id,
+                io.Hidden.extra_pnginfo 
+            ],
+            is_output_node=True,
+        )
+    
+    @classmethod
+    def execute(
+        cls,
+        story_info=None,
+        selected_scene="default_pose",
+        prompt_in="",
+        prompt_action="use_file",
+    ) -> io.NodeOutput:
+        className = cls.__name__
+        unique_id = cls.hidden.unique_id
+        extra_pnginfo = cls.hidden.extra_pnginfo
+        
+        if story_info is None:
+            print("StoryView: story_info is None")
+            return io.NodeOutput(None, None, "", "", 0, "", "", None, None, None)
+        
+        # Find the selected scene configuration in the story
+        scene_config = None
+        for scene in story_info.scenes:
+            if scene.scene_name == selected_scene:
+                scene_config = scene
+                break
+        
+        if scene_config is None and story_info.scenes:
+            print(f"StoryView: Scene '{selected_scene}' not found in story, defaulting to first scene '{story_info.scenes[0].scene_name}'")
+            scene_config = story_info.scenes[0]
+            selected_scene = scene_config.scene_name
+
+        # If scene not found in story, create a default configuration
+        if scene_config is None:
+            print(f"StoryView: Scene '{selected_scene}' not found in story, using defaults")
+            scene_config = SceneInStory(
+                scene_name=selected_scene,
+                scene_order=0,
+                mask_type="combined",
+                mask_background=True,
+                prompt_type="girl_pos",
+                custom_prompt="",
+                depth_type="depth",
+                pose_type="open",
+            )
+        
+        # Load scene data from pose directory
+        poses_dir = default_poses_dir()
+        pose_dir = os.path.join(poses_dir, selected_scene)
+        
+        if not os.path.isdir(pose_dir):
+            print(f"StoryView: pose_dir '{pose_dir}' is not a valid directory")
+            return io.NodeOutput(story_info, None, story_info.story_name, story_info.story_dir, len(story_info.scenes), selected_scene, "", None, None, None)
+        
+        try:
+            scene_info, assets, selected_prompt, prompt_data, prompt_widget_text = SceneInfo.from_story_scene(
+                scene_config,
+                poses_dir=poses_dir,
+                prompt_in=prompt_in,
+                prompt_action=prompt_action,
+                include_upscale=False,
+                include_canny=False,
+            )
+        except Exception as e:
+            print(f"StoryView: failed to build SceneInfo for '{selected_scene}': {e}")
+            return io.NodeOutput(story_info, None, story_info.story_name, story_info.story_dir, len(story_info.scenes), selected_scene, "", None, None, None)
+
+        if prompt_widget_text is not None:
+            input_types = cls.INPUT_TYPES()
+            inputs = input_types.get('required', {}) if isinstance(input_types, dict) else {}
+            update_ui_widget(className, unique_id, extra_pnginfo, prompt_widget_text, "prompt_in", inputs)
+
+        selected_depth_image = assets.get("depth_image")
+        selected_pose_image = assets.get("pose_image")
+        selected_mask_image = assets.get("mask_image")
+        mask = assets.get("mask")
+        
+        # Create preview UI combining pose, mask, and depth
+        preview_batch = assets.get("preview_batch", [])
+        preview_image_ui = ui.PreviewImage(image=torch.cat(preview_batch, dim=0)) if preview_batch else None
+        
+        # Create text preview with scene IDs
+        scene_list_lines = []
+        for scene in sorted(story_info.scenes, key=lambda s: s.scene_order):
+            marker = "▶ " if scene.scene_name == selected_scene else "  "
+            mask_suffix = "" if scene.mask_background else " (no bg)"
+            scene_line = (
+                f"{marker}{scene.scene_order}: {scene.scene_name} [{scene.scene_id[:8]}] | "
+                f"mask={scene.mask_type}{mask_suffix} | "
+                f"prompt={scene.prompt_type} | "
+                f"depth={scene.depth_type} | "
+                f"pose={scene.pose_type}"
+            )
+            if scene.prompt_type == "custom" and scene.custom_prompt:
+                scene_line += f" | custom='{scene.custom_prompt[:30]}...'"
+            scene_list_lines.append(scene_line)
+        
+        scene_list_text = "\n".join(scene_list_lines) if scene_list_lines else "No scenes"
+        
+        preview_text = (
+            f"Story: {story_info.story_name}\n"
+            f"Dir: {story_info.story_dir}\n"
+            f"Scenes: {len(story_info.scenes)}\n"
+            f"Selected: {selected_scene} (order {scene_config.scene_order})\n"
+            f"Prompt Type: {scene_config.prompt_type}\n"
+            f"Prompt: {selected_prompt}\n\n"
+            f"All Scenes:\n{scene_list_text}"
+        )
+        text_ui = ui.PreviewText(value=preview_text)
+        
+        # Combine UI elements
+        combined_ui = {
+            "text": text_ui.as_dict().get("text", []),
+            "images": preview_image_ui.as_dict().get("images", []) if preview_image_ui else [],
+            "animated": preview_image_ui.as_dict().get("animated", False) if preview_image_ui else False,
+        }
+        
+        print(f"StoryView: Story '{story_info.story_name}' - Selected scene '{selected_scene}' with prompt_type '{scene_config.prompt_type}'")
+        
+        return io.NodeOutput(
+            story_info,
+            scene_info,
+            story_info.story_name,
+            story_info.story_dir,
+            len(story_info.scenes),
+            selected_scene,
+            selected_prompt,
+            selected_pose_image,
+            selected_mask_image,
+            selected_depth_image,
+            ui=combined_ui
+        )
+
+class StorySceneBatch(io.ComfyNode):
+    """Create an ordered list of scene descriptors for iteration."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("StorySceneBatch"),
+            display_name="StorySceneBatch",
+            category="🧊 frost-byte/Story",
+            inputs=[
+                io.Custom("STORY_INFO").Input(id="story_info", display_name="story_info", tooltip="Story to expand into an ordered scene list"),
+                io.String.Input(id="job_id", display_name="job_id", default="", tooltip="Optional job id; auto-generated when empty"),
+                io.String.Input(id="job_root_dir", display_name="job_root_dir", default="", tooltip="Base directory for per-job inputs/outputs; defaults to story_dir/jobs/<job_id>"),
+            ],
+            outputs=[
+                io.Int.Output(id="scene_count", display_name="scene_count", tooltip="Total number of scenes"),
+                io.Custom("SCENE_BATCH").Output(id="scene_batch", display_name="scene_batch", tooltip="Ordered list of scene dictionaries"),
+                io.String.Output(id="job_id_out", display_name="job_id", tooltip="Job id used for this batch"),
+                io.String.Output(id="job_root_dir_out", display_name="job_root_dir", tooltip="Resolved job root directory"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        story_info=None,
+        job_id: str = "",
+        job_root_dir: str = "",
+    ) -> io.NodeOutput:
+        if story_info is None or not getattr(story_info, "scenes", None):
+            print("StorySceneBatch: story_info is empty")
+            return io.NodeOutput(0, [], job_id or "", job_root_dir or "")
+
+        resolved_job_id = job_id.strip() or uuid.uuid4().hex[:12]
+        default_root = Path(story_info.story_dir) / "jobs" / resolved_job_id
+        job_root = Path(job_root_dir) if job_root_dir else default_root
+        job_root.mkdir(parents=True, exist_ok=True)
+
+        poses_dir = default_poses_dir()
+        batch: list[dict] = []
+
+        scenes_sorted = sorted(story_info.scenes, key=lambda s: s.scene_order)
+        for scene in scenes_sorted:
+            pose_dir = os.path.join(poses_dir, scene.scene_name)
+            prompt_path = os.path.join(pose_dir, "prompts.json")
+            prompt_data = load_prompt_json(prompt_path) or {}
+
+            mask_key = resolve_mask_key(scene.mask_type, scene.mask_background)
+            depth_key = default_depth_options.get(scene.depth_type, "depth_image")
+            pose_key = default_pose_options.get(scene.pose_type, "pose_open_image")
+            positive_prompt = build_positive_prompt(scene.prompt_type, prompt_data, scene.custom_prompt)
+
+            job_scene_dir = job_root / f"{scene.scene_order:03d}_{scene.scene_name}"
+            job_input_dir = job_scene_dir / "input"
+            job_output_dir = job_scene_dir / "output"
+            job_input_dir.mkdir(parents=True, exist_ok=True)
+            job_output_dir.mkdir(parents=True, exist_ok=True)
+
+            source_input_dir = Path(pose_dir) / "input"
+            first_input_image = None
+            for ext in ["png", "jpg", "jpeg", "webp"]:
+                matches = sorted(source_input_dir.glob(f"*.{ext}"))
+                if matches:
+                    first_input_image = str(matches[0])
+                    break
+
+            descriptor = {
+                "scene_id": scene.scene_id,
+                "scene_name": scene.scene_name,
+                "scene_order": scene.scene_order,
+                "mask_type": scene.mask_type,
+                "mask_background": scene.mask_background,
+                "mask_key": mask_key,
+                "prompt_type": scene.prompt_type,
+                "custom_prompt": scene.custom_prompt,
+                "depth_type": scene.depth_type,
+                "depth_key": depth_key,
+                "pose_type": scene.pose_type,
+                "pose_key": pose_key,
+                "pose_dir": pose_dir,
+                "story_dir": story_info.story_dir,
+                "job_id": resolved_job_id,
+                "job_root": str(job_root),
+                "job_scene_dir": str(job_scene_dir),
+                "job_input_dir": str(job_input_dir),
+                "job_output_dir": str(job_output_dir),
+                "source_input_dir": str(source_input_dir),
+                "source_output_dir": str(Path(pose_dir) / "output"),
+                "positive_prompt": positive_prompt,
+                "wan_prompt": prompt_data.get("wan_prompt", ""),
+                "wan_low_prompt": prompt_data.get("wan_low_prompt", ""),
+                "four_image_prompt": prompt_data.get("four_image_prompt", ""),
+                "girl_pos": prompt_data.get("girl_pos", ""),
+                "male_pos": prompt_data.get("male_pos", ""),
+                "input_image_path": first_input_image,
+                "prompt_data": prompt_data,
+            }
+
+            batch.append(descriptor)
+
+        print(f"StorySceneBatch: Prepared {len(batch)} scenes with job_id={resolved_job_id} at {job_root}")
+
+        return io.NodeOutput(
+            len(batch),
+            batch,
+            resolved_job_id,
+            str(job_root),
+        )
+
+
+class StoryScenePick(io.ComfyNode):
+    """Select one scene descriptor by index and load the assets for generation."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("StoryScenePick"),
+            display_name="StoryScenePick",
+            category="🧊 frost-byte/Story",
+            inputs=[
+                io.Custom("SCENE_BATCH").Input(id="scene_batch", display_name="scene_batch", tooltip="Scene descriptor list from StorySceneBatch"),
+                io.Int.Input(id="scene_index", display_name="scene_index", default=0, tooltip="Index into scene_batch (0-based)"),
+            ],
+            outputs=[
+                io.Image.Output(id="mask_image", display_name="mask_image", tooltip="Selected mask image"),
+                io.Mask.Output(id="mask", display_name="mask", tooltip="Single-channel mask"),
+                io.Image.Output(id="depth_image", display_name="depth_image", tooltip="Selected depth image"),
+                io.Image.Output(id="pose_image", display_name="pose_image", tooltip="Selected pose image"),
+                io.Image.Output(id="canny_image", display_name="canny_image", tooltip="Canny edge image"),
+                io.String.Output(id="positive_prompt", display_name="positive_prompt", tooltip="Chosen positive prompt"),
+                io.String.Output(id="wan_prompt", display_name="wan_prompt", tooltip="Wan high positive prompt"),
+                io.String.Output(id="wan_low_prompt", display_name="wan_low_prompt", tooltip="Wan low positive prompt"),
+                io.String.Output(id="four_image_prompt", display_name="four_image_prompt", tooltip="Four-image prompt"),
+                io.String.Output(id="scene_name", display_name="scene_name", tooltip="Scene name"),
+                io.Int.Output(id="scene_order", display_name="scene_order", tooltip="Scene order"),
+                io.String.Output(id="scene_id", display_name="scene_id", tooltip="Scene id"),
+                io.String.Output(id="job_id", display_name="job_id", tooltip="Job id"),
+                io.String.Output(id="job_scene_dir", display_name="job_scene_dir", tooltip="Job scene directory"),
+                io.String.Output(id="input_image_path", display_name="input_image_path", tooltip="Path to first input image (if any)"),
+                io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Fully-loaded SceneInfo for the selected scene"),
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        scene_batch=None,
+        scene_index: int = 0,
+    ) -> io.NodeOutput:
+        if not scene_batch:
+            print("StoryScenePick: scene_batch is empty")
+            return io.NodeOutput(None, None, None, None, None, "", "", "", "", "", 0, "", "", "", "", None)
+
+        try:
+            scenes_sorted = sorted(scene_batch, key=lambda d: d.get("scene_order", 0))
+        except Exception:
+            scenes_sorted = scene_batch
+
+        safe_index = max(0, min(len(scenes_sorted) - 1, scene_index))
+        descriptor = scenes_sorted[safe_index]
+
+        pose_dir = descriptor.get("pose_dir", "")
+        if not pose_dir or not os.path.isdir(pose_dir):
+            print(f"StoryScenePick: pose_dir '{pose_dir}' is invalid")
+            return io.NodeOutput(None, None, None, None, None, "", "", "", "", descriptor.get("scene_name", ""), descriptor.get("scene_order", 0), descriptor.get("scene_id", ""), descriptor.get("job_id", ""), descriptor.get("job_scene_dir", ""), descriptor.get("input_image_path", ""), None)
+
+        scene_config = SceneInStory(
+            scene_id=descriptor.get("scene_id", ""),
+            scene_name=descriptor.get("scene_name", ""),
+            scene_order=descriptor.get("scene_order", 0),
+            mask_type=descriptor.get("mask_type", "combined"),
+            mask_background=descriptor.get("mask_background", True),
+            prompt_type=descriptor.get("prompt_type", "girl_pos"),
+            custom_prompt=descriptor.get("custom_prompt", ""),
+            depth_type=descriptor.get("depth_type", "depth"),
+            pose_type=descriptor.get("pose_type", "open"),
+        )
+
+        prompt_override = descriptor.get("positive_prompt", "")
+
+        try:
+            scene_info, assets, selected_prompt, prompt_data, _ = SceneInfo.from_story_scene(
+                scene_config,
+                pose_dir_override=pose_dir,
+                include_upscale=False,
+                include_canny=True,
+                prompt_override=prompt_override,
+            )
+        except Exception as e:
+            print(f"StoryScenePick: failed to build SceneInfo for '{scene_config.scene_name}': {e}")
+            return io.NodeOutput(None, None, None, None, None, "", "", "", "", descriptor.get("scene_name", ""), descriptor.get("scene_order", 0), descriptor.get("scene_id", ""), descriptor.get("job_id", ""), descriptor.get("job_scene_dir", ""), descriptor.get("input_image_path", ""), None)
+
+        empty_image = make_empty_image()
+        canny_image = assets.get("canny_image", empty_image)
+        mask_image = assets.get("mask_image")
+        mask = assets.get("mask")
+        depth_image = assets.get("depth_image", empty_image)
+        pose_image = assets.get("pose_image", empty_image)
+
+        def select_prompt(descriptor, selected, prompt_data):
+            return (
+                descriptor.get("positive_prompt")
+                or selected
+                or build_positive_prompt(
+                    descriptor.get("prompt_type", ""),
+                    prompt_data,
+                    descriptor.get("custom_prompt", ""),
+                )
+            )
+
+        positive_prompt = select_prompt(descriptor, selected_prompt, prompt_data)
+        wan_prompt_val = descriptor.get("wan_prompt", prompt_data.get("wan_prompt", ""))
+        wan_low_prompt_val = descriptor.get("wan_low_prompt", prompt_data.get("wan_low_prompt", ""))
+        four_image_prompt_val = descriptor.get("four_image_prompt", prompt_data.get("four_image_prompt", ""))
+
+        return io.NodeOutput(
+            mask_image,
+            mask,
+            depth_image,
+            pose_image,
+            canny_image,
+            positive_prompt,
+            wan_prompt_val,
+            wan_low_prompt_val,
+            four_image_prompt_val,
+            descriptor.get("scene_name", ""),
+            descriptor.get("scene_order", 0),
+            descriptor.get("scene_id", ""),
+            descriptor.get("job_id", ""),
+            descriptor.get("job_scene_dir", ""),
+            descriptor.get("input_image_path", ""),
+            scene_info,
+        )
+
+
+class StorySave(io.ComfyNode):
+    """Save the story configuration to a JSON file"""
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("StorySave"),
+            display_name="StorySave",
+            category="🧊 frost-byte/Story",
+            inputs=[
+                io.Custom("STORY_INFO").Input(id="story_info", display_name="story_info", tooltip="Story to save"),
+                io.String.Input(id="filename", display_name="filename", default="story.json", tooltip="Filename for the story JSON"),
+            ],
+            outputs=[
+                io.String.Output(id="save_path", display_name="save_path", tooltip="Path where story was saved"),
+            ],
+            is_output_node=True,
+        )
+    
+    @classmethod
+    def execute(
+        cls,
+        story_info=None,
+        filename="story.json",
+    ) -> io.NodeOutput:
+        if story_info is None:
+            print("StorySave: story_info is None")
+            return io.NodeOutput("")
+        
+        # Ensure story directory exists
+        os.makedirs(story_info.story_dir, exist_ok=True)
+        
+        # Build save path
+        save_path = Path(story_info.story_dir) / filename
+        
+        # Save the story
+        save_story(story_info, str(save_path))
+        
+        print(f"StorySave: Saved story to '{save_path}'")
+        
+        preview_ui = ui.PreviewText(value=f"Story saved to: {save_path}\nScenes: {len(story_info.scenes)}")
+        
+        return io.NodeOutput(
+            str(save_path),
+            ui=preview_ui.as_dict()
+        )
+
+class StoryLoad(io.ComfyNode):
+    """Load a story from a JSON file"""
+    @classmethod
+    def define_schema(cls):
+        default_stories_dir_path = default_stories_dir()
+        stories_subdir_dict = get_subdirectories(default_stories_dir_path)
+        available_stories = sorted(stories_subdir_dict.keys()) if stories_subdir_dict else ["default_story"]
+        
+        return io.Schema(
+            node_id=prefixed_node_id("StoryLoad"),
+            display_name="StoryLoad",
+            category="🧊 frost-byte/Story",
+            inputs=[
+                io.String.Input(id="stories_dir", display_name="stories_dir", default=default_stories_dir_path, tooltip="Directory containing stories"),
+                io.Combo.Input(id="story_name", display_name="story_name", options=available_stories, default=available_stories[0], tooltip="Story to load"),
+                io.String.Input(id="filename", display_name="filename", default="story.json", tooltip="Filename of the story JSON"),
+            ],
+            outputs=[
+                io.Custom("STORY_INFO").Output(id="story_info", display_name="story_info", tooltip="Loaded story information"),
+            ],
+        )
+    
+    @classmethod
+    def execute(
+        cls,
+        stories_dir="",
+        story_name="default_story",
+        filename="story.json",
+    ) -> io.NodeOutput:
+        if not stories_dir:
+            stories_dir = default_stories_dir()
+        
+        story_path = Path(stories_dir) / story_name / filename
+        
+        if not story_path.exists():
+            print(f"StoryLoad: Story file not found at '{story_path}'")
+            return io.NodeOutput(None)
+        
+        story_info = load_story(str(story_path))
+        
+        if story_info:
+            print(f"StoryLoad: Loaded story '{story_info.story_name}' with {len(story_info.scenes)} scenes")
+        else:
+            print(f"StoryLoad: Failed to load story from '{story_path}'")
+        
+        return io.NodeOutput(story_info)
+
 class FBTextEncodeQwenImageEditPlus(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="FBTextEncodeQwenImageEditPlus",
+            node_id=prefixed_node_id("FBTextEncodeQwenImageEditPlus"),
+            display_name="FBTextEncodeQwenImageEditPlus",
             category="🧊 frost-byte/conditioning",
             inputs=[
                 io.Clip.Input("clip"),
@@ -2270,6 +3818,256 @@ class FBTextEncodeQwenImageEditPlus(io.ComfyNode):
         return io.NodeOutput(conditioning)
 
 
+# ============================================================================
+# LIBBER NODES
+# ============================================================================
+
+@io.comfytype(io_type="LIBBER")
+class LibberType:
+    """Custom type for passing Libber instances between nodes."""
+    Type = Libber
+    
+    class Output(io.Output):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+    
+    class Input(io.Input):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+
+class LibberCreate(io.ComfyNode):
+    """Create a new Libber or load from file."""
+    
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("LibberCreate"),
+            display_name="LibberCreate",
+            category="🧊 frost-byte/Libber",
+            inputs=[
+                io.String.Input(id="delimiter", display_name="delimiter", default="%", tooltip="Character(s) used to mark lib references"),
+                io.Int.Input(id="max_depth", display_name="max_depth", default=10, min=1, max=100, tooltip="Maximum recursion depth"),
+            ],
+            outputs=[
+                io.Custom("LIBBER").Output(id="libber", display_name="libber", tooltip="Libber instance"),
+                io.String.Output(id="info", display_name="info", tooltip="Information about the created Libber"),
+            ],
+        )
+    
+    @classmethod
+    def execute(cls, delimiter="%", max_depth=10):
+        libber = Libber(delimiter=delimiter, max_depth=max_depth)
+        info = f"Created new Libber with delimiter='{delimiter}', max_depth={max_depth}"
+        print(f"LibberCreate: {info}")
+        return io.NodeOutput(libber, info)
+
+
+class LibberLoad(io.ComfyNode):
+    """Load a Libber from a JSON file."""
+    
+    @classmethod
+    def define_schema(cls):
+        libber_dir = default_libber_dir()
+        
+        # Get available libber files
+        libber_files = []
+        if os.path.isdir(libber_dir):
+            for f in os.listdir(libber_dir):
+                if f.endswith('.json'):
+                    libber_files.append(f)
+        
+        if not libber_files:
+            libber_files = ["none.json"]
+        
+        return io.Schema(
+            node_id=prefixed_node_id("LibberLoad"),
+            display_name="LibberLoad",
+            category="🧊 frost-byte/Libber",
+            inputs=[
+                io.String.Input(id="libber_dir", display_name="libber_dir", default=libber_dir, tooltip="Directory containing libber files"),
+                io.Combo.Input(id="filename", display_name="filename", options=sorted(libber_files), default=libber_files[0], tooltip="Libber file to load"),
+            ],
+            outputs=[
+                io.Custom("LIBBER").Output(id="libber", display_name="libber", tooltip="Loaded Libber instance"),
+                io.String.Output(id="info", display_name="info", tooltip="Information about the loaded Libber"),
+            ],
+        )
+    
+    @classmethod
+    def execute(cls, libber_dir="", filename="my_libber.json"):
+        if not libber_dir:
+            libber_dir = default_libber_dir()
+        
+        filepath = os.path.join(libber_dir, filename)
+        
+        if not os.path.isfile(filepath):
+            # Create a new empty libber if file doesn't exist
+            libber = Libber()
+            info = f"File not found, created new Libber"
+            print(f"LibberLoad: {info} (tried {filepath})")
+        else:
+            try:
+                libber = Libber.load(filepath)
+                info = f"Loaded Libber from {filename}: {len(libber.libs)} libs, delimiter='{libber.delimiter}', max_depth={libber.max_depth}"
+                print(f"LibberLoad: {info}")
+            except Exception as e:
+                libber = Libber()
+                info = f"Error loading file: {e}"
+                print(f"LibberLoad: {info}")
+        
+        return io.NodeOutput(libber, info)
+
+
+class LibberSave(io.ComfyNode):
+    """Save a Libber to a JSON file."""
+    
+    @classmethod
+    def define_schema(cls):
+        libber_dir = default_libber_dir()
+        
+        return io.Schema(
+            node_id=prefixed_node_id("LibberSave"),
+            display_name="LibberSave",
+            category="🧊 frost-byte/Libber",
+            inputs=[
+                io.Custom("LIBBER").Input(id="libber", display_name="libber", tooltip="Libber instance to save"),
+                io.String.Input(id="libber_dir", display_name="libber_dir", default=libber_dir, tooltip="Directory to save libber files"),
+                io.String.Input(id="filename", display_name="filename", default="my_libber.json", tooltip="Filename for the saved libber"),
+            ],
+            outputs=[
+                io.String.Output(id="save_path", display_name="save_path", tooltip="Path where libber was saved"),
+                io.String.Output(id="info", display_name="info", tooltip="Save confirmation"),
+            ],
+            is_output_node=True,
+        )
+    
+    @classmethod
+    def execute(cls, libber, libber_dir="", filename="my_libber.json"):
+        if not libber_dir:
+            libber_dir = default_libber_dir()
+        
+        os.makedirs(libber_dir, exist_ok=True)
+        filepath = os.path.join(libber_dir, filename)
+        
+        try:
+            libber.save(filepath)
+            info = f"Saved Libber to {filename}: {len(libber.libs)} libs"
+            print(f"LibberSave: {info}")
+        except Exception as e:
+            info = f"Error saving: {e}"
+            print(f"LibberSave: {info}")
+        
+        return io.NodeOutput(filepath, info)
+
+
+class LibberEdit(io.ComfyNode):
+    """Add, remove, or update lib entries in a Libber."""
+    
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("LibberEdit"),
+            display_name="LibberEdit",
+            category="🧊 frost-byte/Libber",
+            inputs=[
+                io.Custom("LIBBER").Input(id="libber", display_name="libber", tooltip="Libber instance to edit", optional=True),
+                io.String.Input(id="libber_json_in", display_name="libber_json_in", default="", multiline=True, tooltip="Serialized libber state (auto-updated after each operation)"),
+                io.Combo.Input(id="data_priority", display_name="action", options=["use_file", "use_edit"], default="use_file", tooltip="Which data source to prioritize when both libber and libber_json_in are provided"),
+                io.Combo.Input(id="operation", display_name="operation", options=["add", "remove", "update", "view"], default="add", tooltip="Operation to perform"),
+                io.Combo.Input(id="key_selector", display_name="key_selector", options=[""], default="", tooltip="Select existing key to edit/remove"),
+                io.String.Input(id="lib_key", display_name="lib_key", default="", tooltip="Key for the lib (lowercase, underscore separator)"),
+                io.String.Input(id="lib_value", display_name="lib_value", default="", multiline=True, tooltip="Value for the lib (can reference other libs)"),
+            ],
+            outputs=[
+                io.Custom("LIBBER").Output(id="libber_out", display_name="libber", tooltip="Updated Libber instance"),
+                io.String.Output(id="lib_list", display_name="lib_list", tooltip="List of all libs in the Libber"),
+            ],
+            is_output_node=True,
+        )
+    
+    @classmethod
+    def execute(cls, libber=None, data_priority="use_file", libber_json_in="", operation="add", key_selector="", lib_key="", lib_value=""):
+        import copy
+        import json
+        libber_copy = copy.deepcopy(libber) if libber else Libber()
+        
+        if libber_json_in and (data_priority == "use_edit" or libber is None):
+            try:
+                libber_data = json.loads(libber_json_in)
+                libber_copy = Libber.from_dict(libber_data)
+            except Exception as e:
+                info = f"Error parsing libber_json_in: {e}"
+                print(f"LibberEdit: {info}")
+                return io.NodeOutput(libber_copy, info, "")
+        
+        # Generate list of all libs
+        lib_list_items = []
+        for key in libber_copy.list_libs():
+            value = libber_copy.get_lib(key)
+            preview = value[:40] + "..." if len(value) > 40 else value
+            lib_list_items.append(f"  {key}: {preview}")
+        
+        lib_list = f"Libs ({len(libber_copy.libs)}):\n" + "\n".join(lib_list_items) if lib_list_items else "No libs defined"
+        
+        # Serialize libber to JSON for persistence
+        libber_json = json.dumps(libber_copy.to_dict(), indent=2)
+        
+        # Create key selector options (empty string first for "new key" mode)
+        key_options = [""] + libber_copy.list_libs()
+        key_options_json = json.dumps(key_options)
+        
+        # Create key-value mapping for JS to populate lib_value when key selected
+        key_value_map = {key: libber_copy.get_lib(key) for key in libber_copy.list_libs()}
+        key_value_map_json = json.dumps(key_value_map)
+        
+        # Combine UI elements - text array will contain:
+        # [0]=libber_json, [1]=key_options_json, [2]=key_value_map_json
+        combined_ui = {
+            "text": [libber_json, key_options_json, key_value_map_json]
+        }
+        
+        return io.NodeOutput(libber_copy, lib_list, ui=combined_ui)
+
+
+class LibberApply(io.ComfyNode):
+    """Apply Libber substitution to a text string."""
+    
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("LibberApply"),
+            display_name="LibberApply",
+            category="🧊 frost-byte/Libber",
+            inputs=[
+                io.Custom("LIBBER").Input(id="libber", display_name="libber", tooltip="Libber instance to use for substitution"),
+                io.String.Input(id="text", display_name="text", default="", multiline=True, tooltip="Input text with lib references (e.g., 'A %chunky% character')"),
+            ],
+            outputs=[
+                io.String.Output(id="result", display_name="result", tooltip="Text with all lib references substituted"),
+                io.String.Output(id="info", display_name="info", tooltip="Substitution details"),
+            ],
+        )
+    
+    @classmethod
+    def execute(cls, libber, text=""):
+        if not text:
+            return io.NodeOutput("", "No input text provided")
+        
+        try:
+            result = libber.substitute(text)
+            info = f"Substituted text using {len(libber.libs)} libs (max_depth={libber.max_depth})"
+            print(f"LibberApply: {info}")
+            print(f"  Input:  {text[:100]}...")
+            print(f"  Output: {result[:100]}...")
+        except Exception as e:
+            result = text
+            info = f"Error during substitution: {e}"
+            print(f"LibberApply: {info}")
+        
+        return io.NodeOutput(result, info)
+
+
 class FBToolsExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
@@ -2278,7 +4076,7 @@ class FBToolsExtension(ComfyExtension):
             SAMPreprocessNHWC,
             QwenAspectRatio,
             SubdirLister,
-            NodeInputSelect,
+            # NodeInputSelect,
             SceneCreate,
             SceneUpdate,
             SceneSave,
@@ -2286,7 +4084,20 @@ class FBToolsExtension(ComfyExtension):
             SceneOutput,
             SceneView,
             SceneSelect,
+            StorySceneBatch,
+            StoryScenePick,
+            StoryCreate,
+            StoryEdit,
+            StoryView,
+            StorySave,
+            StoryLoad,
             OpaqueAlpha,
             TailSplit,
             TailEnhancePro,
+            # Libber nodes
+            LibberCreate,
+            LibberLoad,
+            LibberSave,
+            LibberEdit,
+            LibberApply,
         ]
