@@ -1,5 +1,5 @@
 /**
- * Libber REST API Client (stub for future implementation)
+ * Libber REST API Client
  * Handles Libber placeholder management operations.
  */
 
@@ -12,23 +12,42 @@ export class LibberAPI extends BaseAPI {
 
     /**
      * Create a new Libber session
-     * @param {object|null} initialData - Optional initial Libber data
-     * @returns {Promise<{session_id: string, libber: object}>}
+     * @param {string} name - Name for the Libber instance
+     * @param {string} delimiter - Delimiter for lib references (default "%")
+     * @param {number} maxDepth - Maximum substitution depth (default 10)
+     * @returns {Promise<{name: string, keys: string[], status: string}>}
      */
-    async createSession(initialData = null) {
-        return await this.post("/create", { libber: initialData });
+    async createLibber(name, delimiter = "%", maxDepth = 10) {
+        return await this.post("/create", { 
+            name,
+            delimiter,
+            max_depth: maxDepth
+        });
+    }
+
+    /**
+     * Load a Libber from file
+     * @param {string} name - Name for the Libber instance
+     * @param {string} filepath - Path to the JSON file
+     * @returns {Promise<{name: string, keys: string[], status: string}>}
+     */
+    async loadLibber(name, filepath) {
+        return await this.post("/load", {
+            name,
+            filepath,
+        });
     }
 
     /**
      * Add a lib entry to Libber
-     * @param {string} sessionId - Libber session identifier
+     * @param {string} name - Libber name
      * @param {string} key - Lib key
      * @param {string} value - Lib value
-     * @returns {Promise<{libber: object, keys: string[]}>}
+     * @returns {Promise<{name: string, keys: string[], status: string}>}
      */
-    async addLib(sessionId, key, value) {
+    async addLib(name, key, value) {
         return await this.post("/add_lib", {
-            session_id: sessionId,
+            name,
             key,
             value,
         });
@@ -36,47 +55,56 @@ export class LibberAPI extends BaseAPI {
 
     /**
      * Remove a lib entry from Libber
-     * @param {string} sessionId - Libber session identifier
+     * @param {string} name - Libber name
      * @param {string} key - Lib key to remove
-     * @returns {Promise<{libber: object, keys: string[]}>}
+     * @returns {Promise<{name: string, keys: string[], status: string}>}
      */
-    async removeLib(sessionId, key) {
+    async removeLib(name, key) {
         return await this.post("/remove_lib", {
-            session_id: sessionId,
+            name,
             key,
         });
     }
 
     /**
-     * Get all keys from Libber
-     * @param {string} sessionId - Libber session identifier
-     * @returns {Promise<{keys: string[]}>}
+     * Save a Libber to file
+     * @param {string} name - Libber name
+     * @param {string} filepath - Path where to save the JSON file
+     * @returns {Promise<{name: string, filepath: string, status: string}>}
      */
-    async getKeys(sessionId) {
-        return await this.get("/keys", { session_id: sessionId });
-    }
-
-    /**
-     * Get a specific lib value
-     * @param {string} sessionId - Libber session identifier
-     * @param {string} key - Lib key to retrieve
-     * @returns {Promise<{key: string, value: string}>}
-     */
-    async getLib(sessionId, key) {
-        return await this.get(`/get_lib/${encodeURIComponent(key)}`, {
-            session_id: sessionId,
+    async saveLibber(name, filepath) {
+        return await this.post("/save", {
+            name,
+            filepath,
         });
     }
 
     /**
-     * Apply Libber substitutions to text
-     * @param {string} sessionId - Libber session identifier
-     * @param {string} text - Text to process
-     * @returns {Promise<{result: string}>}
+     * List all available libbers
+     * @returns {Promise<{libbers: string[], files: string[], count: number}>}
      */
-    async applySubstitutions(sessionId, text) {
+    async listLibbers() {
+        return await this.get("/list");
+    }
+
+    /**
+     * Get Libber data for UI display
+     * @param {string} name - Libber name
+     * @returns {Promise<{keys: string[], lib_dict: object, delimiter: string, max_depth: number}>}
+     */
+    async getLibberData(name) {
+        return await this.get(`/get_data/${encodeURIComponent(name)}`);
+    }
+
+    /**
+     * Apply Libber substitutions to text
+     * @param {string} name - Libber name
+     * @param {string} text - Text to process
+     * @returns {Promise<{result: string, original: string, name: string}>}
+     */
+    async applySubstitutions(name, text) {
         return await this.post("/apply", {
-            session_id: sessionId,
+            name,
             text,
         });
     }

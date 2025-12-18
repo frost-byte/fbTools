@@ -7,7 +7,7 @@
  *   3. npm test
  */
 
-import { PromptCollectionAPI } from "../api/prompt_collection.js";
+import { PromptCollectionAPI } from "../js/api/prompt_collection.js";
 import {
     mockFetch,
     createMockApp,

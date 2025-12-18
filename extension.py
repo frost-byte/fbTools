@@ -3852,49 +3852,8 @@ class FBTextEncodeQwenImageEditPlus(io.ComfyNode):
 # LIBBER NODES
 # ============================================================================
 
-@io.comfytype(io_type="LIBBER")
-class LibberType:
-    """Custom type for passing Libber instances between nodes."""
-    Type = Libber
-    
-    class Output(io.Output):
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
-    
-    class Input(io.Input):
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
-
-
-class LibberCreate(io.ComfyNode):
-    """Create a new Libber or load from file."""
-    
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id=prefixed_node_id("LibberCreate"),
-            display_name="LibberCreate",
-            category="🧊 frost-byte/Libber",
-            inputs=[
-                io.String.Input(id="delimiter", display_name="delimiter", default="%", tooltip="Character(s) used to mark lib references"),
-                io.Int.Input(id="max_depth", display_name="max_depth", default=10, min=1, max=100, tooltip="Maximum recursion depth"),
-            ],
-            outputs=[
-                io.Custom("LIBBER").Output(id="libber", display_name="libber", tooltip="Libber instance"),
-                io.String.Output(id="info", display_name="info", tooltip="Information about the created Libber"),
-            ],
-        )
-    
-    @classmethod
-    def execute(cls, delimiter="%", max_depth=10):
-        libber = Libber(delimiter=delimiter, max_depth=max_depth)
-        info = f"Created new Libber with delimiter='{delimiter}', max_depth={max_depth}"
-        print(f"LibberCreate: {info}")
-        return io.NodeOutput(libber, info)
-
-
-class LibberLoad(io.ComfyNode):
-    """Load a Libber from a JSON file."""
+class LibberManager(io.ComfyNode):
+    """Manage Libber instances - create, load, save, and edit libs."""
     
     @classmethod
     def define_schema(cls):
@@ -3911,192 +3870,262 @@ class LibberLoad(io.ComfyNode):
             libber_files = ["none.json"]
         
         return io.Schema(
-            node_id=prefixed_node_id("LibberLoad"),
-            display_name="LibberLoad",
+            node_id=prefixed_node_id("LibberManager"),
+            display_name="LibberManager",
             category="🧊 frost-byte/Libber",
             inputs=[
-                io.String.Input(id="libber_dir", display_name="libber_dir", default=libber_dir, tooltip="Directory containing libber files"),
-                io.Combo.Input(id="filename", display_name="filename", options=sorted(libber_files), default=libber_files[0], tooltip="Libber file to load"),
+                io.Combo.Input(
+                    id="operation",
+                    display_name="operation",
+                    options=["create", "load", "add_lib", "remove_lib", "save"],
+                    default="create",
+                    tooltip="Operation to perform on the Libber"
+                ),
+                io.String.Input(
+                    id="libber_name",
+                    display_name="libber_name",
+                    default="my_libber",
+                    tooltip="Name of the Libber instance (used to reference it)"
+                ),
+                io.Combo.Input(
+                    id="filename",
+                    display_name="filename",
+                    options=sorted(libber_files),
+                    default=libber_files[0],
+                    tooltip="Filename for load/save operations"
+                ),
+                io.String.Input(
+                    id="libber_dir",
+                    display_name="libber_dir",
+                    default=libber_dir,
+                    tooltip="Directory for libber files"
+                ),
+                io.Combo.Input(
+                    id="key_selector",
+                    display_name="key_selector",
+                    options=[""],
+                    default="",
+                    tooltip="Select existing key (populated by REST API)"
+                ),
+                io.String.Input(
+                    id="lib_key",
+                    display_name="lib_key",
+                    default="",
+                    tooltip="Key for add/remove operations"
+                ),
+                io.String.Input(
+                    id="lib_value",
+                    display_name="lib_value",
+                    default="",
+                    multiline=True,
+                    tooltip="Value for add operation"
+                ),
+                io.String.Input(
+                    id="delimiter",
+                    display_name="delimiter",
+                    default="%",
+                    tooltip="Delimiter for lib references (create only)"
+                ),
+                io.Int.Input(
+                    id="max_depth",
+                    display_name="max_depth",
+                    default=10,
+                    min=1,
+                    max=100,
+                    tooltip="Maximum substitution depth (create only)"
+                ),
             ],
             outputs=[
-                io.Custom("LIBBER").Output(id="libber", display_name="libber", tooltip="Loaded Libber instance"),
-                io.String.Output(id="info", display_name="info", tooltip="Information about the loaded Libber"),
-            ],
-        )
-    
-    @classmethod
-    def execute(cls, libber_dir="", filename="my_libber.json"):
-        if not libber_dir:
-            libber_dir = default_libber_dir()
-        
-        filepath = os.path.join(libber_dir, filename)
-        
-        if not os.path.isfile(filepath):
-            # Create a new empty libber if file doesn't exist
-            libber = Libber()
-            info = f"File not found, created new Libber"
-            print(f"LibberLoad: {info} (tried {filepath})")
-        else:
-            try:
-                libber = Libber.load(filepath)
-                info = f"Loaded Libber from {filename}: {len(libber.libs)} libs, delimiter='{libber.delimiter}', max_depth={libber.max_depth}"
-                print(f"LibberLoad: {info}")
-            except Exception as e:
-                libber = Libber()
-                info = f"Error loading file: {e}"
-                print(f"LibberLoad: {info}")
-        
-        return io.NodeOutput(libber, info)
-
-
-class LibberSave(io.ComfyNode):
-    """Save a Libber to a JSON file."""
-    
-    @classmethod
-    def define_schema(cls):
-        libber_dir = default_libber_dir()
-        
-        return io.Schema(
-            node_id=prefixed_node_id("LibberSave"),
-            display_name="LibberSave",
-            category="🧊 frost-byte/Libber",
-            inputs=[
-                io.Custom("LIBBER").Input(id="libber", display_name="libber", tooltip="Libber instance to save"),
-                io.String.Input(id="libber_dir", display_name="libber_dir", default=libber_dir, tooltip="Directory to save libber files"),
-                io.String.Input(id="filename", display_name="filename", default="my_libber.json", tooltip="Filename for the saved libber"),
-            ],
-            outputs=[
-                io.String.Output(id="save_path", display_name="save_path", tooltip="Path where libber was saved"),
-                io.String.Output(id="info", display_name="info", tooltip="Save confirmation"),
+                io.String.Output(id="status", display_name="status", tooltip="Operation status and info"),
+                io.String.Output(id="keys_list", display_name="keys_list", tooltip="List of all lib keys"),
             ],
             is_output_node=True,
         )
     
     @classmethod
-    def execute(cls, libber, libber_dir="", filename="my_libber.json"):
+    def execute(cls, operation="create", libber_name="my_libber", filename="my_libber.json",
+                libber_dir="", key_selector="", lib_key="", lib_value="", delimiter="%", max_depth=10):
+        
         if not libber_dir:
             libber_dir = default_libber_dir()
         
-        os.makedirs(libber_dir, exist_ok=True)
-        filepath = os.path.join(libber_dir, filename)
+        manager = LibberStateManager.instance()
         
         try:
-            libber.save(filepath)
-            info = f"Saved Libber to {filename}: {len(libber.libs)} libs"
-            print(f"LibberSave: {info}")
-        except Exception as e:
-            info = f"Error saving: {e}"
-            print(f"LibberSave: {info}")
-        
-        return io.NodeOutput(filepath, info)
-
-
-class LibberEdit(io.ComfyNode):
-    """Add, remove, or update lib entries in a Libber."""
-    
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id=prefixed_node_id("LibberEdit"),
-            display_name="LibberEdit",
-            category="🧊 frost-byte/Libber",
-            inputs=[
-                io.Custom("LIBBER").Input(id="libber", display_name="libber", tooltip="Libber instance to edit", optional=True),
-                io.String.Input(id="libber_json_in", display_name="libber_json_in", default="", multiline=True, tooltip="Serialized libber state (auto-updated after each operation)"),
-                io.Combo.Input(id="data_priority", display_name="action", options=["use_file", "use_edit"], default="use_file", tooltip="Which data source to prioritize when both libber and libber_json_in are provided"),
-                io.Combo.Input(id="operation", display_name="operation", options=["add", "remove", "update", "view"], default="add", tooltip="Operation to perform"),
-                io.Combo.Input(id="key_selector", display_name="key_selector", options=[""], default="", tooltip="Select existing key to edit/remove"),
-                io.String.Input(id="lib_key", display_name="lib_key", default="", tooltip="Key for the lib (lowercase, underscore separator)"),
-                io.String.Input(id="lib_value", display_name="lib_value", default="", multiline=True, tooltip="Value for the lib (can reference other libs)"),
-            ],
-            outputs=[
-                io.Custom("LIBBER").Output(id="libber_out", display_name="libber", tooltip="Updated Libber instance"),
-                io.String.Output(id="lib_list", display_name="lib_list", tooltip="List of all libs in the Libber"),
-            ],
-            is_output_node=True,
-        )
-    
-    @classmethod
-    def execute(cls, libber=None, data_priority="use_file", libber_json_in="", operation="add", key_selector="", lib_key="", lib_value=""):
-        import copy
-        import json
-        libber_copy = copy.deepcopy(libber) if libber else Libber()
-        
-        if libber_json_in and (data_priority == "use_edit" or libber is None):
-            try:
-                libber_data = json.loads(libber_json_in)
-                libber_copy = Libber.from_dict(libber_data)
-            except Exception as e:
-                info = f"Error parsing libber_json_in: {e}"
-                print(f"LibberEdit: {info}")
-                return io.NodeOutput(libber_copy, info, "")
-        
-        # Generate list of all libs
-        lib_list_items = []
-        for key in libber_copy.list_libs():
-            value = libber_copy.get_lib(key)
-            if value is None:
-                preview = "(empty)"
+            if operation == "create":
+                libber = manager.create_libber(libber_name, delimiter, max_depth)
+                keys = libber.list_libs()
+                status = f"✓ Created libber '{libber_name}' with delimiter='{delimiter}', max_depth={max_depth}"
+                
+            elif operation == "load":
+                filepath = os.path.join(libber_dir, filename)
+                if not os.path.isfile(filepath):
+                    status = f"✗ File not found: {filepath}"
+                    keys = []
+                else:
+                    libber = manager.load_libber(libber_name, filepath)
+                    keys = libber.list_libs()
+                    status = f"✓ Loaded libber '{libber_name}' from {filename} ({len(keys)} libs)"
+                
+            elif operation == "add_lib":
+                libber = manager.get_libber(libber_name)
+                if not libber:
+                    status = f"✗ Libber '{libber_name}' not found. Create or load it first."
+                    keys = []
+                else:
+                    if not lib_key:
+                        status = f"✗ lib_key required for add_lib operation"
+                        keys = libber.list_libs()
+                    else:
+                        libber.add_lib(lib_key, lib_value)
+                        keys = libber.list_libs()
+                        status = f"✓ Added lib '{lib_key}' to '{libber_name}' ({len(keys)} libs total)"
+                
+            elif operation == "remove_lib":
+                libber = manager.get_libber(libber_name)
+                if not libber:
+                    status = f"✗ Libber '{libber_name}' not found. Create or load it first."
+                    keys = []
+                else:
+                    # Use key_selector if lib_key is empty
+                    key_to_remove = lib_key if lib_key else key_selector
+                    if not key_to_remove:
+                        status = f"✗ lib_key or key_selector required for remove_lib operation"
+                        keys = libber.list_libs()
+                    else:
+                        libber.remove_lib(key_to_remove)
+                        keys = libber.list_libs()
+                        status = f"✓ Removed lib '{key_to_remove}' from '{libber_name}' ({len(keys)} libs remaining)"
+                
+            elif operation == "save":
+                libber = manager.get_libber(libber_name)
+                if not libber:
+                    status = f"✗ Libber '{libber_name}' not found. Create or load it first."
+                    keys = []
+                else:
+                    os.makedirs(libber_dir, exist_ok=True)
+                    filepath = os.path.join(libber_dir, filename)
+                    manager.save_libber(libber_name, filepath)
+                    keys = libber.list_libs()
+                    status = f"✓ Saved libber '{libber_name}' to {filename} ({len(keys)} libs)"
+            
             else:
-                preview = value[:40] + "..." if len(value) > 40 else value
-            lib_list_items.append(f"  {key}: {preview}")
-        
-        lib_list = f"Libs ({len(libber_copy.libs)}):\n" + "\n".join(lib_list_items) if lib_list_items else "No libs defined"
-        
-        # Serialize libber to JSON for persistence
-        libber_json = json.dumps(libber_copy.to_dict(), indent=2)
-        
-        # Create key selector options (empty string first for "new key" mode)
-        key_options = [""] + libber_copy.list_libs()
-        key_options_json = json.dumps(key_options)
-        
-        # Create key-value mapping for JS to populate lib_value when key selected
-        key_value_map = {key: libber_copy.get_lib(key) for key in libber_copy.list_libs()}
-        key_value_map_json = json.dumps(key_value_map)
-        
-        # Combine UI elements - text array will contain:
-        # [0]=libber_json, [1]=key_options_json, [2]=key_value_map_json
-        combined_ui = {
-            "text": [libber_json, key_options_json, key_value_map_json]
-        }
-        
-        return io.NodeOutput(libber_copy, lib_list, ui=combined_ui)
+                status = f"✗ Unknown operation: {operation}"
+                keys = []
+            
+            # Format keys list for display
+            keys_display = "\n".join(keys) if keys else "(no libs)"
+            
+            # Return UI data for dynamic updates
+            keys_json = json.dumps(keys)
+            
+            # Get libber data for UI display if libber exists
+            libber_data = manager.get_libber_data(libber_name)
+            if libber_data:
+                lib_dict_json = json.dumps(libber_data["lib_dict"])
+            else:
+                lib_dict_json = json.dumps({})
+            
+            combined_ui = {
+                "text": [keys_json, lib_dict_json, status]
+            }
+            
+            print(f"LibberManager: {status}")
+            return io.NodeOutput(status, keys_display, ui=combined_ui)
+            
+        except Exception as e:
+            status = f"✗ Error: {str(e)}"
+            print(f"LibberManager error: {status}")
+            return io.NodeOutput(status, "")
 
 
 class LibberApply(io.ComfyNode):
-    """Apply Libber substitution to a text string."""
+    """Apply Libber substitutions to text with libber selection."""
     
     @classmethod
     def define_schema(cls):
+        manager = LibberStateManager.instance()
+        available_libbers = manager.list_libbers()
+        
+        if not available_libbers:
+            available_libbers = ["none"]
+        
         return io.Schema(
             node_id=prefixed_node_id("LibberApply"),
             display_name="LibberApply",
             category="🧊 frost-byte/Libber",
             inputs=[
-                io.Custom("LIBBER").Input(id="libber", display_name="libber", tooltip="Libber instance to use for substitution"),
-                io.String.Input(id="text", display_name="text", default="", multiline=True, tooltip="Input text with lib references (e.g., 'A %chunky% character')"),
+                io.Combo.Input(
+                    id="libber_name",
+                    display_name="libber_name",
+                    options=available_libbers,
+                    default=available_libbers[0],
+                    tooltip="Select which Libber to use"
+                ),
+                io.String.Input(
+                    id="text",
+                    display_name="text",
+                    default="",
+                    multiline=True,
+                    tooltip="Input text with lib references (e.g., 'A %chunky% character')"
+                ),
             ],
             outputs=[
                 io.String.Output(id="result", display_name="result", tooltip="Text with all lib references substituted"),
-                io.String.Output(id="info", display_name="info", tooltip="Substitution details"),
+                io.String.Output(id="info", display_name="info", tooltip="Substitution details and available libs"),
             ],
         )
     
     @classmethod
-    def execute(cls, libber, text=""):
+    def execute(cls, libber_name="my_libber", text=""):
+        manager = LibberStateManager.instance()
+        libber = manager.get_libber(libber_name)
+        
+        if not libber:
+            status = f"✗ Libber '{libber_name}' not found. Create or load it in LibberManager first."
+            print(f"LibberApply: {status}")
+            return io.NodeOutput(text, status)
+        
         if not text:
-            return io.NodeOutput("", "No input text provided")
+            # Display available libs when no text provided
+            keys = libber.list_libs()
+            info_parts = [f"Libber '{libber_name}' ready ({len(keys)} libs)"]
+            if keys:
+                info_parts.append("\nAvailable libs:")
+                for key in keys[:10]:  # Show first 10
+                    value = libber.get_lib(key) or ""
+                    preview = value[:40] + "..." if len(value) > 40 else value
+                    info_parts.append(f"  {key}: {preview}")
+                if len(keys) > 10:
+                    info_parts.append(f"  ... and {len(keys) - 10} more")
+            else:
+                info_parts.append("(no libs defined yet)")
+            
+            info = "\n".join(info_parts)
+            return io.NodeOutput("", info)
         
         try:
             result = libber.substitute(text)
-            info = f"Substituted text using {len(libber.libs)} libs (max_depth={libber.max_depth})"
+            keys = libber.list_libs()
+            info = f"✓ Substituted using libber '{libber_name}' ({len(keys)} libs, max_depth={libber.max_depth})"
             print(f"LibberApply: {info}")
             print(f"  Input:  {text[:100]}...")
             print(f"  Output: {result[:100]}...")
+            
+            # Provide UI data showing available libs
+            libber_data = manager.get_libber_data(libber_name)
+            if libber_data:
+                lib_dict_json = json.dumps(libber_data["lib_dict"])
+                combined_ui = {"text": [lib_dict_json, info]}
+                return io.NodeOutput(result, info, ui=combined_ui)
+            
+            return io.NodeOutput(result, info)
+            
         except Exception as e:
             result = text
-            info = f"Error during substitution: {e}"
+            info = f"✗ Error during substitution: {e}"
             print(f"LibberApply: {info}")
+            return io.NodeOutput(result, info)
         
         return io.NodeOutput(result, info)
 
@@ -4160,6 +4189,71 @@ class PromptCollectionStateManager:
         if session_id in self.sessions:
             self.sessions[session_id]["collection"] = collection
             self.sessions[session_id]["last_access"] = datetime.now()
+
+
+class LibberStateManager:
+    """
+    Manages server-side Libber instances for REST API operations.
+    Libbers are stored by name and persist until explicitly deleted or server restart.
+    """
+    _instance = None
+    
+    def __init__(self):
+        self.libbers = {}  # libber_name -> Libber instance
+    
+    @classmethod
+    def instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def create_libber(self, name: str, delimiter: str = "%", max_depth: int = 10) -> Libber:
+        """Create a new Libber instance."""
+        libber = Libber(lib_dict={}, delimiter=delimiter, max_depth=max_depth)
+        self.libbers[name] = libber
+        print(f"LibberStateManager: Created libber '{name}'")
+        return libber
+    
+    def load_libber(self, name: str, filepath: str) -> Libber:
+        """Load a Libber from file."""
+        libber = Libber.load(filepath)
+        self.libbers[name] = libber
+        print(f"LibberStateManager: Loaded libber '{name}' from {filepath}")
+        return libber
+    
+    def get_libber(self, name: str) -> Optional[Libber]:
+        """Get a Libber by name."""
+        return self.libbers.get(name)
+    
+    def save_libber(self, name: str, filepath: str):
+        """Save a Libber to file."""
+        if name in self.libbers:
+            self.libbers[name].save(filepath)
+            print(f"LibberStateManager: Saved libber '{name}' to {filepath}")
+        else:
+            raise ValueError(f"Libber '{name}' not found")
+    
+    def list_libbers(self) -> List[str]:
+        """List all loaded libber names."""
+        return list(self.libbers.keys())
+    
+    def delete_libber(self, name: str):
+        """Remove a Libber from memory."""
+        if name in self.libbers:
+            del self.libbers[name]
+            print(f"LibberStateManager: Deleted libber '{name}'")
+    
+    def get_libber_data(self, name: str) -> Optional[dict]:
+        """Get Libber data for UI display."""
+        if name in self.libbers:
+            libber = self.libbers[name]
+            return {
+                "keys": libber.list_libs(),
+                "lib_dict": libber.libs.copy(),
+                "delimiter": libber.delimiter,
+                "max_depth": libber.max_depth
+            }
+        return None
 
 
 # Register REST API endpoints
@@ -4307,6 +4401,258 @@ async def list_prompt_names(request):
         }, status=500)
 
 
+# ============================================================================
+# LIBBER REST API ENDPOINTS
+# ============================================================================
+
+@PromptServer.instance.routes.post("/fbtools/libber/create")
+async def libber_create(request):
+    """
+    Create a new Libber instance.
+    Body: {"name": str, "delimiter": str (optional), "max_depth": int (optional)}
+    Returns: {"name": str, "keys": [], "status": "created"}
+    """
+    try:
+        data = await request.json()
+        name = data.get("name")
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        
+        delimiter = data.get("delimiter", "%")
+        max_depth = data.get("max_depth", 10)
+        
+        manager = LibberStateManager.instance()
+        libber = manager.create_libber(name, delimiter, max_depth)
+        
+        return web.json_response({
+            "name": name,
+            "keys": libber.list_libs(),
+            "delimiter": libber.delimiter,
+            "max_depth": libber.max_depth,
+            "status": "created"
+        })
+    
+    except Exception as e:
+        print(f"Error creating libber: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/fbtools/libber/load")
+async def libber_load(request):
+    """
+    Load a Libber from file.
+    Body: {"name": str, "filepath": str}
+    Returns: {"name": str, "keys": [...], "status": "loaded"}
+    """
+    try:
+        data = await request.json()
+        name = data.get("name")
+        filepath = data.get("filepath")
+        
+        if not name or not filepath:
+            return web.json_response({"error": "name and filepath required"}, status=400)
+        
+        manager = LibberStateManager.instance()
+        libber = manager.load_libber(name, filepath)
+        
+        return web.json_response({
+            "name": name,
+            "keys": libber.list_libs(),
+            "delimiter": libber.delimiter,
+            "max_depth": libber.max_depth,
+            "status": "loaded"
+        })
+    
+    except Exception as e:
+        print(f"Error loading libber: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/fbtools/libber/add_lib")
+async def libber_add_lib(request):
+    """
+    Add a lib entry to a Libber.
+    Body: {"name": str, "key": str, "value": str}
+    Returns: {"name": str, "keys": [...], "status": "added"}
+    """
+    try:
+        data = await request.json()
+        name = data.get("name")
+        key = data.get("key")
+        value = data.get("value")
+        
+        if not all([name, key, value is not None]):
+            return web.json_response({"error": "name, key, and value required"}, status=400)
+        
+        manager = LibberStateManager.instance()
+        libber = manager.get_libber(name)
+        
+        if not libber:
+            return web.json_response({"error": f"Libber '{name}' not found"}, status=404)
+        
+        libber.add_lib(key, value)
+        
+        return web.json_response({
+            "name": name,
+            "keys": libber.list_libs(),
+            "status": "added",
+            "key": key
+        })
+    
+    except Exception as e:
+        print(f"Error adding lib: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/fbtools/libber/remove_lib")
+async def libber_remove_lib(request):
+    """
+    Remove a lib entry from a Libber.
+    Body: {"name": str, "key": str}
+    Returns: {"name": str, "keys": [...], "status": "removed"}
+    """
+    try:
+        data = await request.json()
+        name = data.get("name")
+        key = data.get("key")
+        
+        if not name or not key:
+            return web.json_response({"error": "name and key required"}, status=400)
+        
+        manager = LibberStateManager.instance()
+        libber = manager.get_libber(name)
+        
+        if not libber:
+            return web.json_response({"error": f"Libber '{name}' not found"}, status=404)
+        
+        libber.remove_lib(key)
+        
+        return web.json_response({
+            "name": name,
+            "keys": libber.list_libs(),
+            "status": "removed",
+            "key": key
+        })
+    
+    except Exception as e:
+        print(f"Error removing lib: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/fbtools/libber/save")
+async def libber_save(request):
+    """
+    Save a Libber to file.
+    Body: {"name": str, "filepath": str}
+    Returns: {"name": str, "filepath": str, "status": "saved"}
+    """
+    try:
+        data = await request.json()
+        name = data.get("name")
+        filepath = data.get("filepath")
+        
+        if not name or not filepath:
+            return web.json_response({"error": "name and filepath required"}, status=400)
+        
+        manager = LibberStateManager.instance()
+        manager.save_libber(name, filepath)
+        
+        return web.json_response({
+            "name": name,
+            "filepath": filepath,
+            "status": "saved"
+        })
+    
+    except Exception as e:
+        print(f"Error saving libber: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/fbtools/libber/list")
+async def libber_list(request):
+    """
+    List all available libbers in memory and on disk.
+    Returns: {"libbers": [...], "files": [...]}
+    """
+    try:
+        manager = LibberStateManager.instance()
+        libbers = manager.list_libbers()
+        
+        # Also scan default directory for available files
+        libber_dir = default_libber_dir()
+        files = []
+        if os.path.exists(libber_dir):
+            files = [f for f in os.listdir(libber_dir) if f.endswith('.json')]
+        
+        return web.json_response({
+            "libbers": libbers,
+            "files": files,
+            "count": len(libbers)
+        })
+    
+    except Exception as e:
+        print(f"Error listing libbers: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/fbtools/libber/get_data/{name}")
+async def libber_get_data(request):
+    """
+    Get Libber data for UI display.
+    Returns: {"keys": [...], "lib_dict": {...}, "delimiter": str, "max_depth": int}
+    """
+    try:
+        name = request.match_info.get("name")
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        
+        manager = LibberStateManager.instance()
+        data = manager.get_libber_data(name)
+        
+        if not data:
+            return web.json_response({"error": f"Libber '{name}' not found"}, status=404)
+        
+        return web.json_response(data)
+    
+    except Exception as e:
+        print(f"Error getting libber data: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/fbtools/libber/apply")
+async def libber_apply(request):
+    """
+    Apply Libber substitutions to text.
+    Body: {"name": str, "text": str}
+    Returns: {"result": str, "original": str}
+    """
+    try:
+        data = await request.json()
+        name = data.get("name")
+        text = data.get("text")
+        
+        if not name or text is None:
+            return web.json_response({"error": "name and text required"}, status=400)
+        
+        manager = LibberStateManager.instance()
+        libber = manager.get_libber(name)
+        
+        if not libber:
+            return web.json_response({"error": f"Libber '{name}' not found"}, status=404)
+        
+        result = libber.substitute(text)
+        
+        return web.json_response({
+            "result": result,
+            "original": text,
+            "name": name
+        })
+    
+    except Exception as e:
+        print(f"Error applying libber: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 class FBToolsExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
@@ -4334,9 +4680,6 @@ class FBToolsExtension(ComfyExtension):
             TailSplit,
             TailEnhancePro,
             # Libber nodes
-            LibberCreate,
-            LibberLoad,
-            LibberSave,
-            LibberEdit,
+            LibberManager,
             LibberApply,
         ]

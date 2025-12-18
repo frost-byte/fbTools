@@ -16,13 +16,13 @@
   "jest": {
     "testEnvironment": "jsdom",
     "testMatch": [
-      "**/tests/**/*.test.js"
+      "**/js-tests/**/*.test.js"
     ],
     "transform": {},
     "collectCoverageFrom": [
-      "api/**/*.js",
-      "utils/**/*.js",
-      "ui/**/*.js"
+      "js/api/**/*.js",
+      "js/utils/**/*.js",
+      "js/ui/**/*.js"
     ]
   }
 }

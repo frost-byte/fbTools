@@ -33,8 +33,9 @@ const NODE_WIDGET_MAP = {
         { widget_index: 2, widget_name: "story_json_in" },
         { widget_index: 4, widget_name: "story_scene_selector", widget_type: "combo" },
     ],
-    [`${EXT_PREFIX}LibberEdit`]: [
-        { widget_index: 0, widget_name: "libber_json_in" },
+    [`${EXT_PREFIX}LibberManager`]: [
+        // text[0]=keys_json, text[1]=lib_dict_json, text[2]=status
+        { widget_index: 0, widget_name: "key_selector", widget_type: "combo" },
     ],
 };
 
@@ -542,309 +543,434 @@ app.registerExtension({
             };
         }
         
-        if (isNode("LibberEdit")) {
-            console.log("fb_tools -> LibberEdit node detected");
+        if (isNode("LibberManager")) {
+            console.log("fb_tools -> LibberManager node detected");
             
-            const onWidgetChanged = nodeType.prototype.onWidgetChanged;
-            nodeType.prototype.onWidgetChanged = function (widgetName, newValue, oldValue, widgetObject) {
-                const originalReturn = onWidgetChanged?.apply(this, arguments);
-                const keySelectorWidget = this.widgets.find((w) => w.name === "key_selector");
-                const libValueWidget = this.widgets.find((w) => w.name === "lib_value");
-                const libKeyWidget = this.widgets.find((w) => w.name === "lib_key");
-                const currentKey = keySelectorWidget ? keySelectorWidget.value : null;
-                const buttonWidget = this.widgets.find((w) => w.type === "button");
-                const jsonInWidget = this.widgets.find((w) => w.name === "libber_json_in");
-                const libsJson = jsonInWidget && jsonInWidget.value ? JSON.parse(jsonInWidget.value) : {};
-                const libs = libsJson.libs || {};
-                const keys = Object.keys(libs).sort();
-                if (widgetName === "operation") {
-                    console.log("fbTools -> LibberEdit: operation changed to", newValue);
-                    // Clear key_selector, lib_value, lib_key when operation changes
-                    switch (newValue) {
-                        case "add":
-                            // Disable key_selector combo
-                            if (keySelectorWidget) {
-                                keySelectorWidget.disabled = true;
-                            }
-                            // Clear lib_value and lib_key for new entry and enable the inputs
-                            if (libValueWidget) {
-                                libValueWidget.disabled = false;
-                                libValueWidget.value = "";
-                            }
-                            if (libKeyWidget) {
-                                libKeyWidget.disabled = false;
-                                libKeyWidget.value = "";
-                            }
-                            if (buttonWidget) {
-                                buttonWidget.disabled = false;
-                                buttonWidget.label = "ADD";
-                            }
-                            break;
-                        case "view":
-                        case "remove":
-                            if (keySelectorWidget) {
-                                keySelectorWidget.disabled = false;
-                                if (keySelectorWidget.inputEl && keySelectorWidget.inputEl.tagName === "SELECT") {
-                                    keySelectorWidget.inputEl.options = keys;
-                                    keySelectorWidget.inputEl.value = keys.length ? keys[0] : "";
-                                }
-                                // Rebuild select options
-                                // choose a default value
-                                keySelectorWidget.value = keys.length ? keys[0] : "";
-
-                            }
-                            if (libKeyWidget) {
-                                libKeyWidget.disabled = true;
-                            }
-                            if (libValueWidget) {
-                                libValueWidget.disabled = true;
-                                libValueWidget.value = libs?.[currentKey] || "";
-                            }
-                            if (buttonWidget) {
-                                buttonWidget.disabled = false;
-                                buttonWidget.label = newValue.toUpperCase();
-                            }
-                            break;
-                        case "update":
-                            // Enable key_selector for existing key mode
-                            if (keySelectorWidget) {
-                                keySelectorWidget.disabled = false;
-                            }
-                            if (libKeyWidget) {
-                                libKeyWidget.disabled = true;
-                            }
-                            if (libValueWidget) {
-                                libValueWidget.disabled = false;
-                                libValueWidget.value = libs?.[currentKey] || "";
-                            }
-                            if (buttonWidget) {
-                                buttonWidget.disabled = false;
-                                buttonWidget.label = "UPDATE";
-                            }
-                            break;
-                        default:
-                            console.warn("fbTools -> LibberEdit: unknown operation", newValue);
-                            break;
-                    }
-                }
-                if (widgetName === "key_selector") {
-                    console.log("fbTools -> LibberEdit: key_selector changed to", newValue);
-                    
-                    if (!libs) {
-                        console.warn("fbTools -> LibberEdit: failed to parse libber_json_in", err);
+            // Import the API client
+            import("./api/libber.js").then(({ libberAPI }) => {
+                const onNodeCreated = nodeType.prototype.onNodeCreated;
+                nodeType.prototype.onNodeCreated = function () {
+                    if (onNodeCreated) {
+                        onNodeCreated.apply(this, arguments);
                     }
                     
-                    if (newValue && libs?.[newValue]) {
-                        // Populate lib_value and lib_key when a key is selected
-                        if (libValueWidget) {
-                            libValueWidget.value = libs[newValue];
-                            if (libValueWidget.inputEl) {
-                                libValueWidget.inputEl.value = libs[newValue];
-                            }
-                        }
-                        console.log("fbTools -> LibberEdit: populated value for key", newValue);
-                    } else if (newValue === "") {
-                        // Clear lib_value when empty option selected (for new key mode)
-                        if (libValueWidget) {
-                            libValueWidget.value = "";
-                            if (libValueWidget.inputEl) {
-                                libValueWidget.inputEl.value = "";
-                            }
-                        }
-                    }
-                }
-                return originalReturn;
-            };
-
-            // Set up key_selector change handler on node creation
-            const onOriginalCreated = nodeType.prototype.onNodeCreated;
-            nodeType.prototype.onNodeCreated = function () {
-                if (onOriginalCreated) {
-                    onOriginalCreated.apply(this, arguments);
-                }
-                
-                // Set up change handler for key_selector to populate lib_value and lib_key
-                const widgets = this.widgets || [];
-                const keySelectorWidget = widgets.find((w) => w.name === "key_selector");
-                const operationWidget = widgets.find((w) => w.name === "operation");
-                const buttonLabel = String(operationWidget.value || "Do Stuff!").toUpperCase()
-                const libValueWidget = this.widgets.find((w) => w.name === "lib_value");
-                const libKeyWidget = this.widgets.find((w) => w.name === "lib_key");
-                const currentKey = keySelectorWidget ? keySelectorWidget.value : null;
-                const jsonInWidget = this.widgets.find((w) => w.name === "libber_json_in");
-
-                this.addWidget("button", buttonLabel, null, () => {
-                    console.log("fbTools -> LibberEdit: Do stuff button clicked! 💅");
-                    if (operationWidget) {
-                        const operation = operationWidget.value;
-                        console.log("Current operation:", operation);
-                        const libsJson = jsonInWidget && jsonInWidget.value ? JSON.parse(jsonInWidget.value) : {};
-                        const libs = libsJson.libs || {};
-                        const newKey = libKeyWidget ? libKeyWidget.value : null;
-                        const newValue = libValueWidget ? libValueWidget.value : null;
+                    const widgets = this.widgets || [];
+                    const operationWidget = widgets.find(w => w.name === "operation");
+                    const libberNameWidget = widgets.find(w => w.name === "libber_name");
+                    const filenameWidget = widgets.find(w => w.name === "filename");
+                    const libberDirWidget = widgets.find(w => w.name === "libber_dir");
+                    const keySelectorWidget = widgets.find(w => w.name === "key_selector");
+                    const libKeyWidget = widgets.find(w => w.name === "lib_key");
+                    const libValueWidget = widgets.find(w => w.name === "lib_value");
+                    const delimiterWidget = widgets.find(w => w.name === "delimiter");
+                    const maxDepthWidget = widgets.find(w => w.name === "max_depth");
+                    
+                    // Auto-load libber on node creation if filename exists
+                    const autoLoadLibber = async () => {
+                        const filename = filenameWidget?.value;
+                        const libberDir = libberDirWidget?.value;
+                        const libberName = libberNameWidget?.value;
                         
-                        switch (operation) {
-                            case "add":
-                                if (newKey && newValue && !libs?.[newKey]) {
-                                    libs[newKey] = newValue;
-                                    libsJson.libs = libs;
-                                    jsonInWidget.value = JSON.stringify(libsJson, null, 2);
-                                    if (jsonInWidget.inputEl) {
-                                        jsonInWidget.inputEl.value = jsonInWidget.value;
-                                    }
-                                    showToast({ severity: "success", summary: `Added ${newKey} - ${newValue}`, life: 2000 });
-                                }
-                                else {
-                                    showToast({ severity: "warn", summary: `Add operation requires a new key and value`, life: 2000 });
-                                }
-                                break;
-                            case "view":
-                                console.log("View operation selected, no action taken");
-                                break;
-                            case "remove":
-                                if (currentKey && libs?.[currentKey]) {
-                                    delete libs[currentKey];
-                                    libsJson.libs = libs;
-                                    jsonInWidget.value = JSON.stringify(libsJson, null, 2);
-                                    if (jsonInWidget.inputEl) {
-                                        jsonInWidget.inputEl.value = jsonInWidget.value;
-                                    }
-                                    showToast({ severity: "success", summary: `Removed ${currentKey}`, life: 2000 });
-                                } else {
-                                    showToast({ severity: "warn", summary: `Remove operation requires an existing key`, life: 2000 });
-                                }
-                                break;
-                            case "update":
-                                if (currentKey && libs?.[currentKey] && newValue) {
-                                    libs[currentKey] = newValue;
-                                    libsJson.libs = libs;
-                                    jsonInWidget.value = JSON.stringify(libsJson, null, 2);
-                                    if (jsonInWidget.inputEl) {
-                                        jsonInWidget.inputEl.value = jsonInWidget.value;
-                                    }
-                                    showToast({ severity: "success", summary: `Updated ${currentKey} - ${newValue}`, life: 2000 });
-                                } else {
-                                    showToast({ severity: "warn", summary: `Update operation requires an existing key and new value`, life: 2000 });
-                                }
-                                break;
-                            default:
-                                showToast({ severity: "warn", summary: `Unknown operation: ${operation}`, life: 2000 });
-                                break;
-                        }
-                    }
-                });
-
-                if (keySelectorWidget && !keySelectorWidget._libberHandlerInstalled) {
-                    const originalCallback = keySelectorWidget.callback;
-                    keySelectorWidget.callback = function(value) {
-                        if (originalCallback) {
-                            originalCallback.call(this, value);
-                        }
-                        
-                        // Get the current key-value map from libber_json_in
-                        const libberJsonWidget = widgets.find((w) => w.name === "libber_json_in");
-                        let keyValueMap = {};
-                        
-                        if (libberJsonWidget && libberJsonWidget.value) {
+                        if (filename && libberDir && libberName) {
+                            const loadPath = `${libberDir}/${filename}`;
                             try {
-                                const libberData = JSON.parse(libberJsonWidget.value);
-                                const libs = libberData.libs || {};
-                                keyValueMap = libs;
-                            } catch (err) {
-                                console.warn("fbTools -> LibberEdit: failed to parse libber_json_in", err);
-                            }
-                        }
-                        
-                        const libValueWidget = widgets.find((w) => w.name === "lib_value");
-                        const libKeyWidget = widgets.find((w) => w.name === "lib_key");
-                        
-                        if (value && keyValueMap[value]) {
-                            // Populate lib_value and lib_key when a key is selected
-                            if (libValueWidget) {
-                                libValueWidget.value = keyValueMap[value];
-                                if (libValueWidget.inputEl) {
-                                    libValueWidget.inputEl.value = keyValueMap[value];
+                                const result = await libberAPI.loadLibber(libberName, loadPath);
+                                if (result && result.keys && keySelectorWidget) {
+                                    const newOptions = ["", ...result.keys];
+                                    keySelectorWidget.options.values = newOptions;
+                                    if (!keySelectorWidget.options.values.includes(keySelectorWidget.value)) {
+                                        keySelectorWidget.value = keySelectorWidget.options.values[0];
+                                    }
+                                    console.log("fbTools -> LibberManager: auto-loaded libber on node creation");
                                 }
-                            }
-                            if (libKeyWidget) {
-                                libKeyWidget.value = value;
-                                if (libKeyWidget.inputEl) {
-                                    libKeyWidget.inputEl.value = value;
+                            } catch (error) {
+                                // File doesn't exist or load failed, clear widgets
+                                console.log("fbTools -> LibberManager: auto-load skipped, clearing widgets");
+                                if (keySelectorWidget) {
+                                    keySelectorWidget.options.values = [""];
+                                    keySelectorWidget.value = "";
                                 }
-                            }
-                            console.log("fbTools -> LibberEdit: populated value for key", value);
-                        } else if (value === "") {
-                            // Clear lib_value when empty option selected (for new key mode)
-                            if (libValueWidget) {
-                                libValueWidget.value = "";
-                                if (libValueWidget.inputEl) {
-                                    libValueWidget.inputEl.value = "";
+                                if (libKeyWidget) {
+                                    libKeyWidget.value = "";
+                                    if (libKeyWidget.inputEl) {
+                                        libKeyWidget.inputEl.value = "";
+                                    }
                                 }
                             }
                         }
                     };
-                    keySelectorWidget._libberHandlerInstalled = true;
-                }
-            };
-            
-            const onOriginalExecuted = nodeType.prototype.onExecuted;
-            nodeType.prototype.onExecuted = function (message) {
-                if (onOriginalExecuted) {
-                    onOriginalExecuted.apply(this, arguments);
-                }
-
-                // LibberEdit returns: text[0]=libber_json, text[1]=key_options_json, text[2]=key_value_map_json
-                const textArray = message?.text;
-                
-                // Update libber_json_in widget
-                updateNodeInputs(this, textArray, nodeData.name);
-                
-                if (!textArray || !textArray[1]) {
-                    scheduleNodeRefresh(this, app);
-                    return;
-                }
-                
-                try {
-                    const keyOptions = JSON.parse(textArray[1]);
                     
-                    // Update key_selector combo options
-                    const widgets = this.widgets || [];
-                    const keySelectorWidget = widgets.find((w) => w.name === "key_selector");
-                    if (keySelectorWidget && Array.isArray(keyOptions)) {
-                        const currentOptions = (keySelectorWidget.options && keySelectorWidget.options.values) || keySelectorWidget.options || [];
-                        const sameOptions =
-                            Array.isArray(currentOptions) &&
-                            currentOptions.length === keyOptions.length &&
-                            currentOptions.every((val, idx) => val === keyOptions[idx]);
+                    // Run auto-load after a short delay to ensure widgets are initialized
+                    setTimeout(autoLoadLibber, 100);
+                    
+                    // Add Execute button
+                    this.addWidget("button", "Execute", null, async () => {
+                        console.log("fbTools -> LibberManager: Execute button clicked");
                         
-                        if (!sameOptions) {
-                            if (keySelectorWidget.options && typeof keySelectorWidget.options === "object") {
-                                keySelectorWidget.options.values = keyOptions;
-                            } else {
-                                keySelectorWidget.options = { values: keyOptions };
-                            }
-                            keySelectorWidget.options_values = keyOptions;
+                        const operation = operationWidget?.value;
+                        const libberName = libberNameWidget?.value;
+                        const filename = filenameWidget?.value;
+                        const libberDir = libberDirWidget?.value;
+                        const libKey = libKeyWidget?.value;
+                        const libValue = libValueWidget?.value;
+                        const delimiter = delimiterWidget?.value || "%";
+                        const maxDepth = maxDepthWidget?.value || 10;
+                        
+                        try {
+                            let result;
+                            let addedKey = null; // Track the key that was added
+                            let isRemoveOperation = false; // Track if this was a remove operation
                             
-                            if (keySelectorWidget.inputEl && keySelectorWidget.inputEl.tagName === "SELECT") {
-                                keySelectorWidget.inputEl.innerHTML = "";
-                                keyOptions.forEach((opt) => {
-                                    const optionEl = document.createElement("option");
-                                    optionEl.value = opt;
-                                    optionEl.textContent = opt || "(new key)";
-                                    keySelectorWidget.inputEl.appendChild(optionEl);
+                            switch (operation) {
+                                case "create":
+                                    result = await libberAPI.createLibber(libberName, delimiter, maxDepth);
+                                    showToast({ severity: "success", summary: `Created libber '${libberName}'`, life: 2000 });
+                                    break;
+                                    
+                                case "load":
+                                    const loadPath = `${libberDir}/${filename}`;
+                                    result = await libberAPI.loadLibber(libberName, loadPath);
+                                    showToast({ severity: "success", summary: `Loaded libber '${libberName}'`, life: 2000 });
+                                    break;
+                                    
+                                case "add_lib":
+                                    if (!libKey) {
+                                        showToast({ severity: "warn", summary: "lib_key required for add_lib", life: 2000 });
+                                        return;
+                                    }
+                                    result = await libberAPI.addLib(libberName, libKey, libValue);
+                                    addedKey = libKey.toLowerCase().replace(/\s/g, "_").replace(/-/g, "_"); // Normalize to match backend
+                                    showToast({ severity: "success", summary: `Added lib '${libKey}'`, life: 2000 });
+                                    // Clear lib_key after successful add
+                                    libKeyWidget.value = "";
+                                    if (libKeyWidget.inputEl) {
+                                        libKeyWidget.inputEl.value = "";
+                                    }
+                                    // Auto-save after adding
+                                    if (filename && libberDir) {
+                                        const savePath = `${libberDir}/${filename}`;
+                                        await libberAPI.saveLibber(libberName, savePath);
+                                        console.log("fbTools -> LibberManager: auto-saved after add_lib");
+                                    }
+                                    break;
+                                    
+                                case "remove_lib":
+                                    const keyToRemove = libKey || keySelectorWidget?.value;
+                                    if (!keyToRemove) {
+                                        showToast({ severity: "warn", summary: "lib_key or key_selector required", life: 2000 });
+                                        return;
+                                    }
+                                    result = await libberAPI.removeLib(libberName, keyToRemove);
+                                    isRemoveOperation = true;
+                                    showToast({ severity: "success", summary: `Removed lib '${keyToRemove}'`, life: 2000 });
+                                    // Clear lib_key after successful remove
+                                    libKeyWidget.value = "";
+                                    if (libKeyWidget.inputEl) {
+                                        libKeyWidget.inputEl.value = "";
+                                    }
+                                    // Auto-save after removing
+                                    if (filename && libberDir) {
+                                        const savePath = `${libberDir}/${filename}`;
+                                        await libberAPI.saveLibber(libberName, savePath);
+                                        console.log("fbTools -> LibberManager: auto-saved after remove_lib");
+                                    }
+                                    break;
+                                    
+                                case "save":
+                                    const savePath = `${libberDir}/${filename}`;
+                                    result = await libberAPI.saveLibber(libberName, savePath);
+                                    showToast({ severity: "success", summary: `Saved libber to '${filename}'`, life: 2000 });
+                                    break;
+                                    
+                                default:
+                                    showToast({ severity: "warn", summary: `Unknown operation: ${operation}`, life: 2000 });
+                                    return;
+                            }
+                            
+                            // Update key_selector dropdown with latest keys
+                            if (result && result.keys && keySelectorWidget) {
+                                const newOptions = ["", ...result.keys];
+                                keySelectorWidget.options.values = newOptions;
+                                
+                                // If we just added a key, select it
+                                if (addedKey && keySelectorWidget.options.values.includes(addedKey)) {
+                                    keySelectorWidget.value = addedKey;
+                                } else if (isRemoveOperation) {
+                                    // After remove, select first available key and update lib_value
+                                    const firstKey = newOptions.length > 1 ? newOptions[1] : ""; // Skip empty string at index 0
+                                    keySelectorWidget.value = firstKey;
+                                    
+                                    // Update lib_value to match the selected key
+                                    if (firstKey && libValueWidget) {
+                                        try {
+                                            const data = await libberAPI.getLibberData(libberName);
+                                            if (data && data.lib_dict && data.lib_dict[firstKey]) {
+                                                libValueWidget.value = data.lib_dict[firstKey];
+                                                if (libValueWidget.inputEl) {
+                                                    libValueWidget.inputEl.value = data.lib_dict[firstKey];
+                                                }
+                                            }
+                                        } catch (err) {
+                                            console.warn("fbTools -> LibberManager: failed to fetch value for first key", err);
+                                        }
+                                    } else if (libValueWidget) {
+                                        // No keys left, clear lib_value
+                                        libValueWidget.value = "";
+                                        if (libValueWidget.inputEl) {
+                                            libValueWidget.inputEl.value = "";
+                                        }
+                                    }
+                                } else if (!keySelectorWidget.options.values.includes(keySelectorWidget.value)) {
+                                    // Otherwise, reset value if it's not in the new options
+                                    keySelectorWidget.value = keySelectorWidget.options.values[0];
+                                }
+                            }
+                            
+                            console.log("fbTools -> LibberManager: Operation result:", result);
+                            
+                        } catch (error) {
+                            console.error("fbTools -> LibberManager: Error:", error);
+                            showToast({ severity: "error", summary: `Error: ${error.message}`, life: 3000 });
+                        }
+                    });
+                    
+                    // Update key_selector when a libber is loaded/created
+                    const onWidgetChanged = this.onWidgetChanged;
+                    this.onWidgetChanged = function (widgetName, newValue, oldValue, widgetObject) {
+                        const originalReturn = onWidgetChanged?.apply(this, arguments);
+                        
+                        if (widgetName === "key_selector" && newValue && libValueWidget) {
+                            // When a key is selected, fetch its value from the server
+                            const libberName = libberNameWidget?.value;
+                            if (libberName) {
+                                libberAPI.getLibberData(libberName).then(data => {
+                                    if (data && data.lib_dict && data.lib_dict[newValue]) {
+                                        libValueWidget.value = data.lib_dict[newValue];
+                                        if (libValueWidget.inputEl) {
+                                            libValueWidget.inputEl.value = data.lib_dict[newValue];
+                                        }
+                                        console.log("fbTools -> LibberManager: populated value for key", newValue);
+                                    }
+                                }).catch(err => {
+                                    console.warn("fbTools -> LibberManager: failed to fetch libber data", err);
                                 });
                             }
+                        }
+                        
+                        return originalReturn;
+                    };
+                };
+                
+                // Handle execution updates
+                const onExecuted = nodeType.prototype.onExecuted;
+                nodeType.prototype.onExecuted = function (message) {
+                    if (onExecuted) {
+                        onExecuted.apply(this, arguments);
+                    }
+                    
+                    // LibberManager returns: text[0]=keys_json, text[1]=lib_dict_json, text[2]=status
+                    const textArray = message?.text;
+                    if (textArray && textArray.length >= 1) {
+                        try {
+                            const keys = JSON.parse(textArray[0]);
+                            const keySelectorWidget = this.widgets?.find(w => w.name === "key_selector");
+                            if (keySelectorWidget && Array.isArray(keys)) {
+                                const newOptions = ["", ...keys];
+                                keySelectorWidget.options.values = newOptions;
+                                // Reset value if it's not in the new options
+                                if (!keySelectorWidget.options.values.includes(keySelectorWidget.value)) {
+                                    keySelectorWidget.value = keySelectorWidget.options.values[0];
+                                }
+                                console.log("fbTools -> LibberManager: updated key_selector options", keys);
+                            }
+                        } catch (err) {
+                            console.warn("fbTools -> LibberManager: failed to parse keys JSON", err);
+                        }
+                    }
+                };
+            }).catch(err => {
+                console.error("fb_tools -> LibberManager: failed to import libberAPI", err);
+            });
+        }
+        
+        if (isNode("LibberApply")) {
+            console.log("fb_tools -> LibberApply node detected");
+            
+            // Import the API client
+            import("./api/libber.js").then(({ libberAPI }) => {
+                const onNodeCreated = nodeType.prototype.onNodeCreated;
+                nodeType.prototype.onNodeCreated = function () {
+                    if (onNodeCreated) {
+                        onNodeCreated.apply(this, arguments);
+                    }
+                    
+                    const widgets = this.widgets || [];
+                    const libberNameWidget = widgets.find(w => w.name === "libber_name");
+                    
+                    // Set minimum node width for JSON viewer
+                    this.size[0] = Math.max(this.size[0], 400);
+                    
+                    // Create a container for the JSONView display
+                    const container = document.createElement("div");
+                    container.style.cssText = 'width: 100%; min-height: 150px; max-height: 250px; padding: 8px; background: var(--comfy-input-bg); border: 1px solid var(--border-color); border-radius: 4px; overflow-y: auto; overflow-x: auto;';
+                    
+                    // Add the DOM widget for displaying formatted libber data with JSONView
+                    const displayWidget = this.addDOMWidget("libber_data_display", "preview", container, {
+                        serialize: false,
+                        hideOnZoom: false,
+                        getValue() {
+                            return container.innerHTML;
+                        },
+                        setValue(v) {
+                            container.innerHTML = v;
+                        }
+                    });
+                    
+                    // Define how the widget computes its size
+                    displayWidget.computeSize = function(width) {
+                        // Get the actual content height from the container
+                        const contentHeight = container.scrollHeight || 150;
+                        // Add some padding
+                        return [width, Math.min(contentHeight + 20, 400)];
+                    };
+                    
+                    // Function to adjust the node size
+                    const adjustNodeSize = () => {
+                        const newSize = this.computeSize([this.size[0], this.size[1]]);
+                        this.setSize([this.size[0], newSize[1]]);
+                        app.graph?.setDirtyCanvas(true);
+                    };
+                    
+                    // Function to update display with table format
+                    const updateDisplay = (libberName) => {
+                        if (!libberName || libberName === "none") {
+                            container.innerHTML = "<div style='padding: 8px; color: var(--descrip-text);'>(no libber selected)</div>";
+                            setTimeout(adjustNodeSize, 10);
+                            return;
+                        }
+                        
+                        libberAPI.getLibberData(libberName).then(data => {
+                            if (data && data.lib_dict && Object.keys(data.lib_dict).length > 0) {
+                                // Create table with key-value pairs
+                                const rows = Object.entries(data.lib_dict).map(([key, value]) => {
+                                    // Escape HTML characters in the value
+                                    const escapedValue = String(value)
+                                        .replace(/&/g, '&amp;')
+                                        .replace(/</g, '&lt;')
+                                        .replace(/>/g, '&gt;')
+                                        .replace(/"/g, '&quot;')
+                                        .replace(/'/g, '&#039;');
+                                    
+                                    return `<tr>
+                                        <td style='padding: 6px 8px; font-weight: 500; border-bottom: 1px solid var(--border-color); color: var(--fg-color); white-space: nowrap;'>${key}</td>
+                                        <td style='padding: 6px 8px; border-bottom: 1px solid var(--border-color); color: var(--fg-color); word-break: break-word;'>${escapedValue}</td>
+                                    </tr>`;
+                                }).join('');
+                                
+                                container.innerHTML = `<table style='width: 100%; border-collapse: collapse; font-size: 12px;'>
+                                    <thead>
+                                        <tr style='background: var(--comfy-menu-bg);'>
+                                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;'>🗝️ Lib</th>
+                                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;'>🪙 Value</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>${rows}</tbody>
+                                </table>`;
+                                
+                                // Adjust node size after content is added
+                                setTimeout(adjustNodeSize, 10);
+                                
+                                console.log(`fbTools -> LibberApply: displayed ${Object.keys(data.lib_dict).length} libs`);
+                            } else {
+                                container.innerHTML = "<div style='padding: 8px; color: var(--descrip-text);'>(empty libber)</div>";
+                                setTimeout(adjustNodeSize, 10);
+                            }
+                        }).catch(err => {
+                            container.innerHTML = `<div style='padding: 8px; color: var(--error-text);'>Error: ${err.message}</div>`;
+                            setTimeout(adjustNodeSize, 10);
+                            console.warn("fbTools -> LibberApply: failed to fetch libber data", err);
+                        });
+                    };
+                    
+                    // Fetch and populate available libbers
+                    libberAPI.listLibbers().then(data => {
+                        if (data && data.libbers && libberNameWidget) {
+                            const libbers = data.libbers.length > 0 ? data.libbers : ["none"];
+                            libberNameWidget.options.values = libbers;
+                            if (!libberNameWidget.value || !libbers.includes(libberNameWidget.value)) {
+                                libberNameWidget.value = libbers[0];
+                            }
+                            console.log("fbTools -> LibberApply: populated libber_name options", libbers);
                             
-                            console.log("fbTools -> LibberEdit: updated key_selector with", keyOptions.length - 1, "keys");
+                            // Update display for initial libber
+                            updateDisplay(libberNameWidget.value);
+                        }
+                    }).catch(err => {
+                        console.warn("fbTools -> LibberApply: failed to fetch libbers", err);
+                    });
+                    
+                    // Add widget change handler to update display when libber_name changes
+                    const onWidgetChanged = this.onWidgetChanged;
+                    this.onWidgetChanged = function (widgetName, newValue, oldValue, widgetObject) {
+                        const originalReturn = onWidgetChanged?.apply(this, arguments);
+                        
+                        if (widgetName === "libber_name") {
+                            updateDisplay(newValue);
+                        }
+                        
+                        return originalReturn;
+                    };
+                };
+                
+                // Handle execution updates to refresh display
+                const onExecuted = nodeType.prototype.onExecuted;
+                nodeType.prototype.onExecuted = function (message) {
+                    if (onExecuted) {
+                        onExecuted.apply(this, arguments);
+                    }
+                    
+                    // LibberApply returns: text[0]=lib_dict_json, text[1]=info
+                    const textArray = message?.text;
+                    if (textArray && textArray.length >= 1) {
+                        try {
+                            const libDict = JSON.parse(textArray[0]);
+                            const widgets = this.widgets || [];
+                            const displayWidget = widgets.find(w => w.name === "libber_data_display");
+                            if (displayWidget && Object.keys(libDict).length > 0) {
+                                // Use JSONView if available
+                                if (JSONView.JSONView) {
+                                    const container = document.createElement('div');
+                                    container.style.cssText = 'padding: 8px; max-height: 300px; overflow: auto; font-size: 11px; background: var(--comfy-menu-bg); border-radius: 4px;';
+                                    
+                                    const formatter = new JSONView.JSONView(libDict, {
+                                        element: container,
+                                        collapsed: false,
+                                        showLen: true,
+                                        showType: false,
+                                        showFoldmarker: true,
+                                        maxDepth: 3
+                                    });
+                                    
+                                    applyPrimeTextVars(container, { removeClass: true });
+                                    displayWidget.value = container.outerHTML;
+                                } else {
+                                    // Fallback to formatted JSON
+                                    const formatted = JSON.stringify(libDict, null, 2);
+                                    displayWidget.value = `<pre style='padding: 8px; margin: 0; font-family: monospace; font-size: 11px; max-height: 300px; overflow: auto; background: var(--comfy-menu-bg); border-radius: 4px; color: var(--fg-color);'>${formatted}</pre>`;
+                                }
+                                console.log("fbTools -> LibberApply: execution shows", Object.keys(libDict).length, "libs available");
+                            }
+                        } catch (err) {
+                            // Not all executions return lib_dict
+                            console.debug("fbTools -> LibberApply: no lib_dict in response");
                         }
                     }
                     
-                } catch (err) {
-                    console.warn("fbTools -> LibberEdit: failed to parse key options", err);
-                }
-                
-                scheduleNodeRefresh(this, app);
-            };
+                    scheduleNodeRefresh(this, app);
+                };
+            }).catch(err => {
+                console.error("fb_tools -> LibberApply: failed to import libberAPI", err);
+            });
         }
         
         addMenuHandler(nodeType, function (_, options) {
