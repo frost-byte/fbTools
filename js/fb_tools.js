@@ -806,6 +806,74 @@ app.registerExtension({
                     
                     const widgets = this.widgets || [];
                     const libberNameWidget = widgets.find(w => w.name === "libber_name");
+                    const inputTextWidget = widgets.find(w => w.name === "text");
+                    
+                    // Store last known cursor position
+                    let lastCursorStart = 0;
+                    let lastCursorEnd = 0;
+                    
+                    // Track cursor position changes in the input widget
+                    if (inputTextWidget && inputTextWidget.inputEl) {
+                        const input = inputTextWidget.inputEl;
+                        
+                        // Update cursor position on selection change
+                        const updateCursorPos = () => {
+                            lastCursorStart = input.selectionStart || 0;
+                            lastCursorEnd = input.selectionEnd || 0;
+                        };
+                        
+                        // Listen for various events that might change cursor position
+                        input.addEventListener('click', updateCursorPos);
+                        input.addEventListener('keyup', updateCursorPos);
+                        input.addEventListener('select', updateCursorPos);
+                        input.addEventListener('focus', updateCursorPos);
+                        
+                        // Initialize cursor position
+                        updateCursorPos();
+                    }
+                    
+                    // Function to insert text at cursor position in the input widget
+                    const insertAtCursor = (text) => {
+                        if (!inputTextWidget || !inputTextWidget.inputEl) return;
+                        
+                        const input = inputTextWidget.inputEl;
+                        
+                        // Use stored cursor position instead of current (which may be lost)
+                        const startPos = lastCursorStart;
+                        const endPos = lastCursorEnd;
+                        
+                        // Focus the input first
+                        input.focus();
+                        
+                        // Restore cursor position
+                        input.setSelectionRange(startPos, endPos);
+                        
+                        // Use execCommand to insert text - this adds to browser's undo stack
+                        // Note: execCommand is deprecated but still widely supported and works with Ctrl+Z
+                        const success = document.execCommand('insertText', false, text);
+                        
+                        if (!success) {
+                            // Fallback if execCommand doesn't work (shouldn't happen in modern browsers)
+                            const currentValue = inputTextWidget.value || "";
+                            const newValue = currentValue.substring(0, startPos) + text + currentValue.substring(endPos);
+                            inputTextWidget.value = newValue;
+                            input.value = newValue;
+                            
+                            // Set cursor position after inserted text
+                            const newCursorPos = startPos + text.length;
+                            input.setSelectionRange(newCursorPos, newCursorPos);
+                        }
+                        
+                        // Update stored cursor position
+                        const newCursorPos = input.selectionStart || (startPos + text.length);
+                        lastCursorStart = newCursorPos;
+                        lastCursorEnd = newCursorPos;
+                        
+                        // Update the widget value to ensure ComfyUI state is in sync
+                        inputTextWidget.value = input.value;
+                        
+                        console.log(`fbTools -> LibberApply: inserted "${text}" at position ${startPos}`);
+                    };
                     
                     // Set minimum node width for JSON viewer
                     this.size[0] = Math.max(this.size[0], 400);
@@ -898,7 +966,9 @@ app.registerExtension({
                         
                         libberAPI.getLibberData(libberName).then(data => {
                             if (data && data.lib_dict && Object.keys(data.lib_dict).length > 0) {
-                                // Create table with key-value pairs
+                                const delimiter = data.delimiter || "%";
+                                
+                                // Create table with clickable rows
                                 const rows = Object.entries(data.lib_dict).map(([key, value]) => {
                                     // Escape HTML characters in the value
                                     const escapedValue = String(value)
@@ -908,7 +978,7 @@ app.registerExtension({
                                         .replace(/"/g, '&quot;')
                                         .replace(/'/g, '&#039;');
                                     
-                                    return `<tr>
+                                    return `<tr data-key="${key}" style='cursor: pointer;' onmouseover='this.style.backgroundColor="var(--comfy-menu-bg)"' onmouseout='this.style.backgroundColor=""'>
                                         <td style='padding: 6px 8px; font-weight: 500; border-bottom: 1px solid var(--border-color); color: var(--fg-color); white-space: nowrap;'>${key}</td>
                                         <td style='padding: 6px 8px; border-bottom: 1px solid var(--border-color); color: var(--fg-color); word-break: break-word;'>${escapedValue}</td>
                                     </tr>`;
@@ -923,6 +993,16 @@ app.registerExtension({
                                     </thead>
                                     <tbody>${rows}</tbody>
                                 </table>`;
+                                
+                                // Add click handlers to table rows
+                                const tableRows = container.querySelectorAll('tbody tr[data-key]');
+                                tableRows.forEach(row => {
+                                    row.addEventListener('click', () => {
+                                        const key = row.getAttribute('data-key');
+                                        const wrappedKey = `${delimiter}${key}${delimiter}`;
+                                        insertAtCursor(wrappedKey);
+                                    });
+                                });
                                 
                                 // Update container height after content is added
                                 updateContainerHeight();
