@@ -810,11 +810,11 @@ app.registerExtension({
                     // Set minimum node width for JSON viewer
                     this.size[0] = Math.max(this.size[0], 400);
                     
-                    // Create a container for the JSONView display
+                    // Create a container for the table display
                     const container = document.createElement("div");
-                    container.style.cssText = 'width: 100%; min-height: 150px; max-height: 250px; padding: 8px; background: var(--comfy-input-bg); border: 1px solid var(--border-color); border-radius: 4px; overflow-y: auto; overflow-x: auto;';
+                    container.style.cssText = 'width: 100%; min-height: 150px; padding: 8px; background: var(--comfy-input-bg); border: 1px solid var(--border-color); border-radius: 4px; overflow-y: auto; overflow-x: auto; box-sizing: border-box;';
                     
-                    // Add the DOM widget for displaying formatted libber data with JSONView
+                    // Add the DOM widget for displaying formatted libber data
                     const displayWidget = this.addDOMWidget("libber_data_display", "preview", container, {
                         serialize: false,
                         hideOnZoom: false,
@@ -826,18 +826,65 @@ app.registerExtension({
                         }
                     });
                     
-                    // Define how the widget computes its size
+                    // Store references on node for resize updates
+                    this._libberContainer = container;
+                    this._libberDisplayWidget = displayWidget;
+                    
+                    // Store reference to node in widget
+                    displayWidget.parentNode = this;
+                    
+                    // Define how the widget computes its size - return fixed height to prevent infinite growth
                     displayWidget.computeSize = function(width) {
-                        // Get the actual content height from the container
-                        const contentHeight = container.scrollHeight || 150;
-                        // Add some padding
-                        return [width, Math.min(contentHeight + 20, 400)];
+                        const node = this.parentNode;
+                        if (!node) return [width, 200];
+                        
+                        // Find this widget's index
+                        const widgetIndex = node.widgets?.indexOf(this) ?? -1;
+                        if (widgetIndex === -1) return [width, 200];
+                        
+                        // Calculate total height used by previous widgets
+                        let usedHeight = LiteGraph.NODE_TITLE_HEIGHT || 30;
+                        for (let i = 0; i < widgetIndex; i++) {
+                            const w = node.widgets[i];
+                            if (w.computeSize) {
+                                const size = w.computeSize(width);
+                                usedHeight += size[1];
+                            } else {
+                                usedHeight += LiteGraph.NODE_WIDGET_HEIGHT || 20;
+                            }
+                        }
+                        
+                        // Calculate remaining height, ensuring minimum and preventing overflow
+                        const bottomMargin = 15;
+                        const remainingHeight = node.size[1] - usedHeight - bottomMargin;
+                        const finalHeight = Math.max(Math.min(remainingHeight, 600), 150); // Cap at 600px, min 150px
+                        
+                        return [width, finalHeight];
                     };
                     
-                    // Function to adjust the node size
-                    const adjustNodeSize = () => {
-                        const newSize = this.computeSize([this.size[0], this.size[1]]);
-                        this.setSize([this.size[0], newSize[1]]);
+                    // Function to update container height based on computed widget size
+                    const updateContainerHeight = () => {
+                        if (!displayWidget.parentNode) return;
+                        const widgetSize = displayWidget.computeSize(this.size[0]);
+                        const targetHeight = widgetSize[1] - 20; // Subtract padding
+                        container.style.height = `${targetHeight}px`;
+                    };
+                    
+                    // Initial height update
+                    updateContainerHeight();
+                    
+                    // Hook into node resize to update container
+                    const onResize = this.onResize;
+                    this.onResize = function(size) {
+                        if (onResize) {
+                            onResize.apply(this, arguments);
+                        }
+                        // Update container height after resize
+                        if (this._libberDisplayWidget && this._libberContainer) {
+                            const widgetSize = this._libberDisplayWidget.computeSize(size[0]);
+                            const targetHeight = Math.max(widgetSize[1] - 20, 130); // Subtract padding, ensure minimum
+                            this._libberContainer.style.height = `${targetHeight}px`;
+                        }
                         app.graph?.setDirtyCanvas(true);
                     };
                     
@@ -845,7 +892,7 @@ app.registerExtension({
                     const updateDisplay = (libberName) => {
                         if (!libberName || libberName === "none") {
                             container.innerHTML = "<div style='padding: 8px; color: var(--descrip-text);'>(no libber selected)</div>";
-                            setTimeout(adjustNodeSize, 10);
+                            updateContainerHeight();
                             return;
                         }
                         
@@ -877,17 +924,17 @@ app.registerExtension({
                                     <tbody>${rows}</tbody>
                                 </table>`;
                                 
-                                // Adjust node size after content is added
-                                setTimeout(adjustNodeSize, 10);
+                                // Update container height after content is added
+                                updateContainerHeight();
                                 
                                 console.log(`fbTools -> LibberApply: displayed ${Object.keys(data.lib_dict).length} libs`);
                             } else {
                                 container.innerHTML = "<div style='padding: 8px; color: var(--descrip-text);'>(empty libber)</div>";
-                                setTimeout(adjustNodeSize, 10);
+                                updateContainerHeight();
                             }
                         }).catch(err => {
                             container.innerHTML = `<div style='padding: 8px; color: var(--error-text);'>Error: ${err.message}</div>`;
-                            setTimeout(adjustNodeSize, 10);
+                            updateContainerHeight();
                             console.warn("fbTools -> LibberApply: failed to fetch libber data", err);
                         });
                     };
@@ -909,6 +956,9 @@ app.registerExtension({
                         console.warn("fbTools -> LibberApply: failed to fetch libbers", err);
                     });
                     
+                    // Store updateDisplay function on the node for use in onExecuted
+                    this._libberUpdateDisplay = updateDisplay;
+                    
                     // Add widget change handler to update display when libber_name changes
                     const onWidgetChanged = this.onWidgetChanged;
                     this.onWidgetChanged = function (widgetName, newValue, oldValue, widgetObject) {
@@ -929,41 +979,14 @@ app.registerExtension({
                         onExecuted.apply(this, arguments);
                     }
                     
-                    // LibberApply returns: text[0]=lib_dict_json, text[1]=info
-                    const textArray = message?.text;
-                    if (textArray && textArray.length >= 1) {
-                        try {
-                            const libDict = JSON.parse(textArray[0]);
-                            const widgets = this.widgets || [];
-                            const displayWidget = widgets.find(w => w.name === "libber_data_display");
-                            if (displayWidget && Object.keys(libDict).length > 0) {
-                                // Use JSONView if available
-                                if (JSONView.JSONView) {
-                                    const container = document.createElement('div');
-                                    container.style.cssText = 'padding: 8px; max-height: 300px; overflow: auto; font-size: 11px; background: var(--comfy-menu-bg); border-radius: 4px;';
-                                    
-                                    const formatter = new JSONView.JSONView(libDict, {
-                                        element: container,
-                                        collapsed: false,
-                                        showLen: true,
-                                        showType: false,
-                                        showFoldmarker: true,
-                                        maxDepth: 3
-                                    });
-                                    
-                                    applyPrimeTextVars(container, { removeClass: true });
-                                    displayWidget.value = container.outerHTML;
-                                } else {
-                                    // Fallback to formatted JSON
-                                    const formatted = JSON.stringify(libDict, null, 2);
-                                    displayWidget.value = `<pre style='padding: 8px; margin: 0; font-family: monospace; font-size: 11px; max-height: 300px; overflow: auto; background: var(--comfy-menu-bg); border-radius: 4px; color: var(--fg-color);'>${formatted}</pre>`;
-                                }
-                                console.log("fbTools -> LibberApply: execution shows", Object.keys(libDict).length, "libs available");
-                            }
-                        } catch (err) {
-                            // Not all executions return lib_dict
-                            console.debug("fbTools -> LibberApply: no lib_dict in response");
-                        }
+                    // After execution, refresh the display with current libber_name
+                    const widgets = this.widgets || [];
+                    const libberNameWidget = widgets.find(w => w.name === "libber_name");
+                    
+                    // Use the stored updateDisplay function if available
+                    if (this._libberUpdateDisplay && libberNameWidget?.value) {
+                        console.log("fbTools -> LibberApply: refreshing display after execution");
+                        this._libberUpdateDisplay(libberNameWidget.value);
                     }
                     
                     scheduleNodeRefresh(this, app);
