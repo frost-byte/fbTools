@@ -181,10 +181,17 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         
         // Store current prompts data
         let currentPromptsData = [];
+        let availableLibbers = ["none"];
         
         // Function to render the editable table
-        const renderTable = (promptsList) => {
+        const renderTable = (promptsList, libbersList) => {
             currentPromptsData = promptsList || [];
+            availableLibbers = libbersList || ["none"];
+            
+            // Ensure "none" is always first
+            if (!availableLibbers.includes("none")) {
+                availableLibbers.unshift("none");
+            }
             
             // Help text
             const helpText = `<div style="margin-bottom: 8px; padding: 6px 8px; background: var(--comfy-menu-bg); border: 1px solid var(--border-color); border-radius: 4px; font-size: 11px; color: var(--descrip-text);">
@@ -202,10 +209,16 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             const existingRows = currentPromptsData.map((prompt, idx) => {
                 const escapedKey = String(prompt.key || '').replace(/"/g, '&quot;');
                 const escapedValue = String(prompt.value || '').replace(/"/g, '&quot;');
-                const escapedLibber = String(prompt.libber_name || '').replace(/"/g, '&quot;');
                 const escapedCategory = String(prompt.category || '').replace(/"/g, '&quot;');
                 const processingType = prompt.processing_type || 'raw';
+                const libberName = prompt.libber_name || 'none';
                 const icon = processingType === 'libber' ? '🔄' : '📝';
+                
+                // Build libber dropdown options
+                const libberOptions = availableLibbers.map(lib => {
+                    const selected = lib === libberName ? 'selected' : '';
+                    return `<option value="${lib}" ${selected}>${lib}</option>`;
+                }).join('');
                 
                 return `<tr data-idx="${idx}" data-key="${escapedKey}" style="vertical-align: top;">
                     <td style="width: 15%; padding: 4px;"><input type="text" class="prompt-key-input" value="${escapedKey}" title="Unique identifier for this prompt (e.g., 'char1', 'quality')" placeholder="prompt_key" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-family: monospace; font-size: 11px; box-sizing: border-box;" /></td>
@@ -216,7 +229,11 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                             <option value="libber" ${processingType === 'libber' ? 'selected' : ''}>🔄 libber</option>
                         </select>
                     </td>
-                    <td style="width: 15%; padding: 4px;"><input type="text" class="prompt-libber-input" value="${escapedLibber}" title="Name of libber to use for substitution (only for libber type)" placeholder="char_lib" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;" ${processingType !== 'libber' ? 'disabled' : ''} /></td>
+                    <td style="width: 15%; padding: 4px;">
+                        <select class="prompt-libber-select" title="Select which libber to use for substitution" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;" ${processingType !== 'libber' ? 'disabled' : ''}>
+                            ${libberOptions}
+                        </select>
+                    </td>
                     <td style="width: 12%; padding: 4px;"><input type="text" class="prompt-category-input" value="${escapedCategory}" title="Optional: group prompts (e.g., 'character', 'scene', 'quality')" placeholder="character" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;" /></td>
                     <td style="white-space: nowrap; text-align: center; vertical-align: top; width: 8%; padding: 4px;">
                         <button class="remove-prompt-btn" title="Remove this prompt" style="padding: 8px 10px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; cursor: pointer; font-size: 14px; min-height: 34px;">➖</button>
@@ -225,6 +242,11 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             }).join('');
             
             // Add row for new prompt
+            const newRowLibberOptions = availableLibbers.map(lib => {
+                const selected = lib === 'none' ? 'selected' : '';
+                return `<option value="${lib}" ${selected}>${lib}</option>`;
+            }).join('');
+            
             const newRow = `<tr class="new-prompt-row" style="vertical-align: top; border-top: 2px solid var(--border-color);">
                 <td style="padding: 4px;"><input type="text" placeholder="prompt_key" class="prompt-key-input" title="Unique identifier (required)" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-family: monospace; font-size: 11px; box-sizing: border-box;" /></td>
                 <td style="padding: 4px;"><textarea placeholder="beautiful woman, detailed..." class="prompt-value-input" title="The prompt text" style="width: 100%; min-height: 50px; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; resize: vertical; font-size: 11px; box-sizing: border-box; font-family: inherit;"></textarea></td>
@@ -234,7 +256,11 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                         <option value="libber">🔄 libber</option>
                     </select>
                 </td>
-                <td style="padding: 4px;"><input type="text" class="prompt-libber-input" placeholder="char_lib" title="Libber name (for libber type only)" disabled style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;" /></td>
+                <td style="padding: 4px;">
+                    <select class="prompt-libber-select" title="Select libber for substitution" disabled style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;">
+                        ${newRowLibberOptions}
+                    </select>
+                </td>
                 <td style="padding: 4px;"><input type="text" class="prompt-category-input" placeholder="character" title="Optional category" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;" /></td>
                 <td style="white-space: nowrap; text-align: center; vertical-align: top; padding: 4px;">
                     <button class="add-prompt-btn" title="Add new prompt" style="padding: 8px 10px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; cursor: pointer; font-size: 14px; min-height: 34px;">➕</button>
@@ -292,16 +318,20 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         
         // Event handlers
         const attachEventHandlers = () => {
-            // Enable/disable libber name input based on type selection
+            // Enable/disable libber dropdown based on type selection
             container.querySelectorAll('.prompt-type-select').forEach(select => {
                 select.addEventListener('change', (e) => {
                     const row = e.target.closest('tr');
-                    const libberInput = row.querySelector('.prompt-libber-input');
+                    const libberSelect = row.querySelector('.prompt-libber-select');
                     if (e.target.value === 'libber') {
-                        libberInput.disabled = false;
+                        libberSelect.disabled = false;
+                        // If currently "none", switch to first available libber
+                        if (libberSelect.value === 'none' && availableLibbers.length > 1) {
+                            libberSelect.value = availableLibbers[1];
+                        }
                     } else {
-                        libberInput.disabled = true;
-                        libberInput.value = '';
+                        libberSelect.disabled = true;
+                        libberSelect.value = 'none';
                     }
                 });
             });
@@ -312,13 +342,13 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                 const keyInput = row.querySelector('.prompt-key-input');
                 const valueInput = row.querySelector('.prompt-value-input');
                 const typeSelect = row.querySelector('.prompt-type-select');
-                const libberInput = row.querySelector('.prompt-libber-input');
+                const libberSelect = row.querySelector('.prompt-libber-select');
                 const categoryInput = row.querySelector('.prompt-category-input');
                 
                 const key = keyInput.value.trim();
                 const value = valueInput.value;
                 const type = typeSelect.value;
-                const libber = libberInput.value.trim();
+                const libber = libberSelect.value;
                 const category = categoryInput.value.trim();
                 
                 if (!key) {
@@ -337,12 +367,12 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                     key,
                     value,
                     processing_type: type,
-                    libber_name: type === 'libber' ? libber : null,
+                    libber_name: type === 'libber' && libber !== 'none' ? libber : null,
                     category: category || null
                 });
                 
                 showToast({ severity: "success", summary: `Added '${key}'`, life: 2000 });
-                renderTable(currentPromptsData);
+                renderTable(currentPromptsData, availableLibbers);
             });
             
             // Remove buttons
@@ -354,7 +384,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                     
                     currentPromptsData.splice(idx, 1);
                     showToast({ severity: "success", summary: `Removed '${key}'`, life: 2000 });
-                    renderTable(currentPromptsData);
+                    renderTable(currentPromptsData, availableLibbers);
                 });
             });
             
@@ -368,16 +398,17 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                     const keyInput = row.querySelector('.prompt-key-input');
                     const valueInput = row.querySelector('.prompt-value-input');
                     const typeSelect = row.querySelector('.prompt-type-select');
-                    const libberInput = row.querySelector('.prompt-libber-input');
+                    const libberSelect = row.querySelector('.prompt-libber-select');
                     const categoryInput = row.querySelector('.prompt-category-input');
                     
                     const key = keyInput.value.trim();
                     if (key) {
+                        const libberValue = libberSelect.value;
                         updatedData.push({
                             key,
                             value: valueInput.value,
                             processing_type: typeSelect.value,
-                            libber_name: typeSelect.value === 'libber' ? libberInput.value.trim() || null : null,
+                            libber_name: typeSelect.value === 'libber' && libberValue !== 'none' ? libberValue : null,
                             category: categoryInput.value.trim() || null
                         });
                     }
@@ -386,12 +417,12 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                 currentPromptsData = updatedData;
                 updateCollectionJson();
                 showToast({ severity: "success", summary: `Applied ${currentPromptsData.length} prompts`, life: 2000 });
-                renderTable(currentPromptsData);
+                renderTable(currentPromptsData, availableLibbers);
             });
         };
         
         // Initial render
-        renderTable([]);
+        renderTable([], ["none"]);
         
         // Handle execution results - update from backend
         const onExecuted = this.onExecuted;
@@ -403,6 +434,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             // message.text[0] = collection_json
             // message.text[1] = prompts_list JSON
             // message.text[2] = status
+            // message.text[3] = available_libbers JSON
             if (message?.text && message.text.length >= 2) {
                 try {
                     // Update collection_json widget
@@ -412,7 +444,18 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                     
                     // Parse and render prompts list
                     const promptsList = JSON.parse(message.text[1]);
-                    renderTable(promptsList);
+                    
+                    // Parse available libbers (with fallback)
+                    let libbersList = ["none"];
+                    if (message.text[3]) {
+                        try {
+                            libbersList = JSON.parse(message.text[3]);
+                        } catch (err) {
+                            console.warn("fb_tools -> ScenePromptManager: Error parsing libbers list", err);
+                        }
+                    }
+                    
+                    renderTable(promptsList, libbersList);
                     
                     console.log("fb_tools -> ScenePromptManager: UI updated from backend");
                 } catch (err) {

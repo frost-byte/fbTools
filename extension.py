@@ -4148,11 +4148,16 @@ class ScenePromptManager(io.ComfyNode):
                 "category": metadata.category or "",
             })
         
+        # Get available libbers
+        libber_manager = LibberStateManager()
+        available_libbers = ["none"] + list(libber_manager.libbers.keys())
+        
         combined_ui = {
             "text": [
                 json.dumps(collection_data),
                 json.dumps(prompts_list),
-                status
+                status,
+                json.dumps(available_libbers)
             ]
         }
         
