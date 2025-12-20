@@ -1087,6 +1087,20 @@ class SceneInfo(BaseModel):
             prompt_json_path = os.path.join(pose_dir, "prompts.json")
             prompt_data = load_prompt_json(prompt_json_path)
         
+        # Migrate legacy prompts to PromptCollection
+        prompt_collection = None
+        if prompt_data:
+            # Check if it's v2 format (has "version" field)
+            if "version" in prompt_data and prompt_data.get("version") == 2:
+                prompt_collection = PromptCollection.from_dict(prompt_data)
+            else:
+                # Legacy format - migrate
+                prompt_collection = PromptCollection.from_legacy_dict(prompt_data)
+                print(f"SceneInfo.from_pose_directory: Migrated {len(prompt_collection.prompts)} legacy prompts")
+        else:
+            # No prompts file - create empty collection
+            prompt_collection = PromptCollection()
+        
         # Load all images
         all_images = cls.load_all_images(pose_dir)
         
@@ -1101,11 +1115,7 @@ class SceneInfo(BaseModel):
         return cls(
             pose_dir=pose_dir,
             pose_name=pose_name,
-            girl_pos=prompt_data.get("girl_pos", ""),
-            male_pos=prompt_data.get("male_pos", ""),
-            four_image_prompt=prompt_data.get("four_image_prompt", ""),
-            wan_prompt=prompt_data.get("wan_prompt", ""),
-            wan_low_prompt=prompt_data.get("wan_low_prompt", ""),
+            prompts=prompt_collection,
             pose_json=pose_json,
             resolution=resolution,
             loras_high=loras_high,
@@ -2179,14 +2189,9 @@ class SceneCreate(io.ComfyNode):
                     tooltip="Canny edge detector high threshold",
                     default=200, min=0, max=255, step=1
                 ),
-                io.String.Input(id="girl_pos", display_name="girl_pos", placeholder="Provide the positive prompt for the female in the scene", tooltip="Positive prompt for the girl", multiline=True),
-                io.String.Input(id="male_pos", display_name="male_pos", placeholder="Provide the positive prompt for the male(s) in the scene", tooltip="Positive prompt for the male(s)", multiline=True),
-                io.String.Input(id="four_image_prompt", display_name="four_image_prompt", placeholder="Provide the four image prompt for the scene", tooltip="Four image prompt for the scene", multiline=True),
-                io.String.Input(id="wan_prompt", display_name="wan_prompt", placeholder="Provide the Wan high positive prompt for the scene", tooltip="WanVideoWrapper high positive prompt for the scene", multiline=True),
-                io.String.Input(id="wan_low_prompt", display_name="wan_low_prompt", placeholder="Provide the Wan low positive prompt for the scene", tooltip="WanVideoWrapper low positive prompt for the scene", multiline=True),
                 io.Image.Input(id="base_image", display_name="base_image", tooltip="Base image for the scene"),
-                io.Custom("WANVIDLORA").Input(id="loras_high", display_name="loras_high", tooltip="WanVideoWrapper High Multi-Lora list" ),
-                io.Custom("WANVIDLORA").Input(id="loras_low", display_name="loras_low", tooltip="WanVideoWrapper Low Multi-Lora list" ),
+                io.Custom("WANVIDLORA").Input(id="loras_high", display_name="loras_high", tooltip="WanVideoWrapper High Multi-Lora list", optional=True),
+                io.Custom("WANVIDLORA").Input(id="loras_low", display_name="loras_low", tooltip="WanVideoWrapper Low Multi-Lora list", optional=True),
             ],
             outputs=[
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene Information"),
@@ -2210,11 +2215,6 @@ class SceneCreate(io.ComfyNode):
         zoe_environment="indoor",
         canny_low_threshold=100,
         canny_high_threshold=200,
-        girl_pos="",
-        male_pos="",
-        four_image_prompt="",
-        wan_prompt="",
-        wan_low_prompt="",
         base_image=None,
         loras_high=None,
         loras_low=None,
@@ -2230,13 +2230,6 @@ class SceneCreate(io.ComfyNode):
             pose_name = "default_pose"
 
         pose_dir = os.path.join(poses_dir, pose_name)
-        
-        # Ensure all prompt strings have defaults
-        girl_pos = girl_pos if girl_pos else ""
-        male_pos = male_pos if male_pos else ""
-        four_image_prompt = four_image_prompt if four_image_prompt else ""
-        wan_prompt = wan_prompt if wan_prompt else ""
-        wan_low_prompt = wan_low_prompt if wan_low_prompt else ""
 
         upscale_image, = ImageScaleBy().upscale(base_image, upscale_method=upscale_method, scale_by=upscale_factor)
         print(f"SceneCreate: upscale_image is of type: {type(upscale_image)} with shape {upscale_image.shape if torch.is_tensor(upscale_image) else 'N/A'}")
@@ -2274,15 +2267,15 @@ class SceneCreate(io.ComfyNode):
         # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
         pose_dwpose_json = json.dumps(pose_json)
 
+        # Create empty PromptCollection for new scenes
+        # Users will add prompts via ScenePromptManager
+        prompt_collection = PromptCollection()
+
         scene_info = SceneInfo(
             pose_dir=pose_dir,
             pose_name=pose_name,
             resolution=resolution,
-            girl_pos=girl_pos,
-            male_pos=male_pos,
-            wan_prompt=wan_prompt,
-            wan_low_prompt=wan_low_prompt,
-            four_image_prompt=four_image_prompt,
+            prompts=prompt_collection,
             upscale_image=upscale_image,
             depth_image=depth_image,
             depth_any_image=depth_any_image,
