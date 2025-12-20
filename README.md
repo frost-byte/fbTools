@@ -356,6 +356,15 @@ git push
 An example custom node is located in [node.py](src/fb_tools/nodes.py). To learn more, read the [docs](https://docs.comfy.org/essentials/custom_node_overview).
 
 
+## Documentation
+
+- [Debugging Guide](DEBUGGING.md) - Runtime debug flag system for troubleshooting
+- [Testing Guide](TESTING_SCENE_TABS.md) - UI testing procedures
+- [Scene Prompt System](SCENE_PROMPT_SYSTEM.md) - Scene management architecture
+- [Story Nodes](STORY_NODES_README.md) - Story system documentation
+- [Libber Nodes](LIBBER_NODES_README.md) - Template system documentation
+- [Scene Nodes](SCENE_NODES_README.md) - Scene nodes reference
+
 ## Tests
 
 This repo contains unit tests written in Pytest in the `tests/` directory. It is recommended to unit test your custom node.

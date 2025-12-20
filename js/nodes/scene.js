@@ -4,6 +4,7 @@
 
 import { libberAPI } from "../api/libber.js";
 import { sceneAPI } from "../api/scene.js";
+import { debugLog, DEBUG_FLAGS } from "../utils/debug_config.js";
 
 /**
  * Show toast notification
@@ -75,22 +76,22 @@ export function setupSceneSelect(nodeType, nodeData, app) {
     // Debug connection hooks
     const onConnectOutput = nodeType.prototype.onConnectOutput;
     nodeType.prototype.onConnectOutput = function(outputIndex, inputType, inputSlot, inputNode, inputIndex) {
-        console.log("🔌 SceneSelect.onConnectOutput called:");
-        console.log("  outputIndex:", outputIndex);
-        console.log("  inputType:", inputType);
-        console.log("  inputSlot:", inputSlot);
-        console.log("  inputNode:", inputNode?.type);
-        console.log("  inputIndex:", inputIndex);
-        console.log("  this.outputs:", this.outputs);
-        console.log("  Output being connected:", this.outputs[outputIndex]);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "🔌 SceneSelect.onConnectOutput called:");
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  outputIndex:", outputIndex);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  inputType:", inputType);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  inputSlot:", inputSlot);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  inputNode:", inputNode?.type);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  inputIndex:", inputIndex);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  this.outputs:", this.outputs);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  Output being connected:", this.outputs[outputIndex]);
         
         // Call original hook if it exists
         const result = onConnectOutput?.apply(this, arguments);
-        console.log("  Original result:", result);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  Original result:", result);
         
         // Explicitly return true to allow connection (undefined can be ambiguous)
         const finalResult = result !== false ? true : false;
-        console.log("  Final result:", finalResult);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  Final result:", finalResult);
         return finalResult;
     };
     
@@ -124,33 +125,33 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
     // Debug connection hooks
     const onConnectInput = nodeType.prototype.onConnectInput;
     nodeType.prototype.onConnectInput = function(inputIndex, outputType, outputSlot, outputNode, outputIndex) {
-        console.log("🔌 ScenePromptManager.onConnectInput called:");
-        console.log("  inputIndex:", inputIndex);
-        console.log("  outputType:", outputType);
-        console.log("  outputSlot:", outputSlot);
-        console.log("  outputNode:", outputNode?.type);
-        console.log("  outputIndex:", outputIndex);
-        console.log("  this.inputs:", this.inputs);
-        console.log("  Expected input type:", this.inputs[inputIndex]);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "🔌 ScenePromptManager.onConnectInput called:");
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  inputIndex:", inputIndex);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  outputType:", outputType);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  outputSlot:", outputSlot);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  outputNode:", outputNode?.type);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  outputIndex:", outputIndex);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  this.inputs:", this.inputs);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  Expected input type:", this.inputs[inputIndex]);
         
         // Call original hook if it exists
         const result = onConnectInput?.apply(this, arguments);
-        console.log("  Original result:", result);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  Original result:", result);
         
         // Explicitly return true to allow connection (undefined can be ambiguous)
         const finalResult = result !== false ? true : false;
-        console.log("  Final result:", finalResult);
+        debugLog(DEBUG_FLAGS.CONNECTIONS, "  Final result:", finalResult);
         return finalResult;
     };
     
     const onConnectionsChange = nodeType.prototype.onConnectionsChange;
     nodeType.prototype.onConnectionsChange = function(type, index, connected, link_info, ioSlot) {
-        console.log("🔗 ScenePromptManager.onConnectionsChange called:");
-        console.log("  type:", type, "(1=input, 2=output)");
-        console.log("  index:", index);
-        console.log("  connected:", connected);
-        console.log("  link_info:", link_info);
-        console.log("  ioSlot:", ioSlot);
+        debugLog(DEBUG_FLAGS.CONNECTION_CHANGES, "🔗 ScenePromptManager.onConnectionsChange called:");
+        debugLog(DEBUG_FLAGS.CONNECTION_CHANGES, "  type:", type, "(1=input, 2=output)");
+        debugLog(DEBUG_FLAGS.CONNECTION_CHANGES, "  index:", index);
+        debugLog(DEBUG_FLAGS.CONNECTION_CHANGES, "  connected:", connected);
+        debugLog(DEBUG_FLAGS.CONNECTION_CHANGES, "  link_info:", link_info);
+        debugLog(DEBUG_FLAGS.CONNECTION_CHANGES, "  ioSlot:", ioSlot);
         
         const result = onConnectionsChange?.apply(this, arguments);
         return result;
@@ -178,10 +179,12 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             serialize: false,
             hideOnZoom: false,
             getValue() {
-                return container.innerHTML;
+                // Don't serialize HTML - it will be regenerated
+                return "";
             },
             setValue(v) {
-                container.innerHTML = v;
+                // Don't restore HTML - wait for proper initialization
+                // The container will be populated by renderTable when data is available
             }
         });
         
@@ -946,5 +949,74 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                 }
             }
         };
+        
+        // Add onConfigure hook to restore UI state when node is loaded from saved workflow
+        const onConfigure = this.onConfigure;
+        this.onConfigure = function(info) {
+            if (onConfigure) {
+                onConfigure.apply(this, arguments);
+            }
+            
+            // After configuration, parse the collection_json and render the UI
+            if (collectionJsonWidget && collectionJsonWidget.value && collectionJsonWidget.value.trim() !== '') {
+                try {
+                    const collection = JSON.parse(collectionJsonWidget.value);
+                    
+                    // Convert prompts from object to array format
+                    // Stored as: {"key1": {value: "...", processing_type: "...", ...}, ...}
+                    // Need as: [{key: "key1", value: "...", processing_type: "...", ...}, ...]
+                    const promptsList = [];
+                    if (collection.prompts && typeof collection.prompts === 'object') {
+                        for (const [key, promptData] of Object.entries(collection.prompts)) {
+                            promptsList.push({
+                                key: key,
+                                value: promptData.value || "",
+                                processing_type: promptData.processing_type || "raw",
+                                libber_name: promptData.libber_name || null,
+                                category: promptData.category || null
+                            });
+                        }
+                    }
+                    
+                    // Convert compositions from object to array format
+                    // Stored as: {"comp1": ["key1", "key2"], "comp2": [...], ...}
+                    // Need as: [{name: "comp1", prompt_keys: ["key1", "key2"]}, ...]
+                    const compositionsList = [];
+                    if (collection.compositions && typeof collection.compositions === 'object') {
+                        for (const [name, promptKeys] of Object.entries(collection.compositions)) {
+                            compositionsList.push({
+                                name: name,
+                                prompt_keys: Array.isArray(promptKeys) ? promptKeys : []
+                            });
+                        }
+                    }
+                    
+                    // Extract libbers (if any) - will be updated on first API call or execution
+                    const libbersList = ["none"];
+                    
+                    // No prompt_dict on load - will be generated when user clicks Process
+                    const promptDict = {};
+                    
+                    // Reset to Define tab on load to ensure consistent state
+                    activeTab = "define";
+                    
+                    // Render the UI with the loaded data
+                    renderTable(promptsList, libbersList, compositionsList, promptDict);
+                    
+                    console.log("fb_tools -> ScenePromptManager: UI restored from saved workflow with", promptsList.length, "prompts and", compositionsList.length, "compositions");
+                } catch (err) {
+                    console.error("fb_tools -> ScenePromptManager: Error restoring UI from saved data", err);
+                    // Initialize with empty data if restore fails
+                    activeTab = "define";
+                    renderTable([], ["none"], [], {});
+                }
+            } else {
+                // No saved data, initialize with empty state
+                console.log("fb_tools -> ScenePromptManager: No saved data, initializing with empty state");
+                activeTab = "define";
+                renderTable([], ["none"], [], {});
+            }
+        };
     };
+
 }
