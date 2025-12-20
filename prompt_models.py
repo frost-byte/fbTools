@@ -10,11 +10,15 @@ from pydantic import BaseModel, ConfigDict
 
 
 class PromptMetadata(BaseModel):
-    """Metadata for a single prompt entry."""
+    """Metadata for a single prompt entry with processing support."""
     value: str
     category: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[List[str]] = None
+    
+    # Processing configuration
+    processing_type: str = "raw"  # "raw" or "libber"
+    libber_name: Optional[str] = None  # which libber to use for substitution
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -34,13 +38,16 @@ class PromptCollection(BaseModel):
         return prompt.value if prompt else None
     
     def add_prompt(self, key: str, value: str, category: Optional[str] = None, 
-                   description: Optional[str] = None, tags: Optional[List[str]] = None):
+                   description: Optional[str] = None, tags: Optional[List[str]] = None,
+                   processing_type: str = "raw", libber_name: Optional[str] = None):
         """Add or update a prompt entry."""
         self.prompts[key] = PromptMetadata(
             value=value,
             category=category,
             description=description,
-            tags=tags
+            tags=tags,
+            processing_type=processing_type,
+            libber_name=libber_name
         )
     
     def remove_prompt(self, key: str) -> bool:
@@ -61,11 +68,18 @@ class PromptCollection(BaseModel):
         
         Legacy format: {"girl_pos": "...", "male_pos": "...", ...}
         V2 format: {"version": 2, "v1_backup": {...}, "prompts": {...}}
+        
+        All legacy prompts are migrated as "raw" processing type.
+        Output slot assignment happens at node level, not in metadata.
         """
         prompts = {}
+        
         for key, value in legacy_data.items():
-            if isinstance(value, str):
-                prompts[key] = PromptMetadata(value=value)
+            if isinstance(value, str) and value:  # Only migrate non-empty strings
+                prompts[key] = PromptMetadata(
+                    value=value,
+                    processing_type="raw"
+                )
         
         return cls(
             version=2,
@@ -86,6 +100,7 @@ class PromptCollection(BaseModel):
         for key, metadata in self.prompts.items():
             result["prompts"][key] = {
                 "value": metadata.value,
+                "processing_type": metadata.processing_type,
             }
             if metadata.category:
                 result["prompts"][key]["category"] = metadata.category
@@ -93,6 +108,8 @@ class PromptCollection(BaseModel):
                 result["prompts"][key]["description"] = metadata.description
             if metadata.tags:
                 result["prompts"][key]["tags"] = metadata.tags
+            if metadata.libber_name:
+                result["prompts"][key]["libber_name"] = metadata.libber_name
         
         return result
     
@@ -115,7 +132,9 @@ class PromptCollection(BaseModel):
                     value=prompt_data.get("value", ""),
                     category=prompt_data.get("category"),
                     description=prompt_data.get("description"),
-                    tags=prompt_data.get("tags")
+                    tags=prompt_data.get("tags"),
+                    processing_type=prompt_data.get("processing_type", "raw"),
+                    libber_name=prompt_data.get("libber_name")
                 )
         
         return cls(
@@ -123,5 +142,16 @@ class PromptCollection(BaseModel):
             v1_backup=data.get("v1_backup"),
             prompts=prompts
         )
+    
+    def get_prompt_metadata(self, key: str) -> Optional[PromptMetadata]:
+        """Get full metadata for a prompt by key."""
+        return self.prompts.get(key)
+    
+    def get_prompts_by_category(self, category: str) -> dict[str, PromptMetadata]:
+        """Get all prompts in a specific category."""
+        return {
+            key: metadata for key, metadata in self.prompts.items()
+            if metadata.category == category
+        }
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
