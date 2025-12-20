@@ -3853,21 +3853,22 @@ class FBTextEncodeQwenImageEditPlus(io.ComfyNode):
 # ============================================================================
 
 class LibberManager(io.ComfyNode):
-    """Manage Libber instances - create, load, save, and edit libs."""
+    """Manage Libber instances - create, load, save, and edit libs with an interactive table."""
     
     @classmethod
     def define_schema(cls):
         libber_dir = default_libber_dir()
         
-        # Get available libber files
-        libber_files = []
+        # Get available libber files (basenames only, no .json extension)
+        libber_names = []
         if os.path.isdir(libber_dir):
             for f in os.listdir(libber_dir):
                 if f.endswith('.json'):
-                    libber_files.append(f)
+                    # Remove .json extension for display
+                    libber_names.append(f[:-5])
         
-        if not libber_files:
-            libber_files = ["none.json"]
+        if not libber_names:
+            libber_names = ["none"]
         
         return io.Schema(
             node_id=prefixed_node_id("LibberManager"),
@@ -3875,24 +3876,11 @@ class LibberManager(io.ComfyNode):
             category="🧊 frost-byte/Libber",
             inputs=[
                 io.Combo.Input(
-                    id="operation",
-                    display_name="operation",
-                    options=["create", "load", "add_lib", "remove_lib", "save"],
-                    default="create",
-                    tooltip="Operation to perform on the Libber"
-                ),
-                io.String.Input(
                     id="libber_name",
                     display_name="libber_name",
-                    default="my_libber",
-                    tooltip="Name of the Libber instance (used to reference it)"
-                ),
-                io.Combo.Input(
-                    id="filename",
-                    display_name="filename",
-                    options=sorted(libber_files),
-                    default=libber_files[0],
-                    tooltip="Filename for load/save operations"
+                    options=sorted(libber_names),
+                    default=libber_names[0],
+                    tooltip="Select an existing libber or create a new one"
                 ),
                 io.String.Input(
                     id="libber_dir",
@@ -3900,31 +3888,11 @@ class LibberManager(io.ComfyNode):
                     default=libber_dir,
                     tooltip="Directory for libber files"
                 ),
-                io.Combo.Input(
-                    id="key_selector",
-                    display_name="key_selector",
-                    options=[""],
-                    default="",
-                    tooltip="Select existing key (populated by REST API)"
-                ),
-                io.String.Input(
-                    id="lib_key",
-                    display_name="lib_key",
-                    default="",
-                    tooltip="Key for add/remove operations"
-                ),
-                io.String.Input(
-                    id="lib_value",
-                    display_name="lib_value",
-                    default="",
-                    multiline=True,
-                    tooltip="Value for add operation"
-                ),
                 io.String.Input(
                     id="delimiter",
                     display_name="delimiter",
                     default="%",
-                    tooltip="Delimiter for lib references (create only)"
+                    tooltip="Delimiter for lib references"
                 ),
                 io.Int.Input(
                     id="max_depth",
@@ -3932,7 +3900,7 @@ class LibberManager(io.ComfyNode):
                     default=10,
                     min=1,
                     max=100,
-                    tooltip="Maximum substitution depth (create only)"
+                    tooltip="Maximum substitution depth"
                 ),
             ],
             outputs=[
@@ -3943,75 +3911,29 @@ class LibberManager(io.ComfyNode):
         )
     
     @classmethod
-    def execute(cls, operation="create", libber_name="my_libber", filename="my_libber.json",
-                libber_dir="", key_selector="", lib_key="", lib_value="", delimiter="%", max_depth=10):
+    def execute(cls, libber_name="my_libber",
+                libber_dir="", delimiter="%", max_depth=10):
         
         if not libber_dir:
             libber_dir = default_libber_dir()
         
+        # Skip if no libber selected
+        if libber_name == "none":
+            return io.NodeOutput("Select or create a libber to begin", "")
+        
         manager = LibberStateManager.instance()
         
         try:
-            if operation == "create":
+            # Try to get or create libber - ensure instance name matches selected name
+            libber = manager.get_libber(libber_name)
+            if not libber:
+                # Create new libber if it doesn't exist
                 libber = manager.create_libber(libber_name, delimiter, max_depth)
-                keys = libber.list_libs()
-                status = f"✓ Created libber '{libber_name}' with delimiter='{delimiter}', max_depth={max_depth}"
-                
-            elif operation == "load":
-                filepath = os.path.join(libber_dir, filename)
-                if not os.path.isfile(filepath):
-                    status = f"✗ File not found: {filepath}"
-                    keys = []
-                else:
-                    libber = manager.load_libber(libber_name, filepath)
-                    keys = libber.list_libs()
-                    status = f"✓ Loaded libber '{libber_name}' from {filename} ({len(keys)} libs)"
-                
-            elif operation == "add_lib":
-                libber = manager.get_libber(libber_name)
-                if not libber:
-                    status = f"✗ Libber '{libber_name}' not found. Create or load it first."
-                    keys = []
-                else:
-                    if not lib_key:
-                        status = f"✗ lib_key required for add_lib operation"
-                        keys = libber.list_libs()
-                    else:
-                        libber.add_lib(lib_key, lib_value)
-                        keys = libber.list_libs()
-                        status = f"✓ Added lib '{lib_key}' to '{libber_name}' ({len(keys)} libs total)"
-                
-            elif operation == "remove_lib":
-                libber = manager.get_libber(libber_name)
-                if not libber:
-                    status = f"✗ Libber '{libber_name}' not found. Create or load it first."
-                    keys = []
-                else:
-                    # Use key_selector if lib_key is empty
-                    key_to_remove = lib_key if lib_key else key_selector
-                    if not key_to_remove:
-                        status = f"✗ lib_key or key_selector required for remove_lib operation"
-                        keys = libber.list_libs()
-                    else:
-                        libber.remove_lib(key_to_remove)
-                        keys = libber.list_libs()
-                        status = f"✓ Removed lib '{key_to_remove}' from '{libber_name}' ({len(keys)} libs remaining)"
-                
-            elif operation == "save":
-                libber = manager.get_libber(libber_name)
-                if not libber:
-                    status = f"✗ Libber '{libber_name}' not found. Create or load it first."
-                    keys = []
-                else:
-                    os.makedirs(libber_dir, exist_ok=True)
-                    filepath = os.path.join(libber_dir, filename)
-                    manager.save_libber(libber_name, filepath)
-                    keys = libber.list_libs()
-                    status = f"✓ Saved libber '{libber_name}' to {filename} ({len(keys)} libs)"
-            
+                status = f"✓ Created new libber '{libber_name}'"
             else:
-                status = f"✗ Unknown operation: {operation}"
-                keys = []
+                status = f"✓ Libber '{libber_name}' ready"
+            
+            keys = libber.list_libs()
             
             # Format keys list for display
             keys_display = "\n".join(keys) if keys else "(no libs)"
@@ -4019,7 +3941,7 @@ class LibberManager(io.ComfyNode):
             # Return UI data for dynamic updates
             keys_json = json.dumps(keys)
             
-            # Get libber data for UI display if libber exists
+            # Get libber data for UI display
             libber_data = manager.get_libber_data(libber_name)
             if libber_data:
                 lib_dict_json = json.dumps(libber_data["lib_dict"])
