@@ -154,4 +154,44 @@ class PromptCollection(BaseModel):
             if metadata.category == category
         }
     
+    def compose_prompts(self, composition_map: dict, libber_manager=None) -> dict[str, str]:
+        """
+        Compose output prompts based on a composition map.
+        
+        Args:
+            composition_map: Dict mapping output names to lists of prompt keys
+                Example: {
+                    "qwen_main": ["girl_pos", "male_pos", "quality"],
+                    "video_high": ["wan_prompt", "style"]
+                }
+            libber_manager: Optional LibberStateManager instance for processing libber prompts
+            
+        Returns:
+            Dict mapping output names to composed prompt strings
+        """
+        results = {}
+        
+        for output_name, prompt_keys in composition_map.items():
+            parts = []
+            
+            for key in prompt_keys:
+                if key not in self.prompts:
+                    continue
+                    
+                metadata = self.prompts[key]
+                value = metadata.value
+                
+                # Process libber substitution if needed
+                if metadata.processing_type == "libber" and metadata.libber_name and libber_manager:
+                    libber = libber_manager.get_libber(metadata.libber_name)
+                    if libber:
+                        value = libber.substitute(value)
+                
+                if value:
+                    parts.append(value)
+            
+            results[output_name] = " ".join(parts).strip()
+        
+        return results
+    
     model_config = ConfigDict(arbitrary_types_allowed=True)

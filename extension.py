@@ -4071,6 +4071,214 @@ class LibberApply(io.ComfyNode):
 
 
 # ============================================================================
+# SCENE PROMPT MANAGEMENT NODES
+# ============================================================================
+
+class ScenePromptManager(io.ComfyNode):
+    """Manage prompts in a Scene's PromptCollection with an interactive table interface."""
+    
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("ScenePromptManager"),
+            display_name="ScenePromptManager",
+            category="🧊 frost-byte/Scene",
+            inputs=[
+                io.Custom("SCENE_INFO").Input(
+                    id="scene_info",
+                    display_name="scene_info",
+                    optional=True,
+                    tooltip="Scene to manage prompts for (optional)"
+                ),
+                io.String.Input(
+                    id="collection_json",
+                    display_name="collection_json",
+                    default="",
+                    multiline=True,
+                    tooltip="Prompt collection JSON (auto-updated)"
+                ),
+            ],
+            outputs=[
+                io.Custom("SCENE_INFO").Output(
+                    id="scene_info_out",
+                    display_name="scene_info",
+                    tooltip="Updated scene with modified prompts"
+                ),
+                io.String.Output(
+                    id="status",
+                    display_name="status",
+                    tooltip="Operation status"
+                ),
+            ],
+            is_output_node=True,
+        )
+    
+    @classmethod
+    def execute(cls, scene_info=None, collection_json=""):
+        # Get or create prompt collection
+        if scene_info and scene_info.prompts:
+            collection = scene_info.prompts
+        elif collection_json:
+            try:
+                data = json.loads(collection_json)
+                collection = PromptCollection.from_dict(data)
+            except Exception as e:
+                collection = PromptCollection()
+                print(f"ScenePromptManager: Error loading collection JSON: {e}")
+        else:
+            collection = PromptCollection()
+        
+        # Create or update scene_info
+        if scene_info:
+            scene_info.prompts = collection
+            status = f"✓ Scene '{scene_info.pose_name}' has {len(collection.prompts)} prompts"
+        else:
+            # Create minimal scene_info if none provided
+            scene_info = SceneInfo(
+                pose_dir="",
+                pose_name="",
+                pose_json="[]",
+                resolution=512,
+                prompts=collection
+            )
+            status = f"✓ Created new collection with {len(collection.prompts)} prompts"
+        
+        # Prepare UI data
+        collection_data = collection.to_dict()
+        prompts_list = []
+        for key, metadata in collection.prompts.items():
+            prompts_list.append({
+                "key": key,
+                "value": metadata.value,
+                "processing_type": metadata.processing_type,
+                "libber_name": metadata.libber_name or "",
+                "category": metadata.category or "",
+            })
+        
+        combined_ui = {
+            "text": [
+                json.dumps(collection_data),
+                json.dumps(prompts_list),
+                status
+            ]
+        }
+        
+        print(f"ScenePromptManager: {status}")
+        return io.NodeOutput(scene_info, status, ui=combined_ui)
+
+
+class PromptComposer(io.ComfyNode):
+    """Compose multiple output prompts from a PromptCollection with flexible slot assignment."""
+    
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("PromptComposer"),
+            display_name="PromptComposer",
+            category="🧊 frost-byte/Scene",
+            inputs=[
+                io.Custom("SCENE_INFO").Input(
+                    id="scene_info",
+                    display_name="scene_info",
+                    optional=True,
+                    tooltip="Scene with prompt collection"
+                ),
+                io.String.Input(
+                    id="composition_json",
+                    display_name="composition_json",
+                    default="",
+                    multiline=True,
+                    tooltip="Composition map: {output_name: [prompt_keys]}"
+                ),
+            ],
+            outputs=[
+                io.Custom("DICT").Output(
+                    id="prompt_dict",
+                    display_name="prompt_dict",
+                    tooltip="Dictionary of composed prompts by name"
+                ),
+                io.String.Output(
+                    id="composition_json_out",
+                    display_name="composition_json",
+                    tooltip="Composition map for saving/loading"
+                ),
+                io.String.Output(
+                    id="info",
+                    display_name="info",
+                    tooltip="Composition details"
+                ),
+            ],
+            is_output_node=True,
+        )
+    
+    @classmethod
+    def execute(cls, scene_info=None, composition_json=""):
+        # Get prompt collection
+        collection = None
+        if scene_info and scene_info.prompts:
+            collection = scene_info.prompts
+        
+        if not collection:
+            status = "✗ No prompt collection provided"
+            print(f"PromptComposer: {status}")
+            return io.NodeOutput({}, "{}", status)
+        
+        # Parse composition map
+        composition_map = {}
+        if composition_json:
+            try:
+                composition_map = json.loads(composition_json)
+            except Exception as e:
+                print(f"PromptComposer: Error parsing composition JSON: {e}")
+                composition_map = {}
+        
+        # Default composition if none provided
+        if not composition_map:
+            # Create default based on legacy prompt names
+            available_keys = list(collection.prompts.keys())
+            composition_map = {
+                "prompt_a": available_keys[:2] if len(available_keys) >= 2 else available_keys,
+            }
+        
+        # Get libber manager for processing
+        libber_manager = LibberStateManager.instance()
+        
+        # Compose prompts
+        prompt_dict = collection.compose_prompts(composition_map, libber_manager)
+        
+        # Generate info
+        info_lines = [f"✓ Composed {len(prompt_dict)} output prompts:"]
+        for name, value in prompt_dict.items():
+            preview = value[:60] + "..." if len(value) > 60 else value
+            prompt_count = len(composition_map.get(name, []))
+            info_lines.append(f"  {name}: {prompt_count} prompts → \"{preview}\"")
+        
+        info = "\n".join(info_lines)
+        
+        # Prepare UI data
+        prompts_list = []
+        for key, metadata in collection.prompts.items():
+            prompts_list.append({
+                "key": key,
+                "value": metadata.value,
+                "processing_type": metadata.processing_type,
+                "libber_name": metadata.libber_name or "",
+            })
+        
+        combined_ui = {
+            "text": [
+                json.dumps(composition_map),
+                json.dumps(prompts_list),
+                json.dumps(prompt_dict),
+                info
+            ]
+        }
+        
+        print(f"PromptComposer: {info}")
+        return io.NodeOutput(prompt_dict, json.dumps(composition_map, indent=2), info, ui=combined_ui)
+
+
+# ============================================================================
 # REST API STATE MANAGERS
 # ============================================================================
 
@@ -4622,4 +4830,7 @@ class FBToolsExtension(ComfyExtension):
             # Libber nodes
             LibberManager,
             LibberApply,
+            # Scene Prompt Management nodes
+            ScenePromptManager,
+            PromptComposer,
         ]
