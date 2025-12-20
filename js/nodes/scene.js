@@ -3,6 +3,7 @@
  */
 
 import { libberAPI } from "../api/libber.js";
+import { sceneAPI } from "../api/scene.js";
 
 /**
  * Show toast notification
@@ -406,7 +407,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             // Help text
             const helpText = `<div style="margin-bottom: 8px; padding: 6px 8px; background: var(--comfy-menu-bg); border: 1px solid var(--border-color); border-radius: 4px; font-size: 11px; color: var(--descrip-text);">
                 <strong style="color: var(--fg-color);">👁️ Preview Compositions:</strong> 
-                View the fully processed output for each composition. This shows the final text after combining all prompts and applying libber substitutions.
+                View the fully processed output for each composition. Click "🔄 Process" to generate previews with libber substitutions applied.
             </div>`;
             
             // Composition selector
@@ -422,8 +423,9 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             
             if (currentCompositionsData.length > 0) {
                 const firstCompName = currentCompositionsData[0].name;
-                const firstCompOutput = currentPromptDict[firstCompName] || 'No output available';
+                const firstCompOutput = currentPromptDict[firstCompName] || 'Click "Process" to generate preview...';
                 const charCount = firstCompOutput.length;
+                const hasOutput = currentPromptDict[firstCompName] !== undefined;
                 
                 previewContent = `
                     <div style="margin-bottom: 8px;">
@@ -435,12 +437,13 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                     <div style="margin-bottom: 8px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                             <label style="font-weight: 600; color: var(--fg-color); font-size: 11px;">Processed Output:</label>
-                            <span style="font-size: 10px; color: var(--descrip-text);" class="char-count">${charCount} characters</span>
+                            <span style="font-size: 10px; color: var(--descrip-text);" class="char-count">${hasOutput ? charCount + ' characters' : ''}</span>
                         </div>
                         <textarea readonly class="comp-output-textarea" style="width: 100%; min-height: 200px; padding: 8px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; font-family: monospace; resize: vertical; box-sizing: border-box;">${firstCompOutput}</textarea>
                     </div>
                     <div style="display: flex; gap: 8px;">
-                        <button class="copy-output-btn" title="Copy to clipboard" style="padding: 6px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; font-size: 11px;">📋 Copy</button>
+                        <button class="process-compositions-btn" title="Process compositions with current prompts and libbers" style="padding: 6px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; font-size: 11px;">🔄 Process</button>
+                        <button class="copy-output-btn" title="Copy to clipboard" style="padding: 6px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; font-size: 11px;" ${hasOutput ? '' : 'disabled'}>📋 Copy</button>
                     </div>
                 `;
             }
@@ -736,17 +739,76 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             
             // ==== VIEW TAB HANDLERS ====
             
+            // Process compositions button
+            container.querySelector('.process-compositions-btn')?.addEventListener('click', async () => {
+                try {
+                    showToast({ severity: "info", summary: "Processing compositions...", life: 2000 });
+                    
+                    // Build collection data from current state
+                    const collection = {
+                        version: 2,
+                        prompts: {},
+                        compositions: {}
+                    };
+                    
+                    currentPromptsData.forEach(prompt => {
+                        if (prompt.key) {
+                            collection.prompts[prompt.key] = {
+                                value: prompt.value || "",
+                                processing_type: prompt.processing_type || "raw",
+                                libber_name: prompt.libber_name || null,
+                                category: prompt.category || null
+                            };
+                        }
+                    });
+                    
+                    currentCompositionsData.forEach(comp => {
+                        if (comp.name) {
+                            collection.compositions[comp.name] = comp.prompt_keys || [];
+                        }
+                    });
+                    
+                    // Call backend API to process
+                    const response = await sceneAPI.processCompositions(collection);
+                    
+                    if (response && response.prompt_dict) {
+                        currentPromptDict = response.prompt_dict;
+                        
+                        // Update the view with first composition
+                        const selectedComp = container.querySelector('.comp-preview-select')?.value;
+                        const compToShow = selectedComp || currentCompositionsData[0]?.name;
+                        const output = currentPromptDict[compToShow] || 'No output generated';
+                        
+                        const textarea = container.querySelector('.comp-output-textarea');
+                        const charCountSpan = container.querySelector('.char-count');
+                        const copyBtn = container.querySelector('.copy-output-btn');
+                        
+                        if (textarea) textarea.value = output;
+                        if (charCountSpan) charCountSpan.textContent = `${output.length} characters`;
+                        if (copyBtn) copyBtn.disabled = false;
+                        
+                        showToast({ severity: "success", summary: "Compositions processed successfully", life: 2000 });
+                    } else {
+                        showToast({ severity: "error", summary: "Failed to process compositions", life: 3000 });
+                    }
+                } catch (err) {
+                    console.error("Error processing compositions:", err);
+                    showToast({ severity: "error", summary: "Error processing compositions", life: 3000 });
+                }
+            });
+            
             // Composition preview dropdown
             container.querySelector('.comp-preview-select')?.addEventListener('change', (e) => {
                 const selectedComp = e.target.value;
-                const output = currentPromptDict[selectedComp] || 'No output available';
+                const output = currentPromptDict[selectedComp] || 'Click "Process" to generate preview...';
+                const hasOutput = currentPromptDict[selectedComp] !== undefined;
                 const charCount = output.length;
                 
                 const textarea = container.querySelector('.comp-output-textarea');
                 const charCountSpan = container.querySelector('.char-count');
                 
                 if (textarea) textarea.value = output;
-                if (charCountSpan) charCountSpan.textContent = `${charCount} characters`;
+                if (charCountSpan) charCountSpan.textContent = hasOutput ? `${charCount} characters` : '';
             });
             
             // Copy button

@@ -4820,6 +4820,44 @@ async def libber_apply(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+@PromptServer.instance.routes.post("/fbtools/scene/process_compositions")
+async def scene_process_compositions(request):
+    """
+    Process compositions from a prompt collection and return composed prompts.
+    Body: {"collection": dict}
+    Returns: {"prompt_dict": dict, "status": str}
+    """
+    try:
+        data = await request.json()
+        collection_data = data.get("collection")
+        
+        if not collection_data:
+            return web.json_response({"error": "collection data required"}, status=400)
+        
+        # Parse collection data
+        try:
+            collection = PromptCollection.from_dict(collection_data)
+        except Exception as e:
+            return web.json_response({"error": f"Invalid collection data: {str(e)}"}, status=400)
+        
+        # Get libber manager for substitutions
+        libber_manager = LibberStateManager.instance()
+        
+        # Compose prompts
+        prompt_dict = collection.compose_prompts(collection.compositions, libber_manager)
+        
+        return web.json_response({
+            "prompt_dict": prompt_dict,
+            "status": f"Processed {len(prompt_dict)} compositions"
+        })
+    
+    except Exception as e:
+        print(f"Error processing compositions: {e}")
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"error": str(e)}, status=500)
+
+
 class FBToolsExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:

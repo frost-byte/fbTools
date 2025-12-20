@@ -68,6 +68,17 @@ export class SceneAPI extends BaseAPI {
             loras,
         });
     }
+
+    /**
+     * Process compositions and return composed prompts
+     * @param {object} collectionData - Full collection data with prompts and compositions
+     * @returns {Promise<{prompt_dict: object, status: string}>}
+     */
+    async processCompositions(collectionData) {
+        return await this.post("/process_compositions", {
+            collection: collectionData,
+        });
+    }
 }
 
 // Export singleton instance for convenience
