@@ -72,6 +72,23 @@ function scheduleNodeRefresh(node, app) {
 export function setupSceneSelect(nodeType, nodeData, app) {
     console.log("fb_tools -> SceneSelect node detected");
     
+    // Debug connection hooks
+    const onConnectOutput = nodeType.prototype.onConnectOutput;
+    nodeType.prototype.onConnectOutput = function(outputIndex, inputType, inputSlot, inputNode, inputIndex) {
+        console.log("🔌 SceneSelect.onConnectOutput called:");
+        console.log("  outputIndex:", outputIndex);
+        console.log("  inputType:", inputType);
+        console.log("  inputSlot:", inputSlot);
+        console.log("  inputNode:", inputNode?.type);
+        console.log("  inputIndex:", inputIndex);
+        console.log("  this.outputs:", this.outputs);
+        console.log("  Output being connected:", this.outputs[outputIndex]);
+        
+        const result = onConnectOutput?.apply(this, arguments);
+        console.log("  Connection allowed:", result);
+        return result;
+    };
+    
     const widgetMap = [
         { widget_index: 0, widget_name: "girl_pos_in" },
         { widget_index: 1, widget_name: "male_pos_in" },
@@ -98,6 +115,36 @@ export function setupSceneSelect(nodeType, nodeData, app) {
  */
 export function setupScenePromptManager(nodeType, nodeData, app) {
     console.log("fb_tools -> ScenePromptManager node detected");
+    
+    // Debug connection hooks
+    const onConnectInput = nodeType.prototype.onConnectInput;
+    nodeType.prototype.onConnectInput = function(inputIndex, outputType, outputSlot, outputNode, outputIndex) {
+        console.log("🔌 ScenePromptManager.onConnectInput called:");
+        console.log("  inputIndex:", inputIndex);
+        console.log("  outputType:", outputType);
+        console.log("  outputSlot:", outputSlot);
+        console.log("  outputNode:", outputNode?.type);
+        console.log("  outputIndex:", outputIndex);
+        console.log("  this.inputs:", this.inputs);
+        console.log("  Expected input type:", this.inputs[inputIndex]);
+        
+        const result = onConnectInput?.apply(this, arguments);
+        console.log("  Connection result:", result);
+        return result;
+    };
+    
+    const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function(type, index, connected, link_info, ioSlot) {
+        console.log("🔗 ScenePromptManager.onConnectionsChange called:");
+        console.log("  type:", type, "(1=input, 2=output)");
+        console.log("  index:", index);
+        console.log("  connected:", connected);
+        console.log("  link_info:", link_info);
+        console.log("  ioSlot:", ioSlot);
+        
+        const result = onConnectionsChange?.apply(this, arguments);
+        return result;
+    };
     
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
