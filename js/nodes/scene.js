@@ -84,9 +84,14 @@ export function setupSceneSelect(nodeType, nodeData, app) {
         console.log("  this.outputs:", this.outputs);
         console.log("  Output being connected:", this.outputs[outputIndex]);
         
+        // Call original hook if it exists
         const result = onConnectOutput?.apply(this, arguments);
-        console.log("  Connection allowed:", result);
-        return result;
+        console.log("  Original result:", result);
+        
+        // Explicitly return true to allow connection (undefined can be ambiguous)
+        const finalResult = result !== false ? true : false;
+        console.log("  Final result:", finalResult);
+        return finalResult;
     };
     
     const widgetMap = [
@@ -128,9 +133,14 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         console.log("  this.inputs:", this.inputs);
         console.log("  Expected input type:", this.inputs[inputIndex]);
         
+        // Call original hook if it exists
         const result = onConnectInput?.apply(this, arguments);
-        console.log("  Connection result:", result);
-        return result;
+        console.log("  Original result:", result);
+        
+        // Explicitly return true to allow connection (undefined can be ambiguous)
+        const finalResult = result !== false ? true : false;
+        console.log("  Final result:", finalResult);
+        return finalResult;
     };
     
     const onConnectionsChange = nodeType.prototype.onConnectionsChange;
