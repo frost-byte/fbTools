@@ -186,9 +186,15 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         const renderTable = (promptsList) => {
             currentPromptsData = promptsList || [];
             
+            // Help text
+            const helpText = `<div style="margin-bottom: 8px; padding: 6px 8px; background: var(--comfy-menu-bg); border: 1px solid var(--border-color); border-radius: 4px; font-size: 11px; color: var(--descrip-text);">
+                <strong style="color: var(--fg-color);">💡 Quick Guide:</strong> 
+                Create reusable prompt components. <strong>Key</strong>=unique identifier, <strong>Value</strong>=prompt text, <strong>Type</strong>=raw (use as-is) or libber (with substitution), <strong>Libber</strong>=which libber to use for substitution, <strong>Category</strong>=group/organize prompts. Use PromptComposer to combine prompts into outputs.
+            </div>`;
+            
             // Action buttons - sticky at top
             const actionButtons = `<div style="margin-bottom: 8px; padding-bottom: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-bottom: 2px solid var(--border-color); background: var(--comfy-input-bg); position: sticky; top: 0; z-index: 10;">
-                <button class="apply-btn" style="padding: 4px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer;">✓ Apply</button>
+                <button class="apply-btn" title="Apply all changes to collection_json" style="padding: 4px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer;">✓ Apply Changes</button>
                 <span style="padding: 4px 8px; color: var(--descrip-text); font-size: 11px;" class="prompt-count">${currentPromptsData.length} prompts</span>
             </div>`;
             
@@ -201,50 +207,51 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                 const processingType = prompt.processing_type || 'raw';
                 const icon = processingType === 'libber' ? '🔄' : '📝';
                 
-                return `<tr data-idx="${idx}" data-key="${escapedKey}">
-                    <td style="width: 15%;"><input type="text" class="prompt-key-input" value="${escapedKey}" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-family: monospace; font-size: 11px;" /></td>
-                    <td style="width: 35%;"><textarea class="prompt-value-input" style="width: 100%; min-height: 40px; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; resize: vertical; font-size: 11px;">${escapedValue}</textarea></td>
-                    <td style="width: 15%;">
-                        <select class="prompt-type-select" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px;">
+                return `<tr data-idx="${idx}" data-key="${escapedKey}" style="vertical-align: top;">
+                    <td style="width: 15%; padding: 4px;"><input type="text" class="prompt-key-input" value="${escapedKey}" title="Unique identifier for this prompt (e.g., 'char1', 'quality')" placeholder="prompt_key" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-family: monospace; font-size: 11px; box-sizing: border-box;" /></td>
+                    <td style="width: 35%; padding: 4px;"><textarea class="prompt-value-input" title="The actual prompt text" placeholder="beautiful woman, detailed" style="width: 100%; min-height: 50px; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; resize: vertical; font-size: 11px; box-sizing: border-box; font-family: inherit;">${escapedValue}</textarea></td>
+                    <td style="width: 15%; padding: 4px;">
+                        <select class="prompt-type-select" title="Raw: use text as-is | Libber: substitute placeholders like %var%" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;">
                             <option value="raw" ${processingType === 'raw' ? 'selected' : ''}>📝 raw</option>
                             <option value="libber" ${processingType === 'libber' ? 'selected' : ''}>🔄 libber</option>
                         </select>
                     </td>
-                    <td style="width: 15%;"><input type="text" class="prompt-libber-input" value="${escapedLibber}" placeholder="libber_name" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px;" ${processingType !== 'libber' ? 'disabled' : ''} /></td>
-                    <td style="width: 12%;"><input type="text" class="prompt-category-input" value="${escapedCategory}" placeholder="category" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px;" /></td>
-                    <td style="white-space: nowrap; text-align: center; vertical-align: top; width: 8%;">
-                        <button class="remove-prompt-btn" title="Remove" style="padding: 4px 8px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; cursor: pointer; font-size: 12px;">➖</button>
+                    <td style="width: 15%; padding: 4px;"><input type="text" class="prompt-libber-input" value="${escapedLibber}" title="Name of libber to use for substitution (only for libber type)" placeholder="char_lib" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;" ${processingType !== 'libber' ? 'disabled' : ''} /></td>
+                    <td style="width: 12%; padding: 4px;"><input type="text" class="prompt-category-input" value="${escapedCategory}" title="Optional: group prompts (e.g., 'character', 'scene', 'quality')" placeholder="character" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;" /></td>
+                    <td style="white-space: nowrap; text-align: center; vertical-align: top; width: 8%; padding: 4px;">
+                        <button class="remove-prompt-btn" title="Remove this prompt" style="padding: 8px 10px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; cursor: pointer; font-size: 14px; min-height: 34px;">➖</button>
                     </td>
                 </tr>`;
             }).join('');
             
             // Add row for new prompt
-            const newRow = `<tr class="new-prompt-row">
-                <td><input type="text" placeholder="prompt_key" class="prompt-key-input" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-family: monospace; font-size: 11px;" /></td>
-                <td><textarea placeholder="prompt value" class="prompt-value-input" style="width: 100%; min-height: 40px; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; resize: vertical; font-size: 11px;"></textarea></td>
-                <td>
-                    <select class="prompt-type-select" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px;">
+            const newRow = `<tr class="new-prompt-row" style="vertical-align: top; border-top: 2px solid var(--border-color);">
+                <td style="padding: 4px;"><input type="text" placeholder="prompt_key" class="prompt-key-input" title="Unique identifier (required)" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-family: monospace; font-size: 11px; box-sizing: border-box;" /></td>
+                <td style="padding: 4px;"><textarea placeholder="beautiful woman, detailed..." class="prompt-value-input" title="The prompt text" style="width: 100%; min-height: 50px; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; resize: vertical; font-size: 11px; box-sizing: border-box; font-family: inherit;"></textarea></td>
+                <td style="padding: 4px;">
+                    <select class="prompt-type-select" title="Processing type" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;">
                         <option value="raw" selected>📝 raw</option>
                         <option value="libber">🔄 libber</option>
                     </select>
                 </td>
-                <td><input type="text" class="prompt-libber-input" placeholder="libber_name" disabled style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px;" /></td>
-                <td><input type="text" class="prompt-category-input" placeholder="category" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px;" /></td>
-                <td style="white-space: nowrap; text-align: center; vertical-align: top;">
-                    <button class="add-prompt-btn" title="Add" style="padding: 4px 8px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; cursor: pointer; font-size: 12px;">➕</button>
+                <td style="padding: 4px;"><input type="text" class="prompt-libber-input" placeholder="char_lib" title="Libber name (for libber type only)" disabled style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;" /></td>
+                <td style="padding: 4px;"><input type="text" class="prompt-category-input" placeholder="character" title="Optional category" style="width: 100%; padding: 6px; background: var(--comfy-input-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; font-size: 11px; box-sizing: border-box;" /></td>
+                <td style="white-space: nowrap; text-align: center; vertical-align: top; padding: 4px;">
+                    <button class="add-prompt-btn" title="Add new prompt" style="padding: 8px 10px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 3px; cursor: pointer; font-size: 14px; min-height: 34px;">➕</button>
                 </td>
             </tr>`;
             
             container.innerHTML = `
+                ${helpText}
                 ${actionButtons}
                 <table style='width: 100%; border-collapse: collapse; font-size: 11px;'>
                     <thead>
                         <tr style='background: var(--comfy-menu-bg);'>
-                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;'>🗝️ Key</th>
-                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;'>💬 Value</th>
-                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;'>🔧 Type</th>
-                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;'>🪙 Libber</th>
-                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;'>🏷️ Category</th>
+                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;' title="Unique identifier for this prompt">🗝️ Key</th>
+                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;' title="The prompt text content">💬 Value</th>
+                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;' title="Raw: use as-is | Libber: substitute placeholders">🔧 Type</th>
+                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;' title="Which libber to use for substitution">🪙 Libber</th>
+                            <th style='padding: 6px 8px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;' title="Optional: group/organize prompts">🏷️ Category</th>
                             <th style='padding: 6px 8px; text-align: center; border-bottom: 2px solid var(--border-color); color: var(--fg-color); font-weight: 600;'>⚡ Actions</th>
                         </tr>
                     </thead>

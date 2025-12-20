@@ -4081,14 +4081,14 @@ class ScenePromptManager(io.ComfyNode):
                     id="scene_info",
                     display_name="scene_info",
                     optional=True,
-                    tooltip="Scene to manage prompts for (optional)"
+                    tooltip="Scene to manage prompts for (optional - can create standalone collection)"
                 ),
                 io.String.Input(
                     id="collection_json",
                     display_name="collection_json",
                     default="",
                     multiline=True,
-                    tooltip="Prompt collection JSON (auto-updated)"
+                    tooltip="Prompt collection JSON (auto-updated by UI table - normally don't edit manually)"
                 ),
             ],
             outputs=[
@@ -4174,14 +4174,14 @@ class PromptComposer(io.ComfyNode):
                     id="scene_info",
                     display_name="scene_info",
                     optional=True,
-                    tooltip="Scene with prompt collection"
+                    tooltip="Scene with prompt collection (from ScenePromptManager or SceneSelect)"
                 ),
                 io.String.Input(
                     id="composition_json",
                     display_name="composition_json",
-                    default="",
+                    default='{\n  "qwen_main": ["char1", "char2", "setting", "quality"]\n}',
                     multiline=True,
-                    tooltip="Composition map: {output_name: [prompt_keys]}"
+                    tooltip='Composition map: {"output_name": ["prompt_key1", "prompt_key2"]}. Example: {"main_prompt": ["char1", "setting"], "video_high": ["char1", "quality_high"]}'
                 ),
             ],
             outputs=[
