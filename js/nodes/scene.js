@@ -2,6 +2,8 @@
  * Scene-related node extensions
  */
 
+import { libberAPI } from "../api/libber.js";
+
 /**
  * Show toast notification
  */
@@ -320,14 +322,37 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         const attachEventHandlers = () => {
             // Enable/disable libber dropdown based on type selection
             container.querySelectorAll('.prompt-type-select').forEach(select => {
-                select.addEventListener('change', (e) => {
+                select.addEventListener('change', async (e) => {
                     const row = e.target.closest('tr');
                     const libberSelect = row.querySelector('.prompt-libber-select');
                     if (e.target.value === 'libber') {
                         libberSelect.disabled = false;
-                        // If currently "none", switch to first available libber
-                        if (libberSelect.value === 'none' && availableLibbers.length > 1) {
-                            libberSelect.value = availableLibbers[1];
+                        // If currently "none", fetch latest libbers and switch to first available
+                        if (libberSelect.value === 'none') {
+                            try {
+                                const response = await libberAPI.listLibbers();
+                                if (response && response.libbers && response.libbers.length > 0) {
+                                    // Update availableLibbers list
+                                    availableLibbers = ["none", ...response.libbers];
+                                    
+                                    // Repopulate the dropdown options
+                                    libberSelect.innerHTML = availableLibbers.map(lib => {
+                                        const selected = lib === response.libbers[0] ? 'selected' : '';
+                                        return `<option value="${lib}" ${selected}>${lib}</option>`;
+                                    }).join('');
+                                    
+                                    console.log("fb_tools -> ScenePromptManager: Updated libbers list from API");
+                                } else if (availableLibbers.length > 1) {
+                                    // Use existing list if API fails
+                                    libberSelect.value = availableLibbers[1];
+                                }
+                            } catch (err) {
+                                console.warn("fb_tools -> ScenePromptManager: Could not fetch libbers list", err);
+                                // Fallback to existing list
+                                if (availableLibbers.length > 1) {
+                                    libberSelect.value = availableLibbers[1];
+                                }
+                            }
                         }
                     } else {
                         libberSelect.disabled = true;
