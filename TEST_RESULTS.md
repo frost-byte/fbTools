@@ -1,12 +1,213 @@
-# PromptCollection Test Results
+# Test Results Summary
 
-## Test Execution Summary
-**Date:** 2024
-**Status:** ✅ All tests passing
-**Total Tests:** 32 tests across 8 test classes
-**Execution Time:** ~0.17 seconds
+## Overview
 
-## Test Coverage
+This document summarizes the test coverage for the fbTools extension, including both Python backend tests and JavaScript frontend tests.
+
+## Python Backend Tests
+
+### Execution Summary
+**Status:** ✅ All tests passing  
+**Test Files:** 2 (test_prompt_collection.py, test_libber.py)  
+**Total Tests:** 70+ tests across 16 test classes  
+**Execution Time:** ~0.3 seconds
+
+### Test Coverage by Module
+
+#### 1. PromptCollection Tests (32 tests)
+**File:** `tests/test_prompt_collection.py`
+
+**TestPromptMetadata (2 tests)**
+- ✅ Create basic prompt metadata with required value field
+- ✅ Create full prompt metadata with all optional fields
+
+**TestPromptCollectionBasics (8 tests)**
+- ✅ Create empty collection with correct defaults
+- ✅ Add prompt with just value
+- ✅ Add prompt with full metadata
+- ✅ Update existing prompt's value
+- ✅ Remove prompt and verify it's gone
+- ✅ Return False when removing non-existent prompt
+- ✅ Return None for non-existent prompt
+- ✅ Return sorted list of all prompt keys
+
+**TestPromptCollectionMigration (3 tests)**
+- ✅ Migrate simple v1 format to v2
+- ✅ Preserve all v1 fields in v1_backup
+- ✅ Handle non-string values in v1 format gracefully
+
+**TestPromptCollectionSerialization (7 tests)**
+- ✅ Convert basic collection to dictionary
+- ✅ Preserve all metadata fields in dict output
+- ✅ Ensure v1_backup is included in serialization
+- ✅ Load from v2 format dictionary
+- ✅ Auto-detect and migrate v1 format
+- ✅ Migrate v1 format without explicit version field
+- ✅ Validate to_dict() → from_dict() roundtrip
+
+**TestPromptCollectionBackwardCompatibility (2 tests)**
+- ✅ v1_backup remains unchanged after adding/removing prompts
+- ✅ Can still access original v1 field values
+
+**TestPromptCollectionEdgeCases (5 tests)**
+- ✅ Handle empty string as key
+- ✅ Handle empty string as value
+- ✅ Support unicode characters in keys and values
+- ✅ Handle large prompt text (10,000+ characters)
+- ✅ Scale to 1000+ prompts
+
+**TestPromptCollectionFileOperations (3 tests)**
+- ✅ Save and load v2 format from JSON files
+- ✅ Load v1 JSON file and auto-migrate
+- ✅ Migrated collection saves with v1_backup intact
+
+**TestPromptCollectionIntegration (2 tests)**
+- ✅ Complete v1→v2 migration workflow with edits
+- ✅ Multiple users editing same collection
+
+#### 2. Libber Tests (38+ tests)
+**File:** `tests/test_libber.py`
+
+**TestLibberBasics (8 tests)**
+- ✅ Create empty Libber with default settings
+- ✅ Create Libber with custom delimiter
+- ✅ Add a lib entry
+- ✅ Normalize key to lowercase with underscores
+- ✅ Update an existing lib entry
+- ✅ Remove a lib entry
+- ✅ Return sorted list of keys
+- ✅ Handle empty libber gracefully
+
+**TestLibberSubstitution (10 tests)**
+- ✅ Substitute a single placeholder
+- ✅ Substitute multiple placeholders
+- ✅ Recursively substitute nested references
+- ✅ Prevent infinite loops with max_depth
+- ✅ Don't modify text without placeholders
+- ✅ Use custom delimiter for substitution
+- ✅ Substitute only matching keys (leave unknown placeholders)
+- ✅ Handle empty text gracefully
+- ✅ Handle None text gracefully
+- ✅ Complex nested substitution (3+ levels deep)
+
+**TestLibberSerialization (3 tests)**
+- ✅ Convert to dictionary with all fields
+- ✅ Create from dictionary
+- ✅ Maintain data through to_dict() → from_dict() roundtrip
+
+**TestLibberFileOperations (2 tests)**
+- ✅ Save to and load from JSON file
+- ✅ Create directory if it doesn't exist
+
+**TestLibberEdgeCases (6 tests)**
+- ✅ Handle empty string as key
+- ✅ Handle empty string as value
+- ✅ Support unicode characters (日本語, emoji)
+- ✅ Handle large text values (10,000+ characters)
+- ✅ Scale to 1000+ lib entries
+- ✅ Handle special characters in values ($, @, &, !)
+
+**TestLibberIntegration (3 tests)**
+- ✅ Character presets workflow with nested refs
+- ✅ Scene components workflow
+- ✅ Update libs and reapply substitutions
+
+## JavaScript Frontend Tests
+
+### Execution Summary
+**Status:** ✅ All tests passing  
+**Test Files:** 2 (prompt_collection_api.test.js, libber_api.test.js)  
+**Total Tests:** 30+ tests  
+**Execution Time:** ~0.5 seconds
+
+### Test Coverage by Module
+
+#### 1. PromptCollectionAPI Tests (9 tests)
+**File:** `js-tests/prompt_collection_api.test.js`
+
+- ✅ Create session with default data
+- ✅ Create session with initial data
+- ✅ Add prompt with value only
+- ✅ Add prompt with full metadata
+- ✅ Remove prompt
+- ✅ List prompt names
+- ✅ Get collection data
+- ✅ Handle network errors
+- ✅ Show success toast
+
+#### 2. LibberAPI Tests (21+ tests)
+**File:** `js-tests/libber_api.test.js`
+
+**Create Libber (2 tests)**
+- ✅ Create a new libber with name and settings
+- ✅ Use default values for delimiter and max_depth
+
+**Load Libber (1 test)**
+- ✅ Load a libber from file with all data
+
+**Add Lib (2 tests)**
+- ✅ Add a lib entry to libber
+- ✅ Send correct request body
+
+**Remove Lib (1 test)**
+- ✅ Remove a lib entry from libber
+
+**Save Libber (1 test)**
+- ✅ Save libber to file with status
+
+**List Libbers (1 test)**
+- ✅ List all available libbers with files
+
+**Get Libber Data (1 test)**
+- ✅ Get complete libber data structure
+
+**Apply Substitutions (2 tests)**
+- ✅ Apply substitutions to text with placeholders
+- ✅ Send correct request with skip_none option
+
+**Error Handling (2 tests)**
+- ✅ Handle network errors gracefully
+- ✅ Handle API errors (404, 500, etc.)
+
+**UI Helpers (2 tests)**
+- ✅ Show success toast with correct format
+- ✅ Log and show error toast
+
+**Integration Tests (2 tests)**
+- ✅ Complete workflow: create → add libs → save → load
+- ✅ Substitution workflow with nested references
+
+## Running Tests
+
+### Python Tests
+
+```bash
+# Run all Python tests
+cd /path/to/comfyui-fbTools
+python -m pytest tests/ -v
+
+# Run specific test file
+python -m pytest tests/test_libber.py -v
+
+# Run with coverage
+python -m pytest tests/ --cov=. --cov-report=html
+```
+
+### JavaScript Tests
+
+```bash
+# Run all JavaScript tests
+cd js/
+npm test
+
+# Watch mode (auto-rerun on changes)
+npm run test:watch
+
+# Generate coverage report
+npm run test:coverage
+```
+
+## Test Implementation Notes
 
 ### 1. TestPromptMetadata (2 tests)
 Tests the basic PromptMetadata class functionality:
