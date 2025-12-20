@@ -3924,14 +3924,21 @@ class LibberManager(io.ComfyNode):
         manager = LibberStateManager.instance()
         
         try:
-            # Try to get or create libber - ensure instance name matches selected name
-            libber = manager.get_libber(libber_name)
-            if not libber:
-                # Create new libber if it doesn't exist
-                libber = manager.create_libber(libber_name, delimiter, max_depth)
-                status = f"✓ Created new libber '{libber_name}'"
+            # Check if libber file exists and load it to ensure we have the latest data
+            libber_filepath = os.path.join(libber_dir, f"{libber_name}.json")
+            if os.path.exists(libber_filepath):
+                # Reload from file to get latest changes
+                libber = manager.load_libber(libber_name, libber_filepath)
+                status = f"✓ Reloaded libber '{libber_name}' from file"
             else:
-                status = f"✓ Libber '{libber_name}' ready"
+                # Try to get existing in-memory instance or create new one
+                libber = manager.get_libber(libber_name)
+                if not libber:
+                    # Create new libber if it doesn't exist
+                    libber = manager.create_libber(libber_name, delimiter, max_depth)
+                    status = f"✓ Created new libber '{libber_name}'"
+                else:
+                    status = f"✓ Libber '{libber_name}' ready (in-memory)"
             
             keys = libber.list_libs()
             
@@ -4001,7 +4008,18 @@ class LibberApply(io.ComfyNode):
     @classmethod
     def execute(cls, libber_name="my_libber", text=""):
         manager = LibberStateManager.instance()
-        libber = manager.get_libber(libber_name)
+        
+        # Try to reload from file to ensure we have the latest data
+        libber_dir = default_libber_dir()
+        libber_filepath = os.path.join(libber_dir, f"{libber_name}.json")
+        if os.path.exists(libber_filepath):
+            try:
+                libber = manager.load_libber(libber_name, libber_filepath)
+            except Exception as e:
+                print(f"LibberApply: Error reloading from file, using in-memory instance: {e}")
+                libber = manager.get_libber(libber_name)
+        else:
+            libber = manager.get_libber(libber_name)
         
         if not libber:
             status = f"✗ Libber '{libber_name}' not found. Create or load it in LibberManager first."
