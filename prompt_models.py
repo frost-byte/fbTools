@@ -31,6 +31,7 @@ class PromptCollection(BaseModel):
     version: int = 2
     v1_backup: Optional[dict] = None
     prompts: dict[str, PromptMetadata] = {}
+    compositions: dict[str, List[str]] = {}  # {output_name: [prompt_keys]}
     
     def get_prompt_value(self, key: str) -> Optional[str]:
         """Get prompt value by key, returns None if not found."""
@@ -60,6 +61,21 @@ class PromptCollection(BaseModel):
     def list_prompt_names(self) -> List[str]:
         """Return sorted list of all prompt keys."""
         return sorted(self.prompts.keys())
+    
+    def add_composition(self, name: str, prompt_keys: List[str]):
+        """Add or update a composition."""
+        self.compositions[name] = prompt_keys
+    
+    def remove_composition(self, name: str) -> bool:
+        """Remove a composition. Returns True if removed, False if not found."""
+        if name in self.compositions:
+            del self.compositions[name]
+            return True
+        return False
+    
+    def list_composition_names(self) -> List[str]:
+        """Return sorted list of all composition names."""
+        return sorted(self.compositions.keys())
     
     @classmethod
     def from_legacy_dict(cls, legacy_data: dict) -> "PromptCollection":
@@ -91,7 +107,8 @@ class PromptCollection(BaseModel):
         """Convert to dictionary for JSON serialization."""
         result = {
             "version": self.version,
-            "prompts": {}
+            "prompts": {},
+            "compositions": self.compositions
         }
         
         if self.v1_backup is not None:
@@ -137,10 +154,13 @@ class PromptCollection(BaseModel):
                     libber_name=prompt_data.get("libber_name")
                 )
         
+        compositions = data.get("compositions", {})
+        
         return cls(
             version=2,
             v1_backup=data.get("v1_backup"),
-            prompts=prompts
+            prompts=prompts,
+            compositions=compositions
         )
     
     def get_prompt_metadata(self, key: str) -> Optional[PromptMetadata]:

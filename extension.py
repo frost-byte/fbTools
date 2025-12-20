@@ -4097,6 +4097,11 @@ class ScenePromptManager(io.ComfyNode):
                     display_name="scene_info",
                     tooltip="Updated scene with modified prompts"
                 ),
+                io.Custom("DICT").Output(
+                    id="prompt_dict",
+                    display_name="prompt_dict",
+                    tooltip="Dictionary of composed prompts by name"
+                ),
                 io.String.Output(
                     id="status",
                     display_name="status",
@@ -4152,17 +4157,33 @@ class ScenePromptManager(io.ComfyNode):
         libber_manager = LibberStateManager()
         available_libbers = ["none"] + list(libber_manager.libbers.keys())
         
+        # Compose prompts if compositions exist
+        prompt_dict = {}
+        if collection.compositions:
+            prompt_dict = collection.compose_prompts(collection.compositions, libber_manager)
+        
+        # Prepare compositions list for UI
+        compositions_list = []
+        for name, prompt_keys in collection.compositions.items():
+            compositions_list.append({
+                "name": name,
+                "prompt_keys": prompt_keys,
+                "preview": prompt_dict.get(name, "")[:100] + ("..." if len(prompt_dict.get(name, "")) > 100 else "")
+            })
+        
         combined_ui = {
             "text": [
                 json.dumps(collection_data),
                 json.dumps(prompts_list),
                 status,
-                json.dumps(available_libbers)
+                json.dumps(available_libbers),
+                json.dumps(compositions_list),
+                json.dumps(prompt_dict)
             ]
         }
         
         print(f"ScenePromptManager: {status}")
-        return io.NodeOutput(scene_info, status, ui=combined_ui)
+        return io.NodeOutput(scene_info, prompt_dict, status, ui=combined_ui)
 
 
 class PromptComposer(io.ComfyNode):
