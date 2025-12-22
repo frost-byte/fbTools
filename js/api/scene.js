@@ -24,7 +24,7 @@ export class SceneAPI extends BaseAPI {
     }
 
     /**
-     * Update scene metadata (pose_name, resolution, etc.)
+     * Update scene metadata (scene_name, resolution, etc.)
      * @param {string} sessionId - Scene session identifier
      * @param {object} metadata - Metadata fields to update
      * @returns {Promise<object>}
@@ -77,6 +77,28 @@ export class SceneAPI extends BaseAPI {
     async processCompositions(collectionData) {
         return await this.post("/process_compositions", {
             collection: collectionData,
+        });
+    }
+
+    /**
+     * Get prompts from a scene's prompts.json file
+     * @param {string} sceneDir - Path to scene directory
+     * @returns {Promise<{prompts: Array, compositions: object}>}
+     */
+    async getScenePrompts(sceneDir) {
+        return await this.get(`/get_scene_prompts?scene_dir=${encodeURIComponent(sceneDir)}`);
+    }
+
+    /**
+     * Save prompts and compositions to a scene's prompts.json file
+     * @param {string} sceneDir - Path to scene directory
+     * @param {object} collection - Collection data with prompts and compositions
+     * @returns {Promise<{success: boolean, message: string}>}
+     */
+    async saveScenePrompts(sceneDir, collection) {
+        return await this.post("/save_scene_prompts", {
+            scene_dir: sceneDir,
+            collection: collection,
         });
     }
 }

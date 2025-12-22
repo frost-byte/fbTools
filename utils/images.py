@@ -504,3 +504,251 @@ def image_resize_ess(
     outputs = torch.clamp(outputs, 0, 1)
 
     return outputs
+
+
+def mask_remove_holes(mask: torch.Tensor, min_hole_size: int = 10) -> torch.Tensor:
+    """
+    Remove holes from a binary mask using morphological operations.
+    
+    Args:
+        mask: Input mask tensor [H, W] with values 0-1
+        min_hole_size: Minimum size of holes to remove (in pixels)
+    
+    Returns:
+        Mask with holes filled
+    """
+    if not _HAS_CV2:
+        print("mask_remove_holes: opencv not available, returning original mask")
+        return mask
+    
+    # Convert to numpy and ensure binary
+    mask_np = mask.cpu().numpy()
+    mask_binary = (mask_np > 0.5).astype(np.uint8) * 255
+    
+    # Find contours of holes (inverted mask)
+    inverted = cv2.bitwise_not(mask_binary)
+    contours, _ = cv2.findContours(inverted, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Fill holes smaller than threshold
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_hole_size:
+            cv2.drawContours(mask_binary, [contour], -1, 255, -1)
+    
+    # Convert back to tensor
+    result = torch.from_numpy(mask_binary.astype(np.float32) / 255.0).to(mask.device)
+    return result
+
+
+def mask_grow(mask: torch.Tensor, grow_amount: int = 5) -> torch.Tensor:
+    """
+    Grow (dilate) a mask by expanding its borders.
+    
+    Args:
+        mask: Input mask tensor [H, W] with values 0-1
+        grow_amount: Number of pixels to grow the mask
+    
+    Returns:
+        Dilated mask
+    """
+    if not _HAS_CV2:
+        print("mask_grow: opencv not available, returning original mask")
+        return mask
+    
+    if grow_amount <= 0:
+        return mask
+    
+    # Convert to numpy
+    mask_np = mask.cpu().numpy()
+    mask_binary = (mask_np > 0.5).astype(np.uint8) * 255
+    
+    # Create circular kernel for dilation
+    kernel_size = grow_amount * 2 + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    
+    # Dilate
+    dilated = cv2.dilate(mask_binary, kernel, iterations=1)
+    
+    # Convert back to tensor
+    result = torch.from_numpy(dilated.astype(np.float32) / 255.0).to(mask.device)
+    return result
+
+
+def mask_gaussian_blur(mask: torch.Tensor, blur_radius: float = 5.0) -> torch.Tensor:
+    """
+    Apply Gaussian blur to a mask for soft edges.
+    
+    Args:
+        mask: Input mask tensor [H, W] with values 0-1
+        blur_radius: Radius of Gaussian blur (sigma value)
+    
+    Returns:
+        Blurred mask
+    """
+    if not _HAS_CV2:
+        print("mask_gaussian_blur: opencv not available, returning original mask")
+        return mask
+    
+    if blur_radius <= 0:
+        return mask
+    
+    # Convert to numpy
+    mask_np = mask.cpu().numpy()
+    
+    # Kernel size should be odd and roughly 6*sigma
+    kernel_size = int(blur_radius * 6)
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    kernel_size = max(3, kernel_size)  # Minimum size of 3
+    
+    # Apply Gaussian blur
+    blurred = cv2.GaussianBlur(mask_np, (kernel_size, kernel_size), blur_radius)
+    
+    # Convert back to tensor
+    result = torch.from_numpy(blurred.astype(np.float32)).to(mask.device)
+    return result
+
+
+def mask_smooth(mask: torch.Tensor, smooth_iterations: int = 2) -> torch.Tensor:
+    """
+    Smooth a mask using morphological operations (opening then closing).
+    Preserves grayscale values for soft edges.
+    
+    Args:
+        mask: Input mask tensor [H, W] with values 0-1
+        smooth_iterations: Number of smoothing iterations
+    
+    Returns:
+        Smoothed mask
+    """
+    if not _HAS_CV2:
+        print("mask_smooth: opencv not available, returning original mask")
+        return mask
+    
+    if smooth_iterations <= 0:
+        return mask
+    
+    # Convert to numpy (preserve grayscale)
+    mask_np = mask.cpu().numpy()
+    
+    # Create small circular kernel for smoothing
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    
+    # Apply morphological opening then closing for smoothing
+    # Work with grayscale values to preserve soft edges
+    for _ in range(smooth_iterations):
+        # Opening: erosion followed by dilation (removes small bright spots)
+        opened = cv2.morphologyEx(mask_np, cv2.MORPH_OPEN, kernel)
+        # Closing: dilation followed by erosion (fills small dark spots)
+        mask_np = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel)
+    
+    # Convert back to tensor (no binarization - preserves soft edges)
+    result = torch.from_numpy(mask_np.astype(np.float32)).to(mask.device)
+    return result
+
+# PIL to Mask
+def pil2mask(image):
+    image_np = np.array(image.convert("L")).astype(np.float32) / 255.0
+    mask = torch.from_numpy(image_np)
+    return 1.0 - mask
+
+def smooth_masks_region_was(masks: torch.Tensor, sigma=128) -> torch.Tensor:
+    """
+    Smooth mask region using Gaussian filter and thresholding.
+    
+    Args:
+        masks: Input mask tensor [B, H, W] or [H, W]
+        sigma: Gaussian filter sigma value
+    
+    Returns:
+        Smoothed mask tensor [1, H, W] (3D for ComfyUI compatibility)
+    """
+    if masks.dim() == 3:
+        mask_single = masks[0]
+    else:
+        mask_single = masks
+    
+    from PIL import Image as PILImage, ImageOps
+    
+    # Convert to numpy uint8 for PIL
+    mask_np = np.clip(255. * mask_single.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)
+    pil_image = PILImage.fromarray(mask_np, mode='L')
+    
+    # Apply smoothing
+    region_mask = smooth_region_was(pil_image, tolerance=sigma)
+    
+    # Convert back to tensor [H, W] and add batch dimension [1, H, W]
+    region_tensor = pil2mask(region_mask).unsqueeze(0)
+    
+    return region_tensor.to(masks.device)
+
+def smooth_region_was(image, tolerance):
+    """
+    Apply Gaussian smoothing and thresholding to a PIL image.
+    
+    Args:
+        image: PIL Image
+        tolerance: Gaussian filter sigma value
+    
+    Returns:
+        PIL Image (L mode) with smoothed and thresholded mask, inverted
+    """
+    from scipy.ndimage import gaussian_filter
+    
+    image = image.convert("L")
+    mask_array = np.array(image)
+    smoothed_array = gaussian_filter(mask_array, sigma=tolerance)
+    threshold = np.max(smoothed_array) / 2
+    smoothed_mask = np.where(smoothed_array >= threshold, 255, 0).astype(np.uint8)
+    smoothed_image = Image.fromarray(smoothed_mask, mode="L")
+    
+    # Return inverted L mode image (no need to convert to RGB)
+    return ImageOps.invert(smoothed_image)
+
+def create_mask_overlay_image(mask: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
+    """
+    Create an RGBA overlay image where the masked area is replaced with solid white.
+    The masked area has RGB=(1,1,1) white and alpha=1 (fully opaque).
+    
+    Args:
+        mask: Mask tensor [H, W] or [B, H, W] with values 0-1 (1=masked)
+        image: Image tensor [H, W, C] or [B, H, W, C] with values 0-1
+    
+    Returns:
+        RGBA overlay image tensor [1, H, W, 4] where masked areas are solid white
+    """
+    from PIL import Image as PILImage
+    
+    # Get first from batch if needed
+    if mask.dim() == 3:  # [B, H, W]
+        mask_single = mask[0]
+    else:
+        mask_single = mask
+    
+    if image.dim() == 4:  # [B, H, W, C]
+        img_single = image[0]
+    else:
+        img_single = image
+    
+    # Convert mask to numpy (0-1 float)
+    mask_np = mask_single.cpu().numpy()  # [H, W]
+    
+    # Convert image to numpy (0-1 float)
+    img_np = img_single.cpu().numpy()  # [H, W, C]
+    
+    # Create RGBA output: [H, W, 4]
+    h, w = mask_np.shape
+    overlay_np = np.ones((h, w, 4), dtype=np.float32)  # Initialize to all 1.0 (white, opaque)
+    
+    # Set RGB values: white (1.0) where masked, original image where not masked
+    # mask_np is 1.0 where masked, 0.0 where not masked
+    for c in range(3):  # RGB channels
+        overlay_np[:, :, c] = np.where(mask_np > 0.5, 1.0, img_np[:, :, c])
+    
+    # Set alpha channel: all opaque (1.0) everywhere
+    overlay_np[:, :, 3] = 1.0
+    
+    # Convert to tensor [1, H, W, 4]
+    overlay_image = torch.from_numpy(overlay_np).unsqueeze(0).to(image.device)
+    
+    return overlay_image

@@ -85,8 +85,10 @@ class PromptCollection(BaseModel):
         Legacy format: {"girl_pos": "...", "male_pos": "...", ...}
         V2 format: {"version": 2, "v1_backup": {...}, "prompts": {...}}
         
-        All legacy prompts are migrated as "raw" processing type.
-        Output slot assignment happens at node level, not in metadata.
+        All legacy prompts are migrated with:
+        - processing_type="raw"
+        - category="legacy"
+        - libber_name=None
         """
         prompts = {}
         
@@ -94,7 +96,9 @@ class PromptCollection(BaseModel):
             if isinstance(value, str) and value:  # Only migrate non-empty strings
                 prompts[key] = PromptMetadata(
                     value=value,
-                    processing_type="raw"
+                    category="legacy",
+                    processing_type="raw",
+                    libber_name=None
                 )
         
         return cls(
@@ -213,5 +217,34 @@ class PromptCollection(BaseModel):
             results[output_name] = " ".join(parts).strip()
         
         return results
+    
+    @classmethod
+    def load_from_json(cls, filepath: str) -> "PromptCollection":
+        """
+        Load PromptCollection from a JSON file.
+        Automatically detects and migrates legacy v1 format to v2.
+        
+        Args:
+            filepath: Path to prompts.json file
+            
+        Returns:
+            PromptCollection instance (auto-migrated if legacy format)
+        """
+        import json
+        import os
+        
+        # Return empty collection if file doesn't exist
+        if not os.path.isfile(filepath):
+            return cls(version=2, prompts={}, compositions={})
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"PromptCollection.load_from_json: Error loading {filepath}: {e}")
+            return cls(version=2, prompts={}, compositions={})
+        
+        # Use from_dict which handles both v1 and v2 formats
+        return cls.from_dict(data)
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
