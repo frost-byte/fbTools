@@ -41,6 +41,27 @@ When creating a new ComfyUI node, **always** complete these steps:
 
 ## Architecture Patterns
 
+### Scene Image Workflow
+- **base_image**: The original input image (saved as `base.png` in scene directory)
+  - The true source of all scene content
+  - User can update via `update_base=True` in SceneUpdate
+  - Updating base_image triggers regeneration of everything
+- **upscale_image**: Scaled version of base_image (saved as `upscale.png`)
+  - Created from base_image using upscale_factor and upscale_method
+  - Acts as the source for all derived images (pose, depth, canny, etc.)
+  - In **SceneCreate**: Created by upscaling the input base_image
+  - In **SceneUpdate**: 
+    - If `update_base=True` + new base_image: Regenerate from new base
+    - If `update_upscale=True`: Apply scale factor to existing upscale_image
+    - If neither: Use existing upscale_image from scene
+    - All other regeneration (pose, depth, canny) uses whichever upscale_image we have
+- **Derived images**: pose_*, depth_*, canny_image
+  - Generated FROM the upscale_image
+  - Can be regenerated individually using `update_*` flags
+  - All normalized to match upscale_image dimensions
+  
+**Image Hierarchy**: base_image → upscale_image → derived images (pose, depth, canny)
+
 ### Singleton Pattern
 - **LibberStateManager**: Use `LibberStateManager.instance()` not `LibberStateManager()`
 - Single source of truth for libber data across all nodes

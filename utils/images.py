@@ -707,15 +707,17 @@ def smooth_region_was(image, tolerance):
 
 def create_mask_overlay_image(mask: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
     """
-    Create an RGBA overlay image where the masked area is replaced with solid white.
-    The masked area has RGB=(1,1,1) white and alpha=1 (fully opaque).
+    Create an RGBA image where the masked area is made fully transparent (alpha=0).
+    This removes color information from the masked region for inpainting workflows.
     
     Args:
-        mask: Mask tensor [H, W] or [B, H, W] with values 0-1 (1=masked)
+        mask: Mask tensor [H, W] or [B, H, W] with values 0-1 (1=masked, 0=unmasked)
         image: Image tensor [H, W, C] or [B, H, W, C] with values 0-1
     
     Returns:
-        RGBA overlay image tensor [1, H, W, 4] where masked areas are solid white
+        RGBA image tensor [1, H, W, 4] where:
+        - Masked areas: alpha=0 (transparent), RGB=0 (black, but invisible)
+        - Unmasked areas: alpha=1 (opaque), RGB=original image colors
     """
     from PIL import Image as PILImage
     
@@ -738,15 +740,16 @@ def create_mask_overlay_image(mask: torch.Tensor, image: torch.Tensor) -> torch.
     
     # Create RGBA output: [H, W, 4]
     h, w = mask_np.shape
-    overlay_np = np.ones((h, w, 4), dtype=np.float32)  # Initialize to all 1.0 (white, opaque)
+    overlay_np = np.zeros((h, w, 4), dtype=np.float32)  # Initialize to all 0.0 (black, transparent)
     
-    # Set RGB values: white (1.0) where masked, original image where not masked
+    # Set RGB values: black (0.0) where masked, original image where not masked
     # mask_np is 1.0 where masked, 0.0 where not masked
     for c in range(3):  # RGB channels
-        overlay_np[:, :, c] = np.where(mask_np > 0.5, 1.0, img_np[:, :, c])
+        overlay_np[:, :, c] = np.where(mask_np > 0.5, 0.0, img_np[:, :, c])
     
-    # Set alpha channel: all opaque (1.0) everywhere
-    overlay_np[:, :, 3] = 1.0
+    # Set alpha channel: transparent (0.0) where masked, opaque (1.0) where not masked
+    # This removes color information from the masked region
+    overlay_np[:, :, 3] = np.where(mask_np > 0.5, 0.0, 1.0)
     
     # Convert to tensor [1, H, W, 4]
     overlay_image = torch.from_numpy(overlay_np).unsqueeze(0).to(image.device)

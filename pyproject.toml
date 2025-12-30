@@ -53,6 +53,18 @@ testpaths = [
     "tests",
 ]
 
+[tool.pyright]
+exclude = [
+    "../../custom_nodes/**/*.py",
+]
+ignore = [
+    "src/**/*.py",
+]
+include = [
+    "tests/**/*.py",
+    "extension.py",
+    "utils/**/*.py",
+]
 [tool.mypy]
 files = "."
 

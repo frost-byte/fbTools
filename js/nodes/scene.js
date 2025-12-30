@@ -569,6 +569,14 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         let activeTab = "define";  // "define", "compose", or "view"
         let currentSceneDir = null;  // Track current scene directory for API calls
         const node = this;  // Store node reference for closures
+
+        // --- Scene Flags State ---
+        let sceneFlags = {
+            use_depth: false,
+            use_mask: false,
+            use_pose: false,
+            use_canny: false
+        };
         
         // Function to update scene directory from widgets and reload prompts
         const updateSceneDir = async (reloadPrompts = false) => {
@@ -580,13 +588,25 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                 const sceneChanged = currentSceneDir !== newSceneDir;
                 currentSceneDir = newSceneDir;
                 console.log("fb_tools -> ScenePromptManager: Updated scene dir:", currentSceneDir, "(changed:", sceneChanged, ")");
-                
+
                 // Reload prompts if scene changed or explicitly requested
                 if ((sceneChanged || reloadPrompts) && currentSceneDir) {
                     try {
                         console.log("fb_tools -> ScenePromptManager: Loading prompts from", currentSceneDir);
                         const data = await sceneAPI.getScenePrompts(currentSceneDir);
-                        
+
+                        // --- Load scene flags if present ---
+                        if (data.scene_flags) {
+                            sceneFlags = {
+                                use_depth: !!data.scene_flags.use_depth,
+                                use_mask: !!data.scene_flags.use_mask,
+                                use_pose: !!data.scene_flags.use_pose,
+                                use_canny: !!data.scene_flags.use_canny
+                            };
+                        } else {
+                            sceneFlags = { use_depth: false, use_mask: false, use_pose: false, use_canny: false };
+                        }
+
                         // Handle prompts - could be array or object
                         let promptsList;
                         if (Array.isArray(data.prompts)) {
@@ -602,7 +622,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                                 category: metadata.category || null
                             }));
                         }
-                        
+
                         // Handle compositions - could be array or object
                         let compositionsList;
                         if (Array.isArray(data.compositions)) {
@@ -613,7 +633,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                                 prompt_keys
                             }));
                         }
-                        
+
                         // Convert prompts array to dict for compatibility
                         const promptDict = {};
                         promptsList.forEach(p => {
@@ -626,7 +646,33 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                                 };
                             }
                         });
-                        
+
+                        // --- Update collection_json widget to match fetched scene ---
+                        if (collectionJsonWidget) {
+                            const collection = {
+                                version: 2,
+                                prompts: {},
+                                compositions: {},
+                                scene_flags: { ...sceneFlags }
+                            };
+                            promptsList.forEach(prompt => {
+                                if (prompt.key) {
+                                    collection.prompts[prompt.key] = {
+                                        value: prompt.value || "",
+                                        processing_type: prompt.processing_type || "raw",
+                                        libber_name: prompt.libber_name || null,
+                                        category: prompt.category || null
+                                    };
+                                }
+                            });
+                            compositionsList.forEach(comp => {
+                                if (comp.name) {
+                                    collection.compositions[comp.name] = comp.prompt_keys || [];
+                                }
+                            });
+                            collectionJsonWidget.value = JSON.stringify(collection, null, 2);
+                        }
+
                         console.log("fb_tools -> ScenePromptManager: Loaded", promptsList.length, "prompts and", compositionsList.length, "compositions");
                         renderTable(promptsList, data.libbers || ["none"], compositionsList, promptDict);
                     } catch (error) {
@@ -671,6 +717,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         
         // Function to render tabs
         const renderTabs = () => {
+            console.log("fb_tools -> ScenePromptManager: Rendering tabs. Active tab:", activeTab);
             return `<div style="display: flex; gap: 4px; margin-bottom: 8px; border-bottom: 2px solid var(--border-color);">
                 <button class="tab-btn" data-tab="define" style="padding: 8px 16px; background: ${activeTab === 'define' ? 'var(--comfy-menu-bg)' : 'transparent'}; color: var(--fg-color); border: none; border-bottom: 2px solid ${activeTab === 'define' ? 'var(--fg-color)' : 'transparent'}; cursor: pointer; font-weight: ${activeTab === 'define' ? '600' : '400'};">📝 Define</button>
                 <button class="tab-btn" data-tab="compose" style="padding: 8px 16px; background: ${activeTab === 'compose' ? 'var(--comfy-menu-bg)' : 'transparent'}; color: var(--fg-color); border: none; border-bottom: 2px solid ${activeTab === 'compose' ? 'var(--fg-color)' : 'transparent'}; cursor: pointer; font-weight: ${activeTab === 'compose' ? '600' : '400'};">🎨 Compose</button>
@@ -684,15 +731,33 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             currentCompositionsData = compositionsList || [];
             currentPromptDict = promptDict || {};
             availableLibbers = libbersList || ["none"];
-            
+
             // Ensure "none" is always first
             if (!availableLibbers.includes("none")) {
                 availableLibbers.unshift("none");
             }
-            
+
+            // --- Scene Flags UI ---
+            const flagsHTML = `
+                <div style="display: flex; gap: 16px; margin-bottom: 8px; align-items: center; flex-wrap: wrap;">
+                    <label style="display: flex; align-items: center; gap: 4px; font-size: 12px;">
+                        <input type="checkbox" class="scene-flag-checkbox" data-flag="use_depth" ${sceneFlags.use_depth ? 'checked' : ''} /> use_depth
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 4px; font-size: 12px;">
+                        <input type="checkbox" class="scene-flag-checkbox" data-flag="use_mask" ${sceneFlags.use_mask ? 'checked' : ''} /> use_mask
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 4px; font-size: 12px;">
+                        <input type="checkbox" class="scene-flag-checkbox" data-flag="use_pose" ${sceneFlags.use_pose ? 'checked' : ''} /> use_pose
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 4px; font-size: 12px;">
+                        <input type="checkbox" class="scene-flag-checkbox" data-flag="use_canny" ${sceneFlags.use_canny ? 'checked' : ''} /> use_canny
+                    </label>
+                </div>
+            `;
+
             // Render tabs
             const tabsHTML = renderTabs();
-            
+
             // Render content based on active tab
             let contentHTML = '';
             if (activeTab === 'define') {
@@ -702,9 +767,11 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             } else if (activeTab === 'view') {
                 contentHTML = renderViewTab();
             }
-            
-            container.innerHTML = tabsHTML + contentHTML;
-            
+
+            container.innerHTML = flagsHTML + tabsHTML + contentHTML;
+
+            console.log("fb_tools -> ScenePromptManager: renderTable called. Tabs should be present in container.", container, container.innerHTML);
+
             // Attach event handlers
             attachEventHandlers();
             updateContainerHeight();
@@ -939,7 +1006,8 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             const collection = {
                 version: 2,
                 prompts: {},
-                compositions: {}
+                compositions: {},
+                scene_flags: { ...sceneFlags }
             };
             
             currentPromptsData.forEach(prompt => {
@@ -967,10 +1035,21 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         
         // Event handlers
         const attachEventHandlers = () => {
+            // --- Scene Flags Checkbox Handlers ---
+            container.querySelectorAll('.scene-flag-checkbox').forEach(cb => {
+                cb.addEventListener('change', (e) => {
+                    const flag = e.target.getAttribute('data-flag');
+                    sceneFlags[flag] = e.target.checked;
+                });
+            });
             // Tab switching
-            container.querySelectorAll('.tab-btn').forEach(btn => {
+            const tabBtns = container.querySelectorAll('.tab-btn');
+            console.log("fb_tools -> ScenePromptManager: Attaching tab event handlers. Found", tabBtns.length, "tab buttons.", tabBtns);
+            tabBtns.forEach(btn => {
                 btn.addEventListener('click', (e) => {
-                    activeTab = e.target.getAttribute('data-tab');
+                    const tab = e.target.getAttribute('data-tab');
+                    console.log("fb_tools -> ScenePromptManager: Tab clicked:", tab);
+                    activeTab = tab;
                     renderTable(currentPromptsData, availableLibbers, currentCompositionsData, currentPromptDict);
                 });
             });
@@ -1122,9 +1201,10 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                         const collection = {
                             version: 2,
                             prompts: {},
-                            compositions: {}
+                            compositions: {},
+                            scene_flags: { ...sceneFlags }
                         };
-                        
+
                         currentPromptsData.forEach(prompt => {
                             if (prompt.key) {
                                 collection.prompts[prompt.key] = {
@@ -1135,13 +1215,16 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                                 };
                             }
                         });
-                        
+
                         currentCompositionsData.forEach(comp => {
                             if (comp.name) {
                                 collection.compositions[comp.name] = comp.prompt_keys || [];
                             }
                         });
-                        
+
+                        // --- Save scene_flags ---
+                        collection.scene_flags = { ...sceneFlags };
+
                         const result = await sceneAPI.saveScenePrompts(sceneDir, collection);
                         if (result.success) {
                             showToast({ severity: "success", summary: result.message, life: 3000 });
@@ -1355,9 +1438,10 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                         const collection = {
                             version: 2,
                             prompts: {},
-                            compositions: {}
+                            compositions: {},
+                            scene_flags: { ...sceneFlags }
                         };
-                        
+
                         currentPromptsData.forEach(prompt => {
                             if (prompt.key) {
                                 collection.prompts[prompt.key] = {
@@ -1368,13 +1452,16 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                                 };
                             }
                         });
-                        
+
                         currentCompositionsData.forEach(comp => {
                             if (comp.name) {
                                 collection.compositions[comp.name] = comp.prompt_keys || [];
                             }
                         });
-                        
+
+                        // --- Save scene_flags ---
+                        collection.scene_flags = { ...sceneFlags };
+
                         const result = await sceneAPI.saveScenePrompts(sceneDir, collection);
                         if (result.success) {
                             showToast({ severity: "success", summary: result.message, life: 3000 });
@@ -1493,7 +1580,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             
             // Update scene directory from current widget values
             updateSceneDir();
-            
+
             // message.text[0] = collection_json
             // message.text[1] = prompts_list JSON
             // message.text[2] = status
@@ -1507,10 +1594,10 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                     if (collectionJsonWidget && message.text[0]) {
                         collectionJsonWidget.value = message.text[0];
                     }
-                    
+
                     // Parse and render prompts list
                     const promptsList = JSON.parse(message.text[1]);
-                    
+
                     // Parse available libbers (with fallback)
                     let libbersList = ["none"];
                     if (message.text[3]) {
@@ -1520,7 +1607,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                             console.warn("fb_tools -> ScenePromptManager: Error parsing libbers list", err);
                         }
                     }
-                    
+
                     // Parse compositions list (with fallback)
                     let compositionsList = [];
                     if (message.text[4]) {
@@ -1530,7 +1617,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                             console.warn("fb_tools -> ScenePromptManager: Error parsing compositions list", err);
                         }
                     }
-                    
+
                     // Parse prompt_dict (with fallback)
                     let promptDict = {};
                     if (message.text[5]) {
@@ -1540,9 +1627,38 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                             console.warn("fb_tools -> ScenePromptManager: Error parsing prompt_dict", err);
                         }
                     }
-                    
+
+                    // Parse scene_flags if present (from collection_json)
+                    let flags = { use_depth: false, use_mask: false, use_pose: false, use_canny: false };
+                    if (collectionJsonWidget && collectionJsonWidget.value) {
+                        try {
+                            const collection = JSON.parse(collectionJsonWidget.value);
+                            if (collection.scene_flags) {
+                                flags = {
+                                    use_depth: !!collection.scene_flags.use_depth,
+                                    use_mask: !!collection.scene_flags.use_mask,
+                                    use_pose: !!collection.scene_flags.use_pose,
+                                    use_canny: !!collection.scene_flags.use_canny
+                                };
+                            }
+                        } catch (err) {
+                            // ignore
+                        }
+                    }
+                    sceneFlags = { ...flags };
+
                     renderTable(promptsList, libbersList, compositionsList, promptDict);
-                    
+
+                    // --- Ensure processed composition is shown in comp-output-textarea ---
+                    setTimeout(() => {
+                        const textarea = container.querySelector('.comp-output-textarea');
+                        if (textarea && compositionsList.length > 0) {
+                            const firstCompName = compositionsList[0].name || compositionsList[0];
+                            const output = promptDict[firstCompName] || 'Click "Process" to generate preview...';
+                            textarea.value = output;
+                        }
+                    }, 0);
+
                     console.log("fb_tools -> ScenePromptManager: UI updated from backend");
                 } catch (err) {
                     console.error("fb_tools -> ScenePromptManager: Error parsing prompts", err);
