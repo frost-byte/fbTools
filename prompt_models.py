@@ -8,6 +8,18 @@ extracted to a separate file for easier testing and reusability.
 from typing import Optional, List
 from pydantic import BaseModel, ConfigDict
 
+# Handle both package import (ComfyUI) and standalone import (tests)
+try:
+    from .utils.logging_utils import get_logger
+except ImportError:
+    # Fallback for test imports - use standard logging
+    import logging
+    def get_logger(name):
+        return logging.getLogger(name)
+
+
+logger = get_logger(__name__)
+
 
 class PromptMetadata(BaseModel):
     """Metadata for a single prompt entry with processing support."""
@@ -160,6 +172,16 @@ class PromptCollection(BaseModel):
         
         compositions = data.get("compositions", {})
         
+        logger.debug(
+            "PromptCollection.from_dict: Loaded %d prompts, %d compositions",
+            len(prompts),
+            len(compositions),
+        )
+        if compositions:
+            logger.debug("  -> compositions keys: %s", list(compositions.keys()))
+            for comp_name, comp_keys in compositions.items():
+                logger.debug("     - %s: %s", comp_name, comp_keys)
+        
         return cls(
             version=2,
             v1_backup=data.get("v1_backup"),
@@ -207,9 +229,16 @@ class PromptCollection(BaseModel):
                 
                 # Process libber substitution if needed
                 if metadata.processing_type == "libber" and metadata.libber_name and libber_manager:
-                    libber = libber_manager.get_libber(metadata.libber_name)
+                    # Try to ensure libber is loaded (LibberStateManager implements ensure_libber)
+                    ensure_fn = getattr(libber_manager, "ensure_libber", None)
+                    libber = ensure_fn(metadata.libber_name) if callable(ensure_fn) else None
+                    if libber is None:
+                        getter = getattr(libber_manager, "get_libber", None)
+                        libber = getter(metadata.libber_name) if callable(getter) else None
                     if libber:
-                        value = libber.substitute(value)
+                        substitute_fn = getattr(libber, "substitute", None)
+                        if callable(substitute_fn):
+                            value = substitute_fn(value)
                 
                 if value:
                     parts.append(value)

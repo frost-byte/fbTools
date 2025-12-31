@@ -12,7 +12,25 @@ from unittest.mock import MagicMock
 
 # Add the project root directory to Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
+comfyui_root = os.path.abspath(os.path.join(project_root, '../..'))
+
+# Add paths to enable both package imports and direct imports
+sys.path.insert(0, comfyui_root)  # For custom_nodes.comfyui-fbTools imports
+sys.path.insert(0, project_root)  # For direct imports from project root
+
+# Create a mock utils package so prompt_models.py's relative imports work
+# when imported directly as a top-level module
+if 'utils' not in sys.modules:
+    utils_mock = MagicMock()
+    logging_utils_mock = MagicMock()
+    # Create a real logger that works for tests
+    import logging
+    def get_logger(name):
+        return logging.getLogger(name)
+    logging_utils_mock.get_logger = get_logger
+    utils_mock.logging_utils = logging_utils_mock
+    sys.modules['utils'] = utils_mock
+    sys.modules['utils.logging_utils'] = logging_utils_mock
 
 # Mock all ComfyUI modules BEFORE any extension imports
 # Core ComfyUI modules

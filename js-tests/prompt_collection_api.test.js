@@ -157,6 +157,10 @@ describe("PromptCollectionAPI", () => {
 
     describe("error handling", () => {
         test("should show error toast on failure", async () => {
+            // Suppress console.error for this test since we're intentionally triggering an error
+            const originalError = console.error;
+            console.error = () => {}; // No-op function to suppress output
+            
             mockFetch.mockError(404, "Not Found");
 
             try {
@@ -166,6 +170,9 @@ describe("PromptCollectionAPI", () => {
             }
 
             expectErrorToast(mockApp, "Create Session Failed");
+            
+            // Restore console.error
+            console.error = originalError;
         });
 
         test("should show success toast", () => {

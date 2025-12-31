@@ -52,6 +52,9 @@ import uuid
 import re
 import copy
 from pydantic import BaseModel, ConfigDict
+from .utils.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 try:
     from westNeighbor_comfyui_ultimate_openpose_editor.openpose_editor_nodes import OpenposeEditorNode  # type: ignore
@@ -290,7 +293,7 @@ class SAMPreprocessNHWC(io.ComfyNode):
         if input_image.ndim != 4:
             raise RuntimeError("IMAGE must be [B,H,W,C]")
 
-        print(f"SAMPreprocessNHWC: image in shape={input_image.shape}")        
+        logger.debug("SAMPreprocessNHWC: image in shape=%s", input_image.shape)
         b, h, w, c = input_image.shape
         img = input_image
 
@@ -319,7 +322,7 @@ class SAMPreprocessNHWC(io.ComfyNode):
         # AssertionError: set_torch_image input must be BCHW with long side 1024
         # /home/beerye/comfyui_env/.venv/lib/python3.12/site-packages/segment_anything/predictor.py", line 80, in set_torch_image
         info = f"[fbTools: SAMPreprocessNHWC] out={tuple(img.shape)} range=[{img.min().item():.1f},{img.max().item():.1f}]"
-        print(info)
+        logger.info(info)
         return io.NodeOutput({
             "output_image": img,
             "info": info
@@ -494,9 +497,17 @@ class TailSplit(io.ComfyNode):
         if not torch.is_tensor(image):
             raise ValueError("fbTools -> TailSplit: Input 'image' must be a torch tensor")
 
-        print(f"fbTools -> TailSplit: image in shape={image.shape}, tail_size={tail_size}, dtype={image.dtype}, device={image.device}") if debug else None        
+        if debug:
+            logger.debug(
+                "fbTools -> TailSplit: image in shape=%s, tail_size=%s, dtype=%s, device=%s",
+                image.shape,
+                tail_size,
+                image.dtype,
+                image.device,
+            )
         b, h, w, c = image.shape
-        print(f"fbTools -> TailSplit: b={b}, h={h}, w={w}, c={c}") if debug else None
+        if debug:
+            logger.debug("fbTools -> TailSplit: b=%s, h=%s, w=%s, c=%s", b, h, w, c)
         
         if tail_size >= b:
             raise ValueError("tail_size must be less than the batch size")
@@ -517,7 +528,7 @@ class TailSplit(io.ComfyNode):
         )
         
         if debug:
-            print(msg)
+            logger.debug(msg)
 
         return io.NodeOutput({
             "main_image": main_image,
@@ -559,9 +570,18 @@ class OpaqueAlpha(io.ComfyNode):
         if not torch.is_tensor(image):
             raise ValueError("Input 'image' must be a torch tensor")
 
-        print(f"OpaqueAlpha: image in shape={image.shape}, alpha_value={alpha_value}, force_replace_alpha={force_replace_alpha},dtype={image.dtype}, device={image.device}") if debug else None        
+        if debug:
+            logger.debug(
+                "OpaqueAlpha: image in shape=%s, alpha_value=%s, force_replace_alpha=%s, dtype=%s, device=%s",
+                image.shape,
+                alpha_value,
+                force_replace_alpha,
+                image.dtype,
+                image.device,
+            )
         b, h, w, c = image.shape
-        print(f"OpaqueAlpha: b={b}, h={h}, w={w}, c={c}") if debug else None
+        if debug:
+            logger.debug("OpaqueAlpha: b=%s, h=%s, w=%s, c=%s", b, h, w, c)
         device = image.device
         dtype = image.dtype
         
@@ -595,7 +615,7 @@ class OpaqueAlpha(io.ComfyNode):
         )
         
         if debug:
-            print(msg)
+            logger.debug(msg)
 
         return io.NodeOutput({
             "image_rgba": image_rgba,
@@ -663,10 +683,21 @@ class MaskProcessor(io.ComfyNode):
             raise ValueError(f"Expected mask with shape [B, H, W] or [H, W], got {input_mask.shape}")
         
         if debug:
-            print(f"MaskProcessor: Input shape={input_mask.shape}, selected shape={mask_single.shape}")
-            print(f"MaskProcessor: Parameters - min_hole_size={min_hole_size}, grow_amount={grow_amount}, "
-                  f"smooth_iterations={smooth_iterations}, enable_region_smooth={enable_region_smooth}, "
-                  f"region_smooth_sigma={region_smooth_sigma}, blur_radius={blur_radius}")
+            logger.debug(
+                "MaskProcessor: Input shape=%s, selected shape=%s",
+                input_mask.shape,
+                mask_single.shape,
+            )
+            logger.debug(
+                "MaskProcessor: Parameters - min_hole_size=%s, grow_amount=%s, smooth_iterations=%s, "
+                "enable_region_smooth=%s, region_smooth_sigma=%s, blur_radius=%s",
+                min_hole_size,
+                grow_amount,
+                smooth_iterations,
+                enable_region_smooth,
+                region_smooth_sigma,
+                blur_radius,
+            )
         
         # Apply operations in sequence
         processed = mask_single
@@ -677,21 +708,21 @@ class MaskProcessor(io.ComfyNode):
             processed = mask_remove_holes(processed, min_hole_size=min_hole_size)
             operations.append(f"remove_holes(min_size={min_hole_size})")
             if debug:
-                print(f"MaskProcessor: After remove_holes - shape={processed.shape}")
+                logger.debug("MaskProcessor: After remove_holes - shape=%s", processed.shape)
         
         # 2. Grow (dilate)
         if grow_amount > 0:
             processed = mask_grow(processed, grow_amount=grow_amount)
             operations.append(f"grow(amount={grow_amount})")
             if debug:
-                print(f"MaskProcessor: After grow - shape={processed.shape}")
+                logger.debug("MaskProcessor: After grow - shape=%s", processed.shape)
         
         # 3. Smooth (morphological cleanup)
         if smooth_iterations > 0:
             processed = mask_smooth(processed, smooth_iterations=smooth_iterations)
             operations.append(f"smooth(iterations={smooth_iterations})")
             if debug:
-                print(f"MaskProcessor: After smooth - shape={processed.shape}")
+                logger.debug("MaskProcessor: After smooth - shape=%s", processed.shape)
         
         # 4. Region smooth (Gaussian with thresholding - WAS method)
         if enable_region_smooth:
@@ -705,14 +736,14 @@ class MaskProcessor(io.ComfyNode):
             processed = processed_batch[0] if processed_batch.dim() == 3 else processed_batch
             operations.append(f"region_smooth(sigma={region_smooth_sigma})")
             if debug:
-                print(f"MaskProcessor: After region_smooth - shape={processed.shape}")
+                logger.debug("MaskProcessor: After region_smooth - shape=%s", processed.shape)
         
         # 5. Gaussian blur (LAST - creates soft edges for blending)
         if blur_radius > 0.0:
             processed = mask_gaussian_blur(processed, blur_radius=blur_radius)
             operations.append(f"gaussian_blur(radius={blur_radius})")
             if debug:
-                print(f"MaskProcessor: After gaussian_blur - shape={processed.shape}")
+                logger.debug("MaskProcessor: After gaussian_blur - shape=%s", processed.shape)
         
         # Ensure output is 3D [B, H, W] for compatibility
         if processed.dim() == 2:
@@ -727,9 +758,9 @@ class MaskProcessor(io.ComfyNode):
             try:
                 overlay_image = create_mask_overlay_image(processed, image)
                 if debug:
-                    print(f"MaskProcessor: Created overlay_image with shape {overlay_image.shape}")
+                    logger.debug("MaskProcessor: Created overlay_image with shape %s", overlay_image.shape)
             except Exception as e:
-                print(f"MaskProcessor: Error creating overlay image: {e}")
+                logger.exception("MaskProcessor: Error creating overlay image")
                 # Create placeholder RGBA image on error
                 h, w = processed.shape[1], processed.shape[2]
                 overlay_image = torch.zeros((1, h, w, 4), dtype=torch.float32, device=processed.device)
@@ -739,7 +770,7 @@ class MaskProcessor(io.ComfyNode):
             overlay_image = torch.zeros((1, h, w, 4), dtype=torch.float32, device=processed.device)
         
         if debug:
-            print(debug_info)
+            logger.debug(debug_info)
         
         # Return io.NodeOutput with positional args matching OUTPUT_TYPES order: mask, overlay_image, debug_info
         return io.NodeOutput(processed, overlay_image, debug_info)
@@ -749,13 +780,12 @@ def get_subdirectories(directory_path: str) -> dict:
     subdir_dict = {}
 
     if not os.path.isdir(directory_path):
-        print(f"Directory '{directory_path}' does not exist or is not a directory.")
+        logger.warning("Directory '%s' does not exist or is not a directory.", directory_path)
         return subdir_dict
 
     with os.scandir(directory_path) as entries:
         for entry in entries:
             if entry.is_dir():
-                # print(f"Found subdirectory: {entry.name} at {entry.path}")
                 subdir_dict[entry.name] = entry.path
 
     return subdir_dict
@@ -839,9 +869,16 @@ class QwenAspectRatio(io.ComfyNode):
         else:
             b, h, w, c = input_image.shape
 
-        print(f"QwenAspectRatio: input image shape={input_image.shape} -> w={w}, h={h}")
+        logger.debug("QwenAspectRatio: input image shape=%s -> w=%s, h=%s", input_image.shape, w, h)
         recommended_w, recommended_h, layout, aspect_ratio_str, aspect_ratio_float = find_nearest_qwen_aspect_ratio(w, h)
-        print(f"QwenAspectRatio: recommended_w={recommended_w}, recommended_h={recommended_h}, layout={layout}, aspect_ratio_str={aspect_ratio_str}, aspect_ratio_float={aspect_ratio_float}")
+        logger.debug(
+            "QwenAspectRatio: recommended_w=%s, recommended_h=%s, layout=%s, aspect_ratio_str=%s, aspect_ratio_float=%s",
+            recommended_w,
+            recommended_h,
+            layout,
+            aspect_ratio_str,
+            aspect_ratio_float,
+        )
 
         return io.NodeOutput(
             recommended_w,
@@ -1079,19 +1116,23 @@ class SceneInfo(BaseModel):
         mask_tensor = mask_tensors.get(mask_key)
         unsqueeze_me = False
         if mask_tensor is not None:
-            print(f"SceneInfo.load_preview_assets: using mask tensor for key '{mask_key}'")
+            logger.debug("SceneInfo.load_preview_assets: using mask tensor for key '%s'", mask_key)
             mask = mask_tensor
             unsqueeze_me = True
         elif mask_image is not None:
-            print(f"SceneInfo.load_preview_assets: building empty mask matching mask_image shape")
+            logger.debug("SceneInfo.load_preview_assets: building empty mask matching mask_image shape")
             b, hh, ww, _ = mask_image.shape
             mask = torch.zeros((b, hh, ww, 1), device=mask_image.device, dtype=torch.float32)
         else:
-            print(f"SceneInfo.load_preview_assets: building empty mask of size (1,{H},{W},1)")
+            logger.debug(
+                "SceneInfo.load_preview_assets: building empty mask of size (1,%s,%s,1)",
+                H,
+                W,
+            )
             mask = torch.zeros((1, H, W, 1), dtype=torch.float32)
 
         if mask is not None and mask.dtype != torch.float32:
-            print(f"SceneInfo.load_preview_assets: converting mask to float32")
+            logger.debug("SceneInfo.load_preview_assets: converting mask to float32")
             mask = mask.float()
 
         mask_preview = None
@@ -1172,8 +1213,18 @@ class SceneInfo(BaseModel):
             # Legacy format - migrate
             prompt_collection = PromptCollection.from_legacy_dict(prompt_data_raw)
         
-        # Get LibberStateManager for prompt processing
-        libber_manager = LibberStateManager()
+        logger.debug(
+            "SceneInfo.from_story_scene: Loaded PromptCollection with %d prompts and %d compositions",
+            len(prompt_collection.prompts),
+            len(prompt_collection.compositions),
+        )
+        if prompt_collection.compositions:
+            logger.debug("  -> compositions: %s", list(prompt_collection.compositions.keys()))
+        else:
+            logger.debug("  -> compositions: None/Empty")
+        
+        # Use shared LibberStateManager so loaded libbers (e.g., story_libber) are applied
+        libber_manager = LibberStateManager.instance()
         
         # Build prompt_dict: just the raw individual prompts (not composed)
         prompt_dict = {}
@@ -1181,7 +1232,7 @@ class SceneInfo(BaseModel):
             value = metadata.value
             # Process libber substitution if needed
             if metadata.processing_type == "libber" and metadata.libber_name:
-                libber = libber_manager.get_libber(metadata.libber_name)
+                libber = libber_manager.ensure_libber(metadata.libber_name)
                 if libber:
                     value = libber.substitute(value)
             prompt_dict[key] = value
@@ -1191,6 +1242,9 @@ class SceneInfo(BaseModel):
         composition_dict = {}
         if prompt_collection.compositions:
             composition_dict = prompt_collection.compose_prompts(prompt_collection.compositions, libber_manager)
+            logger.debug("  -> Composed %d compositions: %s", len(composition_dict), list(composition_dict.keys()))
+        else:
+            logger.debug("  -> No compositions to compose")
         
         # Determine the selected prompt based on prompt_source and prompt_key
         prompt_file_text = ""
@@ -1200,6 +1254,16 @@ class SceneInfo(BaseModel):
             prompt_file_text = prompt_dict.get(scene.prompt_key, "")
         elif scene.prompt_source == "composition" and scene.prompt_key:
             prompt_file_text = composition_dict.get(scene.prompt_key, "")
+        
+        logger.debug(
+            "SceneInfo.from_story_scene: scene=%s, prompt_source=%s, prompt_key=%s",
+            scene.scene_name,
+            scene.prompt_source,
+            scene.prompt_key,
+        )
+        logger.debug("  -> prompt_dict has %d keys", len(prompt_dict))
+        logger.debug("  -> composition_dict has %d keys", len(composition_dict))
+        logger.debug("  -> prompt_file_text length: %d", len(prompt_file_text))
         
         class_name = f"{cls.__name__}.from_story_scene"
         selected_prompt, prompt_widget_text = select_text_by_action(
@@ -1280,7 +1344,10 @@ class SceneInfo(BaseModel):
             else:
                 # Legacy format - migrate
                 prompt_collection = PromptCollection.from_legacy_dict(prompt_data)
-                print(f"SceneInfo.from_scene_directory: Migrated {len(prompt_collection.prompts)} legacy prompts")
+                logger.info(
+                    "SceneInfo.from_scene_directory: Migrated %d legacy prompts",
+                    len(prompt_collection.prompts),
+                )
         else:
             # No prompts file - create empty collection
             prompt_collection = PromptCollection()
@@ -1412,17 +1479,17 @@ class SceneInfo(BaseModel):
         
         if not os.path.exists(scene_path):
             os.makedirs(scene_path, exist_ok=True)
-            print(f"SceneInfo: Created scene_dir='{scene_path}'")
+            logger.info("SceneInfo: Created scene_dir='%s'", scene_path)
         
         input_dir = os.path.join(scene_path, "input")
         if not os.path.exists(input_dir):
             os.makedirs(input_dir, exist_ok=True)
-            print(f"SceneInfo: Created input_dir='{input_dir}'")
+            logger.info("SceneInfo: Created input_dir='%s'", input_dir)
         
         output_dir = os.path.join(scene_path, "output")
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
-            print(f"SceneInfo: Created output_dir='{output_dir}'")
+            logger.info("SceneInfo: Created output_dir='%s'", output_dir)
 
     def save_all(self, scene_dir: Optional[str] = None):
         """Save all scene data (images, prompts, pose_json, loras) to the scene directory"""
@@ -1581,7 +1648,7 @@ class StoryInfo(BaseModel):
 def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
     if os.path.isfile(loras_json_path):
         data = load_json_file(loras_json_path)
-        print(f"load_loras: loaded data from {loras_json_path}: {data}")
+        # logger.debug("load_loras: loaded data from %s: %s", loras_json_path, data)
         loras_high = []
         loras_low = []
         if not data or not isinstance(data, dict):
@@ -1602,7 +1669,7 @@ def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
                 try:
                     full_path = folder_paths.get_full_path_or_raise("loras", lora_name)
                 except Exception as e:
-                    print(f"Could not resolve path for LoRA '{lora_name}': {e}")
+                    logger.warning("Could not resolve path for LoRA '%s': %s", lora_name, e)
                     continue
 
                 # Use saved blocks/layer_filter if present
@@ -1689,7 +1756,7 @@ def load_story(story_json_path: str) -> Optional[StoryInfo]:
     V1 stories are automatically migrated to V2 on load.
     """
     if not os.path.isfile(story_json_path):
-        print(f"fbTools: story_json_path '{story_json_path}' is not a valid file")
+        logger.warning("fbTools: story_json_path '%s' is not a valid file", story_json_path)
         return None
     
     try:
@@ -1747,12 +1814,14 @@ def load_story(story_json_path: str) -> Optional[StoryInfo]:
             scenes=scenes
         )
         
-        print(f"load_story: loaded story from {story_json_path} with {len(scenes)} scenes (migrated to v2)")
+        logger.info(
+            "load_story: loaded story from %s with %d scenes (migrated to v2)",
+            story_json_path,
+            len(scenes),
+        )
         return story_info
     except Exception as e:
-        print(f"fbTools: Error loading story JSON from '{story_json_path}': {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("fbTools: Error loading story JSON from '%s'", story_json_path)
         return None
 
 def save_story(story_info: StoryInfo, story_json_path: str):
@@ -1781,11 +1850,13 @@ def save_story(story_info: StoryInfo, story_json_path: str):
         }
         
         save_json_file(story_json_path, story_data)
-        print(f"save_story: saved story (v2) to {story_json_path} with {len(scenes_data)} scenes")
+        logger.info(
+            "save_story: saved story (v2) to %s with %d scenes",
+            story_json_path,
+            len(scenes_data),
+        )
     except Exception as e:
-        print(f"fbTools: Error saving story to '{story_json_path}': {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("fbTools: Error saving story to '%s'", story_json_path)
 
 def default_stories_dir():
     output_dir = get_output_directory()
@@ -1823,7 +1894,6 @@ class NodeInputSelect(io.ComfyNode):
             node_data = nodes_data.get(first_node_key, None)
 
         default_node_name = nodes[0] if nodes and len(nodes) > 0 else "1_Unknown_Node"
-        #print(f"{cls.__name__}: available nodes={nodes}; default_node_name='{default_node_name}'; first_node_key='{first_node_key}'")
         node_inputs = node_input_details(cls.__name__, node_data) if node_data else []
         
         if isinstance(node_inputs, dict):
@@ -1871,23 +1941,23 @@ class NodeInputSelect(io.ComfyNode):
         input_name_out= "No Inputs"
         input_value = ""
 
-        print(f"{class_name}: node='{node_name}'; input_name_in='{input_name_in}'")
+        logger.debug("%s: node='%s'; input_name_in='%s'", class_name, node_name, input_name_in)
 
         # All nodes for the workflow
         nodes_data = get_workflow_all_nodes(cls.__name__)
 
         if nodes_data is None or not isinstance(nodes_data, dict) or len(nodes_data) == 0:
-            print(f"{class_name}: No nodes available.")
+            logger.warning("%s: No nodes available.", class_name)
             return io.NodeOutput(
                 input_name_in,
                 ""
             )
 
-        print(f"{class_name}: nodes_data keys={list(nodes_data.keys()) if nodes_data else 'None'}")
+        logger.debug("%s: nodes_data keys=%s", class_name, list(nodes_data.keys()) if nodes_data else "None")
 
         # List of node names for the dropdown
         nodes = listify_nodes_data(nodes_data)
-        print(f"{class_name}: available nodes={nodes}")
+        logger.debug("%s: available nodes=%s", class_name, nodes)
 
         # The default is the first node, if available
         node_id = list(nodes_data.keys())[0] if nodes_data and len(nodes_data) > 0 else None
@@ -1897,19 +1967,19 @@ class NodeInputSelect(io.ComfyNode):
             node_id = node_name.split("_", 1)[0] if "_" in node_name else None
 
         if node_id is None:
-            print(f"{class_name}: Could not determine node_id from node_name='{node_name}'")
+            logger.warning("%s: Could not determine node_id from node_name='%s'", class_name, node_name)
             return io.NodeOutput(
                 input_name_in,
                 ""
             )
 
-        print(f"{class_name}: selected node_id={node_id}")
+        logger.debug("%s: selected node_id=%s", class_name, node_id)
 
         if isinstance(nodes_data, dict):
             node_data = nodes_data.get(str(node_id), None)
             
             if node_data is None:
-                print(f"{class_name}: No data found for node_id={node_id}")
+                logger.warning("%s: No data found for node_id=%s", class_name, node_id)
                 return io.NodeOutput(
                     input_name_in,
                     ""
@@ -1918,7 +1988,7 @@ class NodeInputSelect(io.ComfyNode):
             node_inputs = node_input_details(cls.__name__, node_data)
 
             if node_inputs and isinstance(node_inputs, dict):
-                print(f"{class_name}: node_inputs keys={list(node_inputs.keys())}")
+                logger.debug("%s: node_inputs keys=%s", class_name, list(node_inputs.keys()))
                 input_name_out = input_name_in if input_name_in and input_name_in in node_inputs.keys() else None
                 
                 # If the specified input name is not found, default to the first input
@@ -1927,7 +1997,12 @@ class NodeInputSelect(io.ComfyNode):
 
                 input_value = node_inputs.get(input_name_out, "")
 
-        print(f"{class_name}: selected input_name='{input_name_out}'; input_value='{input_value}'")
+        logger.info(
+            "%s: selected input_name='%s'; input_value='%s'",
+            class_name,
+            input_name_out,
+            input_value,
+        )
 
         return io.NodeOutput(
             input_name_out,
@@ -1948,8 +2023,6 @@ class SceneSelect(io.ComfyNode):
         default_scene = default_options[0]
         pose_options = list(default_pose_options.keys())
         depth_options = list(default_depth_options.keys())
-
-        # print(f"SceneSelect: default scenes_dir='{default_dir}'; default_scene='{default_scene}'; default_options={default_options}")
 
         return io.Schema(
             node_id=prefixed_node_id("SceneSelect"),
@@ -2003,21 +2076,21 @@ class SceneSelect(io.ComfyNode):
         input_types = cls.INPUT_TYPES()
         unique_id = cls.hidden.unique_id
         extra_pnginfo = cls.hidden.extra_pnginfo
-        print(f"{className}: unique_id ='{unique_id}'; extra_pnginfo='{extra_pnginfo}'")
-        print(f"{className}: [DEBUG] selected_scene input = '{selected_scene}'")
+        logger.debug("%s: unique_id='%s'; extra_pnginfo='%s'", className, unique_id, extra_pnginfo)
+        logger.debug("%s: selected_scene input='%s'", className, selected_scene)
 
         if not scenes_dir:
             scenes_dir = default_scenes_dir()
 
         if not scenes_dir or not selected_scene:
-            print(f"{className}: scenes_dir or selected_scene is empty")
+            logger.warning("%s: scenes_dir or selected_scene is empty", className)
             return io.NodeOutput(None)
         
         scene_dir = os.path.join(scenes_dir, selected_scene)
-        print(f"{className}: [DEBUG] using scene_dir = '{scene_dir}' for selected_scene = '{selected_scene}'")
+        logger.debug("%s: using scene_dir='%s' for selected_scene='%s'", className, scene_dir, selected_scene)
 
         if not os.path.isdir(scene_dir):
-            print(f"{className}: scene_dir '{scene_dir}' is not a valid directory")
+            logger.error("%s: scene_dir '%s' is not a valid directory", className, scene_dir)
             return io.NodeOutput(None)
         
         # Load prompts.json for PromptCollection
@@ -2036,7 +2109,7 @@ class SceneSelect(io.ComfyNode):
         loras_path = os.path.join(scene_dir, "loras.json")
         loras_high, loras_low = None, None
         if not os.path.isfile(loras_path):
-            print(f"{className}: loras.json not found at '{loras_path}'")
+            logger.warning("%s: loras.json not found at '%s'", className, loras_path)
         else:
             loras_high, loras_low = load_loras(loras_path)
 
@@ -2044,7 +2117,12 @@ class SceneSelect(io.ComfyNode):
         selected_depth_attr = default_depth_options.get(depth_image_type, "depth_image")
         selected_pose_attr = default_pose_options.get(pose_image_type, "pose_open_image")
         mask_key = resolve_mask_key(mask_type, mask_background)
-        print(f"{className}: Loading assets from scene_dir='{scene_dir}'; mask_key='{mask_key}'")
+        logger.info(
+            "%s: Loading assets from scene_dir='%s'; mask_key='%s'",
+            className,
+            scene_dir,
+            mask_key,
+        )
         assets = SceneInfo.load_preview_assets(
             scene_dir,
             depth_attr=selected_depth_attr,
@@ -2074,8 +2152,16 @@ class SceneSelect(io.ComfyNode):
         # Normalize canny to match preview size
         canny_image = normalize_image_tensor(canny_image, H, W)
 
-        print(f"{className}: depth_image shape: {selected_depth_image.shape if selected_depth_image is not None else 'None'}")
-        print(f"{className}: upscale_image shape: {base_image.shape if base_image is not None else 'None'}")
+        logger.debug(
+            "%s: depth_image shape: %s",
+            className,
+            selected_depth_image.shape if selected_depth_image is not None else "None",
+        )
+        logger.debug(
+            "%s: upscale_image shape: %s",
+            className,
+            base_image.shape if base_image is not None else "None",
+        )
 
         preview_batch = assets.get("preview_batch", [])
         preview_image = ui.PreviewImage(image=torch.cat(preview_batch, dim=0)) if preview_batch else None
@@ -2126,7 +2212,7 @@ class SceneSelect(io.ComfyNode):
                 
                 # Apply libber substitution if needed
                 if metadata.processing_type == "libber" and metadata.libber_name and libber_manager:
-                    libber = libber_manager.get_libber(metadata.libber_name)
+                    libber = libber_manager.ensure_libber(metadata.libber_name)
                     if libber:
                         value = libber.substitute(value)
                 
@@ -2249,23 +2335,23 @@ class SceneWanVideoLoraMultiSave(io.ComfyNode):
 
         scene_dir = info_in.scene_dir
         if not scene_dir or not os.path.isdir(scene_dir):
-            print(f"{className}: Invalid scene_dir '{scene_dir}' in SceneInfo")
+            logger.error("%s: Invalid scene_dir '%s' in SceneInfo", className, scene_dir)
             return io.NodeOutput(None)
 
         if not loras_high is None:
-            print(f"{className}: Saving {len(loras_high)} High LoRA entries to scene_dir '{scene_dir}'")
+            logger.info("%s: Saving %d High LoRA entries to scene_dir '%s'", className, len(loras_high), scene_dir)
             loras_high_path = os.path.join(scene_dir, "loras_high.json")
         else:
             loras_high = []
         if not loras_low is None:
-            print(f"{className}: Saving {len(loras_low)} Low LoRA entries to scene_dir '{scene_dir}'")
+            logger.info("%s: Saving %d Low LoRA entries to scene_dir '%s'", className, len(loras_low), scene_dir)
             loras_low_path = os.path.join(scene_dir, "loras_low.json")
         else:
             loras_low = []
 
         loras_path = os.path.join(scene_dir, "loras.json")
         save_loras(loras_high, loras_low, loras_path)
-        print(f"Saved LoRA preset to: {loras_path}")
+        logger.info("%s: Saved LoRA preset to: %s", className, loras_path)
 
         return io.NodeOutput(info_in)
 
@@ -2384,7 +2470,7 @@ class SceneCreate(io.ComfyNode):
         loras_low=None,
     ) -> io.NodeOutput:
         if base_image is None:
-            print("SceneCreate: base_image is None")
+            logger.error("SceneCreate: base_image is None")
             return io.NodeOutput(None)
         
         if not scenes_dir:
@@ -2397,7 +2483,10 @@ class SceneCreate(io.ComfyNode):
 
         # Create upscale_image from base_image
         upscale_image, = ImageScaleBy().upscale(base_image, upscale_method=upscale_method, scale_by=upscale_factor)
-        print(f"SceneCreate: Created upscale_image from base_image - shape {upscale_image.shape if torch.is_tensor(upscale_image) else 'N/A'}")
+        logger.info(
+            "SceneCreate: Created upscale_image from base_image - shape %s",
+            upscale_image.shape if torch.is_tensor(upscale_image) else "N/A",
+        )
 
         # DensePose
         dense_pose_image = dense_pose(upscale_image, densepose_model, densepose_cmap, resolution)
@@ -2464,7 +2553,7 @@ class SceneCreate(io.ComfyNode):
         
         # Save all scene data using the helper method
         scene_info.save_all(scene_dir)
-        print(f"SceneCreate: Saved all scene data to '{scene_dir}'")
+        logger.info("SceneCreate: Saved all scene data to '%s'", scene_dir)
         
         return io.NodeOutput(
             scene_info,
@@ -2613,7 +2702,7 @@ class SceneUpdate(io.ComfyNode):
         low_loras=None,
     ):
         if scene_info_in is None:
-            print("SceneUpdate: scene_info is None")
+            logger.error("SceneUpdate: scene_info is None")
             return io.NodeOutput(None)
 
         scene_info_out = scene_info_in
@@ -2621,21 +2710,24 @@ class SceneUpdate(io.ComfyNode):
         # Handle base_image update first (triggers full regeneration)
         if update_base:
             if base_image is None:
-                print("SceneUpdate: update_base=True but base_image is None - using existing base_image")
+                logger.warning("SceneUpdate: update_base=True but base_image is None - using existing base_image")
                 base_image = scene_info_in.base_image
             else:
-                print("SceneUpdate: Replacing base_image with new input")
+                logger.info("SceneUpdate: Replacing base_image with new input")
                 scene_info_out.base_image = base_image
             
             # Regenerate upscale_image from base_image
             if base_image is not None:
-                print(f"SceneUpdate: Regenerating upscale_image from base_image using factor {upscale_factor}")
+                logger.info(
+                    "SceneUpdate: Regenerating upscale_image from base_image using factor %s",
+                    upscale_factor,
+                )
                 upscale_image, = ImageScaleBy().upscale(base_image, upscale_method=upscale_method, scale_by=upscale_factor)
                 scene_info_out.upscale_image = upscale_image
                 # Force regeneration of all derived images
                 update_upscale = True
             else:
-                print("SceneUpdate: base_image is None, cannot regenerate upscale_image")
+                logger.error("SceneUpdate: base_image is None, cannot regenerate upscale_image")
                 upscale_image = scene_info_in.upscale_image
         else:
             # Start with existing upscale_image from scene
@@ -2643,12 +2735,16 @@ class SceneUpdate(io.ComfyNode):
             
             # If user wants to rescale the upscale_image (without changing base), do it now
             if update_upscale:
-                print(f"SceneUpdate: Rescaling upscale_image by factor {upscale_factor} using {upscale_method}")
+                logger.info(
+                    "SceneUpdate: Rescaling upscale_image by factor %s using %s",
+                    upscale_factor,
+                    upscale_method,
+                )
                 upscale_image, = ImageScaleBy().upscale(upscale_image, upscale_method=upscale_method, scale_by=upscale_factor)
                 scene_info_out.upscale_image = upscale_image
         
         if upscale_image is None:
-            print("SceneUpdate: upscale_image is None, cannot regenerate derived images")
+            logger.error("SceneUpdate: upscale_image is None, cannot regenerate derived images")
             return io.NodeOutput(scene_info_out)
         
         # upscale_image is now the source for regenerating all other images
@@ -2692,13 +2788,19 @@ class SceneUpdate(io.ComfyNode):
         # Determine target dimensions from reference images
         # Use upscale_image dimensions as the reference since it's the source
         ref_h, ref_w = upscale_image.shape[1], upscale_image.shape[2]
-        print(f"SceneUpdate: Using upscale_image dimensions as reference: {ref_w}x{ref_h}")
+        logger.debug("SceneUpdate: Using upscale_image dimensions as reference: %sx%s", ref_w, ref_h)
         
         # Normalize midas image to match reference dimensions (typically half size)
         if scene_info_out.depth_midas_image is not None and torch.is_tensor(scene_info_out.depth_midas_image):
             midas_h, midas_w = scene_info_out.depth_midas_image.shape[1], scene_info_out.depth_midas_image.shape[2]
             if midas_h != ref_h or midas_w != ref_w:
-                print(f"SceneUpdate: Normalizing midas image from {midas_w}x{midas_h} to {ref_w}x{ref_h}")
+                logger.debug(
+                    "SceneUpdate: Normalizing midas image from %sx%s to %sx%s",
+                    midas_w,
+                    midas_h,
+                    ref_w,
+                    ref_h,
+                )
                 scene_info_out.depth_midas_image = image_resize_ess(
                     scene_info_out.depth_midas_image, ref_w, ref_h,
                     method="keep proportion", interpolation="nearest", multiple_of=16
@@ -2710,7 +2812,14 @@ class SceneUpdate(io.ComfyNode):
             if img is not None and torch.is_tensor(img):
                 img_h, img_w = img.shape[1], img.shape[2]
                 if img_h != ref_h or img_w != ref_w:
-                    print(f"SceneUpdate: Normalizing {depth_attr} from {img_w}x{img_h} to {ref_w}x{ref_h}")
+                    logger.debug(
+                        "SceneUpdate: Normalizing %s from %sx%s to %sx%s",
+                        depth_attr,
+                        img_w,
+                        img_h,
+                        ref_w,
+                        ref_h,
+                    )
                     setattr(scene_info_out, depth_attr, image_resize_ess(
                         img, ref_w, ref_h,
                         method="keep proportion", interpolation="nearest", multiple_of=16
@@ -2722,7 +2831,14 @@ class SceneUpdate(io.ComfyNode):
             if img is not None and torch.is_tensor(img):
                 img_h, img_w = img.shape[1], img.shape[2]
                 if img_h != ref_h or img_w != ref_w:
-                    print(f"SceneUpdate: Normalizing {pose_attr} from {img_w}x{img_h} to {ref_w}x{ref_h}")
+                    logger.debug(
+                        "SceneUpdate: Normalizing %s from %sx%s to %sx%s",
+                        pose_attr,
+                        img_w,
+                        img_h,
+                        ref_w,
+                        ref_h,
+                    )
                     setattr(scene_info_out, pose_attr, image_resize_ess(
                         img, ref_w, ref_h,
                         method="keep proportion", interpolation="nearest", multiple_of=16
@@ -2747,7 +2863,10 @@ class SceneUpdate(io.ComfyNode):
         # Save LoRAs if updated
         if update_high_loras or update_low_loras:
             scene_info_out.save_loras()
-            print(f"SceneUpdate: Saved LoRA presets to: {scene_info_in.scene_dir}/loras.json")
+            logger.info(
+                "SceneUpdate: Saved LoRA presets to: %s",
+                f"{scene_info_in.scene_dir}/loras.json",
+            )
 
         return io.NodeOutput(
             scene_info_out,
@@ -2794,11 +2913,11 @@ class SceneView(io.ComfyNode):
         include_mask_bg=True,
     ) -> io.NodeOutput:
         if scene_info is None:
-            print("SceneView: scene_info is None")
+            logger.error("SceneView: scene_info is None")
             return io.NodeOutput(None, None, None, None, None, None, None, None)
         
         if not isinstance(scene_info, SceneInfo):
-            print("SceneView: scene_info is not of type SceneInfo")
+            logger.error("SceneView: scene_info is not of type SceneInfo")
             return io.NodeOutput(None, None, None, None, None, None, None, None)
 
         assets = scene_info.load_preview_assets(
@@ -2891,7 +3010,7 @@ class SceneOutput(io.ComfyNode):
         scene_info=None,
     ) -> io.NodeOutput:
         if scene_info is None:
-            print("SceneOutput: scene_info is None")
+            logger.error("SceneOutput: scene_info is None")
             return io.NodeOutput((
                 "",
                 "",
@@ -2922,14 +3041,15 @@ class SceneOutput(io.ComfyNode):
                 None,
             ))
         
-        print(
-            f"SceneOutput: scene_info.scene_dir='{scene_info.scene_dir}', "
-            f"scene_name='{scene_info.scene_name}', "
-            f"girl_pos='{scene_info.girl_pos[:32]}', "
-            f"male_pos='{scene_info.male_pos[:32]}', "
-            f"wan_prompt='{scene_info.wan_prompt[:32]}', "
-            f"wan_low_prompt='{scene_info.wan_low_prompt[:32]}', "
-            f"depth_image shape: {scene_info.depth_image.shape if scene_info.depth_image is not None else 'None'}"
+        logger.info(
+            "SceneOutput: scene_dir='%s', scene_name='%s', girl_pos='%s', male_pos='%s', wan_prompt='%s', wan_low_prompt='%s', depth_image shape=%s",
+            scene_info.scene_dir,
+            scene_info.scene_name,
+            scene_info.girl_pos[:32],
+            scene_info.male_pos[:32],
+            scene_info.wan_prompt[:32],
+            scene_info.wan_low_prompt[:32],
+            scene_info.depth_image.shape if scene_info.depth_image is not None else "None",
         )
         return io.NodeOutput(
             scene_info.scene_dir,
@@ -2984,7 +3104,7 @@ class SceneSave(io.ComfyNode):
         scene_dir="",
     ) -> io.NodeOutput:
         if scene_info is None or not scene_info.scene_name:
-            print("SaveScene: scene_info is None or scene_name is empty")
+            logger.error("SaveScene: scene_info is None or scene_name is empty")
             return io.NodeOutput(None)
 
         # Use provided scene_dir or fall back to scene_info's scene_dir
@@ -2992,7 +3112,7 @@ class SceneSave(io.ComfyNode):
         if not target_dir:
             target_dir = str(Path(default_scenes_dir()) / scene_info.scene_name)
 
-        print(f"SaveScene: scene_name='{scene_info.scene_name}'; dest_dir='{target_dir}'")
+        logger.info("SaveScene: scene_name='%s'; dest_dir='%s'", scene_info.scene_name, target_dir)
         
         # Use the unified save_all method
         scene_info.save_all(target_dir)
@@ -3076,10 +3196,10 @@ class SceneInput(io.ComfyNode):
         low_loras=None,
     ) -> io.NodeOutput:
         if not scene_dir or not os.path.isdir(scene_dir):
-            print(f"SceneInput: scene_dir '{scene_dir}' is invalid")
+            logger.error("SceneInput: scene_dir '%s' is invalid", scene_dir)
             return io.NodeOutput(None)
 
-        print(f"SceneInput: scene_dir='{scene_dir}'; scene_name='{scene_name}'")
+        logger.info("SceneInput: scene_dir='%s'; scene_name='%s'", scene_dir, scene_name)
         resolution = min(depth_image.shape[1], depth_image.shape[2]) if depth_image is not None else 512
 
         scene_info = SceneInfo(
@@ -3195,7 +3315,13 @@ class StoryCreate(io.ComfyNode):
             scenes=[initial_scene_obj]
         )
         
-        print(f"StoryCreate: Created story '{story_name}' (v2) with initial scene '{initial_scene}' using {prompt_source}:{prompt_key or 'custom'}")
+        logger.info(
+            "StoryCreate: Created story '%s' (v2) with initial scene '%s' using %s:%s",
+            story_name,
+            initial_scene,
+            prompt_source,
+            prompt_key or "custom",
+        )
         
         return io.NodeOutput(story_info)
 
@@ -3232,7 +3358,7 @@ class StoryEdit(io.ComfyNode):
         # Load story from file system
         story_info = cls._load_story_info(story_select)
         if story_info is None:
-            print(f"StoryEdit: Story '{story_select}' could not be loaded")
+            logger.error("StoryEdit: Story '%s' could not be loaded", story_select)
             return io.NodeOutput(None, None, None, None, None, None)
         
         # Resolve which scene to preview
@@ -3268,7 +3394,7 @@ class StoryEdit(io.ComfyNode):
                 try:
                     preview_image_ui = ui.PreviewImage(image=torch.cat(preview_batch, dim=0))
                 except Exception as exc:
-                    print(f"StoryEdit: Failed to build preview image UI: {exc}")
+                    logger.exception("StoryEdit: Failed to build preview image UI")
         
         # Build summary text and metadata
         summary_text = cls._build_summary_text(story_info, preview_scene)
@@ -3297,7 +3423,7 @@ class StoryEdit(io.ComfyNode):
         stories_dir = default_stories_dir()
         story_json_path = Path(stories_dir) / story_select / "story.json"
         if not story_json_path.exists():
-            print(f"StoryEdit: Story file not found at '{story_json_path}'")
+            logger.warning("StoryEdit: Story file not found at '%s'", story_json_path)
             return None
         return load_story(str(story_json_path))
     
@@ -3305,7 +3431,7 @@ class StoryEdit(io.ComfyNode):
     def _resolve_preview_scene(story_info: StoryInfo, preview_scene_name: str) -> Optional[SceneInStory]:
         """Determine which scene to preview"""
         if not story_info or not getattr(story_info, "scenes", None):
-            print("StoryEdit: Story has no scenes to preview")
+            logger.warning("StoryEdit: Story has no scenes to preview")
             return None
         
         # If a specific scene name is provided, find it
@@ -3323,7 +3449,7 @@ class StoryEdit(io.ComfyNode):
         scenes_dir = default_scenes_dir()
         scene_dir = os.path.join(scenes_dir, scene.scene_name)
         if not os.path.isdir(scene_dir):
-            print(f"StoryEdit: Scene directory '{scene_dir}' missing for preview")
+            logger.warning("StoryEdit: Scene directory '%s' missing for preview", scene_dir)
             return {}
         
         depth_attr = default_depth_options.get(scene.depth_type, "depth_image")
@@ -3342,7 +3468,7 @@ class StoryEdit(io.ComfyNode):
             assets["scene_dir"] = scene_dir
             return assets
         except Exception as exc:
-            print(f"StoryEdit: Failed to load preview assets for '{scene.scene_name}': {exc}")
+            logger.exception("StoryEdit: Failed to load preview assets for '%s'", scene.scene_name)
             return {}
     
     @staticmethod
@@ -3355,18 +3481,16 @@ class StoryEdit(io.ComfyNode):
         prompt_json_path = os.path.join(scene_dir, "prompts.json")
         prompt_data_raw = load_prompt_json(prompt_json_path) or {}
         
-        if prompt_data_raw.get("version") == 2:
-            from prompt_models import PromptCollection
-            
+        if prompt_data_raw.get("version") == 2:            
             prompt_collection = PromptCollection.from_dict(prompt_data_raw)
-            libber_manager = LibberStateManager()
+            libber_manager = LibberStateManager.instance()
             
             # Build individual prompts
             prompt_dict = {}
             for key, metadata in prompt_collection.prompts.items():
                 value = metadata.value
                 if metadata.processing_type == "libber" and metadata.libber_name:
-                    libber = libber_manager.get_libber(metadata.libber_name)
+                    libber = libber_manager.ensure_libber(metadata.libber_name)
                     if libber:
                         value = libber.substitute(value)
                 prompt_dict[key] = value
@@ -3494,7 +3618,7 @@ class StoryView(io.ComfyNode):
         extra_pnginfo = cls.hidden.extra_pnginfo
         
         if story_info is None:
-            print("StoryView: story_info is None")
+            logger.error("StoryView: story_info is None")
             return io.NodeOutput(None, None, "", "", 0, "", "", None, None, None)
         
         # Find the selected scene configuration in the story
@@ -3505,13 +3629,17 @@ class StoryView(io.ComfyNode):
                 break
         
         if scene_config is None and story_info.scenes:
-            print(f"StoryView: Scene '{selected_scene}' not found in story, defaulting to first scene '{story_info.scenes[0].scene_name}'")
+            logger.warning(
+                "StoryView: Scene '%s' not found in story, defaulting to first scene '%s'",
+                selected_scene,
+                story_info.scenes[0].scene_name,
+            )
             scene_config = story_info.scenes[0]
             selected_scene = scene_config.scene_name
 
         # If scene not found in story, create a default configuration
         if scene_config is None:
-            print(f"StoryView: Scene '{selected_scene}' not found in story, using defaults")
+            logger.warning("StoryView: Scene '%s' not found in story, using defaults", selected_scene)
             scene_config = SceneInStory(
                 scene_name=selected_scene,
                 scene_order=0,
@@ -3529,7 +3657,7 @@ class StoryView(io.ComfyNode):
         scene_dir = os.path.join(scenes_dir, selected_scene)
         
         if not os.path.isdir(scene_dir):
-            print(f"StoryView: scene_dir '{scene_dir}' is not a valid directory")
+            logger.error("StoryView: scene_dir '%s' is not a valid directory", scene_dir)
             return io.NodeOutput(story_info, None, story_info.story_name, story_info.story_dir, len(story_info.scenes), selected_scene, "", None, None, None)
         
         try:
@@ -3542,7 +3670,7 @@ class StoryView(io.ComfyNode):
                 include_canny=False,
             )
         except Exception as e:
-            print(f"StoryView: failed to build SceneInfo for '{selected_scene}': {e}")
+            logger.exception("StoryView: failed to build SceneInfo for '%s'", selected_scene)
             return io.NodeOutput(story_info, None, story_info.story_name, story_info.story_dir, len(story_info.scenes), selected_scene, "", None, None, None)
 
         if prompt_widget_text is not None:
@@ -3601,7 +3729,12 @@ class StoryView(io.ComfyNode):
             "animated": preview_image_ui.as_dict().get("animated", False) if preview_image_ui else False,
         }
         
-        print(f"StoryView: Story '{story_info.story_name}' - Selected scene '{selected_scene}' with prompt '{prompt_display}'")
+        logger.info(
+            "StoryView: Story '%s' - Selected scene '%s' with prompt '%s'",
+            story_info.story_name,
+            selected_scene,
+            prompt_display,
+        )
         
         return io.NodeOutput(
             story_info,
@@ -3647,7 +3780,7 @@ class StorySceneBatch(io.ComfyNode):
         job_root_dir: str = "",
     ) -> io.NodeOutput:
         if story_info is None or not getattr(story_info, "scenes", None):
-            print("StorySceneBatch: story_info is empty")
+            logger.warning("StorySceneBatch: story_info is empty")
             return io.NodeOutput(0, [], job_id or "", job_root_dir or "")
 
         resolved_job_id = job_id.strip() or uuid.uuid4().hex[:12]
@@ -3659,16 +3792,32 @@ class StorySceneBatch(io.ComfyNode):
         batch: list[dict] = []
 
         scenes_sorted = sorted(story_info.scenes, key=lambda s: s.scene_order)
+        logger.info(
+            "StorySceneBatch: Preparing batch for story '%s' with %d scenes under job_id='%s' at '%s'",
+            story_info.story_name,
+            len(scenes_sorted),
+            resolved_job_id,
+            job_root,
+        )
         for scene in scenes_sorted:
             scene_dir = os.path.join(scenes_dir, scene.scene_name)
             prompt_path = os.path.join(scene_dir, "prompts.json")
             prompt_data_raw = load_prompt_json(prompt_path) or {}
             
+            logger.debug(
+                "StorySceneBatch: Processing scene '%s' (order %s) with prompt_source='%s' and prompt_key='%s'",
+                scene.scene_name,
+                scene.scene_order,
+                scene.prompt_source,
+                scene.prompt_key,
+            )
+            logger.debug("StorySceneBatch: Loaded raw prompt data: %s", prompt_data_raw)
             # Load PromptCollection and compose prompts using the new system
             if "version" in prompt_data_raw and prompt_data_raw.get("version") == 2:
-                from prompt_models import PromptCollection
+                logger.debug("StorySceneBatch: Detected v2 prompt format for scene '%s'", scene.scene_name)
                 prompt_collection = PromptCollection.from_dict(prompt_data_raw)
-                libber_manager = LibberStateManager()
+                # Use shared LibberStateManager so any loaded libbers are applied across nodes
+                libber_manager = LibberStateManager.instance()
                 
                 # Build prompt_dict: individual prompts (not composed)
                 prompt_dict = {}
@@ -3676,16 +3825,26 @@ class StorySceneBatch(io.ComfyNode):
                     value = metadata.value
                     # Process libber substitution if needed
                     if metadata.processing_type == "libber" and metadata.libber_name:
-                        libber = libber_manager.get_libber(metadata.libber_name)
+                        libber = libber_manager.ensure_libber(metadata.libber_name)
                         if libber:
                             value = libber.substitute(value)
                     prompt_dict[key] = value
                 
                 # Build composition_dict: composed prompts from compositions
                 composition_dict = {}
+                logger.debug(
+                    "StorySceneBatch: Composing compositions for scene '%s'; compositions=%s",
+                    scene.scene_name,
+                    list(prompt_collection.compositions.keys()),
+                )
+                logger.debug(
+                    "StorySceneBatch: Compositions values=%s",
+                    list(prompt_collection.compositions.values()),
+                )
                 if prompt_collection.compositions:
                     composition_dict = prompt_collection.compose_prompts(prompt_collection.compositions, libber_manager)
                 
+                logger.debug("StorySceneBatch: Built composition_dict: %s", composition_dict)
                 # Determine positive_prompt based on prompt_source and prompt_key
                 if scene.prompt_source == "custom":
                     positive_prompt = scene.custom_prompt
@@ -3705,6 +3864,7 @@ class StorySceneBatch(io.ComfyNode):
                     "wan_low_prompt": prompt_dict.get("wan_low_prompt", ""),
                 }
             else:
+                logger.debug("StorySceneBatch: Detected legacy prompt format for scene '%s'", scene.scene_name)
                 # Legacy format
                 prompt_data = prompt_data_raw
                 # Use old build_positive_prompt for backwards compatibility if needed
@@ -3713,7 +3873,12 @@ class StorySceneBatch(io.ComfyNode):
                     if scene.prompt_source == "custom":
                         positive_prompt = scene.custom_prompt
                     elif scene.prompt_key:
-                        positive_prompt = prompt_data.get(scene.prompt_key, "")
+                        if scene.prompt_source == "prompt":
+                            positive_prompt = prompt_data.get(scene.prompt_key, "")
+                        elif scene.prompt_source == "composition":
+                            positive_prompt = prompt_data
+                        else:
+                            positive_prompt = prompt_data.get(scene.prompt_key, "")
                     else:
                         positive_prompt = ""
                 else:
@@ -3773,9 +3938,20 @@ class StorySceneBatch(io.ComfyNode):
                 "prompt_data": prompt_data,
             }
 
+            logger.debug(
+                "StorySceneBatch: Added scene descriptor for '%s' prompt_key='%s' prompt_source='%s'",
+                scene.scene_name,
+                scene.prompt_key,
+                scene.prompt_source,
+            )
             batch.append(descriptor)
 
-        print(f"StorySceneBatch: Prepared {len(batch)} scenes with job_id={resolved_job_id} at {job_root}")
+        logger.info(
+            "StorySceneBatch: Prepared %d scenes with job_id=%s at %s",
+            len(batch),
+            resolved_job_id,
+            job_root,
+        )
 
         return io.NodeOutput(
             len(batch),
@@ -3827,7 +4003,7 @@ class StoryScenePick(io.ComfyNode):
         scene_index: int = 0,
     ) -> io.NodeOutput:
         if not scene_batch:
-            print("StoryScenePick: scene_batch is empty")
+            logger.warning("StoryScenePick: scene_batch is empty")
             return io.NodeOutput(None, None, None, None, None, "", False, False, False, False, "", 0, "", "", "", "", None)
 
         try:
@@ -3840,7 +4016,7 @@ class StoryScenePick(io.ComfyNode):
 
         scene_dir = descriptor.get("scene_dir", "")
         if not scene_dir or not os.path.isdir(scene_dir):
-            print(f"StoryScenePick: scene_dir '{scene_dir}' is invalid")
+            logger.error("StoryScenePick: scene_dir '%s' is invalid", scene_dir)
             return io.NodeOutput(None, None, None, None, None, "", False, False, False, False, descriptor.get("scene_name", ""), descriptor.get("scene_order", 0), descriptor.get("scene_id", ""), descriptor.get("job_id", ""), descriptor.get("job_scene_dir", ""), descriptor.get("input_image_path", ""), None)
         prompt_key = descriptor.get("prompt_key", "")
         scene_config = SceneInStory(
@@ -3861,6 +4037,23 @@ class StoryScenePick(io.ComfyNode):
             use_pose=descriptor.get("use_pose", False),
             use_canny=descriptor.get("use_canny", False),
         )
+        
+        logger.debug(
+            "StoryScenePick: Building scene_config for '%s' with prompt_source=%s, prompt_key=%s, custom_len=%d",
+            scene_config.scene_name,
+            scene_config.prompt_source,
+            scene_config.prompt_key,
+            len(scene_config.custom_prompt),
+        )
+        logger.debug("StoryScenePick: Descriptor keys: %s", list(descriptor.keys()))
+
+        # Use the pre-computed positive_prompt from StorySceneBatch
+        # It's already been processed with compositions and libbers applied
+        prompt = descriptor.get("positive_prompt", "")
+        if prompt:
+            logger.debug("  -> Found pre-computed positive_prompt in descriptor, length: %d", len(prompt))
+        else:
+            logger.warning("  -> No positive_prompt in descriptor; available keys: %s", list(descriptor.keys()))
 
         try:
             scene_info, assets, selected_prompt, prompt_data, _ = SceneInfo.from_story_scene(
@@ -3871,7 +4064,7 @@ class StoryScenePick(io.ComfyNode):
                 prompt_override=None,
             )
         except Exception as e:
-            print(f"StoryScenePick: failed to build SceneInfo for '{scene_config.scene_name}': {e}")
+            logger.error("StoryScenePick: failed to build SceneInfo for '%s': %s", scene_config.scene_name, e)
             return io.NodeOutput(None, None, None, None, None, "", False, False, False, False, descriptor.get("scene_name", ""), descriptor.get("scene_order", 0), descriptor.get("scene_id", ""), descriptor.get("job_id", ""), descriptor.get("job_scene_dir", ""), descriptor.get("input_image_path", ""), None)
 
         empty_image = make_empty_image()
@@ -3880,17 +4073,13 @@ class StoryScenePick(io.ComfyNode):
         mask = assets.get("mask")
         depth_image = assets.get("depth_image", empty_image)
         pose_image = assets.get("pose_image", empty_image)
-
-        # Select the correct prompt based on the scene's setting
-        prompt = ""
-        if scene_config.prompt_source == "composition":
-            comp_dict = prompt_data.get("composition_dict", {}) if prompt_data else {}
-            prompt = comp_dict.get(prompt_key, "")
-        elif scene_config.prompt_source == "custom":
-            prompt = scene_config.custom_prompt or prompt_data.get("custom_prompt", "")
-        else:
-            prompt_dict = prompt_data.get("prompt_dict", {}) if prompt_data else {}
-            prompt = prompt_dict.get(prompt_key, "")
+        
+        logger.info(
+            "StoryScenePick: Scene '%s' (order %s) - Using prompt: '%s'",
+            scene_config.scene_name,
+            scene_config.scene_order,
+            prompt[:128] + ("..." if len(prompt) > 128 else ""),
+        )
 
         return io.NodeOutput(
             mask_image,
@@ -3938,7 +4127,7 @@ class StorySave(io.ComfyNode):
         filename="story.json",
     ) -> io.NodeOutput:
         if story_info is None:
-            print("StorySave: story_info is None")
+            logger.warning("StorySave: story_info is None")
             return io.NodeOutput("")
         
         # Ensure story directory exists
@@ -3950,7 +4139,7 @@ class StorySave(io.ComfyNode):
         # Save the story
         save_story(story_info, str(save_path))
         
-        print(f"StorySave: Saved story to '{save_path}'")
+        logger.info("StorySave: Saved story to '%s'", save_path)
         
         preview_ui = ui.PreviewText(value=f"Story saved to: {save_path}\nScenes: {len(story_info.scenes)}")
         
@@ -3994,15 +4183,15 @@ class StoryLoad(io.ComfyNode):
         story_path = Path(stories_dir) / story_name / filename
         
         if not story_path.exists():
-            print(f"StoryLoad: Story file not found at '{story_path}'")
+            logger.warning("StoryLoad: Story file not found at '%s'", story_path)
             return io.NodeOutput(None)
         
         story_info = load_story(str(story_path))
         
         if story_info:
-            print(f"StoryLoad: Loaded story '{story_info.story_name}' with {len(story_info.scenes)} scenes")
+            logger.info("StoryLoad: Loaded story '%s' with %d scenes", story_info.story_name, len(story_info.scenes))
         else:
-            print(f"StoryLoad: Failed to load story from '{story_path}'")
+            logger.error("StoryLoad: Failed to load story from '%s'", story_path)
         
         return io.NodeOutput(story_info)
 
@@ -4039,11 +4228,11 @@ class StorySceneImageSave(io.ComfyNode):
         quality: int = 95,
     ) -> io.NodeOutput:
         if image is None:
-            print("StorySceneImageSave: No image provided")
+            logger.warning("StorySceneImageSave: No image provided")
             return io.NodeOutput(None, "", "")
 
         if scene_batch is None or not isinstance(scene_batch, list) or not scene_batch:
-            print("StorySceneImageSave: scene_batch is missing or invalid")
+            logger.warning("StorySceneImageSave: scene_batch is missing or invalid")
             return io.NodeOutput(image, "", "")
 
         try:
@@ -4063,10 +4252,10 @@ class StorySceneImageSave(io.ComfyNode):
         target_dir = job_output_dir or job_scene_dir or job_input_dir
 
         if not scene_name:
-            print("StorySceneImageSave: No scene_name provided in descriptor")
+            logger.warning("StorySceneImageSave: No scene_name provided in descriptor")
             return io.NodeOutput(image, "", "")
         if not target_dir:
-            print("StorySceneImageSave: No valid output directory found in descriptor")
+            logger.warning("StorySceneImageSave: No valid output directory found in descriptor")
             return io.NodeOutput(image, "", "")
 
         os.makedirs(target_dir, exist_ok=True)
@@ -4086,7 +4275,7 @@ class StorySceneImageSave(io.ComfyNode):
                 pil_image.save(filepath, format="WEBP", quality=quality)
             else:
                 pil_image.save(filepath, format="PNG", optimize=True)
-            print(f"StorySceneImageSave: Saved image to '{filepath}'")
+            logger.info("StorySceneImageSave: Saved image to '%s'", filepath)
             preview_text = (
                 f"Saved: {filename}\n"
                 f"Scene: {scene_name} (order: {scene_order})\n"
@@ -4103,9 +4292,7 @@ class StorySceneImageSave(io.ComfyNode):
                 ui=preview_ui.as_dict()
             )
         except Exception as e:
-            print(f"StorySceneImageSave: Error saving image: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("StorySceneImageSave: Error saving image: %s", e)
             return io.NodeOutput(image, "", "")
 
 class FBTextEncodeQwenImageEditPlus(io.ComfyNode):
@@ -4283,12 +4470,12 @@ class LibberManager(io.ComfyNode):
                 "text": [keys_json, lib_dict_json, status]
             }
             
-            print(f"LibberManager: {status}")
+            logger.info("LibberManager: %s", status)
             return io.NodeOutput(status, keys_display, ui=combined_ui)
             
         except Exception as e:
             status = f"✗ Error: {str(e)}"
-            print(f"LibberManager error: {status}")
+            logger.error("LibberManager error: %s", status)
             return io.NodeOutput(status, "")
 
 
@@ -4340,14 +4527,14 @@ class LibberApply(io.ComfyNode):
             try:
                 libber = manager.load_libber(libber_name, libber_filepath)
             except Exception as e:
-                print(f"LibberApply: Error reloading from file, using in-memory instance: {e}")
+                logger.warning("LibberApply: Error reloading from file, using in-memory instance: %s", e)
                 libber = manager.get_libber(libber_name)
         else:
             libber = manager.get_libber(libber_name)
         
         if not libber:
             status = f"✗ Libber '{libber_name}' not found. Create or load it in LibberManager first."
-            print(f"LibberApply: {status}")
+            logger.warning("LibberApply: %s", status)
             return io.NodeOutput(text, status)
         
         if not text:
@@ -4372,9 +4559,9 @@ class LibberApply(io.ComfyNode):
             result = libber.substitute(text)
             keys = libber.list_libs()
             info = f"✓ Substituted using libber '{libber_name}' ({len(keys)} libs, max_depth={libber.max_depth})"
-            print(f"LibberApply: {info}")
-            print(f"  Input:  {text[:100]}...")
-            print(f"  Output: {result[:100]}...")
+            logger.info("LibberApply: %s", info)
+            logger.debug("LibberApply input preview: %s", text[:100])
+            logger.debug("LibberApply output preview: %s", result[:100])
             
             # Provide UI data showing available libs
             libber_data = manager.get_libber_data(libber_name)
@@ -4388,7 +4575,7 @@ class LibberApply(io.ComfyNode):
         except Exception as e:
             result = text
             info = f"✗ Error during substitution: {e}"
-            print(f"LibberApply: {info}")
+            logger.error("LibberApply: %s", info)
             return io.NodeOutput(result, info)
         
         return io.NodeOutput(result, info)
@@ -4483,7 +4670,7 @@ class ScenePromptManager(io.ComfyNode):
         
         if not scene_name:
             status = "✗ No scene selected"
-            print(f"ScenePromptManager: {status}")
+            logger.warning("ScenePromptManager: %s", status)
             combined_ui = {"text": ["{}", "[]", status, "[]", "[]", "{}", "{}"]}
             return io.NodeOutput({}, {}, "", "", status, ui=combined_ui)
         
@@ -4491,7 +4678,7 @@ class ScenePromptManager(io.ComfyNode):
         
         if not os.path.isdir(scene_dir):
             status = f"✗ Scene directory not found: {scene_dir}"
-            print(f"ScenePromptManager: {status}")
+            logger.error("ScenePromptManager: %s", status)
             combined_ui = {"text": ["{}", "[]", status, "[]", "[]", "{}", "{}"]}
             return io.NodeOutput({}, {}, scene_name, scene_dir, status, ui=combined_ui)
         
@@ -4501,7 +4688,7 @@ class ScenePromptManager(io.ComfyNode):
         # Check if prompts.json exists
         if not os.path.exists(prompt_json_path) and not collection_json:
             status = f"⚠ Scene '{scene_name}' has no prompts.json file. Create prompts using the UI table."
-            print(f"ScenePromptManager: {status}")
+            logger.warning("ScenePromptManager: %s", status)
             collection = PromptCollection()
             # Save empty collection to create the file
             try:
@@ -4516,27 +4703,30 @@ class ScenePromptManager(io.ComfyNode):
                 try:
                     data = json.loads(collection_json)
                     collection = PromptCollection.from_dict(data)
-                    print(f"ScenePromptManager: Loaded collection from UI JSON with {len(collection.prompts)} prompts")
+                    logger.info(
+                        "ScenePromptManager: Loaded collection from UI JSON with %d prompts",
+                        len(collection.prompts),
+                    )
                     
                     # Save to file
                     try:
                         with open(prompt_json_path, 'w', encoding='utf-8') as f:
                             json.dump(collection.to_dict(), f, indent=2, ensure_ascii=False)
                         status = f"✓ Saved {len(collection.prompts)} prompts to '{scene_name}'"
-                        print(f"ScenePromptManager: {status}")
+                        logger.error("ScenePromptManager: %s", status)
                     except Exception as e:
                         status = f"⚠ Loaded {len(collection.prompts)} prompts but failed to save: {e}"
-                        print(f"ScenePromptManager: {status}")
+                        logger.error("ScenePromptManager: %s", status)
                         
                 except Exception as e:
                     # Fall back to file
                     status = f"✗ Error parsing UI JSON: {e}. Loading from file instead."
-                    print(f"ScenePromptManager: {status}")
+                    logger.error("ScenePromptManager: %s", status)
                     try:
                         collection = PromptCollection.load_from_json(prompt_json_path)
                     except Exception as e2:
                         status = f"✗ Failed to load from file: {e2}"
-                        print(f"ScenePromptManager: {status}")
+                        logger.error("ScenePromptManager: %s", status)
                         collection = PromptCollection()
             else:
                 # Load from file
@@ -4549,10 +4739,10 @@ class ScenePromptManager(io.ComfyNode):
                     else:
                         status = f"✓ Loaded {len(collection.prompts)} prompts from '{scene_name}'"
                     
-                    print(f"ScenePromptManager: {status}")
+                    logger.info("ScenePromptManager: %s", status)
                 except Exception as e:
                     status = f"✗ Error loading prompts.json: {e}"
-                    print(f"ScenePromptManager: {status}")
+                    logger.error("ScenePromptManager: %s", status)
                     collection = PromptCollection()
         
         # Prepare UI data
@@ -4578,7 +4768,7 @@ class ScenePromptManager(io.ComfyNode):
             
             # Apply libber substitution if needed
             if metadata.processing_type == "libber" and metadata.libber_name and libber_manager:
-                libber = libber_manager.get_libber(metadata.libber_name)
+                libber = libber_manager.ensure_libber(metadata.libber_name)
                 if libber:
                     value = libber.substitute(value)
             
@@ -4610,7 +4800,7 @@ class ScenePromptManager(io.ComfyNode):
             ]
         }
         
-        print(f"ScenePromptManager: {status}")
+        logger.info("ScenePromptManager: %s", status)
         return io.NodeOutput(prompt_dict, comp_dict, scene_name, scene_dir, status, ui=combined_ui)
 
 
@@ -4667,7 +4857,7 @@ class PromptComposer(io.ComfyNode):
         
         if not collection:
             status = "✗ No prompt collection provided"
-            print(f"PromptComposer: {status}")
+            logger.warning("PromptComposer: %s", status)
             return io.NodeOutput({}, "{}", status)
         
         # Parse composition map
@@ -4676,7 +4866,7 @@ class PromptComposer(io.ComfyNode):
             try:
                 composition_map = json.loads(composition_json)
             except Exception as e:
-                print(f"PromptComposer: Error parsing composition JSON: {e}")
+                logger.error("PromptComposer: Error parsing composition JSON: %s", e)
                 composition_map = {}
         
         # Default composition if none provided
@@ -4721,7 +4911,7 @@ class PromptComposer(io.ComfyNode):
             ]
         }
         
-        print(f"PromptComposer: {info}")
+        logger.info("PromptComposer: %s", info)
         return io.NodeOutput(prompt_dict, json.dumps(composition_map, indent=2), info, ui=combined_ui)
 
 
@@ -4760,7 +4950,7 @@ class PromptCollectionStateManager:
         ]
         for sid in expired:
             del self.sessions[sid]
-            print(f"PromptCollectionStateManager: Expired session {sid}")
+            logger.info("PromptCollectionStateManager: Expired session %s", sid)
     
     def create_session(self, session_id: str, collection: PromptCollection):
         """Create or update a session with a PromptCollection."""
@@ -4769,7 +4959,7 @@ class PromptCollectionStateManager:
             "collection": collection,
             "last_access": datetime.now()
         }
-        print(f"PromptCollectionStateManager: Created session {session_id}")
+        logger.info("PromptCollectionStateManager: Created session %s", session_id)
     
     def get_collection(self, session_id: str) -> Optional[PromptCollection]:
         """Get PromptCollection for a session, updating last access time."""
@@ -4806,25 +4996,50 @@ class LibberStateManager:
         """Create a new Libber instance."""
         libber = Libber(lib_dict={}, delimiter=delimiter, max_depth=max_depth)
         self.libbers[name] = libber
-        print(f"LibberStateManager: Created libber '{name}'")
+        logger.info("LibberStateManager: Created libber '%s'", name)
         return libber
     
     def load_libber(self, name: str, filepath: str) -> Libber:
         """Load a Libber from file."""
         libber = Libber.load(filepath)
         self.libbers[name] = libber
-        print(f"LibberStateManager: Loaded libber '{name}' from {filepath}")
+        logger.info("LibberStateManager: Loaded libber '%s' from %s", name, filepath)
         return libber
     
     def get_libber(self, name: str) -> Optional[Libber]:
         """Get a Libber by name."""
         return self.libbers.get(name)
+
+    def ensure_libber(self, name: str, base_dir: Optional[str] = None) -> Optional[Libber]:
+        """Get a Libber if loaded; otherwise try loading from disk (base_dir/name.json)."""
+        libber = self.get_libber(name)
+        if libber:
+            return libber
+        base_dir = base_dir or default_libber_dir()
+        filepath = os.path.join(base_dir, f"{name}.json")
+        if os.path.exists(filepath):
+            try:
+                return self.load_libber(name, filepath)
+            except Exception as exc:
+                logger.warning(
+                    "LibberStateManager: Failed to auto-load libber '%s' from %s: %s",
+                    name,
+                    filepath,
+                    exc,
+                )
+        else:
+            logger.warning(
+                "LibberStateManager: Libber '%s' not loaded and file not found at %s",
+                name,
+                filepath,
+            )
+        return None
     
     def save_libber(self, name: str, filepath: str):
         """Save a Libber to file."""
         if name in self.libbers:
             self.libbers[name].save(filepath)
-            print(f"LibberStateManager: Saved libber '{name}' to {filepath}")
+            logger.info("LibberStateManager: Saved libber '%s' to %s", name, filepath)
         else:
             raise ValueError(f"Libber '{name}' not found")
     
@@ -4836,7 +5051,7 @@ class LibberStateManager:
         """Remove a Libber from memory."""
         if name in self.libbers:
             del self.libbers[name]
-            print(f"LibberStateManager: Deleted libber '{name}'")
+            logger.info("LibberStateManager: Deleted libber '%s'", name)
     
     def get_libber_data(self, name: str) -> Optional[dict]:
         """Get Libber data for UI display."""
@@ -5028,7 +5243,7 @@ async def libber_create(request):
         })
     
     except Exception as e:
-        print(f"Error creating libber: {e}")
+        logger.exception("Error creating libber")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5059,7 +5274,7 @@ async def libber_load(request):
         })
     
     except Exception as e:
-        print(f"Error loading libber: {e}")
+        logger.exception("Error loading libber")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5095,7 +5310,7 @@ async def libber_add_lib(request):
         })
     
     except Exception as e:
-        print(f"Error adding lib: {e}")
+        logger.exception("Error adding lib")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5130,7 +5345,7 @@ async def libber_remove_lib(request):
         })
     
     except Exception as e:
-        print(f"Error removing lib: {e}")
+        logger.exception("Error removing lib")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5159,7 +5374,7 @@ async def libber_save(request):
         })
     
     except Exception as e:
-        print(f"Error saving libber: {e}")
+        logger.exception("Error saving libber")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5186,7 +5401,7 @@ async def libber_list(request):
         })
     
     except Exception as e:
-        print(f"Error listing libbers: {e}")
+        logger.exception("Error listing libbers")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5210,7 +5425,7 @@ async def libber_get_data(request):
         return web.json_response(data)
     
     except Exception as e:
-        print(f"Error getting libber data: {e}")
+        logger.exception("Error getting libber data")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5244,7 +5459,7 @@ async def libber_apply(request):
         })
     
     except Exception as e:
-        print(f"Error applying libber: {e}")
+        logger.exception("Error applying libber")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5280,9 +5495,7 @@ async def scene_process_compositions(request):
         })
     
     except Exception as e:
-        print(f"Error processing compositions: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error processing compositions")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5334,7 +5547,7 @@ async def scene_get_prompts(request):
                 # Remove .json extension from libber names
                 libbers_list = ["none"] + [name[:-5] for name in libbers_list[1:]]
         except Exception as e:
-            print(f"Warning: Could not load libbers list: {e}")
+            logger.warning("Warning: Could not load libbers list: %s", e)
         
         # Return compositions as dict
         return web.json_response({
@@ -5344,9 +5557,7 @@ async def scene_get_prompts(request):
         })
     
     except Exception as e:
-        print(f"Error getting scene prompts: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error getting scene prompts")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5362,7 +5573,7 @@ async def scene_save_prompts(request):
         scene_dir = data.get("scene_dir")
         collection_data = data.get("collection")
         
-        print(f"ScenePromptManager API: Received save request for scene_dir='{scene_dir}'")
+        logger.info("ScenePromptManager API: Received save request for scene_dir='%s'", scene_dir)
         
         if not scene_dir:
             return web.json_response({"error": "scene_dir required"}, status=400)
@@ -5371,59 +5582,74 @@ async def scene_save_prompts(request):
             return web.json_response({"error": "collection data required"}, status=400)
         
         if not os.path.isdir(scene_dir):
-            print(f"ScenePromptManager API: Error - scene_dir '{scene_dir}' is not a valid directory")
+            logger.error("ScenePromptManager API: scene_dir '%s' is not a valid directory", scene_dir)
             return web.json_response({"error": f"scene_dir '{scene_dir}' is not a valid directory"}, status=400)
         
         # Parse and validate collection
         try:
             collection = PromptCollection.from_dict(collection_data)
-            print(f"ScenePromptManager API: Parsed collection with {len(collection.prompts)} prompts and {len(collection.compositions)} compositions")
+            logger.info(
+                "ScenePromptManager API: Parsed collection with %d prompts and %d compositions",
+                len(collection.prompts),
+                len(collection.compositions),
+            )
         except Exception as e:
-            print(f"ScenePromptManager API: Error parsing collection data: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("ScenePromptManager API: Error parsing collection data")
             return web.json_response({"error": f"Invalid collection data: {str(e)}"}, status=400)
         
         # Save to file
         prompt_json_path = os.path.join(scene_dir, "prompts.json")
-        print(f"ScenePromptManager API: Attempting to save to: {prompt_json_path}")
-        print(f"ScenePromptManager API: File exists before save: {os.path.exists(prompt_json_path)}")
+        logger.info("ScenePromptManager API: Attempting to save to: %s", prompt_json_path)
+        logger.debug(
+            "ScenePromptManager API: File exists before save: %s",
+            os.path.exists(prompt_json_path),
+        )
         
         try:
             # Convert to dict and save as JSON
             collection_dict = collection.to_dict()
-            print(f"ScenePromptManager API: Collection dict keys: {list(collection_dict.keys())}")
-            print(f"ScenePromptManager API: Prompt keys in dict: {list(collection_dict.get('prompts', {}).keys())}")
-            print(f"ScenePromptManager API: Composition keys in dict: {list(collection_dict.get('compositions', {}).keys())}")
+            logger.debug(
+                "ScenePromptManager API: Collection dict keys: %s",
+                list(collection_dict.keys()),
+            )
+            logger.debug(
+                "ScenePromptManager API: Prompt keys in dict: %s",
+                list(collection_dict.get('prompts', {}).keys()),
+            )
+            logger.debug(
+                "ScenePromptManager API: Composition keys in dict: %s",
+                list(collection_dict.get('compositions', {}).keys()),
+            )
             
             with open(prompt_json_path, 'w', encoding='utf-8') as f:
                 json.dump(collection_dict, f, indent=2, ensure_ascii=False)
             
-            print(f"ScenePromptManager API: File written successfully")
-            print(f"ScenePromptManager API: File exists after save: {os.path.exists(prompt_json_path)}")
-            print(f"ScenePromptManager API: File size: {os.path.getsize(prompt_json_path)} bytes")
+            logger.debug(
+                "ScenePromptManager API: File written successfully; exists=%s; size=%s",
+                os.path.exists(prompt_json_path),
+                os.path.getsize(prompt_json_path),
+            )
             
             # Read back to verify
             with open(prompt_json_path, 'r', encoding='utf-8') as f:
                 saved_data = json.load(f)
-            print(f"ScenePromptManager API: Verification - read back {len(saved_data.get('prompts', {}))} prompts")
+            logger.debug(
+                "ScenePromptManager API: Verification - read back %d prompts",
+                len(saved_data.get('prompts', {})),
+            )
             
             message = f"Saved {len(collection.prompts)} prompts and {len(collection.compositions)} compositions to {os.path.basename(scene_dir)}"
-            print(f"ScenePromptManager API: {message}")
+            logger.info("ScenePromptManager API: %s", message)
             return web.json_response({
                 "success": True,
                 "message": message
             })
         except Exception as e:
-            print(f"ScenePromptManager API: Error saving to file: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("ScenePromptManager API: Error saving to file")
             return web.json_response({"error": f"Failed to save prompts.json: {str(e)}"}, status=500)
     
     except Exception as e:
-        print(f"Error saving scene prompts: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error saving scene prompts")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5478,9 +5704,7 @@ async def story_load(request):
         })
     
     except Exception as e:
-        print(f"Error loading story: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error loading story")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -5496,8 +5720,11 @@ async def story_save(request):
         story_name = data.get("story_name")
         scenes_data = data.get("scenes", [])
         
-        print(f"fb_tools -> StoryEdit: Received save request for story '{story_name}'")
-        print(f"fb_tools -> StoryEdit: Received {len(scenes_data)} scenes")
+        logger.info(
+            "fb_tools -> StoryEdit: Received save request for story '%s' with %d scenes",
+            story_name,
+            len(scenes_data),
+        )
         
         if not story_name:
             return web.json_response({"error": "story_name required"}, status=400)
@@ -5507,7 +5734,7 @@ async def story_save(request):
         story_json_path = Path(stories_dir) / story_name / "story.json"
         
         if not story_json_path.exists():
-            print(f"fb_tools -> StoryEdit: Story not found at {story_json_path}")
+            logger.warning("fb_tools -> StoryEdit: Story not found at %s", story_json_path)
             return web.json_response({"error": f"Story '{story_name}' not found"}, status=404)
         
         story_info = load_story(str(story_json_path))
@@ -5547,9 +5774,7 @@ async def story_save(request):
         })
     
     except Exception as e:
-        print(f"Error saving story: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error saving story")
         return web.json_response({"error": str(e)}, status=500)
 
 

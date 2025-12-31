@@ -34,13 +34,18 @@ export const mockFetch = {
     originalFetch: null,
     mockResponses: [],
     currentIndex: 0,
+    calls: [],
 
     setup() {
         this.originalFetch = global.fetch;
         this.mockResponses = [];
         this.currentIndex = 0;
+        this.calls = [];
 
         global.fetch = async (url, options) => {
+            // Record the call
+            this.calls.push({ url, options });
+
             const response = this.mockResponses[this.currentIndex] || {
                 ok: true,
                 status: 200,
@@ -65,6 +70,7 @@ export const mockFetch = {
         }
         this.mockResponses = [];
         this.currentIndex = 0;
+        this.calls = [];
     },
 
     mockResponse(data) {
@@ -79,6 +85,14 @@ export const mockFetch = {
             json: async () => ({ error: message }),
             text: async () => message,
         });
+    },
+
+    getCalls() {
+        return this.calls.map(call => ({
+            url: call.url,
+            options: call.options,
+            body: call.options?.body,
+        }));
     },
 };
 
