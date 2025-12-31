@@ -4306,6 +4306,8 @@ from .utils.story_video import (
 class StoryVideoBatch(io.ComfyNode):
     """Generate video prompts and aggregate LoRAs for story scene transitions
     
+    Self-contained node with story and job selection via combo widgets.
+    
     Outputs:
     1. input_folder_path - Path to the job's input folder containing ordered scene images
     2. video_prompts - Multiline string with one prompt per scene transition
@@ -4315,13 +4317,28 @@ class StoryVideoBatch(io.ComfyNode):
     
     @classmethod
     def define_schema(cls):
+        # Get available stories for combo widget
+        available_stories = get_available_stories()
+        default_story = available_stories[0] if available_stories else "default_story"
+        
+        # Try to load first story to get available job IDs
+        default_jobs = [""]
+        if available_stories:
+            stories_dir = default_stories_dir()
+            first_story_path = os.path.join(stories_dir, default_story, "story.json")
+            if os.path.isfile(first_story_path):
+                story_info = load_story(first_story_path)
+                if story_info and story_info.story_dir:
+                    jobs = list_job_ids(story_info.story_dir)
+                    default_jobs = jobs if jobs else [""]
+        
         return io.Schema(
             node_id=prefixed_node_id("StoryVideoBatch"),
             display_name="StoryVideoBatch",
             category="🧊 frost-byte/Story",
             inputs=[
-                io.Custom("STORY_INFO").Input(id="story_info", display_name="story_info", tooltip="Story to expand into video transitions"),
-                io.Combo.Input(id="job_id", display_name="job_id", options=[""], default="", tooltip="Select job ID from available jobs (auto-populated)"),
+                io.Combo.Input(id="story_name", display_name="story_name", options=available_stories, default=default_story, tooltip="Select story from available stories"),
+                io.Combo.Input(id="job_id", display_name="job_id", options=default_jobs, default=default_jobs[0], tooltip="Select job ID from available jobs"),
             ],
             outputs=[
                 io.String.Output(id="input_folder_path", display_name="input_folder_path", tooltip="Path to job input folder with ordered scene images"),
@@ -4329,24 +4346,34 @@ class StoryVideoBatch(io.ComfyNode):
                 io.Custom("WANVIDLORA").Output(id="loras_high", display_name="loras_high", tooltip="Aggregated high-priority LoRAs across all scenes"),
                 io.Custom("WANVIDLORA").Output(id="loras_low", display_name="loras_low", tooltip="Aggregated low-priority LoRAs across all scenes"),
                 io.Int.Output(id="video_count", display_name="video_count", tooltip="Total number of video transitions"),
+                io.String.Output(id="story_name_out", display_name="story_name", tooltip="Selected story name"),
             ],
         )
     
     @classmethod
     def execute(
         cls,
-        story_info=None,
+        story_name: str = "default_story",
         job_id: str = "",
     ) -> io.NodeOutput:
+        # Load story from story_name
+        stories_dir = default_stories_dir()
+        story_json_path = os.path.join(stories_dir, story_name, "story.json")
+        
+        if not os.path.isfile(story_json_path):
+            logger.warning("StoryVideoBatch: Story file not found: '%s'", story_json_path)
+            return io.NodeOutput("", "", [], [], 0, story_name)
+        
+        story_info = load_story(story_json_path)
         if story_info is None or not getattr(story_info, "scenes", None):
-            logger.warning("StoryVideoBatch: story_info is empty")
-            return io.NodeOutput("", "", [], [], 0)
+            logger.warning("StoryVideoBatch: Failed to load story or story has no scenes")
+            return io.NodeOutput("", "", [], [], 0, story_name)
         
         # List available job IDs
         available_jobs = list_job_ids(story_info.story_dir)
         if not available_jobs:
             logger.warning("StoryVideoBatch: No jobs found in story directory '%s'", story_info.story_dir)
-            return io.NodeOutput("", "", [], [], 0)
+            return io.NodeOutput("", "", [], [], 0, story_name)
         
         # Select job ID (use first/newest if not specified)
         selected_job = job_id if job_id in available_jobs else available_jobs[0]
@@ -4356,7 +4383,7 @@ class StoryVideoBatch(io.ComfyNode):
         
         if not Path(job_input_dir).exists():
             logger.warning("StoryVideoBatch: Job input directory does not exist: '%s'", job_input_dir)
-            return io.NodeOutput("", "", [], [], 0)
+            return io.NodeOutput("", "", [], [], 0, story_name)
         
         scenes_dir = default_scenes_dir()
         scenes_sorted = sorted(story_info.scenes, key=lambda s: s.scene_order)
@@ -4478,10 +4505,11 @@ class StoryVideoBatch(io.ComfyNode):
         video_prompts_multiline = "\n".join(video_prompts)
         
         logger.info(
-            "StoryVideoBatch: Generated %d video prompts, %d unique high LoRAs, %d unique low LoRAs",
+            "StoryVideoBatch: Generated %d video prompts, %d unique high LoRAs, %d unique low LoRAs for story '%s'",
             len(video_prompts),
             len(loras_high_list),
             len(loras_low_list),
+            story_name,
         )
         
         return io.NodeOutput(
@@ -4490,6 +4518,7 @@ class StoryVideoBatch(io.ComfyNode):
             loras_high_list,
             loras_low_list,
             len(video_prompts),
+            story_name,
         )
 
 
