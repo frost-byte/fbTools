@@ -82,7 +82,38 @@ Creates an ordered list of video descriptors for scene transitions. Each descrip
 | **job_input_dir** | String | Path to job's input directory (where images are) |
 | **job_output_dir** | String | Path to job's output directory (where videos will be saved) |
 
-### Video Descriptor Format
+## Node: StoryVideoSave
+
+### Purpose
+
+Saves generated videos to the correct path specified in the video descriptor, with automatic directory creation and naming.
+
+### Inputs
+
+| Input | Type | Description |
+|-------|------|-------------|
+| **video** | VIDEO | Generated video from your video generation node |
+| **video_batch** | VIDEO_BATCH | Video batch from StoryVideoBatch |
+| **video_index** | Int | Index into video_batch (0-based) |
+
+### Outputs
+
+| Output | Type | Description |
+|--------|------|-------------|
+| **video_out** | VIDEO | Pass-through of the input video for chaining |
+| **filename** | String | Name of the saved video file |
+| **filepath** | String | Full path to the saved video file |
+| **scene_name** | String | Name of the scene |
+| **scene_order** | Int | Order of the scene |
+
+### Notes
+
+- Automatically creates output directories if they don't exist
+- Supports string path videos (copies file to destination)
+- Can be extended to support other video formats based on your video generation nodes
+- Outputs preview text showing saved location and scene information
+
+## Video Descriptor Format
 
 Each video descriptor in the batch is a dictionary containing:
 
@@ -155,7 +186,30 @@ output/
    - Load images
    - Apply video_prompt
    - Generate video (using your video generation node)
-   - Save to video_output_path
+   ↓ (VIDEO)
+4. StoryVideoSave
+   - Saves video to correct path from descriptor
+   - Outputs saved path and scene info
+```
+
+### Complete Workflow with Iteration
+
+```
+StoryLoad → StoryVideoBatch
+                ↓
+            [For each video in batch]
+                ↓
+            Load first_frame image
+                ↓
+            Load last_frame image (if transition)
+                ↓
+            Apply video_prompt + LoRa data
+                ↓
+            Your Video Generation Node
+                ↓
+            StoryVideoSave
+                ↓
+            [Next video in batch]
 ```
 
 ### Integration with Video Generation Nodes

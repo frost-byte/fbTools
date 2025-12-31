@@ -4461,6 +4461,107 @@ class StoryVideoBatch(io.ComfyNode):
         )
 
 
+class StoryVideoSave(io.ComfyNode):
+    """Save generated video for a story scene transition with automatic naming and path management"""
+    
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("StoryVideoSave"),
+            display_name="StoryVideoSave",
+            category="🧊 frost-byte/Story",
+            inputs=[
+                io.Custom("VIDEO").Input(id="video", display_name="video", tooltip="Generated video to save"),
+                io.Custom("VIDEO_BATCH").Input(id="video_batch", display_name="video_batch", tooltip="Video batch from StoryVideoBatch"),
+                io.Int.Input(id="video_index", display_name="video_index", default=0, tooltip="Index into video_batch (0-based)"),
+            ],
+            outputs=[
+                io.Custom("VIDEO").Output(id="video_out", display_name="video", tooltip="Pass-through of the input video"),
+                io.String.Output(id="filename", display_name="filename", tooltip="Name of the saved video file"),
+                io.String.Output(id="filepath", display_name="filepath", tooltip="Full path to the saved video file"),
+                io.String.Output(id="scene_name", display_name="scene_name", tooltip="Name of the scene"),
+                io.Int.Output(id="scene_order", display_name="scene_order", tooltip="Order of the scene"),
+            ],
+            is_output_node=True,
+        )
+    
+    @classmethod
+    def execute(
+        cls,
+        video=None,
+        video_batch=None,
+        video_index: int = 0,
+    ) -> io.NodeOutput:
+        """Save video to the path specified in the video descriptor"""
+        if video is None:
+            logger.warning("StoryVideoSave: No video provided")
+            return io.NodeOutput(None, "", "", "", 0)
+        
+        if video_batch is None or not isinstance(video_batch, list) or not video_batch:
+            logger.warning("StoryVideoSave: video_batch is missing or invalid")
+            return io.NodeOutput(video, "", "", "", 0)
+        
+        # Select descriptor by index
+        safe_index = max(0, min(len(video_batch) - 1, video_index))
+        descriptor = video_batch[safe_index]
+        
+        video_output_path = descriptor.get("video_output_path", "")
+        video_filename = descriptor.get("video_filename", "")
+        scene_name = descriptor.get("scene_name", "")
+        scene_order = descriptor.get("scene_order", 0)
+        
+        if not video_output_path:
+            logger.warning("StoryVideoSave: No video_output_path in descriptor")
+            return io.NodeOutput(video, "", "", scene_name, scene_order)
+        
+        try:
+            # Ensure output directory exists
+            output_dir = os.path.dirname(video_output_path)
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Save the video
+            # Note: This assumes the video input is a file path or compatible format
+            # The actual saving logic depends on how your video generation nodes work
+            if isinstance(video, str):
+                # If video is already a file path, copy/move it
+                import shutil
+                shutil.copy2(video, video_output_path)
+                logger.info("StoryVideoSave: Copied video to '%s'", video_output_path)
+            elif hasattr(video, 'save'):
+                # If video object has a save method
+                video.save(video_output_path)
+                logger.info("StoryVideoSave: Saved video to '%s'", video_output_path)
+            else:
+                # For other video formats, this would need to be adapted
+                # based on what format the video generation nodes output
+                logger.warning("StoryVideoSave: Unsupported video format, cannot save")
+                return io.NodeOutput(video, video_filename, video_output_path, scene_name, scene_order)
+            
+            has_transition = descriptor.get("has_transition", False)
+            next_scene = descriptor.get("next_scene_name", "end")
+            
+            preview_text = (
+                f"Video saved: {video_filename}\n"
+                f"Scene: {scene_name} (order {scene_order})\n"
+                f"Path: {video_output_path}\n"
+                f"Transition: {scene_name} → {next_scene if has_transition else 'final scene'}\n"
+            )
+            preview_ui = ui.PreviewText(value=preview_text)
+            
+            return io.NodeOutput(
+                video,
+                video_filename,
+                video_output_path,
+                scene_name,
+                scene_order,
+                ui=preview_ui.as_dict()
+            )
+            
+        except Exception as e:
+            logger.exception("StoryVideoSave: Error saving video: %s", e)
+            return io.NodeOutput(video, video_filename, video_output_path, scene_name, scene_order)
+
+
 class FBTextEncodeQwenImageEditPlus(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -5963,6 +6064,7 @@ class FBToolsExtension(ComfyExtension):
             StorySceneBatch,
             StoryScenePick,
             StoryVideoBatch,
+            StoryVideoSave,
             StoryCreate,
             StoryEdit,
             StoryView,
