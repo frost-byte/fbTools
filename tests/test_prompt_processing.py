@@ -3,7 +3,14 @@ Tests for prompt processing and migration features
 """
 
 import pytest
-from prompt_models import PromptMetadata, PromptCollection
+
+# Use unified import approach from conftest
+from conftest import import_test_module
+
+# Import from prompt_models using unified helper
+prompt_models = import_test_module("prompt_models.py")
+PromptMetadata = prompt_models.PromptMetadata
+PromptCollection = prompt_models.PromptCollection
 
 
 class TestPromptMetadataSimplified:

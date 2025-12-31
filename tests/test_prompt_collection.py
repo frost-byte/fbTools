@@ -15,8 +15,13 @@ import tempfile
 import os
 from pathlib import Path
 
+# Use unified import approach from conftest
+from conftest import import_test_module
+
 # Import from the standalone prompt_models module - no ComfyUI dependencies needed
-from prompt_models import PromptCollection, PromptMetadata
+prompt_models = import_test_module("prompt_models.py")
+PromptCollection = prompt_models.PromptCollection
+PromptMetadata = prompt_models.PromptMetadata
 
 
 class TestPromptMetadata:

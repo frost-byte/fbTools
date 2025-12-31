@@ -3,12 +3,25 @@ Pytest configuration and fixtures for comfyui-fbTools tests.
 
 This module handles all the ComfyUI dependency mocking and import setup
 so that tests can import from extension.py without issues.
+
+UNIFIED TEST IMPORT APPROACH:
+    Use import_test_module() for all test imports to ensure consistency.
+    
+    Example in test files:
+        from conftest import import_test_module
+        
+        # Import standalone modules (no ComfyUI dependencies)
+        prompt_models = import_test_module("prompt_models.py")
+        
+        # Import utility modules
+        scene_save = import_test_module("utils/scene_image_save.py")
 """
 
 import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
+import importlib.util
 
 # Add the project root directory to Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -61,20 +74,60 @@ server_mock.PromptServer = MagicMock()
 server_mock.PromptServer.instance = prompt_server_instance
 sys.modules['server'] = server_mock
 
-# Now we need to handle the relative imports in extension.py
-# Create a package context so ".utils" imports work
-import importlib.util
 
-# Load extension.py as a module within a package context
-extension_path = Path(project_root) / "extension.py"
-spec = importlib.util.spec_from_file_location("__main__.extension", extension_path)
-if spec and spec.loader:
-    # Import utils modules that extension.py needs
-    # These are real modules in the project, but we need to import them in a way
-    # that doesn't trigger ComfyUI dependencies
-    utils_path = Path(project_root) / "utils"
+# ============================================================================
+# UNIFIED TEST IMPORT HELPERS
+# ============================================================================
+
+def import_test_module(relative_path: str, module_name: str = None):
+    """
+    UNIFIED import helper for all tests - use this instead of custom import code.
     
-    # For now, just make extension importable by temporarily patching the imports
-    # The actual implementation: we'll import extension as a regular module
-    # and Python will resolve .utils as utils/ in the same directory
-    pass
+    Import a Python module directly by file path, bypassing package imports.
+    This handles all the complexity of importing modules with various dependency
+    situations.
+    
+    Args:
+        relative_path: Path relative to project root 
+                      Examples: "prompt_models.py", "utils/scene_image_save.py"
+        module_name: Optional name for the module (defaults to filename without .py)
+    
+    Returns:
+        The imported module object
+    
+    Usage in tests:
+        from conftest import import_test_module
+        
+        # Import standalone modules
+        prompt_models = import_test_module("prompt_models.py")
+        PromptCollection = prompt_models.PromptCollection
+        
+        # Import utility modules  
+        scene_save = import_test_module("utils/scene_image_save.py")
+        SceneImageSaveConfig = scene_save.SceneImageSaveConfig
+    """
+    module_path = Path(project_root) / relative_path
+    
+    if not module_path.exists():
+        raise FileNotFoundError(f"Module file not found: {module_path}")
+    
+    # Use filename without extension as module name if not provided
+    if module_name is None:
+        module_name = module_path.stem
+    
+    # Create a unique module name to avoid conflicts
+    unique_name = f"test_import_{module_name}"
+    
+    spec = importlib.util.spec_from_file_location(unique_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    
+    # Add to sys.modules so relative imports within the module work
+    sys.modules[unique_name] = module
+    
+    spec.loader.exec_module(module)
+    return module
+
+
+def get_project_root() -> Path:
+    """Get the project root directory for tests."""
+    return Path(project_root)

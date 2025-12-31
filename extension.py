@@ -3889,9 +3889,9 @@ class StorySceneBatch(io.ComfyNode):
             depth_key = default_depth_options.get(scene.depth_type, "depth_image")
             pose_key = default_pose_options.get(scene.pose_type, "pose_open_image")
 
-            job_scene_dir = job_root / f"{scene.scene_order:03d}_{scene.scene_name}"
-            job_input_dir = job_scene_dir / "input"
-            job_output_dir = job_scene_dir / "output"
+            # Use flat structure: job_root/input/ for all scene images
+            job_input_dir = job_root / "input"
+            job_output_dir = job_root / "output"
             job_input_dir.mkdir(parents=True, exist_ok=True)
             job_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3923,7 +3923,6 @@ class StorySceneBatch(io.ComfyNode):
                 "story_dir": story_info.story_dir,
                 "job_id": resolved_job_id,
                 "job_root": str(job_root),
-                "job_scene_dir": str(job_scene_dir),
                 "job_input_dir": str(job_input_dir),
                 "job_output_dir": str(job_output_dir),
                 "source_input_dir": str(source_input_dir),
@@ -3989,7 +3988,7 @@ class StoryScenePick(io.ComfyNode):
                 io.Int.Output(id="scene_order", display_name="scene_order", tooltip="Scene order"),
                 io.String.Output(id="scene_id", display_name="scene_id", tooltip="Scene id"),
                 io.String.Output(id="job_id", display_name="job_id", tooltip="Job id"),
-                io.String.Output(id="job_scene_dir", display_name="job_scene_dir", tooltip="Job scene directory"),
+                io.String.Output(id="job_input_dir", display_name="job_input_dir", tooltip="Job input directory (where images are saved)"),
                 io.String.Output(id="input_image_path", display_name="input_image_path", tooltip="Path to first input image (if any)"),
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Fully-loaded SceneInfo for the selected scene"),
             ],
@@ -4017,7 +4016,7 @@ class StoryScenePick(io.ComfyNode):
         scene_dir = descriptor.get("scene_dir", "")
         if not scene_dir or not os.path.isdir(scene_dir):
             logger.error("StoryScenePick: scene_dir '%s' is invalid", scene_dir)
-            return io.NodeOutput(None, None, None, None, None, "", False, False, False, False, descriptor.get("scene_name", ""), descriptor.get("scene_order", 0), descriptor.get("scene_id", ""), descriptor.get("job_id", ""), descriptor.get("job_scene_dir", ""), descriptor.get("input_image_path", ""), None)
+            return io.NodeOutput(None, None, None, None, None, "", False, False, False, False, descriptor.get("scene_name", ""), descriptor.get("scene_order", 0), descriptor.get("scene_id", ""), descriptor.get("job_id", ""), descriptor.get("job_input_dir", ""), descriptor.get("input_image_path", ""), None)
         prompt_key = descriptor.get("prompt_key", "")
         scene_config = SceneInStory(
             scene_id=descriptor.get("scene_id", ""),
@@ -4065,7 +4064,7 @@ class StoryScenePick(io.ComfyNode):
             )
         except Exception as e:
             logger.error("StoryScenePick: failed to build SceneInfo for '%s': %s", scene_config.scene_name, e)
-            return io.NodeOutput(None, None, None, None, None, "", False, False, False, False, descriptor.get("scene_name", ""), descriptor.get("scene_order", 0), descriptor.get("scene_id", ""), descriptor.get("job_id", ""), descriptor.get("job_scene_dir", ""), descriptor.get("input_image_path", ""), None)
+            return io.NodeOutput(None, None, None, None, None, "", False, False, False, False, descriptor.get("scene_name", ""), descriptor.get("scene_order", 0), descriptor.get("scene_id", ""), descriptor.get("job_id", ""), descriptor.get("job_input_dir", ""), descriptor.get("input_image_path", ""), None)
 
         empty_image = make_empty_image()
         canny_image = assets.get("canny_image", empty_image)
@@ -4096,7 +4095,7 @@ class StoryScenePick(io.ComfyNode):
             descriptor.get("scene_order", 0),
             descriptor.get("scene_id", ""),
             descriptor.get("job_id", ""),
-            descriptor.get("job_scene_dir", ""),
+            descriptor.get("job_input_dir", ""),
             descriptor.get("input_image_path", ""),
             scene_info,
         )
@@ -4195,6 +4194,18 @@ class StoryLoad(io.ComfyNode):
         
         return io.NodeOutput(story_info)
 
+# ============================================================================
+# TESTABLE IMAGE SAVE HELPERS - imported from utils module
+# ============================================================================
+
+from .utils.scene_image_save import (
+    SceneImageSaveConfig,
+    ImageSaver,
+    select_scene_descriptor,
+    generate_preview_text
+)
+
+
 class StorySceneImageSave(io.ComfyNode):
     """Save generated image for a story scene with automatic naming and path management"""
     @classmethod
@@ -4206,7 +4217,7 @@ class StorySceneImageSave(io.ComfyNode):
             inputs=[
                 io.Image.Input(id="image", display_name="image", tooltip="Generated image to save"),
                 io.Custom("SCENE_BATCH").Input(id="scene_batch", display_name="scene_batch", tooltip="Scene batch from StorySceneBatch"),
-                io.Int.Input(id="scene_index", display_name="scene_index", default=0, tooltip="Index into scene_batch (0-based)"),
+                io.Int.Input(id="scene_index", display_name="scene_index", default=0, tooltip="Index into scene_batch (0-based); images saved to job_root/input/"),
                 io.Combo.Input(id="image_format", display_name="image_format", options=["png", "jpg", "jpeg", "webp"], default="png", tooltip="Output image format"),
                 io.Int.Input(id="quality", display_name="quality", default=95, min=1, max=100, tooltip="JPEG/WebP quality (1-100)"),
             ],
@@ -4227,6 +4238,7 @@ class StorySceneImageSave(io.ComfyNode):
         image_format: str = "png",
         quality: int = 95,
     ) -> io.NodeOutput:
+        """Main execution - thin orchestration layer over testable components"""
         if image is None:
             logger.warning("StorySceneImageSave: No image provided")
             return io.NodeOutput(None, "", "")
@@ -4235,59 +4247,33 @@ class StorySceneImageSave(io.ComfyNode):
             logger.warning("StorySceneImageSave: scene_batch is missing or invalid")
             return io.NodeOutput(image, "", "")
 
-        try:
-            scenes_sorted = sorted(scene_batch, key=lambda d: d.get("scene_order", 0))
-        except Exception:
-            scenes_sorted = scene_batch
-
-        safe_index = max(0, min(len(scenes_sorted) - 1, scene_index))
-        descriptor = scenes_sorted[safe_index]
-
-        scene_name = descriptor.get("scene_name", "unknown")
-        scene_order = descriptor.get("scene_order", 0)
-        # Prefer job_output_dir, fallback to job_scene_dir, then job_input_dir
-        job_output_dir = descriptor.get("job_output_dir", "")
-        job_scene_dir = descriptor.get("job_scene_dir", "")
-        job_input_dir = descriptor.get("job_input_dir", "")
-        target_dir = job_output_dir or job_scene_dir or job_input_dir
-
-        if not scene_name:
-            logger.warning("StorySceneImageSave: No scene_name provided in descriptor")
+        # Use testable functions
+        descriptor = select_scene_descriptor(scene_batch, scene_index)
+        if descriptor is None:
+            logger.warning("StorySceneImageSave: Could not select descriptor")
             return io.NodeOutput(image, "", "")
-        if not target_dir:
-            logger.warning("StorySceneImageSave: No valid output directory found in descriptor")
+        
+        config = SceneImageSaveConfig.from_descriptor(descriptor, scene_index, image_format, quality)
+        if config is None:
+            logger.warning("StorySceneImageSave: Invalid configuration from descriptor")
             return io.NodeOutput(image, "", "")
 
-        os.makedirs(target_dir, exist_ok=True)
-        formatted_scene_name = scene_name.lower().replace(" ", "_").replace("-", "_")
-        filename = f"{scene_order:03d}_{formatted_scene_name}.{image_format}"
-        filepath = os.path.join(target_dir, filename)
-
+        filepath = config.generate_filepath()
+        
         try:
-            import numpy as np
-            from PIL import Image as PILImage
-            img_tensor = image[0] if hasattr(image, 'shape') and len(image.shape) == 4 else image
-            img_np = (img_tensor.cpu().numpy() * 255).astype(np.uint8)
-            pil_image = PILImage.fromarray(img_np)
-            if image_format.lower() in ["jpg", "jpeg"]:
-                pil_image.save(filepath, format="JPEG", quality=quality, optimize=True)
-            elif image_format.lower() == "webp":
-                pil_image.save(filepath, format="WEBP", quality=quality)
-            else:
-                pil_image.save(filepath, format="PNG", optimize=True)
+            # Use injected/mockable ImageSaver
+            ImageSaver.ensure_directory(config.target_dir)
+            pil_image = ImageSaver.tensor_to_pil(image)
+            ImageSaver.save_pil_image(pil_image, filepath, config.image_format, config.quality)
+            
             logger.info("StorySceneImageSave: Saved image to '%s'", filepath)
-            preview_text = (
-                f"Saved: {filename}\n"
-                f"Scene: {scene_name} (order: {scene_order})\n"
-                f"Path: {filepath}\n"
-                f"Format: {image_format.upper()}"
-            )
-            if image_format.lower() in ["jpg", "jpeg", "webp"]:
-                preview_text += f" (quality: {quality})"
+            
+            preview_text = generate_preview_text(config, filepath)
             preview_ui = ui.PreviewText(value=preview_text)
+            
             return io.NodeOutput(
                 image,
-                filename,
+                config.generate_filename(),
                 filepath,
                 ui=preview_ui.as_dict()
             )
