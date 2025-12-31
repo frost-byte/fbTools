@@ -1509,6 +1509,11 @@ class SceneInStory(BaseModel):
     - prompt_source: "prompt" | "composition" | "custom"
     - prompt_key: key from scene's prompt_dict or composition_dict
     - custom_prompt: used when prompt_source="custom"
+    
+    Video Generation Fields:
+    - video_prompt_source: "prompt" | "composition" | "custom" | "auto" (default: "auto")
+    - video_prompt_key: key from scene's prompt_dict or composition_dict for video
+    - video_custom_prompt: custom prompt for video generation
     """
     scene_id: str = ""  # Unique identifier for this scene instance
     scene_name: str
@@ -1516,10 +1521,15 @@ class SceneInStory(BaseModel):
     mask_type: str = "combined"  # girl, male, combined, girl_no_bg, male_no_bg, combined_no_bg
     mask_background: bool = True
     
-    # V2 fields
+    # V2 fields - Image generation
     prompt_source: str = "prompt"  # "prompt", "composition", "custom"
     prompt_key: str = ""  # Key from prompt_dict or composition_dict
     custom_prompt: str = ""  # Used when prompt_source="custom"
+    
+    # Video generation fields
+    video_prompt_source: str = "auto"  # "prompt", "composition", "custom", "auto" (uses image prompt)
+    video_prompt_key: str = ""  # Key from prompt_dict or composition_dict for video
+    video_custom_prompt: str = ""  # Custom prompt for video generation
     
     # Legacy V1 fields (for backwards compatibility during migration)
     prompt_type: str = ""  # DEPRECATED: girl_pos, male_pos, etc.
@@ -4281,6 +4291,176 @@ class StorySceneImageSave(io.ComfyNode):
             logger.exception("StorySceneImageSave: Error saving image: %s", e)
             return io.NodeOutput(image, "", "")
 
+
+# Import video generation utilities
+from .utils.story_video import (
+    list_job_ids,
+    find_scene_image,
+    pair_consecutive_scenes,
+    generate_video_filename,
+    resolve_video_prompt,
+    build_video_descriptor,
+)
+
+
+class StoryVideoBatch(io.ComfyNode):
+    """Create an ordered list of video descriptors for story scene transitions"""
+    
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("StoryVideoBatch"),
+            display_name="StoryVideoBatch",
+            category="🧊 frost-byte/Story",
+            inputs=[
+                io.Custom("STORY_INFO").Input(id="story_info", display_name="story_info", tooltip="Story to expand into video transitions"),
+                io.Combo.Input(id="job_id", display_name="job_id", options=[""], default="", tooltip="Select job ID from available jobs (auto-populated)"),
+            ],
+            outputs=[
+                io.Int.Output(id="video_count", display_name="video_count", tooltip="Total number of video transitions"),
+                io.Custom("VIDEO_BATCH").Output(id="video_batch", display_name="video_batch", tooltip="List of video descriptors for iteration"),
+                io.String.Output(id="job_id_out", display_name="job_id", tooltip="Selected job ID"),
+                io.String.Output(id="job_input_dir", display_name="job_input_dir", tooltip="Job input directory path"),
+                io.String.Output(id="job_output_dir", display_name="job_output_dir", tooltip="Job output directory path"),
+            ],
+        )
+    
+    @classmethod
+    def execute(
+        cls,
+        story_info=None,
+        job_id: str = "",
+    ) -> io.NodeOutput:
+        if story_info is None or not getattr(story_info, "scenes", None):
+            logger.warning("StoryVideoBatch: story_info is empty")
+            return io.NodeOutput(0, [], "", "", "")
+        
+        # List available job IDs
+        available_jobs = list_job_ids(story_info.story_dir)
+        if not available_jobs:
+            logger.warning("StoryVideoBatch: No jobs found in story directory '%s'", story_info.story_dir)
+            return io.NodeOutput(0, [], "", "", "")
+        
+        # Select job ID (use first/newest if not specified)
+        selected_job = job_id if job_id in available_jobs else available_jobs[0]
+        
+        job_root = Path(story_info.story_dir) / "jobs" / selected_job
+        job_input_dir = str(job_root / "input")
+        job_output_dir = str(job_root / "output")
+        
+        if not Path(job_input_dir).exists():
+            logger.warning("StoryVideoBatch: Job input directory does not exist: '%s'", job_input_dir)
+            return io.NodeOutput(0, [], selected_job, job_input_dir, job_output_dir)
+        
+        # Create output directory if needed
+        Path(job_output_dir).mkdir(parents=True, exist_ok=True)
+        
+        scenes_dir = default_scenes_dir()
+        scenes_sorted = sorted(story_info.scenes, key=lambda s: s.scene_order)
+        
+        logger.info(
+            "StoryVideoBatch: Preparing video batch for story '%s' with %d scenes from job_id='%s'",
+            story_info.story_name,
+            len(scenes_sorted),
+            selected_job,
+        )
+        
+        # Build scene descriptors (similar to StorySceneBatch but lighter)
+        scene_descriptors = []
+        for scene in scenes_sorted:
+            scene_dir = os.path.join(scenes_dir, scene.scene_name)
+            prompt_path = os.path.join(scene_dir, "prompts.json")
+            prompt_data_raw = load_prompt_json(prompt_path) or {}
+            
+            # Process prompts using the v2 system
+            prompt_dict = {}
+            if "version" in prompt_data_raw and prompt_data_raw.get("version") == 2:
+                prompt_collection = PromptCollection.from_dict(prompt_data_raw)
+                libber_manager = LibberStateManager.instance()
+                
+                for key, metadata in prompt_collection.prompts.items():
+                    value = metadata.value
+                    if metadata.processing_type == "libber" and metadata.libber_name:
+                        libber = libber_manager.get_libber(metadata.libber_name)
+                        if libber:
+                            value = libber.substitute(value)
+                    prompt_dict[key] = value
+            else:
+                # Legacy format
+                prompt_dict = prompt_data_raw
+            
+            # Load LoRa data
+            loras_path = os.path.join(scene_dir, "loras.json")
+            loras_high, loras_low = load_loras(loras_path) if os.path.isfile(loras_path) else (None, None)
+            lora_data = {
+                "loras_high": loras_high,
+                "loras_low": loras_low,
+            }
+            
+            # Resolve image prompt (for fallback)
+            if hasattr(scene, 'prompt_source') and scene.prompt_source:
+                if scene.prompt_source == "custom":
+                    positive_prompt = scene.custom_prompt
+                elif scene.prompt_key:
+                    positive_prompt = prompt_dict.get(scene.prompt_key, "")
+                else:
+                    positive_prompt = ""
+            else:
+                positive_prompt = ""
+            
+            scene_descriptors.append({
+                "scene_id": scene.scene_id,
+                "scene_name": scene.scene_name,
+                "scene_order": scene.scene_order,
+                "positive_prompt": positive_prompt,
+                "video_prompt_source": scene.video_prompt_source,
+                "video_prompt_key": scene.video_prompt_key,
+                "video_custom_prompt": scene.video_custom_prompt,
+                "lora_data": lora_data,
+                "prompt_data": prompt_dict,
+            })
+        
+        # Build video descriptors for scene transitions
+        video_batch = []
+        scene_pairs = pair_consecutive_scenes(scene_descriptors)
+        
+        for current_scene, next_scene in scene_pairs:
+            video_desc = build_video_descriptor(
+                current_scene,
+                next_scene,
+                job_input_dir,
+                job_output_dir,
+                current_scene["prompt_data"]
+            )
+            
+            if video_desc:
+                logger.debug(
+                    "StoryVideoBatch: Added video descriptor for transition '%s' -> '%s'",
+                    current_scene.get("scene_name", "?"),
+                    next_scene.get("scene_name", "end") if next_scene else "end",
+                )
+                video_batch.append(video_desc)
+            else:
+                logger.warning(
+                    "StoryVideoBatch: Skipped scene '%s' - missing image",
+                    current_scene.get("scene_name", "?"),
+                )
+        
+        logger.info(
+            "StoryVideoBatch: Prepared %d video descriptors from job_id=%s",
+            len(video_batch),
+            selected_job,
+        )
+        
+        return io.NodeOutput(
+            len(video_batch),
+            video_batch,
+            selected_job,
+            job_input_dir,
+            job_output_dir,
+        )
+
+
 class FBTextEncodeQwenImageEditPlus(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -5782,6 +5962,7 @@ class FBToolsExtension(ComfyExtension):
             SceneSelect,
             StorySceneBatch,
             StoryScenePick,
+            StoryVideoBatch,
             StoryCreate,
             StoryEdit,
             StoryView,
