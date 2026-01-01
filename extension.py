@@ -53,6 +53,7 @@ import re
 import copy
 from pydantic import BaseModel, ConfigDict
 from .utils.logging_utils import get_logger
+from .story_models import SceneInStory, StoryInfo
 
 logger = get_logger(__name__)
 
@@ -1502,158 +1503,11 @@ class SceneInfo(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True, from_attributes=True)
 
-class SceneInStory(BaseModel):
-    """Represents a scene within a story with its configuration
-    
-    Version 2 Schema:
-    - prompt_source: "prompt" | "composition" | "custom"
-    - prompt_key: key from scene's prompt_dict or composition_dict
-    - custom_prompt: used when prompt_source="custom"
-    
-    Video Generation Fields:
-    - video_prompt_source: "prompt" | "composition" | "custom" | "auto" (default: "auto")
-    - video_prompt_key: key from scene's prompt_dict or composition_dict for video
-    - video_custom_prompt: custom prompt for video generation
-    """
-    scene_id: str = ""  # Unique identifier for this scene instance
-    scene_name: str
-    scene_order: int
-    mask_type: str = "combined"  # girl, male, combined, girl_no_bg, male_no_bg, combined_no_bg
-    mask_background: bool = True
-    
-    # V2 fields - Image generation
-    prompt_source: str = "prompt"  # "prompt", "composition", "custom"
-    prompt_key: str = ""  # Key from prompt_dict or composition_dict
-    custom_prompt: str = ""  # Used when prompt_source="custom"
-    
-    # Video generation fields
-    video_prompt_source: str = "auto"  # "prompt", "composition", "custom", "auto" (uses image prompt)
-    video_prompt_key: str = ""  # Key from prompt_dict or composition_dict for video
-    video_custom_prompt: str = ""  # Custom prompt for video generation
-    
-    # Legacy V1 fields (for backwards compatibility during migration)
-    prompt_type: str = ""  # DEPRECATED: girl_pos, male_pos, etc.
-    
-    depth_type: str = "depth"
-    pose_type: str = "open"
-    
-    use_depth: bool = False
-    use_mask: bool = False
-    use_pose: bool = False
-    use_canny: bool = False
-
-    def __init__(self, **data):
-        if 'scene_id' not in data or not data['scene_id']:
-            import uuid
-            data['scene_id'] = str(uuid.uuid4())
-        
-        # Migrate V1 to V2 if needed
-        if 'prompt_type' in data and data.get('prompt_type') and not data.get('prompt_source'):
-            prompt_type = data['prompt_type']
-            if prompt_type == 'custom':
-                data['prompt_source'] = 'custom'
-                data['prompt_key'] = ''
-            else:
-                # Old prompt_type was a key in the old prompts.json (e.g., "girl_pos", "male_pos")
-                # Map to new system: these are now keys in prompt_dict
-                data['prompt_source'] = 'prompt'
-                data['prompt_key'] = prompt_type
-        
-        super().__init__(**data)
-    
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-class StoryInfo(BaseModel):
-    """Contains ordered list of scenes and story metadata"""
-    version: int = 2  # Schema version (1=old prompt_type, 2=prompt_source/prompt_key)
-    story_name: str
-    story_dir: str
-    scenes: List[SceneInStory] = []
-    
-    def get_scene_by_id(self, scene_id: str) -> Optional[SceneInStory]:
-        """Get scene by unique ID"""
-        for scene in self.scenes:
-            if scene.scene_id == scene_id:
-                return scene
-        return None
-    
-    def get_scene_by_name(self, scene_name: str) -> Optional[SceneInStory]:
-        """Get first scene matching the name (multiple scenes can share same name)"""
-        for scene in self.scenes:
-            if scene.scene_name == scene_name:
-                # Ensure scene has UUID (for backward compatibility)
-                if not scene.scene_id:
-                    import uuid
-                    scene.scene_id = str(uuid.uuid4())
-                return scene
-        return None
-    
-    def get_scenes_by_name(self, scene_name: str) -> List[SceneInStory]:
-        """Get all scenes matching the name"""
-        matching_scenes = [scene for scene in self.scenes if scene.scene_name == scene_name]
-        # Ensure all scenes have UUID (for backward compatibility)
-        for scene in matching_scenes:
-            if not scene.scene_id:
-                import uuid
-                scene.scene_id = str(uuid.uuid4())
-        return matching_scenes
-    
-    def get_scene_by_order(self, order: int) -> Optional[SceneInStory]:
-        for scene in self.scenes:
-            if scene.scene_order == order:
-                # Ensure scene has UUID (for backward compatibility)
-                if not scene.scene_id:
-                    import uuid
-                    scene.scene_id = str(uuid.uuid4())
-                return scene
-        return None
-    
-    def add_scene(self, scene: SceneInStory):
-        """Add a scene to the story. Each scene gets a unique ID, allowing duplicates of same scene_name."""
-        # Ensure scene has a unique ID
-        if not scene.scene_id:
-            import uuid
-            scene.scene_id = str(uuid.uuid4())
-        
-        # Ensure unique order
-        existing_orders = [s.scene_order for s in self.scenes]
-        if scene.scene_order in existing_orders:
-            # Find next available order
-            scene.scene_order = max(existing_orders) + 1 if existing_orders else 0
-        
-        self.scenes.append(scene)
-        self.scenes.sort(key=lambda s: s.scene_order)
-    
-    def remove_scene(self, scene_identifier: str):
-        """Remove scene by ID or by name (removes first match if name)"""
-        # Try to find by ID first
-        scene_to_remove = self.get_scene_by_id(scene_identifier)
-        if not scene_to_remove:
-            # Fall back to name
-            scene_to_remove = self.get_scene_by_name(scene_identifier)
-        
-        if scene_to_remove:
-            self.scenes = [s for s in self.scenes if s.scene_id != scene_to_remove.scene_id]
-            # Reorder remaining scenes
-            for idx, scene in enumerate(sorted(self.scenes, key=lambda s: s.scene_order)):
-                scene.scene_order = idx
-    
-    def reorder_scene(self, scene_identifier: str, new_order: int):
-        """Reorder scene by ID or by name (reorders first match if name)"""
-        # Try to find by ID first
-        scene = self.get_scene_by_id(scene_identifier)
-        if not scene:
-            # Fall back to name
-            scene = self.get_scene_by_name(scene_identifier)
-        
-        if scene:
-            scene.scene_order = new_order
-            self.scenes.sort(key=lambda s: s.scene_order)
-            # Normalize orders
-            for idx, s in enumerate(self.scenes):
-                s.scene_order = idx
-    
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+# ============================================================================
+# STORY MODELS - Imported from story_models.py
+# ============================================================================
+# SceneInStory and StoryInfo have been extracted to story_models.py for easier
+# testing and reusability. See story_models.py for the full definitions.
 
 def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
     if os.path.isfile(loras_json_path):
@@ -1787,6 +1641,9 @@ def load_story(story_json_path: str) -> Optional[StoryInfo]:
                     prompt_source=scene_data.get("prompt_source", "prompt"),
                     prompt_key=scene_data.get("prompt_key", ""),
                     custom_prompt=scene_data.get("custom_prompt", ""),
+                    video_prompt_source=scene_data.get("video_prompt_source", "auto"),
+                    video_prompt_key=scene_data.get("video_prompt_key", ""),
+                    video_custom_prompt=scene_data.get("video_custom_prompt", ""),
                     depth_type=scene_data.get("depth_type", "depth"),
                     pose_type=scene_data.get("pose_type", "open"),
                     use_depth=scene_data.get("use_depth", False),
@@ -1847,6 +1704,9 @@ def save_story(story_info: StoryInfo, story_json_path: str):
                 "prompt_source": scene.prompt_source,
                 "prompt_key": scene.prompt_key,
                 "custom_prompt": scene.custom_prompt,
+                "video_prompt_source": scene.video_prompt_source,
+                "video_prompt_key": scene.video_prompt_key,
+                "video_custom_prompt": scene.video_custom_prompt,
                 "depth_type": scene.depth_type,
                 "pose_type": scene.pose_type,
             }
@@ -3340,13 +3200,22 @@ class StoryEdit(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         available_stories = get_available_stories() if callable(globals().get('get_available_stories')) else ["default_story"]
+        
+        # Get scene names from first story for initial preview_scene options
+        default_scene_options = [""]  # Empty option means "use first scene"
+        if available_stories:
+            first_story_info = cls._load_story_info(available_stories[0])
+            if first_story_info and hasattr(first_story_info, 'scenes') and first_story_info.scenes:
+                sorted_scenes = sorted(first_story_info.scenes, key=lambda s: s.scene_order)
+                default_scene_options.extend([scene.scene_name for scene in sorted_scenes])
+        
         return io.Schema(
             node_id=prefixed_node_id("StoryEdit"),
             display_name="StoryEdit",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Combo.Input(id="story_select", display_name="Story", options=available_stories, default=available_stories[0], tooltip="Select a story to view/edit"),
-                io.String.Input(id="preview_scene_name", display_name="Preview Scene", default="", tooltip="Scene within the story to preview (empty selects the first scene)", multiline=False),
+                io.Combo.Input(id="preview_scene_name", display_name="Preview Scene", options=default_scene_options, default=default_scene_options[0], tooltip="Scene within the story to preview (empty selects the first scene)"),
             ],
             outputs=[
                 io.Custom("STORY_INFO").Output(id="story_info_out", display_name="story_info", tooltip="Loaded story information"),
@@ -3560,6 +3429,9 @@ class StoryEdit(io.ComfyNode):
                 "prompt_source": scene.prompt_source,
                 "prompt_key": scene.prompt_key or "",
                 "custom_prompt": scene.custom_prompt or "",
+                "video_prompt_source": getattr(scene, "video_prompt_source", "auto"),
+                "video_prompt_key": getattr(scene, "video_prompt_key", ""),
+                "video_custom_prompt": getattr(scene, "video_custom_prompt", ""),
                 "depth_type": scene.depth_type,
                 "pose_type": scene.pose_type,
                 "use_depth": getattr(scene, "use_depth", False),
@@ -5915,6 +5787,9 @@ async def story_load(request):
                 "prompt_source": scene.prompt_source,
                 "prompt_key": scene.prompt_key or "",
                 "custom_prompt": scene.custom_prompt or "",
+                "video_prompt_source": getattr(scene, "video_prompt_source", "auto"),
+                "video_prompt_key": getattr(scene, "video_prompt_key", ""),
+                "video_custom_prompt": getattr(scene, "video_custom_prompt", ""),
                 "depth_type": scene.depth_type,
                 "pose_type": scene.pose_type,
                 "use_depth": getattr(scene, "use_depth", False),
@@ -5980,6 +5855,9 @@ async def story_save(request):
                 prompt_source=scene_data.get("prompt_source", "prompt"),
                 prompt_key=scene_data.get("prompt_key", ""),
                 custom_prompt=scene_data.get("custom_prompt", ""),
+                video_prompt_source=scene_data.get("video_prompt_source", "auto"),
+                video_prompt_key=scene_data.get("video_prompt_key", ""),
+                video_custom_prompt=scene_data.get("video_custom_prompt", ""),
                 depth_type=scene_data.get("depth_type", "depth"),
                 pose_type=scene_data.get("pose_type", "open"),
                 use_depth=scene_data.get("use_depth", False),

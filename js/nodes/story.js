@@ -2,6 +2,8 @@
  * Story-related node extensions
  */
 
+import { sceneAPI } from "../api/scene.js";
+
 /**
  * Update a widget's value from message.text array
  */
@@ -138,7 +140,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
     console.log("fb_tools -> StoryEdit node detected - initializing table UI");
 
     const onNodeCreated = nodeType.prototype.onNodeCreated;
-    nodeType.prototype.onNodeCreated = function () {
+    nodeType.prototype.onNodeCreated = async function () {
         if (onNodeCreated) {
             onNodeCreated.apply(this, arguments);
         }
@@ -247,7 +249,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
         };
 
         // Render the table UI
-        const renderTable = (storyData) => {
+        const renderTable = async (storyData) => {
             if (!storyData || !storyData.scenes) {
                 container.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--descrip-text);">
                     No story loaded. Select a story from the dropdown above.
@@ -274,8 +276,25 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 contentHTML = renderFlagsTab();
             }
 
-            container.innerHTML = tabsHTML + contentHTML;
+            container.innerHTML = `
+                <div style="position: relative; min-height: 200px;">
+                    ${tabsHTML}
+                    ${contentHTML}
+                    <div class="save-success-overlay" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.85); z-index: 10000; align-items: center; justify-content: center;">
+                        <div style="padding: 30px; text-align: center; color: var(--fg-color); background: var(--comfy-menu-bg); border-radius: 8px; border: 2px solid #4CAF50; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+                            <p class="save-success-message" style="margin: 10px 0; color: #4CAF50; font-weight: 600; font-size: 16px;">✓ Story saved successfully</p>
+                            <p class="save-success-details" style="margin: 10px 0; opacity: 0.7; font-size: 12px;"></p>
+                        </div>
+                    </div>
+                </div>
+            `;
             attachEventHandlers();
+            
+            // Populate video prompt controls if on flags tab
+            if (activeTab === 'flags') {
+                await populateVideoPromptControls();
+            }
+            
             updateContainerHeight();
         };
 
@@ -377,9 +396,53 @@ export function setupStoryEdit(nodeType, nodeData, app) {
 
         // Render flags tab (advanced settings)
         const renderFlagsTab = () => {
-            const flagsHTML = currentScenes.map((scene, idx) => `
+            const videoPromptSources = ["auto", "prompt", "composition", "custom"];
+            
+            const flagsHTML = currentScenes.map((scene, idx) => {
+                const videoPromptSourceOptions = videoPromptSources.map(s => 
+                    `<option value="${s}" ${(scene.video_prompt_source || 'auto') === s ? 'selected' : ''}>${s}</option>`
+                ).join('');
+                
+                const videoPromptSource = scene.video_prompt_source || 'auto';
+                
+                // We'll populate prompt keys dynamically after render
+                const showDropdown = videoPromptSource === 'prompt' || videoPromptSource === 'composition';
+                const showCustomPrompt = videoPromptSource === 'custom';
+                
+                return `
                 <div style="padding: 8px; margin-bottom: 8px; background: var(--comfy-menu-bg); border: 1px solid var(--border-color); border-radius: 4px;">
                     <div style="font-weight: 600; margin-bottom: 6px; color: var(--fg-color);">${scene.scene_name || `Scene ${idx}`}</div>
+                    
+                    <div style="margin-bottom: 8px;">
+                        <div style="font-size: 11px; color: var(--descrip-text); margin-bottom: 4px;">🎬 Video Prompt Settings:</div>
+                        <div style="display: grid; grid-template-columns: 150px 1fr; gap: 8px; align-items: ${showCustomPrompt ? 'start' : 'center'};">
+                            <label style="font-size: 12px;">video_prompt_source:</label>
+                            <select class="video-prompt-source-select" data-scene-idx="${idx}" style="padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
+                                ${videoPromptSourceOptions}
+                            </select>
+                            
+                            ${!showCustomPrompt ? `
+                            <label style="font-size: 12px;">video_prompt_key:</label>
+                            <div class="video-prompt-key-container" data-scene-idx="${idx}">
+                                ${showDropdown ? 
+                                    `<select class="video-prompt-key-select" data-scene-idx="${idx}" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
+                                        <option value="">Loading...</option>
+                                    </select>` :
+                                    `<input type="text" class="video-prompt-key-input" data-scene-idx="${idx}" value="${scene.video_prompt_key || ''}" placeholder="key (for prompt/composition source)" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;" />`
+                                }
+                            </div>
+                            ` : `
+                            <label style="font-size: 12px; padding-top: 4px;">custom_prompt:</label>
+                            <textarea class="video-custom-prompt-input" data-scene-idx="${idx}" style="width: 100%; min-height: 80px; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px; resize: vertical; font-family: monospace;">${scene.video_custom_prompt || ''}</textarea>
+                            `}
+                        </div>
+                        <div style="margin-top: 8px; grid-column: 1 / -1;">
+                            <div style="font-size: 11px; color: var(--descrip-text); margin-bottom: 4px;">Preview:</div>
+                            <textarea class="video-prompt-preview" data-scene-idx="${idx}" readonly style="width: 100%; min-height: 60px; padding: 4px; background: var(--comfy-input-bg); color: var(--descrip-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px; resize: vertical; font-family: monospace;">Loading...</textarea>
+                        </div>
+                    </div>
+                    
+                    <div style="font-size: 11px; color: var(--descrip-text); margin-bottom: 4px;">🏴 Control Flags:</div>
                     <div style="display: flex; gap: 16px; flex-wrap: wrap;">
                         <label style="display: flex; align-items: center; gap: 4px; font-size: 12px;">
                             <input type="checkbox" class="scene-flag" data-scene-idx="${idx}" data-flag="use_depth" ${scene.use_depth ? 'checked' : ''} /> use_depth
@@ -395,12 +458,13 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                         </label>
                     </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
 
             return `
                 <div style="margin-top: 8px;">
                     <div style="margin-bottom: 12px; padding: 8px; background: var(--comfy-input-bg); border: 1px solid var(--border-color); border-radius: 4px; font-size: 11px; color: var(--descrip-text);">
-                        <strong style="color: var(--fg-color);">💡 Advanced Flags:</strong> Control which control inputs are used per scene during generation.
+                        <strong style="color: var(--fg-color);">💡 Advanced Flags:</strong> Control video prompts and which control inputs are used per scene during generation.
                     </div>
                     ${flagsHTML}
                     <div style="margin-top: 12px; padding: 8px;">
@@ -408,6 +472,169 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                     </div>
                 </div>
             `;
+        };
+
+        // Populate video prompt key dropdowns and previews after rendering
+        const populateVideoPromptControls = async () => {
+            for (let idx = 0; idx < currentScenes.length; idx++) {
+                const scene = currentScenes[idx];
+                const videoPromptSource = scene.video_prompt_source || 'auto';
+                
+                // Get the container for this scene
+                const keyContainer = container.querySelector(`.video-prompt-key-container[data-scene-idx="${idx}"]`);
+                const previewTextarea = container.querySelector(`.video-prompt-preview[data-scene-idx="${idx}"]`);
+                
+                if (!keyContainer || !previewTextarea) continue;
+                
+                try {
+                    // Fetch scene prompts if needed
+                    if (videoPromptSource === 'prompt' || videoPromptSource === 'composition') {
+                        const sceneDir = `output/scenes/${scene.scene_name}`;
+                        const promptData = await sceneAPI.getScenePrompts(sceneDir);
+                        
+                        // Store for later use
+                        scene._promptData = promptData;
+                        
+                        // Create a lookup map for prompts (since it's an array)
+                        const promptsMap = {};
+                        if (promptData.prompts && Array.isArray(promptData.prompts)) {
+                            promptData.prompts.forEach(p => {
+                                promptsMap[p.key] = p;
+                            });
+                        }
+                        scene._promptsMap = promptsMap;
+                        
+                        // Get available keys
+                        let keys = [];
+                        if (videoPromptSource === 'prompt' && promptData.prompts) {
+                            keys = promptData.prompts.map(p => p.key);
+                        } else if (videoPromptSource === 'composition' && promptData.compositions) {
+                            keys = Object.keys(promptData.compositions);
+                        }
+                        
+                        // Update dropdown
+                        const selectEl = keyContainer.querySelector('.video-prompt-key-select');
+                        if (selectEl) {
+                            const currentValue = scene.video_prompt_key || '';
+                            
+                            // If current value is empty or not in the list, use first key
+                            if (keys.length > 0 && (!currentValue || !keys.includes(currentValue))) {
+                                scene.video_prompt_key = keys[0];
+                            }
+                            
+                            selectEl.innerHTML = keys.map(k => 
+                                `<option value="${k}" ${k === scene.video_prompt_key ? 'selected' : ''}>${k}</option>`
+                            ).join('');
+                            
+                            if (keys.length === 0) {
+                                selectEl.innerHTML = '<option value="">No keys available</option>';
+                                scene.video_prompt_key = '';
+                            }
+                        }
+                    }
+                    
+                    // Update preview
+                    await updateVideoPromptPreview(idx);
+                    
+                } catch (error) {
+                    console.error(`Error populating video prompt controls for scene ${idx}:`, error);
+                    if (previewTextarea) {
+                        previewTextarea.value = `Error loading prompt data: ${error.message}`;
+                    }
+                }
+            }
+        };
+
+        // Update video prompt preview textarea for a specific scene
+        const updateVideoPromptPreview = async (idx) => {
+            const scene = currentScenes[idx];
+            const videoPromptSource = scene.video_prompt_source || 'auto';
+            const videoPromptKey = scene.video_prompt_key || '';
+            const previewTextarea = container.querySelector(`.video-prompt-preview[data-scene-idx="${idx}"]`);
+            
+            if (!previewTextarea) return;
+            
+            try {
+                let previewText = '';
+                
+                switch (videoPromptSource) {
+                    case 'auto':
+                        // Show the image prompt (from prompt_dict via prompt_key)
+                        if (scene.prompt_key && scene._promptsMap) {
+                            const promptObj = scene._promptsMap[scene.prompt_key];
+                            previewText = promptObj?.value || '(Image prompt not found)';
+                        } else {
+                            previewText = '(Using image prompt - will be resolved at generation)';
+                        }
+                        break;
+                        
+                    case 'prompt':
+                        // Show selected prompt value
+                        if (videoPromptKey && scene._promptsMap) {
+                            const promptObj = scene._promptsMap[videoPromptKey];
+                            previewText = promptObj?.value || '(Prompt not found)';
+                        } else {
+                            previewText = '(No prompt key selected)';
+                        }
+                        break;
+                        
+                    case 'composition':
+                        // Show composition - need to resolve it
+                        if (videoPromptKey && scene._promptData?.compositions && scene._promptsMap) {
+                            const composition = scene._promptData.compositions[videoPromptKey];
+                            console.log('Composition debug:', {
+                                videoPromptKey,
+                                composition,
+                                isArray: Array.isArray(composition),
+                                compositions: scene._promptData.compositions,
+                                promptsMap: scene._promptsMap
+                            });
+                            
+                            if (composition) {
+                                if (Array.isArray(composition)) {
+                                    // Resolve composition by joining prompt values
+                                    const resolvedParts = composition.map(key => {
+                                        const promptObj = scene._promptsMap[key];
+                                        return promptObj?.value || `[${key}]`;
+                                    });
+                                    previewText = resolvedParts.join(', ');
+                                } else if (typeof composition === 'string') {
+                                    // Composition might be a single string
+                                    previewText = composition;
+                                } else {
+                                    previewText = `(Composition format not supported: ${typeof composition})`;
+                                }
+                            } else {
+                                previewText = `(Composition '${videoPromptKey}' not found)`;
+                            }
+                        } else {
+                            if (!videoPromptKey) {
+                                previewText = '(No composition selected)';
+                            } else if (!scene._promptData?.compositions) {
+                                previewText = '(No compositions data loaded)';
+                            } else if (!scene._promptsMap) {
+                                previewText = '(No prompts map available)';
+                            } else {
+                                previewText = '(Unknown error)';
+                            }
+                        }
+                        break;
+                        
+                    case 'custom':
+                        // Show custom prompt text
+                        previewText = scene.video_custom_prompt || '(No custom prompt set)';
+                        break;
+                        
+                    default:
+                        previewText = '(Unknown source)';
+                }
+                
+                previewTextarea.value = previewText;
+                
+            } catch (error) {
+                console.error(`Error updating preview for scene ${idx}:`, error);
+                previewTextarea.value = `Error: ${error.message}`;
+            }
         };
 
         // Attach event handlers
@@ -482,6 +709,51 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                     const flag = e.target.dataset.flag;
                     if (currentScenes[idx]) {
                         currentScenes[idx][flag] = e.target.checked;
+                    }
+                });
+            });
+
+            // Track video prompt source changes
+            container.querySelectorAll('.video-prompt-source-select').forEach(select => {
+                select.addEventListener('change', async (e) => {
+                    const idx = parseInt(e.target.dataset.sceneIdx);
+                    if (currentScenes[idx]) {
+                        currentScenes[idx].video_prompt_source = e.target.value;
+                        // Re-render flags tab to show correct input type
+                        renderTable(currentStoryData);
+                    }
+                });
+            });
+
+            // Track video prompt key changes (text input)
+            container.querySelectorAll('.video-prompt-key-input').forEach(input => {
+                input.addEventListener('change', async (e) => {
+                    const idx = parseInt(e.target.dataset.sceneIdx);
+                    if (currentScenes[idx]) {
+                        currentScenes[idx].video_prompt_key = e.target.value;
+                        await updateVideoPromptPreview(idx);
+                    }
+                });
+            });
+
+            // Track video prompt key changes (dropdown)
+            container.querySelectorAll('.video-prompt-key-select').forEach(select => {
+                select.addEventListener('change', async (e) => {
+                    const idx = parseInt(e.target.dataset.sceneIdx);
+                    if (currentScenes[idx]) {
+                        currentScenes[idx].video_prompt_key = e.target.value;
+                        await updateVideoPromptPreview(idx);
+                    }
+                });
+            });
+
+            // Track video custom prompt changes
+            container.querySelectorAll('.video-custom-prompt-input').forEach(textarea => {
+                textarea.addEventListener('input', async (e) => {
+                    const idx = parseInt(e.target.dataset.sceneIdx);
+                    if (currentScenes[idx]) {
+                        currentScenes[idx].video_custom_prompt = e.target.value;
+                        await updateVideoPromptPreview(idx);
                     }
                 });
             });
@@ -609,6 +881,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 
                 const data = await response.json();
                 console.log(`fb_tools -> StoryEdit: Loaded ${data.scenes?.length || 0} scenes from story '${storySelect}'`);
+                console.log("fb_tools -> StoryEdit: Sample scene data with video fields:", data.scenes[0]);
                 
                 currentStoryData = data;
                 currentScenes = data.scenes || [];
@@ -639,7 +912,9 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 currentStoryData.scenes = currentScenes;
                 
                 console.log("fb_tools -> StoryEdit: Saving story", storySelect);
-                console.log("fb_tools -> StoryEdit: Scenes to save:", JSON.stringify(currentScenes, null, 2));
+                console.log("fb_tools -> StoryEdit: Current scenes count:", currentScenes.length);
+                console.log("fb_tools -> StoryEdit: Sample scene data:", currentScenes[0]);
+                console.log("fb_tools -> StoryEdit: Full scenes to save:", JSON.stringify(currentScenes, null, 2));
                 
                 const response = await fetch('/fbtools/story/save', {
                     method: 'POST',
@@ -663,28 +938,87 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 const result = await response.json();
                 console.log("fb_tools -> StoryEdit: Save result:", result);
                 
-                // Show success message briefly
-                const originalHTML = container.innerHTML;
-                container.innerHTML = `
-                    <div style="padding: 20px; text-align: center; color: var(--fg-color);">
-                        <p style="margin: 10px 0; color: #4CAF50;">✓ Story saved successfully</p>
-                        <p style="margin: 10px 0; opacity: 0.7; font-size: 12px;">${result.message}</p>
-                    </div>
-                `;
+                // Show success message overlay
+                const overlay = container.querySelector('.save-success-overlay');
+                const detailsEl = container.querySelector('.save-success-details');
+                console.log('Overlay element found:', !!overlay, 'Details element found:', !!detailsEl);
                 
-                setTimeout(() => {
-                    container.innerHTML = originalHTML;
-                }, 2000);
+                if (overlay && detailsEl) {
+                    detailsEl.textContent = result.message || '';
+                    overlay.style.display = 'flex';
+                    console.log('Overlay display set to flex');
+                    
+                    setTimeout(() => {
+                        overlay.style.display = 'none';
+                        console.log('Overlay hidden after timeout');
+                    }, 2000);
+                } else {
+                    console.warn('Could not find overlay elements');
+                }
             } catch (error) {
                 console.error("fb_tools -> StoryEdit: Failed to save story:", error);
                 alert(`Failed to save story: ${error.message}`);
             }
         };
 
-        // Initialize by loading story data if a story is selected
+        // Function to update preview scene combo options
+        const updatePreviewSceneOptions = async (storyName) => {
+            const previewSceneWidget = widgets.find(w => w.name === 'preview_scene_name');
+            if (!previewSceneWidget || !storyName) return;
+            
+            try {
+                const response = await fetch(`/fbtools/story/load/${encodeURIComponent(storyName)}`);
+                if (response.ok) {
+                    const storyData = await response.json();
+                    if (storyData.scenes && storyData.scenes.length > 0) {
+                        // Sort scenes by order
+                        const sortedScenes = [...storyData.scenes].sort((a, b) => a.scene_order - b.scene_order);
+                        const sceneNames = ["", ...sortedScenes.map(s => s.scene_name)];
+                        
+                        // Update preview_scene_name combo options
+                        previewSceneWidget.options.values = sceneNames;
+                        
+                        // Only reset to empty if current value is not in new options
+                        if (!sceneNames.includes(previewSceneWidget.value)) {
+                            previewSceneWidget.value = "";
+                        }
+                        
+                        console.log(`fb_tools -> StoryEdit: Updated preview_scene_name options with ${sceneNames.length - 1} scenes from ${storyName}`);
+                    }
+                } else {
+                    console.warn(`fb_tools -> StoryEdit: Failed to load story '${storyName}':`, response.status);
+                }
+            } catch (error) {
+                console.error("fb_tools -> StoryEdit: Failed to load scenes for preview_scene_name:", error);
+            }
+        };
+
+        // Add callback for story_select changes to update preview_scene_name combo
+        const storySelectWidget = widgets.find(w => w.name === 'story_select');
+        
+        if (storySelectWidget) {
+            const originalCallback = storySelectWidget.callback;
+            storySelectWidget.callback = async function(value) {
+                // Call original callback if exists
+                if (originalCallback) {
+                    originalCallback.apply(this, arguments);
+                }
+                
+                // Update preview scene options for the new story
+                await updatePreviewSceneOptions(value);
+                
+                // Trigger load of new story data
+                loadStoryData();
+            };
+        }
+
+        // Initialize: Update preview scene options based on currently selected story
         const initialStorySelect = widgets.find(w => w.name === 'story_select')?.value;
         if (initialStorySelect) {
-            // Load story data immediately
+            // Update preview scene combo for current story first
+            await updatePreviewSceneOptions(initialStorySelect);
+            
+            // Then load story data
             loadStoryData();
         } else {
             // Show initial message
