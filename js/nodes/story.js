@@ -250,7 +250,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
         };
 
         // Render the table UI
-        const renderTable = async (storyData) => {
+        const renderTable = async (storyData, resetScenes = false) => {
             if (!storyData || !storyData.scenes) {
                 container.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--descrip-text);">
                     No story loaded. Select a story from the dropdown above.
@@ -259,7 +259,10 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             }
 
             currentStoryData = storyData;
-            currentScenes = [...(storyData.scenes || [])].sort((a, b) => a.scene_order - b.scene_order);
+            // Only reset currentScenes when loading fresh data, not when switching tabs
+            if (resetScenes) {
+                currentScenes = [...(storyData.scenes || [])].sort((a, b) => a.scene_order - b.scene_order);
+            }
 
             // Render tabs
             const tabsHTML = `
@@ -638,7 +641,8 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             container.querySelectorAll('.tab-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     activeTab = btn.dataset.tab;
-                    renderTable(currentStoryData);
+                    // Don't reset scenes when switching tabs - preserve user changes
+                    renderTable(currentStoryData, false);
                 });
             });
 
@@ -714,8 +718,8 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                     const idx = parseInt(e.target.dataset.sceneIdx);
                     if (currentScenes[idx]) {
                         currentScenes[idx].video_prompt_source = e.target.value;
-                        // Re-render flags tab to show correct input type
-                        renderTable(currentStoryData);
+                        // Re-render flags tab to show correct input type, but keep current changes
+                        renderTable(currentStoryData, false);
                     }
                 });
             });
@@ -759,8 +763,8 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                     const row = e.target.closest('tr');
                     const idx = parseInt(row.dataset.sceneIdx);
                     updateSceneFromInput(e.target);
-                    // Re-render to show correct input type
-                    renderTable(currentStoryData);
+                    // Re-render to show correct input type, but keep current changes
+                    renderTable(currentStoryData, false);
                 });
             });
         };
@@ -815,7 +819,8 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             };
             currentScenes.push(newScene);
             currentStoryData.scenes = currentScenes;
-            renderTable(currentStoryData);
+            // Reset not needed here since we're working with currentScenes
+            renderTable(currentStoryData, false);
         };
 
         // Move scene up or down
@@ -832,7 +837,8 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             });
 
             currentStoryData.scenes = currentScenes;
-            renderTable(currentStoryData);
+            // Don't reset scenes after moving
+            renderTable(currentStoryData, false);
         };
 
         // Delete scene
@@ -847,7 +853,8 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             });
 
             currentStoryData.scenes = currentScenes;
-            renderTable(currentStoryData);
+            // Don't reset scenes after deleting
+            renderTable(currentStoryData, false);
         };
 
         // Load story data from backend
@@ -878,11 +885,26 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 console.log(`fb_tools -> StoryEdit: Loaded ${data.scenes?.length || 0} scenes from story '${storySelect}'`);
                 console.log("fb_tools -> StoryEdit: Sample scene data with video fields:", data.scenes[0]);
                 
-                currentStoryData = data;
-                currentScenes = data.scenes || [];
+                // Normalize scenes to ensure all flag fields have explicit boolean values
+                const normalizedScenes = (data.scenes || []).map(scene => ({
+                    ...scene,
+                    // Ensure all flag fields exist with defaults if not set
+                    use_depth: scene.use_depth ?? false,
+                    use_mask: scene.use_mask ?? false,
+                    use_pose: scene.use_pose ?? false,
+                    use_canny: scene.use_canny ?? false,
+                    // Ensure video fields have defaults
+                    video_prompt_source: scene.video_prompt_source || 'auto',
+                    video_prompt_key: scene.video_prompt_key || '',
+                    video_custom_prompt: scene.video_custom_prompt || ''
+                }));
+                
+                currentStoryData = { ...data, scenes: normalizedScenes };
+                currentScenes = normalizedScenes;
                 node._currentStoryData = currentStoryData;
                 node._currentScenes = currentScenes;
-                
+                // Pass true to reset scenes when loading from backend
+                renderTable(currentStoryData, true);
                 renderTable(data);
             } catch (error) {
                 console.error("fb_tools -> StoryEdit: Failed to load story:", error);
