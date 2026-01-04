@@ -155,6 +155,83 @@ describe("PromptCollectionAPI", () => {
         });
     });
 
+    describe("scene_flags handling", () => {
+        test("should include scene_flags when creating collection", async () => {
+            const initialData = {
+                version: 2,
+                prompts: {
+                    test: { value: "test prompt" },
+                },
+                scene_flags: {
+                    use_depth: true,
+                    use_mask: false,
+                    use_pose: true,
+                    use_canny: false
+                }
+            };
+            const mockResponse = {
+                session_id: "test_session_123",
+                collection: initialData,
+            };
+            mockFetch.mockResponse(mockResponse);
+
+            const result = await api.createSession(initialData);
+
+            expect(result.collection.scene_flags).toBeDefined();
+            expect(result.collection.scene_flags.use_depth).toBe(true);
+            expect(result.collection.scene_flags.use_mask).toBe(false);
+        });
+
+        test("should handle collection without scene_flags", async () => {
+            const initialData = {
+                version: 2,
+                prompts: {
+                    test: { value: "test prompt" },
+                }
+            };
+            const mockResponse = {
+                session_id: "test_session_123",
+                collection: initialData,
+            };
+            mockFetch.mockResponse(mockResponse);
+
+            const result = await api.createSession(initialData);
+
+            // scene_flags should be undefined or null when not provided
+            expect(result.collection.scene_flags).toBeUndefined();
+        });
+
+        test("should preserve scene_flags when adding prompts", async () => {
+            const mockResponse = {
+                collection: {
+                    version: 2,
+                    prompts: {
+                        existing: { value: "existing prompt" },
+                        new_prompt: { value: "new value" },
+                    },
+                    scene_flags: {
+                        use_depth: true,
+                        use_mask: true,
+                        use_pose: false,
+                        use_canny: false
+                    }
+                },
+                prompt_names: ["existing", "new_prompt"],
+            };
+            mockFetch.mockResponse(mockResponse);
+
+            const result = await api.addPrompt(
+                "session123",
+                "new_prompt",
+                "new value"
+            );
+
+            expect(result.collection.scene_flags).toBeDefined();
+            expect(result.collection.scene_flags.use_depth).toBe(true);
+            expect(result.collection.scene_flags.use_mask).toBe(true);
+        });
+    });
+
     describe("error handling", () => {
         test("should show error toast on failure", async () => {
             // Suppress console.error for this test since we're intentionally triggering an error

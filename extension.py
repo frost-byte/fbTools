@@ -1680,12 +1680,7 @@ def load_story(story_json_path: str) -> Optional[StoryInfo]:
             story_dir=data.get("story_dir", ""),
             scenes=scenes
         )
-        
-        logger.info(
-            "load_story: loaded story from %s with %d scenes (migrated to v2)",
-            story_json_path,
-            len(scenes),
-        )
+    
         return story_info
     except Exception as e:
         logger.exception("fbTools: Error loading story JSON from '%s'", story_json_path)
@@ -3637,14 +3632,17 @@ class StorySceneBatch(io.ComfyNode):
 
     @classmethod
     def define_schema(cls):
+        # Get available stories for dropdown
+        stories_dir = default_stories_dir()
+        available_stories = get_subdirectories(stories_dir)
+        story_names = list(available_stories.keys()) if available_stories else [""]
+        
         return io.Schema(
             node_id=prefixed_node_id("StorySceneBatch"),
             display_name="StorySceneBatch",
             category="🧊 frost-byte/Story",
             inputs=[
-                io.Custom("STORY_INFO").Input(id="story_info", display_name="story_info", tooltip="Story to expand into an ordered scene list"),
-                io.String.Input(id="job_id", display_name="job_id", default="", tooltip="Optional job id; auto-generated when empty"),
-                io.String.Input(id="job_root_dir", display_name="job_root_dir", default="", tooltip="Base directory for per-job inputs/outputs; defaults to story_dir/jobs/<job_id>"),
+                io.Combo.Input(id="story_name", display_name="story_name", options=story_names, default=story_names[0] if story_names else "", tooltip="Select story to batch process"),
             ],
             outputs=[
                 io.Int.Output(id="scene_count", display_name="scene_count", tooltip="Total number of scenes"),
@@ -3657,18 +3655,49 @@ class StorySceneBatch(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        story_info=None,
-        job_id: str = "",
-        job_root_dir: str = "",
+        story_name: str = "",
     ) -> io.NodeOutput:
-        if story_info is None or not getattr(story_info, "scenes", None):
-            logger.warning("StorySceneBatch: story_info is empty")
-            return io.NodeOutput(0, [], job_id or "", job_root_dir or "")
+        if not story_name:
+            logger.warning("StorySceneBatch: story_name is empty")
+            return io.NodeOutput(0, [], "", "")
+        
+        # Load story from filesystem
+        stories_dir = default_stories_dir()
+        story_json_path = Path(stories_dir) / story_name / "story.json"
+        
+        if not story_json_path.exists():
+            logger.error("StorySceneBatch: Story '%s' not found at '%s'", story_name, story_json_path)
+            return io.NodeOutput(0, [], "", "")
+        
+        story_info = load_story(str(story_json_path))
+        if not story_info or not getattr(story_info, "scenes", None):
+            logger.error("StorySceneBatch: Failed to load story '%s' or story has no scenes", story_name)
+            return io.NodeOutput(0, [], "", "")
 
-        resolved_job_id = job_id.strip() or uuid.uuid4().hex[:12]
-        default_root = Path(story_info.story_dir) / "jobs" / resolved_job_id
-        job_root = Path(job_root_dir) if job_root_dir else default_root
-        job_root.mkdir(parents=True, exist_ok=True)
+        # Auto-generate unique job_id - check for collisions with existing jobs
+        jobs_dir = Path(story_info.story_dir) / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get existing job_ids
+        existing_job_ids = set()
+        if jobs_dir.exists():
+            existing_job_ids = {d.name for d in jobs_dir.iterdir() if d.is_dir()}
+        
+        # Generate unique job_id (should succeed on first try, but be safe)
+        max_attempts = 100
+        resolved_job_id = None
+        for _ in range(max_attempts):
+            candidate_id = uuid.uuid4().hex[:12]
+            if candidate_id not in existing_job_ids:
+                resolved_job_id = candidate_id
+                break
+        
+        if not resolved_job_id:
+            logger.error("StorySceneBatch: Failed to generate unique job_id after %d attempts", max_attempts)
+            return io.NodeOutput(0, [], "", "")
+        
+        job_root = jobs_dir / resolved_job_id
+        job_root.mkdir(parents=True, exist_ok=False)  # Should not exist - fail if it does
 
         scenes_dir = default_scenes_dir()
         batch: list[dict] = []
@@ -3687,13 +3716,10 @@ class StorySceneBatch(io.ComfyNode):
             prompt_data_raw = load_prompt_json(prompt_path) or {}
             
             logger.debug(
-                "StorySceneBatch: Processing scene '%s' (order %s) with prompt_source='%s' and prompt_key='%s'",
+                "StorySceneBatch: Processing scene '%s' (order %s)",
                 scene.scene_name,
                 scene.scene_order,
-                scene.prompt_source,
-                scene.prompt_key,
             )
-            logger.debug("StorySceneBatch: Loaded raw prompt data: %s", prompt_data_raw)
             # Load PromptCollection and compose prompts using the new system
             if "version" in prompt_data_raw and prompt_data_raw.get("version") == 2:
                 logger.debug("StorySceneBatch: Detected v2 prompt format for scene '%s'", scene.scene_name)
@@ -3714,19 +3740,8 @@ class StorySceneBatch(io.ComfyNode):
                 
                 # Build composition_dict: composed prompts from compositions
                 composition_dict = {}
-                logger.debug(
-                    "StorySceneBatch: Composing compositions for scene '%s'; compositions=%s",
-                    scene.scene_name,
-                    list(prompt_collection.compositions.keys()),
-                )
-                logger.debug(
-                    "StorySceneBatch: Compositions values=%s",
-                    list(prompt_collection.compositions.values()),
-                )
                 if prompt_collection.compositions:
                     composition_dict = prompt_collection.compose_prompts(prompt_collection.compositions, libber_manager)
-                
-                logger.debug("StorySceneBatch: Built composition_dict: %s", composition_dict)
                 # Determine positive_prompt based on prompt_source and prompt_key
                 if scene.prompt_source == "custom":
                     positive_prompt = scene.custom_prompt
@@ -3736,6 +3751,14 @@ class StorySceneBatch(io.ComfyNode):
                     positive_prompt = composition_dict.get(scene.prompt_key, "")
                 else:
                     positive_prompt = ""
+                    logger.warning("StorySceneBatch: No valid prompt configuration for scene '%s'", scene.scene_name)
+                
+                # Warn if prompt is empty
+                if not positive_prompt:
+                    logger.warning(
+                        "StorySceneBatch: Scene '%s' order=%d has EMPTY positive_prompt!",
+                        scene.scene_name, scene.scene_order
+                    )
                 
                 # For backwards compatibility, keep old prompt fields
                 prompt_data = {
@@ -3819,11 +3842,11 @@ class StorySceneBatch(io.ComfyNode):
                 "prompt_data": prompt_data,
             }
 
-            logger.debug(
-                "StorySceneBatch: Added scene descriptor for '%s' prompt_key='%s' prompt_source='%s'",
+            logger.debug("StorySceneBatch: Added descriptor for scene '%s'", scene.scene_name)
+            logger.info(
+                "StorySceneBatch: Descriptor for '%s' has positive_prompt: '%s...'",
                 scene.scene_name,
-                scene.prompt_key,
-                scene.prompt_source,
+                descriptor.get("positive_prompt", "")[:100]
             )
             batch.append(descriptor)
 
@@ -3919,30 +3942,26 @@ class StoryScenePick(io.ComfyNode):
             use_canny=descriptor.get("use_canny", False),
         )
         
-        logger.debug(
-            "StoryScenePick: Building scene_config for '%s' with prompt_source=%s, prompt_key=%s, custom_len=%d",
-            scene_config.scene_name,
-            scene_config.prompt_source,
-            scene_config.prompt_key,
-            len(scene_config.custom_prompt),
-        )
-        logger.debug("StoryScenePick: Descriptor keys: %s", list(descriptor.keys()))
+        logger.debug("StoryScenePick: Processing scene '%s'", scene_config.scene_name)
 
         # Use the pre-computed positive_prompt from StorySceneBatch
         # It's already been processed with compositions and libbers applied
         prompt = descriptor.get("positive_prompt", "")
-        if prompt:
-            logger.debug("  -> Found pre-computed positive_prompt in descriptor, length: %d", len(prompt))
-        else:
-            logger.warning("  -> No positive_prompt in descriptor; available keys: %s", list(descriptor.keys()))
+        
+        if not prompt:
+            logger.warning(
+                "StoryScenePick: Scene '%s' order=%d - No positive_prompt in descriptor; available keys: %s",
+                descriptor.get("scene_name", "unknown"), descriptor.get("scene_order", -1), list(descriptor.keys())
+            )
 
         try:
+            # Use the descriptor's pre-computed prompt - don't let from_story_scene override it
             scene_info, assets, selected_prompt, prompt_data, _ = SceneInfo.from_story_scene(
                 scene_config,
                 scene_dir_override=scene_dir,
                 include_upscale=False,
                 include_canny=True,
-                prompt_override=None,
+                prompt_override=prompt,  # Use the descriptor's positive_prompt
             )
         except Exception as e:
             logger.error("StoryScenePick: failed to build SceneInfo for '%s': %s", scene_config.scene_name, e)
@@ -3955,11 +3974,11 @@ class StoryScenePick(io.ComfyNode):
         depth_image = assets.get("depth_image", empty_image)
         pose_image = assets.get("pose_image", empty_image)
         
-        logger.info(
-            "StoryScenePick: Scene '%s' (order %s) - Using prompt: '%s'",
+        logger.debug(
+            "StoryScenePick: Scene '%s' (order %s) - prompt length: %d",
             scene_config.scene_name,
             scene_config.scene_order,
-            prompt[:128] + ("..." if len(prompt) > 128 else ""),
+            len(prompt),
         )
 
         return io.NodeOutput(
@@ -4069,9 +4088,7 @@ class StoryLoad(io.ComfyNode):
         
         story_info = load_story(str(story_path))
         
-        if story_info:
-            logger.info("StoryLoad: Loaded story '%s' with %d scenes", story_info.story_name, len(story_info.scenes))
-        else:
+        if story_info is None:
             logger.error("StoryLoad: Failed to load story from '%s'", story_path)
         
         return io.NodeOutput(story_info)
@@ -4193,14 +4210,14 @@ class StoryVideoBatch(io.ComfyNode):
         available_stories = get_available_stories()
         default_story = available_stories[0] if available_stories else "default_story"
         
-        # Try to load first story to get available job IDs
+        # Get job IDs for the first story as default options
         default_jobs = [""]
         if available_stories:
             stories_dir = default_stories_dir()
-            first_story_path = os.path.join(stories_dir, default_story, "story.json")
-            if os.path.isfile(first_story_path):
-                story_info = load_story(first_story_path)
-                if story_info and story_info.story_dir:
+            first_story_path = os.path.join(stories_dir, default_story)
+            if os.path.isdir(first_story_path):
+                story_info = load_story(os.path.join(first_story_path, "story.json"))
+                if story_info:
                     jobs = list_job_ids(story_info.story_dir)
                     default_jobs = jobs if jobs else [""]
         
@@ -4210,7 +4227,7 @@ class StoryVideoBatch(io.ComfyNode):
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Combo.Input(id="story_name", display_name="story_name", options=available_stories, default=default_story, tooltip="Select story from available stories"),
-                io.Combo.Input(id="job_id", display_name="job_id", options=default_jobs, default=default_jobs[0], tooltip="Select job ID from available jobs"),
+                io.Combo.Input(id="job_id", display_name="job_id", options=default_jobs, default=default_jobs[0] if default_jobs else "", tooltip="Select job ID from available jobs (leave empty to use most recent)"),
             ],
             outputs=[
                 io.String.Output(id="input_folder_path", display_name="input_folder_path", tooltip="Path to job input folder with ordered scene images"),
@@ -4247,8 +4264,18 @@ class StoryVideoBatch(io.ComfyNode):
             logger.warning("StoryVideoBatch: No jobs found in story directory '%s'", story_info.story_dir)
             return io.NodeOutput("", "", [], [], 0, story_name)
         
-        # Select job ID (use first/newest if not specified)
-        selected_job = job_id if job_id in available_jobs else available_jobs[0]
+        logger.info("StoryVideoBatch: Available job_ids for story '%s': %s", story_name, available_jobs)
+        
+        # Select job ID (use first/newest if not specified or not found)
+        if job_id and job_id in available_jobs:
+            selected_job = job_id
+            logger.info("StoryVideoBatch: Using specified job_id='%s'", selected_job)
+        else:
+            selected_job = available_jobs[0]
+            if job_id:
+                logger.warning("StoryVideoBatch: Specified job_id='%s' not found, using most recent: '%s'", job_id, selected_job)
+            else:
+                logger.info("StoryVideoBatch: No job_id specified, using most recent: '%s'", selected_job)
         
         job_root = Path(story_info.story_dir) / "jobs" / selected_job
         job_input_dir = str(job_root / "input")
@@ -5648,10 +5675,17 @@ async def scene_get_prompts(request):
         except Exception as e:
             logger.warning("Warning: Could not load libbers list: %s", e)
         
-        # Return compositions as dict
+        # Get scene_flags from collection if present
+        scene_flags = {}
+        collection_dict = collection.to_dict()
+        if 'scene_flags' in collection_dict:
+            scene_flags = collection_dict['scene_flags']
+        
+        # Return compositions as dict with scene_flags
         return web.json_response({
             "prompts": prompts_list,
             "compositions": collection.compositions,
+            "scene_flags": scene_flags,
             "libbers": libbers_list
         })
     
@@ -5686,6 +5720,25 @@ async def scene_save_prompts(request):
         
         # Parse and validate collection
         try:
+            logger.debug("ScenePromptManager API: Incoming collection_data keys: %s", list(collection_data.keys()) if isinstance(collection_data, dict) else "not a dict")
+            logger.debug("ScenePromptManager API: collection_data type: %s", type(collection_data))
+            
+            # Check if collection_data has the expected structure
+            if not isinstance(collection_data, dict):
+                raise ValueError(f"collection_data must be a dict, got {type(collection_data)}")
+            
+            # Log the structure
+            if 'prompts' in collection_data:
+                logger.debug("ScenePromptManager API: prompts type: %s, count: %d", 
+                           type(collection_data['prompts']), 
+                           len(collection_data['prompts']) if isinstance(collection_data['prompts'], (dict, list)) else 0)
+            if 'compositions' in collection_data:
+                logger.debug("ScenePromptManager API: compositions type: %s, count: %d",
+                           type(collection_data['compositions']),
+                           len(collection_data['compositions']) if isinstance(collection_data['compositions'], (dict, list)) else 0)
+            if 'scene_flags' in collection_data:
+                logger.debug("ScenePromptManager API: scene_flags: %s", collection_data['scene_flags'])
+            
             collection = PromptCollection.from_dict(collection_data)
             logger.info(
                 "ScenePromptManager API: Parsed collection with %d prompts and %d compositions",
@@ -5693,7 +5746,8 @@ async def scene_save_prompts(request):
                 len(collection.compositions),
             )
         except Exception as e:
-            logger.exception("ScenePromptManager API: Error parsing collection data")
+            logger.exception("ScenePromptManager API: Error parsing collection data: %s", str(e))
+            logger.error("ScenePromptManager API: collection_data content: %s", str(collection_data)[:500])
             return web.json_response({"error": f"Invalid collection data: {str(e)}"}, status=400)
         
         # Save to file
@@ -5705,8 +5759,9 @@ async def scene_save_prompts(request):
         )
         
         try:
-            # Convert to dict and save as JSON
+            # Convert to dict - scene_flags now preserved automatically
             collection_dict = collection.to_dict()
+            
             logger.debug(
                 "ScenePromptManager API: Collection dict keys: %s",
                 list(collection_dict.keys()),
@@ -5808,6 +5863,52 @@ async def story_load(request):
     except Exception as e:
         logger.exception("Error loading story")
         return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/fbtools/story/job_ids")
+async def story_get_job_ids(request):
+    """
+    Get list of job IDs for a specific story.
+    Query params: story_name (required)
+    Returns: {"job_ids": [str]} - List of job IDs sorted by modification time (newest first)
+    """
+    try:
+        story_name = request.query.get('story_name', '')
+        
+        if not story_name:
+            return web.json_response({'error': 'story_name parameter required'}, status=400)
+        
+        stories_dir = default_stories_dir()
+        story_dir = os.path.join(stories_dir, story_name)
+        
+        if not os.path.isdir(story_dir):
+            logger.warning("fbTools API: story_dir '%s' not found for story_name='%s'", story_dir, story_name)
+            return web.json_response({'job_ids': []})
+        
+        job_ids = list_job_ids(story_dir)
+        logger.info("fbTools API: story_name='%s' has %d job_ids: %s", story_name, len(job_ids), job_ids)
+        
+        return web.json_response({'job_ids': job_ids})
+    except Exception as e:
+        logger.exception("fbTools API: Error getting job_ids for story_name='%s'", story_name)
+        return web.json_response({'error': str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/fbtools/story/list")
+async def story_list(request):
+    """
+    Get list of available story names.
+    Returns: {"stories": [str]}
+    """
+    try:
+        stories_dir = default_stories_dir()
+        available_stories = get_subdirectories(stories_dir)
+        story_names = sorted(available_stories.keys()) if available_stories else []
+        
+        return web.json_response({'stories': story_names})
+    except Exception as e:
+        logger.exception("fbTools API: Error listing stories")
+        return web.json_response({'error': str(e)}, status=500)
 
 
 @PromptServer.instance.routes.post("/fbtools/story/save")

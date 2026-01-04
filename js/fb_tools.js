@@ -396,7 +396,7 @@ let _isLoaded = false;
 
 // Import node-specific modules
 import { setupSceneSelect, setupScenePromptManager } from "./nodes/scene.js";
-import { setupStoryEdit, setupStoryView } from "./nodes/story.js";
+import { setupStoryEdit, setupStoryView, setupStorySceneBatch } from "./nodes/story.js";
 import { setupLibberManager, setupLibberApply } from "./nodes/libber.js";
 
 // Add context menu entry for extracting a node as json
@@ -469,6 +469,9 @@ app.registerExtension({
         }
         else if (isNode("StoryView")) {
             setupStoryView(nodeType, nodeData, app);
+        }
+        else if (isNode("StorySceneBatch")) {
+            setupStorySceneBatch(nodeType, nodeData, app);
         }
         
         // Libber nodes

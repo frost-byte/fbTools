@@ -457,6 +457,129 @@ class TestPromptCollectionFileOperations:
 class TestPromptCollectionIntegration:
     """Integration tests simulating real usage scenarios."""
     
+    def test_scene_flags_basic(self):
+        """Test basic scene_flags functionality."""
+        collection = PromptCollection()
+        collection.add_prompt("key1", "value1")
+        collection.scene_flags = {
+            "use_depth": True,
+            "use_mask": False,
+            "use_pose": True,
+            "use_canny": False
+        }
+        
+        data = collection.to_dict()
+        
+        assert "scene_flags" in data
+        assert data["scene_flags"]["use_depth"] is True
+        assert data["scene_flags"]["use_mask"] is False
+        assert data["scene_flags"]["use_pose"] is True
+        assert data["scene_flags"]["use_canny"] is False
+    
+    def test_scene_flags_serialization_roundtrip(self):
+        """Test that scene_flags survive serialization roundtrip."""
+        collection = PromptCollection()
+        collection.add_prompt("test", "value")
+        collection.scene_flags = {"use_depth": True, "use_mask": True}
+        
+        # Serialize and deserialize
+        data = collection.to_dict()
+        restored = PromptCollection.from_dict(data)
+        
+        assert restored.scene_flags == {"use_depth": True, "use_mask": True}
+    
+    def test_scene_flags_from_dict_with_flags(self):
+        """Test loading collection data that includes scene_flags."""
+        data = {
+            "version": 2,
+            "prompts": {
+                "key1": {"value": "value1"}
+            },
+            "scene_flags": {
+                "use_depth": False,
+                "use_mask": True,
+                "use_pose": False,
+                "use_canny": True
+            }
+        }
+        
+        collection = PromptCollection.from_dict(data)
+        
+        assert collection.scene_flags is not None
+        assert collection.scene_flags["use_mask"] is True
+        assert collection.scene_flags["use_canny"] is True
+        assert collection.scene_flags["use_depth"] is False
+    
+    def test_scene_flags_from_dict_without_flags(self):
+        """Test that scene_flags can be None when not provided."""
+        data = {
+            "version": 2,
+            "prompts": {
+                "key1": {"value": "value1"}
+            }
+        }
+        
+        collection = PromptCollection.from_dict(data)
+        
+        # scene_flags should be None if not in data
+        assert collection.scene_flags is None
+    
+    def test_scene_flags_with_compositions(self):
+        """Test scene_flags work alongside compositions."""
+        collection = PromptCollection()
+        collection.add_prompt("char1", "A brave hero")
+        collection.add_prompt("setting", "Ancient castle")
+        collection.add_composition("main", ["char1", "setting"])
+        collection.scene_flags = {
+            "use_depth": True,
+            "use_mask": True,
+            "use_pose": False,
+            "use_canny": False
+        }
+        
+        data = collection.to_dict()
+        
+        assert "scene_flags" in data
+        assert "compositions" in data
+        assert data["compositions"]["main"] == ["char1", "setting"]
+        assert data["scene_flags"]["use_depth"] is True
+    
+    def test_scene_flags_file_persistence(self):
+        """Test scene_flags persist to file correctly."""
+        import json
+        import tempfile
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, "test_prompts.json")
+            
+            # Create collection with flags
+            collection = PromptCollection()
+            collection.add_prompt("test", "value")
+            collection.scene_flags = {
+                "use_depth": True,
+                "use_mask": False,
+                "use_pose": True,
+                "use_canny": False
+            }
+            
+            # Save to file
+            with open(filepath, 'w') as f:
+                json.dump(collection.to_dict(), f)
+            
+            # Load from file
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            
+            # Verify flags in file
+            assert "scene_flags" in data
+            assert data["scene_flags"]["use_depth"] is True
+            assert data["scene_flags"]["use_pose"] is True
+            
+            # Verify flags work when loaded back
+            loaded = PromptCollection.from_dict(data)
+            assert loaded.scene_flags["use_mask"] is False
+            assert loaded.scene_flags["use_canny"] is False
+    
     def test_typical_migration_workflow(self):
         """Test a typical user migration workflow."""
         # Step 1: Start with V1 data (loaded from old file)
