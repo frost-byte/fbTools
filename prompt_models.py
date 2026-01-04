@@ -44,6 +44,7 @@ class PromptCollection(BaseModel):
     v1_backup: Optional[dict] = None
     prompts: dict[str, PromptMetadata] = {}
     compositions: dict[str, List[str]] = {}  # {output_name: [prompt_keys]}
+    scene_flags: Optional[dict] = None  # Optional scene-level control flags (use_depth, use_mask, etc.)
     
     def get_prompt_value(self, key: str) -> Optional[str]:
         """Get prompt value by key, returns None if not found."""
@@ -130,6 +131,9 @@ class PromptCollection(BaseModel):
         if self.v1_backup is not None:
             result["v1_backup"] = self.v1_backup
         
+        if self.scene_flags is not None:
+            result["scene_flags"] = self.scene_flags
+        
         for key, metadata in self.prompts.items():
             result["prompts"][key] = {
                 "value": metadata.value,
@@ -152,25 +156,54 @@ class PromptCollection(BaseModel):
         version = data.get("version", 1)
         
         # Handle v1 format - auto-migrate
-        if version == 1 or "prompts" not in data:
+        if version == 1 or ("prompts" not in data and "compositions" not in data):
             return cls.from_legacy_dict(data)
         
-        # Handle v2 format
+        # Handle v2 format - prompts can be dict or array
         prompts = {}
-        for key, prompt_data in data.get("prompts", {}).items():
-            if isinstance(prompt_data, str):
-                prompts[key] = PromptMetadata(value=prompt_data)
-            elif isinstance(prompt_data, dict):
-                prompts[key] = PromptMetadata(
-                    value=prompt_data.get("value", ""),
-                    category=prompt_data.get("category"),
-                    description=prompt_data.get("description"),
-                    tags=prompt_data.get("tags"),
-                    processing_type=prompt_data.get("processing_type", "raw"),
-                    libber_name=prompt_data.get("libber_name")
-                )
+        prompts_data = data.get("prompts", {})
         
-        compositions = data.get("compositions", {})
+        # Handle both dict and array formats
+        if isinstance(prompts_data, list):
+            # Array format: [{"key": "name", "value": "...", ...}, ...]
+            for prompt_item in prompts_data:
+                if isinstance(prompt_item, dict) and "key" in prompt_item:
+                    key = prompt_item["key"]
+                    prompts[key] = PromptMetadata(
+                        value=prompt_item.get("value", ""),
+                        category=prompt_item.get("category"),
+                        description=prompt_item.get("description"),
+                        tags=prompt_item.get("tags"),
+                        processing_type=prompt_item.get("processing_type", "raw"),
+                        libber_name=prompt_item.get("libber_name")
+                    )
+        elif isinstance(prompts_data, dict):
+            # Dict format: {"name": {"value": "...", ...}, ...}
+            for key, prompt_data in prompts_data.items():
+                if isinstance(prompt_data, str):
+                    prompts[key] = PromptMetadata(value=prompt_data)
+                elif isinstance(prompt_data, dict):
+                    prompts[key] = PromptMetadata(
+                        value=prompt_data.get("value", ""),
+                        category=prompt_data.get("category"),
+                        description=prompt_data.get("description"),
+                        tags=prompt_data.get("tags"),
+                        processing_type=prompt_data.get("processing_type", "raw"),
+                        libber_name=prompt_data.get("libber_name")
+                    )
+        
+        # Handle compositions - can also be dict or array
+        compositions = {}
+        compositions_data = data.get("compositions", {})
+        
+        if isinstance(compositions_data, list):
+            # Array format: [{"name": "comp1", "prompt_keys": ["key1", "key2"]}, ...]
+            for comp_item in compositions_data:
+                if isinstance(comp_item, dict) and "name" in comp_item:
+                    compositions[comp_item["name"]] = comp_item.get("prompt_keys", [])
+        elif isinstance(compositions_data, dict):
+            # Dict format: {"comp1": ["key1", "key2"], ...}
+            compositions = compositions_data
         
         logger.debug(
             "PromptCollection.from_dict: Loaded %d prompts, %d compositions",
@@ -182,11 +215,15 @@ class PromptCollection(BaseModel):
             for comp_name, comp_keys in compositions.items():
                 logger.debug("     - %s: %s", comp_name, comp_keys)
         
+        # Load scene_flags if present
+        scene_flags = data.get("scene_flags")
+        
         return cls(
             version=2,
             v1_backup=data.get("v1_backup"),
             prompts=prompts,
-            compositions=compositions
+            compositions=compositions,
+            scene_flags=scene_flags
         )
     
     def get_prompt_metadata(self, key: str) -> Optional[PromptMetadata]:

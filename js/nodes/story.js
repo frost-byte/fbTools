@@ -3,6 +3,7 @@
  */
 
 import { sceneAPI } from "../api/scene.js";
+import { showOverlay } from "../utils/feedback.js";
 
 /**
  * Update a widget's value from message.text array
@@ -280,12 +281,6 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 <div style="position: relative; min-height: 200px;">
                     ${tabsHTML}
                     ${contentHTML}
-                    <div class="save-success-overlay" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.85); z-index: 10000; align-items: center; justify-content: center;">
-                        <div style="padding: 30px; text-align: center; color: var(--fg-color); background: var(--comfy-menu-bg); border-radius: 8px; border: 2px solid #4CAF50; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
-                            <p class="save-success-message" style="margin: 10px 0; color: #4CAF50; font-weight: 600; font-size: 16px;">✓ Story saved successfully</p>
-                            <p class="save-success-details" style="margin: 10px 0; opacity: 0.7; font-size: 12px;"></p>
-                        </div>
-                    </div>
                 </div>
             `;
             attachEventHandlers();
@@ -938,26 +933,23 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 const result = await response.json();
                 console.log("fb_tools -> StoryEdit: Save result:", result);
                 
-                // Show success message overlay
-                const overlay = container.querySelector('.save-success-overlay');
-                const detailsEl = container.querySelector('.save-success-details');
-                console.log('Overlay element found:', !!overlay, 'Details element found:', !!detailsEl);
-                
-                if (overlay && detailsEl) {
-                    detailsEl.textContent = result.message || '';
-                    overlay.style.display = 'flex';
-                    console.log('Overlay display set to flex');
-                    
-                    setTimeout(() => {
-                        overlay.style.display = 'none';
-                        console.log('Overlay hidden after timeout');
-                    }, 2000);
-                } else {
-                    console.warn('Could not find overlay elements');
-                }
+                // Show success overlay
+                showOverlay({
+                    container: container,
+                    message: "Story saved successfully",
+                    details: result.message || '',
+                    type: "success",
+                    duration: 2000
+                });
             } catch (error) {
                 console.error("fb_tools -> StoryEdit: Failed to save story:", error);
-                alert(`Failed to save story: ${error.message}`);
+                showOverlay({
+                    container: container,
+                    message: "Failed to save story",
+                    details: error.message,
+                    type: "error",
+                    duration: 3000
+                });
             }
         };
 
@@ -1107,3 +1099,55 @@ export function setupStoryView(nodeType, nodeData, app) {
     };
 }
 
+/**
+ * Setup StorySceneBatch node extensions for dynamic story dropdown
+ */
+export function setupStorySceneBatch(nodeType, nodeData, app) {
+    console.log("fb_tools -> StorySceneBatch: Setting up dynamic story dropdown");
+    
+    const onOriginalNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function() {
+        if (onOriginalNodeCreated) {
+            onOriginalNodeCreated.apply(this, arguments);
+        }
+        
+        // Initial load of story options
+        fetchAndUpdateStoryOptions(this);
+    };
+    
+    /**
+     * Fetch available stories from API and update dropdown
+     */
+    async function fetchAndUpdateStoryOptions(node) {
+        try {
+            const response = await fetch('/fbtools/story/list');
+            if (!response.ok) {
+                console.error('fb_tools -> StorySceneBatch: Failed to fetch stories:', response.statusText);
+                return;
+            }
+            
+            const data = await response.json();
+            if (data.stories && Array.isArray(data.stories)) {
+                const storyWidget = node.widgets?.find(w => w.name === 'story_name');
+                if (storyWidget && storyWidget.type === 'combo') {
+                    // Update combo options
+                    storyWidget.options.values = data.stories;
+                    
+                    // Set value to first story if current value is not in list
+                    if (data.stories.length > 0 && !data.stories.includes(storyWidget.value)) {
+                        storyWidget.value = data.stories[0];
+                    }
+                    
+                    console.log(`fb_tools -> StorySceneBatch: Updated story dropdown with ${data.stories.length} stories`);
+                    
+                    // Refresh node display
+                    if (node.graph && node.graph.setDirtyCanvas) {
+                        node.graph.setDirtyCanvas(true, false);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('fb_tools -> StorySceneBatch: Error fetching story list:', error);
+        }
+    }
+}

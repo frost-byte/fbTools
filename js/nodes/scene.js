@@ -5,6 +5,7 @@
 import { libberAPI } from "../api/libber.js";
 import { sceneAPI } from "../api/scene.js";
 import { debugLog, DEBUG_FLAGS } from "../utils/debug_config.js";
+import { showOverlay } from "../utils/feedback.js";
 
 /**
  * Show toast notification
@@ -739,7 +740,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
 
             // --- Scene Flags UI ---
             const flagsHTML = `
-                <div style="display: flex; gap: 16px; margin-bottom: 8px; align-items: center; flex-wrap: wrap;">
+                <div style="display: flex; gap: 16px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 2px solid var(--border-color);">
                     <label style="display: flex; align-items: center; gap: 4px; font-size: 12px;">
                         <input type="checkbox" class="scene-flag-checkbox" data-flag="use_depth" ${sceneFlags.use_depth ? 'checked' : ''} /> use_depth
                     </label>
@@ -752,6 +753,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                     <label style="display: flex; align-items: center; gap: 4px; font-size: 12px;">
                         <input type="checkbox" class="scene-flag-checkbox" data-flag="use_canny" ${sceneFlags.use_canny ? 'checked' : ''} /> use_canny
                     </label>
+                    <button class="save-flags-btn" title="Save scene flags to prompts.json" style="padding: 4px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; margin-left: auto;">💾 Save Flags</button>
                 </div>
             `;
 
@@ -769,8 +771,6 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             }
 
             container.innerHTML = flagsHTML + tabsHTML + contentHTML;
-
-            console.log("fb_tools -> ScenePromptManager: renderTable called. Tabs should be present in container.", container, container.innerHTML);
 
             // Attach event handlers
             attachEventHandlers();
@@ -1042,13 +1042,67 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                     sceneFlags[flag] = e.target.checked;
                 });
             });
+            
+            // --- Save Flags Button Handler ---
+            container.querySelector('.save-flags-btn')?.addEventListener('click', async () => {
+                const scenesDirWidget = node.widgets?.find(w => w.name === "scenes_dir");
+                const sceneNameWidget = node.widgets?.find(w => w.name === "scene_name");
+                
+                const scenesDir = scenesDirWidget?.value;
+                const sceneName = sceneNameWidget?.value;
+                const sceneDir = (scenesDir && sceneName) ? `${scenesDir}/${sceneName}` : null;
+                
+                if (!sceneDir) {
+                    showToast({ severity: "warn", summary: "No scene selected", life: 2000 });
+                    return;
+                }
+                
+                try {
+                    // Load current collection, update flags, and save
+                    const currentData = await sceneAPI.getScenePrompts(sceneDir);
+                    
+                    const collection = {
+                        version: 2,
+                        prompts: currentData.prompts || {},
+                        compositions: currentData.compositions || {},
+                        scene_flags: { ...sceneFlags }
+                    };
+                    
+                    const result = await sceneAPI.saveScenePrompts(sceneDir, collection);
+                    if (result.success) {
+                        showOverlay({
+                            container: container,
+                            message: "Flags saved successfully",
+                            details: `Scene: ${sceneName}`,
+                            type: "success",
+                            duration: 2000
+                        });
+                    } else {
+                        showOverlay({
+                            container: container,
+                            message: "Failed to save flags",
+                            details: result.error,
+                            type: "error",
+                            duration: 3000
+                        });
+                    }
+                } catch (err) {
+                    console.error("Failed to save flags:", err);
+                    showOverlay({
+                        container: container,
+                        message: "Failed to save flags",
+                        details: err.message,
+                        type: "error",
+                        duration: 3000
+                    });
+                }
+            });
+            
             // Tab switching
             const tabBtns = container.querySelectorAll('.tab-btn');
-            console.log("fb_tools -> ScenePromptManager: Attaching tab event handlers. Found", tabBtns.length, "tab buttons.", tabBtns);
             tabBtns.forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     const tab = e.target.getAttribute('data-tab');
-                    console.log("fb_tools -> ScenePromptManager: Tab clicked:", tab);
                     activeTab = tab;
                     renderTable(currentPromptsData, availableLibbers, currentCompositionsData, currentPromptDict);
                 });
@@ -1077,7 +1131,6 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                                         return `<option value="${lib}" ${selected}>${lib}</option>`;
                                     }).join('');
                                     
-                                    console.log("fb_tools -> ScenePromptManager: Updated libbers list from API");
                                 } else if (availableLibbers.length > 1) {
                                     // Use existing list if API fails
                                     libberSelect.value = availableLibbers[1];
@@ -1151,9 +1204,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             
             // Apply prompts button - update all prompts from table and save to file
             const applyBtn = container.querySelector('.apply-prompts-btn');
-            console.log("fb_tools -> ScenePromptManager: Apply button found:", !!applyBtn);
             applyBtn?.addEventListener('click', async () => {
-                console.log("fb_tools -> ScenePromptManager: Apply Changes clicked!");
                 // Update all existing prompts from table inputs
                 const rows = container.querySelectorAll('tbody tr:not(.new-prompt-row)');
                 const updatedData = [];
@@ -1184,16 +1235,10 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                 // Get current scene directory from widgets at click time
                 const scenesDirWidget = node.widgets?.find(w => w.name === "scenes_dir");
                 const sceneNameWidget = node.widgets?.find(w => w.name === "scene_name");
-                
-                console.log("fb_tools -> ScenePromptManager: Widget debug:");
-                console.log("  scenesDirWidget:", scenesDirWidget);
-                console.log("  sceneNameWidget:", sceneNameWidget);
-                console.log("  All widgets:", node.widgets?.map(w => ({name: w.name, value: w.value, type: w.type})));
-                
+                                
                 const scenesDir = scenesDirWidget?.value;
                 const sceneName = sceneNameWidget?.value;
                 const sceneDir = (scenesDir && sceneName) ? `${scenesDir}/${sceneName}` : null;
-                console.log("fb_tools -> ScenePromptManager: Apply Changes - scenesDir=", scenesDir, "sceneName=", sceneName, "sceneDir=", sceneDir);
                 
                 // Save to file via API if we have a scene directory
                 if (sceneDir) {
