@@ -53,7 +53,7 @@ import re
 import copy
 from pydantic import BaseModel, ConfigDict
 from .utils.logging_utils import get_logger
-from .story_models import SceneInStory, StoryInfo
+from .story_models import SceneInStory, StoryInfo, save_story, load_story
 
 logger = get_logger(__name__)
 
@@ -1612,116 +1612,6 @@ def get_available_stories():
         if os.path.isdir(entry_path):
             story_names.append(entry)
     return story_names if story_names else ["default_story"]
-
-def load_story(story_json_path: str) -> Optional[StoryInfo]:
-    """Load story information from JSON file
-    
-    Supports both V1 (prompt_type) and V2 (prompt_source/prompt_key) formats.
-    V1 stories are automatically migrated to V2 on load.
-    """
-    if not os.path.isfile(story_json_path):
-        logger.warning("fbTools: story_json_path '%s' is not a valid file", story_json_path)
-        return None
-    
-    try:
-        with open(story_json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        version = data.get("version", 1)  # Default to V1 if not specified
-        
-        scenes = []
-        for scene_data in data.get("scenes", []):
-            # V2 format
-            if version >= 2 or 'prompt_source' in scene_data:
-                scene = SceneInStory(
-                    scene_name=scene_data.get("scene_name", ""),
-                    scene_order=scene_data.get("scene_order", 0),
-                    mask_type=scene_data.get("mask_type", "combined"),
-                    mask_background=scene_data.get("mask_background", True),
-                    prompt_source=scene_data.get("prompt_source", "prompt"),
-                    prompt_key=scene_data.get("prompt_key", ""),
-                    custom_prompt=scene_data.get("custom_prompt", ""),
-                    video_prompt_source=scene_data.get("video_prompt_source", "auto"),
-                    video_prompt_key=scene_data.get("video_prompt_key", ""),
-                    video_custom_prompt=scene_data.get("video_custom_prompt", ""),
-                    depth_type=scene_data.get("depth_type", "depth"),
-                    pose_type=scene_data.get("pose_type", "open"),
-                    use_depth=scene_data.get("use_depth", False),
-                    use_mask=scene_data.get("use_mask", False),
-                    use_pose=scene_data.get("use_pose", False),
-                    use_canny=scene_data.get("use_canny", False),
-                )
-            # V1 format (migrate to V2)
-            else:
-                prompt_type = scene_data.get("prompt_type", "girl_pos")
-                if prompt_type == "custom":
-                    prompt_source = "custom"
-                    prompt_key = ""
-                else:
-                    prompt_source = "prompt"
-                    prompt_key = prompt_type
-                
-                scene = SceneInStory(
-                    scene_name=scene_data.get("scene_name", ""),
-                    scene_order=scene_data.get("scene_order", 0),
-                    mask_type=scene_data.get("mask_type", "combined"),
-                    mask_background=scene_data.get("mask_background", True),
-                    prompt_source=prompt_source,
-                    prompt_key=prompt_key,
-                    custom_prompt=scene_data.get("custom_prompt", ""),
-                    depth_type=scene_data.get("depth_type", "depth"),
-                    pose_type=scene_data.get("pose_type", "open"),
-                )
-            scenes.append(scene)
-        
-        story_info = StoryInfo(
-            version=2,  # Always use V2 after load
-            story_name=data.get("story_name", ""),
-            story_dir=data.get("story_dir", ""),
-            scenes=scenes
-        )
-    
-        return story_info
-    except Exception as e:
-        logger.exception("fbTools: Error loading story JSON from '%s'", story_json_path)
-        return None
-
-def save_story(story_info: StoryInfo, story_json_path: str):
-    """Save story information to JSON file (V2 format)"""
-    try:
-        scenes_data = []
-        for scene in story_info.scenes:
-            scene_data = {
-                "scene_name": scene.scene_name,
-                "scene_order": scene.scene_order,
-                "mask_type": scene.mask_type,
-                "mask_background": scene.mask_background,
-                "prompt_source": scene.prompt_source,
-                "prompt_key": scene.prompt_key,
-                "custom_prompt": scene.custom_prompt,
-                "video_prompt_source": scene.video_prompt_source,
-                "video_prompt_key": scene.video_prompt_key,
-                "video_custom_prompt": scene.video_custom_prompt,
-                "depth_type": scene.depth_type,
-                "pose_type": scene.pose_type,
-            }
-            scenes_data.append(scene_data)
-        
-        story_data = {
-            "version": 2,
-            "story_name": story_info.story_name,
-            "story_dir": story_info.story_dir,
-            "scenes": scenes_data
-        }
-        
-        save_json_file(story_json_path, story_data)
-        logger.info(
-            "save_story: saved story (v2) to %s with %d scenes",
-            story_json_path,
-            len(scenes_data),
-        )
-    except Exception as e:
-        logger.exception("fbTools: Error saving story to '%s'", story_json_path)
 
 def default_stories_dir():
     output_dir = get_output_directory()

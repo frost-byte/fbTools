@@ -5,6 +5,8 @@ This module contains the SceneInStory and StoryInfo classes
 extracted to a separate file for easier testing and reusability.
 """
 
+import json
+import os
 from typing import Optional, List
 from pydantic import BaseModel, ConfigDict
 
@@ -107,3 +109,89 @@ class StoryInfo(BaseModel):
         return matching_scenes
     
     model_config = ConfigDict(arbitrary_types_allowed=True, from_attributes=True)
+
+
+# ============================================================================
+# STORY FILE I/O FUNCTIONS
+# ============================================================================
+
+def save_story(story_info: StoryInfo, story_json_path: str):
+    """Save story information to JSON file (V2 format)"""
+    try:
+        scenes_data = []
+        for scene in story_info.scenes:
+            scene_data = {
+                "scene_name": scene.scene_name,
+                "scene_order": scene.scene_order,
+                "mask_type": scene.mask_type,
+                "mask_background": scene.mask_background,
+                "prompt_source": scene.prompt_source,
+                "prompt_key": scene.prompt_key,
+                "custom_prompt": scene.custom_prompt,
+                "video_prompt_source": scene.video_prompt_source,
+                "video_prompt_key": scene.video_prompt_key,
+                "video_custom_prompt": scene.video_custom_prompt,
+                "depth_type": scene.depth_type,
+                "pose_type": scene.pose_type,
+                "use_depth": scene.use_depth,
+                "use_mask": scene.use_mask,
+                "use_pose": scene.use_pose,
+                "use_canny": scene.use_canny,
+            }
+            scenes_data.append(scene_data)
+        
+        story_data = {
+            "version": 2,
+            "story_name": story_info.story_name,
+            "story_dir": story_info.story_dir,
+            "scenes": scenes_data
+        }
+        
+        with open(story_json_path, 'w', encoding='utf-8') as f:
+            json.dump(story_data, f, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        raise Exception(f"Error saving story to '{story_json_path}': {str(e)}")
+
+
+def load_story(story_json_path: str) -> Optional[StoryInfo]:
+    """Load story information from JSON file
+    
+    Supports both V1 (prompt_type) and V2 (prompt_source/prompt_key) formats.
+    V1 stories are automatically migrated to V2 on load.
+    """
+    if not os.path.isfile(story_json_path):
+        return None
+    
+    try:
+        with open(story_json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Handle version (default to 1 for old stories)
+        version = data.get("version", 1)
+        
+        scenes = []
+        for scene_data in data.get("scenes", []):
+            # V1 migration: convert prompt_type to prompt_source/prompt_key
+            if version == 1 and 'prompt_type' in scene_data:
+                prompt_type = scene_data.get('prompt_type', '')
+                if prompt_type == 'custom':
+                    scene_data['prompt_source'] = 'custom'
+                    scene_data['prompt_key'] = ''
+                elif prompt_type:
+                    scene_data['prompt_source'] = 'prompt'
+                    scene_data['prompt_key'] = prompt_type
+            
+            # Create scene with automatic V1->V2 migration via __init__
+            scene = SceneInStory(**scene_data)
+            scenes.append(scene)
+        
+        return StoryInfo(
+            version=2,  # Always save as V2 going forward
+            story_name=data.get("story_name", ""),
+            story_dir=data.get("story_dir", ""),
+            scenes=scenes
+        )
+        
+    except Exception as e:
+        raise Exception(f"Error loading story from '{story_json_path}': {str(e)}")
