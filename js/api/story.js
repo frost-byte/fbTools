@@ -42,6 +42,14 @@ export class StoryAPI extends BaseAPI {
     }
 
     /**
+     * List all available scenes
+     * @returns {Promise<{scenes: string[]}>}
+     */
+    async listScenes() {
+        return await this.get("/scene/list", {}, { base: "/fbtools" });
+    }
+
+    /**
      * Get scene order for a story
      * @param {string} storyDir - Story directory path
      * @returns {Promise<{scenes: Array<{order: number, name: string}>}>}

@@ -3533,6 +3533,7 @@ class StorySceneBatch(io.ComfyNode):
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Combo.Input(id="story_name", display_name="story_name", options=story_names, default=story_names[0] if story_names else "", tooltip="Select story to batch process"),
+                io.String.Input(id="job_id", display_name="job_id", default="", tooltip="Optional: Specify job_id (leave empty to auto-generate unique ID)"),
             ],
             outputs=[
                 io.Int.Output(id="scene_count", display_name="scene_count", tooltip="Total number of scenes"),
@@ -3546,6 +3547,7 @@ class StorySceneBatch(io.ComfyNode):
     def execute(
         cls,
         story_name: str = "",
+        job_id: str = "",
     ) -> io.NodeOutput:
         if not story_name:
             logger.warning("StorySceneBatch: story_name is empty")
@@ -3568,26 +3570,43 @@ class StorySceneBatch(io.ComfyNode):
         jobs_dir = Path(story_info.story_dir) / "jobs"
         jobs_dir.mkdir(parents=True, exist_ok=True)
         
-        # Get existing job_ids
-        existing_job_ids = set()
-        if jobs_dir.exists():
-            existing_job_ids = {d.name for d in jobs_dir.iterdir() if d.is_dir()}
+        # Use provided job_id or generate a new unique one
+        resolved_job_id = job_id.strip() if job_id else ""
         
-        # Generate unique job_id (should succeed on first try, but be safe)
-        max_attempts = 100
-        resolved_job_id = None
-        for _ in range(max_attempts):
-            candidate_id = uuid.uuid4().hex[:12]
-            if candidate_id not in existing_job_ids:
-                resolved_job_id = candidate_id
-                break
+        if resolved_job_id:
+            # User provided job_id - validate and use it
+            logger.info("StorySceneBatch: Using user-provided job_id='%s'", resolved_job_id)
+            job_root = jobs_dir / resolved_job_id
+            
+            # Check if this job already exists
+            if job_root.exists():
+                logger.warning(
+                    "StorySceneBatch: Job directory '%s' already exists, will reuse it",
+                    job_root
+                )
+        else:
+            # Auto-generate unique job_id
+            existing_job_ids = set()
+            if jobs_dir.exists():
+                existing_job_ids = {d.name for d in jobs_dir.iterdir() if d.is_dir()}
+            
+            # Generate unique job_id (should succeed on first try, but be safe)
+            max_attempts = 100
+            for _ in range(max_attempts):
+                candidate_id = uuid.uuid4().hex[:12]
+                if candidate_id not in existing_job_ids:
+                    resolved_job_id = candidate_id
+                    break
+            
+            if not resolved_job_id:
+                logger.error("StorySceneBatch: Failed to generate unique job_id after %d attempts", max_attempts)
+                return io.NodeOutput(0, [], "", "")
+            
+            logger.info("StorySceneBatch: Auto-generated unique job_id='%s'", resolved_job_id)
+            job_root = jobs_dir / resolved_job_id
         
-        if not resolved_job_id:
-            logger.error("StorySceneBatch: Failed to generate unique job_id after %d attempts", max_attempts)
-            return io.NodeOutput(0, [], "", "")
-        
-        job_root = jobs_dir / resolved_job_id
-        job_root.mkdir(parents=True, exist_ok=False)  # Should not exist - fail if it does
+        # Create job root directory if it doesn't exist
+        job_root.mkdir(parents=True, exist_ok=True)
 
         scenes_dir = default_scenes_dir()
         batch: list[dict] = []
@@ -5781,6 +5800,23 @@ async def story_get_job_ids(request):
         return web.json_response({'job_ids': job_ids})
     except Exception as e:
         logger.exception("fbTools API: Error getting job_ids for story_name='%s'", story_name)
+        return web.json_response({'error': str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/fbtools/scene/list")
+async def scene_list(request):
+    """
+    Get list of available scene names.
+    Returns: {"scenes": [str]}
+    """
+    try:
+        scenes_dir = default_scenes_dir()
+        available_scenes = get_subdirectories(scenes_dir)
+        scene_names = sorted(available_scenes.keys()) if available_scenes else []
+        
+        return web.json_response({'scenes': scene_names})
+    except Exception as e:
+        logger.exception("fbTools API: Error listing scenes")
         return web.json_response({'error': str(e)}, status=500)
 
 
