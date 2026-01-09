@@ -240,12 +240,13 @@ export function setupStoryEdit(nodeType, nodeData, app) {
         // Load available scenes for dropdowns
         const loadAvailableScenes = async () => {
             try {
-                // This would call a REST API to get available scenes
-                // For now, we'll extract from existing connections or state
-                // TODO: Implement REST API call
-                console.log("fb_tools -> StoryEdit: Loading available scenes");
+                const response = await fetch('/fbtools/scene/list');
+                const data = await response.json();
+                availableScenes = data.scenes || [];
+                console.log("fb_tools -> StoryEdit: Loaded available scenes:", availableScenes);
             } catch (error) {
                 console.error("fb_tools -> StoryEdit: Failed to load available scenes:", error);
+                availableScenes = [];
             }
         };
 
@@ -344,7 +345,12 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                             <input type="number" class="scene-order-input" value="${scene.scene_order || idx}" min="0" style="width: 45px; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px;" />
                         </td>
                         <td style="padding: 4px; border: 1px solid var(--border-color);">
-                            <span style="font-size: 11px; color: var(--fg-color);">${scene.scene_name || 'untitled'}</span>
+                            ${scene._isNewScene ? 
+                                `<select class="scene-name-select" style="width: 100%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
+                                    ${availableScenes.map(s => `<option value="${s}" ${scene.scene_name === s ? 'selected' : ''}>${s}</option>`).join('')}
+                                </select>` :
+                                `<span style="font-size: 11px; color: var(--fg-color);">${scene.scene_name || 'untitled'}</span>`
+                            }
                         </td>
                         <td style="padding: 4px; border: 1px solid var(--border-color);">
                             <select class="mask-type-select" style="width: 95%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
@@ -695,7 +701,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             });
 
             // Track changes in table inputs
-            container.querySelectorAll('.scene-order-input, .mask-type-select, .mask-bg-checkbox, .prompt-source-select, .prompt-key-input, .custom-prompt-input, .depth-type-select, .pose-type-select').forEach(input => {
+            container.querySelectorAll('.scene-order-input, .scene-name-select, .mask-type-select, .mask-bg-checkbox, .prompt-source-select, .prompt-key-input, .custom-prompt-input, .depth-type-select, .pose-type-select').forEach(input => {
                 input.addEventListener('change', (e) => {
                     updateSceneFromInput(e.target);
                 });
@@ -782,6 +788,9 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             // Update appropriate field
             if (input.classList.contains('scene-order-input')) {
                 scene.scene_order = parseInt(input.value) || 0;
+            } else if (input.classList.contains('scene-name-select')) {
+                scene.scene_name = input.value;
+                delete scene._isNewScene;  // Remove flag once scene is selected
             } else if (input.classList.contains('mask-type-select')) {
                 scene.mask_type = input.value;
             } else if (input.classList.contains('mask-bg-checkbox')) {
@@ -801,9 +810,12 @@ export function setupStoryEdit(nodeType, nodeData, app) {
 
         // Add new scene
         const addNewScene = () => {
+            // Use first available scene or fallback to "new_scene"
+            const firstScene = availableScenes.length > 0 ? availableScenes[0] : "new_scene";
+            
             const newScene = {
                 scene_id: `scene_${Date.now()}`,
-                scene_name: "new_scene",
+                scene_name: firstScene,
                 scene_order: currentScenes.length,
                 mask_type: "combined",
                 mask_background: true,
@@ -815,7 +827,8 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 use_depth: false,
                 use_mask: false,
                 use_pose: false,
-                use_canny: false
+                use_canny: false,
+                _isNewScene: true  // Flag to show dropdown
             };
             currentScenes.push(newScene);
             currentStoryData.scenes = currentScenes;
@@ -928,10 +941,16 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             try {
                 currentStoryData.scenes = currentScenes;
                 
+                // Filter out _isNewScene flag before saving
+                const scenesToSave = currentScenes.map(scene => {
+                    const { _isNewScene, ...cleanScene } = scene;
+                    return cleanScene;
+                });
+                
                 console.log("fb_tools -> StoryEdit: Saving story", storySelect);
-                console.log("fb_tools -> StoryEdit: Current scenes count:", currentScenes.length);
-                console.log("fb_tools -> StoryEdit: Sample scene data:", currentScenes[0]);
-                console.log("fb_tools -> StoryEdit: Full scenes to save:", JSON.stringify(currentScenes, null, 2));
+                console.log("fb_tools -> StoryEdit: Current scenes count:", scenesToSave.length);
+                console.log("fb_tools -> StoryEdit: Sample scene data:", scenesToSave[0]);
+                console.log("fb_tools -> StoryEdit: Full scenes to save:", JSON.stringify(scenesToSave, null, 2));
                 
                 const response = await fetch('/fbtools/story/save', {
                     method: 'POST',
@@ -940,7 +959,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                     },
                     body: JSON.stringify({
                         story_name: storySelect,
-                        scenes: currentScenes
+                        scenes: scenesToSave
                     })
                 });
                 
@@ -1029,6 +1048,9 @@ export function setupStoryEdit(nodeType, nodeData, app) {
         // Initialize: Update preview scene options based on currently selected story
         const initialStorySelect = widgets.find(w => w.name === 'story_select')?.value;
         if (initialStorySelect) {
+            // Load available scenes first
+            await loadAvailableScenes();
+            
             // Update preview scene combo for current story first
             await updatePreviewSceneOptions(initialStorySelect);
             

@@ -1,0 +1,4 @@
+textarea.prompt-value-input {
+    overflow: hidden;
+    resize: vertical;
+}

@@ -402,6 +402,20 @@ import { setupLibberManager, setupLibberApply } from "./nodes/libber.js";
 // Add context menu entry for extracting a node as json
 app.registerExtension({
     name: "FBToolsContextMenu",
+    async init() {
+        const styleTagId = 'fb_tools-stylesheet';
+        let styleTag = document.getElementById(styleTagId);
+        if (styleTag) {
+            return;
+        }
+
+        document.head.appendChild(Object.assign(document.createElement('link'), {
+            id: styleTagId,
+            rel: 'stylesheet',
+            type: 'text/css',
+            href: 'extensions/comfyui-fbTools/styles/style.css'
+        }));
+    },
     setup() {
         JSONView.ensureLoaded().then(() => {
             console.log("fb_tools -> JSONView loaded:", JSONView.JSONView);
