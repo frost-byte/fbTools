@@ -918,7 +918,6 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 node._currentScenes = currentScenes;
                 // Pass true to reset scenes when loading from backend
                 renderTable(currentStoryData, true);
-                renderTable(data);
             } catch (error) {
                 console.error("fb_tools -> StoryEdit: Failed to load story:", error);
                 container.innerHTML = `
