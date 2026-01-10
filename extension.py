@@ -3544,6 +3544,20 @@ class StorySceneBatch(io.ComfyNode):
         )
 
     @classmethod
+    def fingerprint_inputs(cls, **kwargs):
+        """Generate fingerprint based on story.json modification time and size to handle caching."""
+        if "story_name" in kwargs:
+            stories_dir = default_stories_dir()
+            story_json_path = Path(stories_dir) / kwargs["story_name"] / "story.json"
+            if story_json_path.exists():
+                try:
+                    st = os.stat(story_json_path)
+                    return (str(story_json_path), int(st.st_mtime), int(st.st_size))
+                except Exception as e:
+                    logger.warning("StorySceneBatch: Failed to stat story.json for fingerprinting: %s", e)
+        return super().fingerprint_inputs(**kwargs)
+
+    @classmethod
     def execute(
         cls,
         story_name: str = "",
@@ -3629,6 +3643,18 @@ class StorySceneBatch(io.ComfyNode):
                 scene.scene_name,
                 scene.scene_order,
             )
+            
+            # Log scene configuration for debugging
+            logger.info(
+                "StorySceneBatch: Scene '%s' - depth_type='%s', pose_type='%s', mask_type='%s', use_pose=%s, use_depth=%s",
+                scene.scene_name,
+                scene.depth_type,
+                scene.pose_type,
+                scene.mask_type,
+                scene.use_pose,
+                scene.use_depth,
+            )
+            
             # Load PromptCollection and compose prompts using the new system
             if "version" in prompt_data_raw and prompt_data_raw.get("version") == 2:
                 logger.debug("StorySceneBatch: Detected v2 prompt format for scene '%s'", scene.scene_name)
@@ -3733,6 +3759,11 @@ class StorySceneBatch(io.ComfyNode):
                 "depth_key": depth_key,
                 "pose_type": scene.pose_type,
                 "pose_key": pose_key,
+                # Control flags for which inputs to use
+                "use_depth": scene.use_depth,
+                "use_mask": scene.use_mask,
+                "use_pose": scene.use_pose,
+                "use_canny": scene.use_canny,
                 "scene_dir": scene_dir,
                 "story_dir": story_info.story_dir,
                 "job_id": resolved_job_id,
@@ -3851,6 +3882,15 @@ class StoryScenePick(io.ComfyNode):
             use_canny=descriptor.get("use_canny", False),
         )
         
+        # Log the pose configuration for debugging
+        pose_attr = default_pose_options.get(scene_config.pose_type, "pose_open_image")
+        logger.info(
+            "StoryScenePick: Scene '%s' - pose_type='%s' -> pose_attr='%s' (from descriptor: '%s')",
+            scene_config.scene_name,
+            scene_config.pose_type,
+            pose_attr,
+            descriptor.get("pose_type", "NOT_IN_DESCRIPTOR")
+        )
         logger.debug("StoryScenePick: Processing scene '%s'", scene_config.scene_name)
 
         # Use the pre-computed positive_prompt from StorySceneBatch
