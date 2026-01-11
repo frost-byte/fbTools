@@ -3527,13 +3527,17 @@ class StorySceneBatch(io.ComfyNode):
         available_stories = get_subdirectories(stories_dir)
         story_names = list(available_stories.keys()) if available_stories else [""]
         
+        # Job ID options will be populated dynamically by frontend when story_name changes
+        # Empty string means auto-generate a new unique job_id
+        job_id_options = [""]
+        
         return io.Schema(
             node_id=prefixed_node_id("StorySceneBatch"),
             display_name="StorySceneBatch",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Combo.Input(id="story_name", display_name="story_name", options=story_names, default=story_names[0] if story_names else "", tooltip="Select story to batch process"),
-                io.String.Input(id="job_id", display_name="job_id", default="", tooltip="Optional: Specify job_id (leave empty to auto-generate unique ID)"),
+                io.Combo.Input(id="job_id", display_name="job_id", options=job_id_options, default="", tooltip="Select existing job_id or leave empty to auto-generate. Options update when story changes."),
             ],
             outputs=[
                 io.Int.Output(id="scene_count", display_name="scene_count", tooltip="Total number of scenes"),
@@ -3544,18 +3548,46 @@ class StorySceneBatch(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, **kwargs):
+    def validate_inputs(cls, story_name: str = "", job_id: str = ""):
+        """Validate that job_id is valid for the selected story."""
+        if not story_name:
+            return "Story name is required"
+        
+        if not job_id:
+            # Empty job_id is allowed - will auto-generate
+            return True
+        
+        stories_dir = default_stories_dir()
+        story_json_path = Path(stories_dir) / story_name / "story.json"
+        
+        if not story_json_path.exists():
+            return f"Story '{story_name}' not found"
+        
+        story_info = load_story(str(story_json_path))
+        if not story_info:
+            return f"Failed to load story '{story_name}'"
+        
+        available_jobs = list_job_ids(story_info.story_dir)
+        if job_id not in available_jobs:
+            return f"Job ID '{job_id}' not found in story '{story_name}'. Available jobs: {', '.join(available_jobs) if available_jobs else '(none)'}"
+        
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, story_name: str = "", job_id: str = ""):
         """Generate fingerprint based on story.json modification time and size to handle caching."""
-        if "story_name" in kwargs:
+        if story_name:
+            logger.debug("StorySceneBatch: Generating fingerprint for story '%s'", story_name)
             stories_dir = default_stories_dir()
-            story_json_path = Path(stories_dir) / kwargs["story_name"] / "story.json"
+            story_json_path = Path(stories_dir) / story_name / "story.json"
             if story_json_path.exists():
                 try:
                     st = os.stat(story_json_path)
                     return (str(story_json_path), int(st.st_mtime), int(st.st_size))
                 except Exception as e:
                     logger.warning("StorySceneBatch: Failed to stat story.json for fingerprinting: %s", e)
-        return super().fingerprint_inputs(**kwargs)
+        # Return None to use default fingerprinting behavior
+        return None
 
     @classmethod
     def execute(
@@ -4189,11 +4221,52 @@ class StoryVideoBatch(io.ComfyNode):
         )
     
     @classmethod
+    def validate_inputs(cls, story_name: str = "default_story", job_id: str = ""):
+        """Validate that job_id is valid for the selected story."""
+        if not job_id:
+            # Empty job_id is allowed - will use most recent
+            return True
+        
+        stories_dir = default_stories_dir()
+        story_json_path = os.path.join(stories_dir, story_name, "story.json")
+        
+        if not os.path.isfile(story_json_path):
+            return f"Story '{story_name}' not found"
+        
+        story_info = load_story(story_json_path)
+        if not story_info:
+            return f"Failed to load story '{story_name}'"
+        
+        available_jobs = list_job_ids(story_info.story_dir)
+        if job_id not in available_jobs:
+            return f"Job ID '{job_id}' not found in story '{story_name}'. Available jobs: {', '.join(available_jobs)}"
+        
+        return True
+    
+    @classmethod
+    def fingerprint_inputs(cls, story_name: str = "default_story", job_id: str = ""):
+        """Generate fingerprint based on story.json modification time and size to handle caching."""
+        if story_name:
+            stories_dir = default_stories_dir()
+            story_json_path = os.path.join(stories_dir, story_name, "story.json")
+            if os.path.isfile(story_json_path):
+                try:
+                    st = os.stat(story_json_path)
+                    return (str(story_json_path), int(st.st_mtime), int(st.st_size))
+                except Exception as e:
+                    logger.warning("StoryVideoBatch: Failed to stat story.json for fingerprinting: %s", e)
+        # Return None to use default fingerprinting behavior
+        return None
+    
+    @classmethod
     def execute(
         cls,
         story_name: str = "default_story",
         job_id: str = "",
     ) -> io.NodeOutput:
+        # Debug logging to track what parameters are being received
+        logger.info("StoryVideoBatch.execute called with story_name='%s', job_id='%s'", story_name, job_id)
+        
         # Load story from story_name
         stories_dir = default_stories_dir()
         story_json_path = os.path.join(stories_dir, story_name, "story.json")
