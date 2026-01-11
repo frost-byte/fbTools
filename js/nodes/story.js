@@ -1146,7 +1146,7 @@ export function setupStoryView(nodeType, nodeData, app) {
  * Setup StorySceneBatch node extensions for dynamic story dropdown
  */
 export function setupStorySceneBatch(nodeType, nodeData, app) {
-    console.log("fb_tools -> StorySceneBatch: Setting up dynamic story dropdown");
+    console.log("fb_tools -> StorySceneBatch: Setting up dynamic story and job_id dropdowns");
     
     const onOriginalNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function() {
@@ -1154,8 +1154,30 @@ export function setupStorySceneBatch(nodeType, nodeData, app) {
             onOriginalNodeCreated.apply(this, arguments);
         }
         
+        const node = this;
+        
         // Initial load of story options
-        fetchAndUpdateStoryOptions(this);
+        fetchAndUpdateStoryOptions(node);
+        
+        // Setup story_name widget callback to update job_id options
+        const storyNameWidget = node.widgets?.find(w => w.name === 'story_name');
+        if (storyNameWidget) {
+            const originalCallback = storyNameWidget.callback;
+            storyNameWidget.callback = async function(value) {
+                // Call original callback if it exists
+                if (originalCallback) {
+                    originalCallback.apply(this, arguments);
+                }
+                
+                // Update job_id options for the selected story
+                await fetchAndUpdateJobIdOptions(node, value);
+            };
+            
+            // Initial load of job_id options for currently selected story
+            if (storyNameWidget.value) {
+                fetchAndUpdateJobIdOptions(node, storyNameWidget.value);
+            }
+        }
     };
     
     /**
@@ -1191,6 +1213,50 @@ export function setupStorySceneBatch(nodeType, nodeData, app) {
             }
         } catch (error) {
             console.error('fb_tools -> StorySceneBatch: Error fetching story list:', error);
+        }
+    }
+    
+    /**
+     * Fetch job IDs for a specific story and update job_id dropdown
+     */
+    async function fetchAndUpdateJobIdOptions(node, storyName) {
+        if (!storyName) {
+            console.log('fb_tools -> StorySceneBatch: No story selected, skipping job_id update');
+            return;
+        }
+        
+        try {
+            const response = await fetch(`/fbtools/story/job_ids?story_name=${encodeURIComponent(storyName)}`);
+            if (!response.ok) {
+                console.error('fb_tools -> StorySceneBatch: Failed to fetch job IDs for story:', storyName);
+                return;
+            }
+            
+            const data = await response.json();
+            const jobIds = data.job_ids || [];
+            
+            // Always include empty string option for auto-generate
+            const jobIdOptions = ["", ...jobIds];
+            
+            const jobIdWidget = node.widgets?.find(w => w.name === 'job_id');
+            if (jobIdWidget && jobIdWidget.type === 'combo') {
+                const currentValue = jobIdWidget.value;
+                
+                // Update widget options
+                jobIdWidget.options.values = jobIdOptions;
+                
+                // Preserve current value if it exists in new options, otherwise reset to empty (auto-generate)
+                jobIdWidget.value = jobIdOptions.includes(currentValue) ? currentValue : "";
+                
+                console.log(`fb_tools -> StorySceneBatch: Updated job_id options for story "${storyName}":`, jobIds.length, 'jobs');
+                
+                // Refresh node display
+                if (node.graph && node.graph.setDirtyCanvas) {
+                    node.graph.setDirtyCanvas(true, false);
+                }
+            }
+        } catch (error) {
+            console.error('fb_tools -> StorySceneBatch: Error fetching job IDs:', error);
         }
     }
 }
