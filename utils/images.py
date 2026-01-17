@@ -151,6 +151,32 @@ def save_image_comfyui(image_tensor, save_path):
     except Exception as e:
         print(f"Error saving image to '{save_path}': {e}")
 
+def generate_thumbnail(image_tensor, save_path, size=(128, 128)):
+    """Generate and save a thumbnail from ComfyUI IMAGE tensor [1,H,W,C] float32 0..1."""
+    print(f"fbTools: generate_thumbnail: '{save_path}'; shape {image_tensor.shape}")
+    
+    if image_tensor.ndim != 4:
+        raise ValueError("image_tensor must be 4D [B,H,W,C]")
+    
+    B, H, W, C = image_tensor.shape
+    if B != 1:
+        print(f"image_tensor batch size > 1; using only first image of {B}")
+        image_tensor = image_tensor[0:1]
+    
+    try:
+        # Convert tensor to PIL Image
+        img_np = (image_tensor[0] * 255.0).clamp(0, 255).to(torch.uint8).cpu().numpy()
+        img = Image.fromarray(img_np)
+        
+        # Create thumbnail (maintains aspect ratio and fits within size)
+        img.thumbnail(size, Image.Resampling.LANCZOS)
+        
+        # Save thumbnail
+        print(f"Saving thumbnail to '{save_path}' with size {img.size}")
+        img.save(save_path, format='PNG', compress_level=4)
+    except Exception as e:
+        print(f"Error generating thumbnail to '{save_path}': {e}")
+
 def load_image_comfyui(image_path: str, include_mask: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
     """Load an image and (optionally) its alpha mask.
 

@@ -38,7 +38,7 @@ from .utils.images import (
     _stack_if_same_shape
 )
 
-from .utils.images import _HAS_KORNIA, _HAS_SKIMAGE, _HAS_CV2, load_image_comfyui, save_image_comfyui, make_placeholder_tensor, normalize_image_tensor
+from .utils.images import _HAS_KORNIA, _HAS_SKIMAGE, _HAS_CV2, load_image_comfyui, save_image_comfyui, make_placeholder_tensor, normalize_image_tensor, generate_thumbnail
 from comfy_api.latest import ComfyExtension, io, ui
 from inspect import cleandoc
 import torch
@@ -1393,9 +1393,50 @@ class SceneInfo(BaseModel):
         if self.depth_zoe_any_image is not None:
             save_image_comfyui(self.depth_zoe_any_image, scene_path / "depth_zoe_any.png")
         
+        # Handle base.webp conversion to base.png
+        base_webp_path = scene_path / "base.webp"
+        base_png_path = scene_path / "base.png"
+        if base_webp_path.exists() and not base_png_path.exists():
+            try:
+                from PIL import Image
+                webp_img = Image.open(base_webp_path)
+                webp_img.save(base_png_path, format='PNG')
+                logger.info("SceneInfo: Converted base.webp to base.png")
+            except Exception as e:
+                logger.error("SceneInfo: Failed to convert base.webp to base.png: %s", e)
+        
         # Save pose images
         if self.base_image is not None:
-            save_image_comfyui(self.base_image, scene_path / "base.png")
+            save_image_comfyui(self.base_image, base_png_path)
+            # Generate thumbnail from base image
+            generate_thumbnail(self.base_image, scene_path / "thumbnail.png", size=(128, 128))
+        elif self.upscale_image is not None:
+            # Check if we should create base.png from upscale.png using depth.png dimensions
+            depth_png_path = scene_path / "depth.png"
+            if depth_png_path.exists() and not base_png_path.exists():
+                try:
+                    # Load depth to get target dimensions
+                    depth_img, _ = load_image_comfyui(str(depth_png_path), include_mask=False)
+                    _, depth_h, depth_w, _ = depth_img.shape
+                    
+                    # Resize upscale image to match depth dimensions
+                    from PIL import Image
+                    upscale_np = (self.upscale_image[0] * 255.0).clamp(0, 255).to(torch.uint8).cpu().numpy()
+                    upscale_pil = Image.fromarray(upscale_np)
+                    resized_pil = upscale_pil.resize((depth_w, depth_h), Image.Resampling.LANCZOS)
+                    
+                    # Convert back to tensor and save
+                    import numpy as np
+                    resized_np = np.array(resized_pil).astype(np.float32) / 255.0
+                    base_tensor = torch.from_numpy(resized_np).unsqueeze(0)
+                    save_image_comfyui(base_tensor, base_png_path)
+                    logger.info("SceneInfo: Created base.png from upscale.png at depth.png resolution")
+                except Exception as e:
+                    logger.error("SceneInfo: Failed to create base.png from upscale: %s", e)
+            
+            # Fallback: use upscale image for thumbnail if base doesn't exist
+            generate_thumbnail(self.upscale_image, scene_path / "thumbnail.png", size=(128, 128))
+        
         if self.pose_dense_image is not None:
             save_image_comfyui(self.pose_dense_image, scene_path / "pose_dense.png")
         if self.pose_dw_image is not None:
@@ -1500,6 +1541,125 @@ class SceneInfo(BaseModel):
         self.save_prompts(target_dir)
         self.save_pose_json(target_dir)
         self.save_loras(target_dir)
+    
+    def regenerate_thumbnail(self, scene_dir: Optional[str] = None, force: bool = False):
+        """Regenerate thumbnail if missing or base/upscale image changed
+        
+        Args:
+            scene_dir: Target scene directory (uses self.scene_dir if None)
+            force: If True, regenerate thumbnail even if it already exists
+        """
+        from pathlib import Path
+        from PIL import Image
+        import numpy as np
+        
+        scene_path = Path(scene_dir) if scene_dir else Path(self.scene_dir)
+        thumbnail_path = scene_path / "thumbnail.png"
+        
+        # Check if thumbnail already exists (skip if not forcing)
+        if thumbnail_path.exists() and not force:
+            logger.debug("SceneInfo: Thumbnail already exists at '%s'", thumbnail_path)
+            return
+        
+        # Define paths for disk-based operations
+        base_png_path = scene_path / "base.png"
+        base_webp_path = scene_path / "base.webp"
+        upscale_path = scene_path / "upscale.png"
+        depth_path = scene_path / "depth.png"
+        
+        # Priority 1: Check for base.webp and convert to base.png
+        if base_webp_path.exists() and not base_png_path.exists():
+            try:
+                webp_img = Image.open(base_webp_path)
+                webp_img.save(base_png_path, format='PNG')
+                logger.info("SceneInfo: Converted base.webp to base.png at '%s'", base_png_path)
+            except Exception as e:
+                logger.error("SceneInfo: Failed to convert base.webp to base.png: %s", e)
+        
+        # Priority 2: Use base_image from memory if available
+        if self.base_image is not None:
+            generate_thumbnail(self.base_image, thumbnail_path, size=(128, 128))
+            logger.info("SceneInfo: Generated thumbnail from base_image in memory at '%s'", thumbnail_path)
+            return
+        
+        # Priority 3: Use base.png from disk
+        if base_png_path.exists():
+            try:
+                img, _ = load_image_comfyui(str(base_png_path), include_mask=False)
+                generate_thumbnail(img, thumbnail_path, size=(128, 128))
+                logger.info("SceneInfo: Generated thumbnail from base.png at '%s'", thumbnail_path)
+                return
+            except Exception as e:
+                logger.error("SceneInfo: Failed to generate thumbnail from base.png: %s", e)
+        
+        # Priority 4: Use upscale_image from memory if available
+        if self.upscale_image is not None:
+            generate_thumbnail(self.upscale_image, thumbnail_path, size=(128, 128))
+            logger.info("SceneInfo: Generated thumbnail from upscale_image in memory at '%s'", thumbnail_path)
+            return
+        
+        # Priority 5: Create base.png from upscale.png if base.png doesn't exist
+        if upscale_path.exists() and not base_png_path.exists():
+            try:
+                img, _ = load_image_comfyui(str(upscale_path), include_mask=False)
+                
+                # Determine target resolution for base.png
+                target_width, target_height = 1024, 1024  # Default resolution
+                
+                # Check if depth.png exists and is not empty (64x64)
+                if depth_path.exists():
+                    try:
+                        depth_img, _ = load_image_comfyui(str(depth_path), include_mask=False)
+                        _, depth_h, depth_w, _ = depth_img.shape
+                        
+                        # Only use depth dimensions if not the empty 64x64 size
+                        if depth_w != 64 or depth_h != 64:
+                            target_width, target_height = depth_w, depth_h
+                            logger.info("SceneInfo: Using depth.png resolution for base.png: %dx%d", target_width, target_height)
+                        else:
+                            logger.info("SceneInfo: depth.png is 64x64 (empty), using default 1024x1024 for base.png")
+                    except Exception as e:
+                        logger.warning("SceneInfo: Failed to read depth.png dimensions, using default 1024x1024: %s", e)
+                else:
+                    logger.info("SceneInfo: No depth.png found, using default 1024x1024 for base.png")
+                
+                # Resize upscale to target dimensions and save as base.png
+                upscale_np = (img[0] * 255.0).clamp(0, 255).to(torch.uint8).cpu().numpy()
+                upscale_pil = Image.fromarray(upscale_np)
+                resized_pil = upscale_pil.resize((target_width, target_height), Image.Resampling.LANCZOS)
+                
+                # Convert back to tensor and save
+                resized_np = np.array(resized_pil).astype(np.float32) / 255.0
+                base_tensor = torch.from_numpy(resized_np).unsqueeze(0)
+                save_image_comfyui(base_tensor, base_png_path)
+                logger.info("SceneInfo: Created base.png from upscale.png at %dx%d resolution", target_width, target_height)
+                
+                # Now generate thumbnail from the newly created base.png
+                generate_thumbnail(base_tensor, thumbnail_path, size=(128, 128))
+                logger.info("SceneInfo: Generated thumbnail from newly created base.png at '%s'", thumbnail_path)
+                return
+                
+            except Exception as e:
+                logger.error("SceneInfo: Failed to create base.png and thumbnail from upscale.png: %s", e)
+        
+        # Priority 6: If upscale.png exists but base.png already exists, use upscale for thumbnail
+        if upscale_path.exists():
+            try:
+                img, _ = load_image_comfyui(str(upscale_path), include_mask=False)
+                generate_thumbnail(img, thumbnail_path, size=(128, 128))
+                logger.info("SceneInfo: Generated thumbnail from upscale.png at '%s'", thumbnail_path)
+                return
+            except Exception as e:
+                logger.error("SceneInfo: Failed to generate thumbnail from upscale.png: %s", e)
+        
+        # Priority 7: Create empty/default thumbnail
+        try:
+            # Create a small empty gray image as default
+            default_img = Image.new('RGB', (128, 128), color=(64, 64, 64))
+            default_img.save(thumbnail_path, format='PNG')
+            logger.info("SceneInfo: Created default empty thumbnail at '%s'", thumbnail_path)
+        except Exception as e:
+            logger.error("SceneInfo: Failed to create default thumbnail: %s", e)
 
     model_config = ConfigDict(arbitrary_types_allowed=True, from_attributes=True)
 
@@ -5948,6 +6108,101 @@ async def story_list(request):
     except Exception as e:
         logger.exception("fbTools API: Error listing stories")
         return web.json_response({'error': str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/fbtools/story/regenerate_thumbnails")
+async def story_regenerate_thumbnails(request):
+    """
+    Regenerate thumbnails for all scenes in a story that don't have them.
+    Body: {"story_name": str}
+    Returns: {"success": bool, "regenerated": int, "message": str}
+    """
+    try:
+        data = await request.json()
+        story_name = data.get("story_name")
+        
+        if not story_name:
+            return web.json_response({'success': False, 'error': 'story_name is required'}, status=400)
+        
+        stories_dir = default_stories_dir()
+        story_dir = os.path.join(stories_dir, story_name)
+        
+        if not os.path.isdir(story_dir):
+            return web.json_response({'success': False, 'error': f'Story "{story_name}" not found'}, status=404)
+        
+        # Load story
+        story_json_path = os.path.join(story_dir, "story.json")
+        story_info = load_story(story_json_path)
+        if not story_info:
+            return web.json_response({'success': False, 'error': f'Failed to load story "{story_name}"'}, status=500)
+        
+        regenerated_count = 0
+        scenes_dir = default_scenes_dir()
+        
+        # Regenerate thumbnails for each scene (force=True to regenerate all)
+        for scene in story_info.scenes:
+            scene_dir = os.path.join(scenes_dir, scene.scene_name)
+            if not os.path.isdir(scene_dir):
+                logger.warning("Scene directory not found: %s", scene_dir)
+                continue
+            
+            thumbnail_path = os.path.join(scene_dir, "thumbnail.png")
+            
+            # Load scene info and regenerate thumbnail (force=True)
+            scene_info = SceneInfo.from_scene_directory(scene_dir, scene.scene_name)
+            scene_info.regenerate_thumbnail(scene_dir, force=True)
+            
+            # Check if thumbnail was actually created
+            if os.path.exists(thumbnail_path):
+                regenerated_count += 1
+                logger.info("Generated thumbnail for scene '%s'", scene.scene_name)
+            else:
+                logger.warning("Failed to generate thumbnail for scene '%s'", scene.scene_name)
+        
+        return web.json_response({
+            'success': True,
+            'regenerated': regenerated_count,
+            'message': f'Regenerated {regenerated_count} thumbnails for story "{story_name}"'
+        })
+        
+    except Exception as e:
+        logger.exception("fbTools API: Error regenerating thumbnails")
+        return web.json_response({'error': str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/fbtools/scene/thumbnail/{scene_name}")
+async def get_scene_thumbnail(request):
+    """
+    Serve thumbnail image for a scene.
+    Returns: thumbnail PNG image or 404 if not found
+    """
+    try:
+        scene_name = request.match_info.get("scene_name")
+        
+        if not scene_name:
+            return web.json_response({"error": "scene_name required"}, status=400)
+        
+        scenes_dir = default_scenes_dir()
+        thumbnail_path = os.path.join(scenes_dir, scene_name, "thumbnail.png")
+        
+        if not os.path.exists(thumbnail_path):
+            logger.warning("Thumbnail not found: %s", thumbnail_path)
+            return web.json_response({"error": f"Thumbnail not found for scene '{scene_name}'"}, status=404)
+        
+        # Serve the image file
+        return web.FileResponse(
+            thumbnail_path,
+            headers={
+                'Content-Type': 'image/png',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0'
+            }
+        )
+        
+    except Exception as e:
+        logger.exception("Error serving thumbnail")
+        return web.json_response({"error": str(e)}, status=500)
 
 
 @PromptServer.instance.routes.post("/fbtools/story/save")
