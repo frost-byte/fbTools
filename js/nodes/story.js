@@ -304,6 +304,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                     <button class="save-story-btn" title="Save story to disk" style="padding: 4px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer;">💾 Save</button>
                     <button class="refresh-story-btn" title="Reload story from disk" style="padding: 4px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer;">🔄 Refresh</button>
                     <button class="add-scene-btn" title="Add new scene" style="padding: 4px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer;">+ Add Scene</button>
+                    <button class="regenerate-thumbnails-btn" title="Regenerate thumbnails for all scenes in this story" style="padding: 4px 12px; background: var(--comfy-menu-bg); color: var(--fg-color); border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer;">🖼️ Regen Thumbnails</button>
                     <span style="padding: 4px 8px; color: var(--descrip-text); font-size: 11px;">${currentScenes.length} scenes</span>
                 </div>
             `;
@@ -314,11 +315,10 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                     <thead>
                         <tr style="background: var(--comfy-menu-bg); position: sticky; top: 48px; z-index: 9;">
                             <th style="padding: 6px; border: 1px solid var(--border-color); text-align: left; width: 50px;">Order</th>
+                            <th style="padding: 6px; border: 1px solid var(--border-color); text-align: center; width: 136px;">Thumbnail</th>
                             <th style="padding: 6px; border: 1px solid var(--border-color); text-align: left; min-width: 120px;">Scene</th>
                             <th style="padding: 6px; border: 1px solid var(--border-color); text-align: left; width: 100px;">Mask</th>
                             <th style="padding: 6px; border: 1px solid var(--border-color); text-align: center; width: 60px;">BG</th>
-                            <th style="padding: 6px; border: 1px solid var(--border-color); text-align: left; width: 110px;">Prompt Src</th>
-                            <th style="padding: 6px; border: 1px solid var(--border-color); text-align: left; min-width: 120px;">Key/Custom</th>
                             <th style="padding: 6px; border: 1px solid var(--border-color); text-align: left; width: 90px;">Depth</th>
                             <th style="padding: 6px; border: 1px solid var(--border-color); text-align: left; width: 90px;">Pose</th>
                             <th style="padding: 6px; border: 1px solid var(--border-color); text-align: center; width: 120px;">Actions</th>
@@ -339,10 +339,16 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 const depthOptions = depthTypes.map(d => `<option value="${d}" ${scene.depth_type === d ? 'selected' : ''}>${d}</option>`).join('');
                 const poseOptions = poseTypes.map(p => `<option value="${p}" ${scene.pose_type === p ? 'selected' : ''}>${p}</option>`).join('');
 
+                const thumbnailUrl = `/fbtools/scene/thumbnail/${scene.scene_name}?t=${Date.now()}`;
+                
                 return `
                     <tr data-scene-idx="${idx}" data-scene-id="${scene.scene_id || ''}" style="background: var(--comfy-input-bg);">
                         <td style="padding: 4px; border: 1px solid var(--border-color);">
                             <input type="number" class="scene-order-input" value="${scene.scene_order || idx}" min="0" style="width: 45px; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px;" />
+                        </td>
+                        <td style="padding: 4px; border: 1px solid var(--border-color); text-align: center;">
+                            <img src="${thumbnailUrl}" alt="Scene thumbnail" style="max-width: 128px; max-height: 128px; width: auto; height: auto; border: 1px solid var(--border-color); border-radius: 2px; display: block; margin: 0 auto; background: var(--comfy-menu-bg);" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';" />
+                            <div style="display: none; font-size: 10px; color: var(--descrip-text); padding: 4px;">No thumbnail</div>
                         </td>
                         <td style="padding: 4px; border: 1px solid var(--border-color);">
                             ${scene._isNewScene ? 
@@ -359,17 +365,6 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                         </td>
                         <td style="padding: 4px; border: 1px solid var(--border-color); text-align: center;">
                             <input type="checkbox" class="mask-bg-checkbox" ${scene.mask_background ? 'checked' : ''} style="cursor: pointer;" />
-                        </td>
-                        <td style="padding: 4px; border: 1px solid var(--border-color);">
-                            <select class="prompt-source-select" style="width: 100%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
-                                ${promptSourceOptions}
-                            </select>
-                        </td>
-                        <td style="padding: 4px; border: 1px solid var(--border-color);">
-                            ${scene.prompt_source === 'custom' ? 
-                                `<textarea class="custom-prompt-input" rows="2" style="width: 100%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px; resize: vertical;">${scene.custom_prompt || ''}</textarea>` :
-                                `<input type="text" class="prompt-key-input" value="${scene.prompt_key || ''}" placeholder="key" style="width: 100%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;" />`
-                            }
                         </td>
                         <td style="padding: 4px; border: 1px solid var(--border-color);">
                             <select class="depth-type-select" style="width: 100%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
@@ -413,9 +408,28 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 const showDropdown = videoPromptSource === 'prompt' || videoPromptSource === 'composition';
                 const showCustomPrompt = videoPromptSource === 'custom';
                 
+                const promptSources = ["prompt", "composition", "custom"];
+                const promptSourceOptions = promptSources.map(p => `<option value="${p}" ${scene.prompt_source === p ? 'selected' : ''}>${p}</option>`).join('');
+                
                 return `
                 <div style="padding: 8px; margin-bottom: 8px; background: var(--comfy-menu-bg); border: 1px solid var(--border-color); border-radius: 4px;">
                     <div style="font-weight: 600; margin-bottom: 6px; color: var(--fg-color);">${scene.scene_name || `Scene ${idx}`}</div>
+                    
+                    <div style="margin-bottom: 8px;">
+                        <div style="font-size: 11px; color: var(--descrip-text); margin-bottom: 4px;">🖼️ Image Prompt Settings:</div>
+                        <div style="display: grid; grid-template-columns: 150px 1fr; gap: 8px; align-items: ${scene.prompt_source === 'custom' ? 'start' : 'center'}; margin-bottom: 12px;">
+                            <label style="font-size: 12px;">prompt_source:</label>
+                            <select class="prompt-source-select-flags" data-scene-idx="${idx}" style="padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
+                                ${promptSourceOptions}
+                            </select>
+                            
+                            <label style="font-size: 12px; ${scene.prompt_source === 'custom' ? 'padding-top: 4px;' : ''}">${scene.prompt_source === 'custom' ? 'custom_prompt:' : 'prompt_key:'}</label>
+                            ${scene.prompt_source === 'custom' ? 
+                                `<textarea class="custom-prompt-input-flags" data-scene-idx="${idx}" style="width: 100%; min-height: 80px; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px; resize: vertical; font-family: monospace;">${scene.custom_prompt || ''}</textarea>` :
+                                `<input type="text" class="prompt-key-input-flags" data-scene-idx="${idx}" value="${scene.prompt_key || ''}" placeholder="key" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;" />`
+                            }
+                        </div>
+                    </div>
                     
                     <div style="margin-bottom: 8px;">
                         <div style="font-size: 11px; color: var(--descrip-text); margin-bottom: 4px;">🎬 Video Prompt Settings:</div>
@@ -674,6 +688,14 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                     addNewScene();
                 });
             }
+            
+            // Regenerate thumbnails button
+            const regenBtn = container.querySelector('.regenerate-thumbnails-btn');
+            if (regenBtn) {
+                regenBtn.addEventListener('click', async () => {
+                    await regenerateThumbnails();
+                });
+            }
 
             // Scene table row actions
             container.querySelectorAll('.move-up-btn').forEach(btn => {
@@ -771,6 +793,38 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                     updateSceneFromInput(e.target);
                     // Re-render to show correct input type, but keep current changes
                     renderTable(currentStoryData, false);
+                });
+            });
+            
+            // Handle prompt source changes in flags tab
+            container.querySelectorAll('.prompt-source-select-flags').forEach(select => {
+                select.addEventListener('change', (e) => {
+                    const idx = parseInt(e.target.dataset.sceneIdx);
+                    if (currentScenes[idx]) {
+                        currentScenes[idx].prompt_source = e.target.value;
+                        // Re-render to show correct input type
+                        renderTable(currentStoryData, false);
+                    }
+                });
+            });
+            
+            // Handle prompt key input changes in flags tab
+            container.querySelectorAll('.prompt-key-input-flags').forEach(input => {
+                input.addEventListener('change', (e) => {
+                    const idx = parseInt(e.target.dataset.sceneIdx);
+                    if (currentScenes[idx]) {
+                        currentScenes[idx].prompt_key = e.target.value;
+                    }
+                });
+            });
+            
+            // Handle custom prompt input changes in flags tab
+            container.querySelectorAll('.custom-prompt-input-flags').forEach(textarea => {
+                textarea.addEventListener('input', (e) => {
+                    const idx = parseInt(e.target.dataset.sceneIdx);
+                    if (currentScenes[idx]) {
+                        currentScenes[idx].custom_prompt = e.target.value;
+                    }
                 });
             });
         };
@@ -929,7 +983,42 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             }
         };
 
-        // Save story data to backend
+        // Regenerate thumbnails for all scenes in story
+        const regenerateThumbnails = async () => {
+            const storySelect = widgets.find(w => w.name === 'story_select')?.value;
+            if (!storySelect) {
+                console.warn("fb_tools -> StoryEdit: No story selected");
+                return;
+            }
+
+            if (!confirm(`Regenerate all thumbnails for scenes in "${storySelect}"?\n\nThis will overwrite existing thumbnails.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/fbtools/story/regenerate_thumbnails', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ story_name: storySelect })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    console.log(`fb_tools -> StoryEdit: Regenerated ${result.regenerated} thumbnails`);
+                    alert(`${result.message}`);
+                    // Reload the table to show new thumbnails
+                    await loadStoryData();
+                } else {
+                    console.error("fb_tools -> StoryEdit: Failed to regenerate thumbnails:", result.error);
+                    alert(`Failed to regenerate thumbnails: ${result.error}`);
+                }
+            } catch (error) {
+                console.error("fb_tools -> StoryEdit: Error regenerating thumbnails:", error);
+                alert(`Error regenerating thumbnails: ${error.message}`);
+            }
+        };
+
+        // Save story data to backend (original full implementation)
         const saveStory = async () => {
             const storySelect = widgets.find(w => w.name === 'story_select')?.value;
             if (!storySelect || !currentStoryData) {
