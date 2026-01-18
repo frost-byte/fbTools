@@ -3,11 +3,11 @@ requires = ["setuptools>=70.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fb_tools"
-version = "0.0.1"
-description = "A collect of custom nodes for ComfyUI"
+name = "fb-Tools"
+version = "0.1.1"
+description = "A collect of custom nodes for ComfyUI, including Scene, Storybuilding, and Libbers, a form of placeholders."
 authors = [
-  {name = "comfy-fb-tools", email = "brian@frost-byte.net"}
+  {name = "frost-byte", email = "brian@frost-byte.net"}
 ]
 readme = "README.md"
 license = {text = "MIT license"}
@@ -16,8 +16,6 @@ classifiers = []
 dependencies = [
 
 ]
-
-
 
 [project.optional-dependencies]
 dev = [
@@ -30,19 +28,19 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/frost-byte/fb_tools"
-BugTracker = "https://github.com/frost-byte/fb_tools/issues"
-Documentation = "https://github.com/frost-byte/fb_tools/wiki"
+Repository = "https://github.com/frost-byte/fbTools"
+BugTracker = "https://github.com/frost-byte/fbTools/issues"
+Documentation = "https://github.com/frost-byte/fbTools/wiki"
 
 
 [tool.comfy]
 PublisherId = "frost-byte"
 DisplayName = "fb-tools"
-Icon = ""
+Icon = "https://raw.githubusercontent.com/frost-byte/fbTools/main/icon_256.png"
 Tags = []
-Repository = "https://github.com/frost-byte/fb_tools"
+Repository = "https://github.com/frost-byte/fbTools"
 
-includes = []
+includes = ['js']
 
 [tool.setuptools.package-data]
 "*" = ["*.*"]
