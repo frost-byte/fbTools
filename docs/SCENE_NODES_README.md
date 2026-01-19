@@ -9,7 +9,8 @@ A **Scene** consists of:
 - **Depth maps**: Various depth estimation methods (Depth Anything v2, MiDaS, Zoe)
 - **Masks**: Character segmentation masks (with/without background)
 - **Prompts**: Multiple prompt types for different generation methods
-- **LoRA configurations**: High and low quality LoRA presets
+- **LoRA configurations**: High and low quality LoRA presets (requires WanVideoWrapper nodes)
+- **Thumbnail**: 128x128 preview image automatically generated from base or upscale image
 
 ## Scene Data Structure
 
@@ -20,11 +21,14 @@ The core data structure containing all scene information:
 ```python
 SceneInfo(
     # Metadata
-    pose_dir: str              # Directory where scene files are stored
-    pose_name: str             # Unique name for the scene
+    scene_dir: str             # Directory where scene files are stored
+    scene_name: str            # Unique name for the scene
     resolution: int            # Target resolution for images
     
-    # Prompts (5 types)
+    # V2 PromptCollection (flexible prompt system)
+    prompts: PromptCollection  # New prompt collection with categories and compositions
+    
+    # Legacy Prompts (maintained for backward compatibility)
     girl_pos: str              # Positive prompt for female character
     male_pos: str              # Positive prompt for male character(s)
     four_image_prompt: str     # Four-image generation prompt
@@ -49,7 +53,10 @@ SceneInfo(
     pose_face_image: Tensor    # Face-focused pose
     pose_open_image: Tensor    # OpenPose output
     canny_image: Tensor        # Canny edge detection
-    upscale_image: Tensor      # Upscaled base image
+    
+    # Image Hierarchy (base → upscale → derived)
+    base_image: Tensor         # Original input image (saved as base.png)
+    upscale_image: Tensor      # Scaled version of base_image (source for derived images)
     
     # Mask Images (6 variants)
     girl_mask_bkgd_image: Tensor      # Female mask with background
@@ -72,46 +79,55 @@ The `SceneInfo` class provides several helper methods for common operations:
 #### Loading Images
 ```python
 # Load all depth images from a directory
-depth_images = SceneInfo.load_depth_images(pose_dir)
+depth_images = SceneInfo.load_depth_images(scene_dir)
 
 # Load all pose images
-pose_images = SceneInfo.load_pose_images(pose_dir)
+pose_images = SceneInfo.load_pose_images(scene_dir)
 
-# Load all mask images
-mask_images = SceneInfo.load_mask_images(pose_dir)
+# Load all mask images (returns tuple: images, masks)
+mask_images, mask_tensors = SceneInfo.load_mask_images(scene_dir)
 
 # Load everything at once
-all_images = SceneInfo.load_all_images(pose_dir)
+all_images = SceneInfo.load_all_images(scene_dir)
+
+# Load specific assets for preview/output
+preview_assets = SceneInfo.load_preview_assets(
+    scene_dir=scene_dir,
+    depth_attr="depth_image",
+    pose_attr="pose_open_image",
+    mask_type="combined",
+    mask_background=True
+)
 ```
 
 #### Saving Data
 ```python
 # Save all images
-scene_info.save_all_images(pose_dir)
+scene_info.save_all_images(scene_dir)
 
-# Save prompts to prompts.json
-scene_info.save_prompts(pose_dir)
+# Save prompts to prompts.json (v2 format with PromptCollection)
+scene_info.save_prompts(scene_dir)
 
 # Save pose keypoints to pose.json
-scene_info.save_pose_json(pose_dir)
+scene_info.save_pose_json(scene_dir)
 
 # Save LoRA configurations
-scene_info.save_loras(pose_dir)
+scene_info.save_loras(scene_dir)
 
 # Create necessary directories
-scene_info.ensure_directories(pose_dir)
+scene_info.ensure_directories(scene_dir)
 
 # Save everything (images, prompts, pose_json, loras)
-scene_info.save_all(pose_dir)
+scene_info.save_all(scene_dir)
 ```
 
 #### Factory Method
 ```python
 # Create SceneInfo by loading from a directory
-scene_info = SceneInfo.from_pose_directory(
-    pose_dir="/path/to/scene",
-    pose_name="my_scene",
-    prompt_data=None,  # Will load from prompts.json if None
+scene_info = SceneInfo.from_scene_directory(
+    scene_dir="/path/to/scene",
+    scene_name="my_scene",
+    prompt_data=None,  # Optional: provide prompt dict, otherwise loads from prompts.json
     pose_json="",
     loras_high=None,
     loras_low=None
@@ -126,8 +142,8 @@ Creates a new scene from a base image by generating all pose, depth, and edge de
 
 **Inputs:**
 - `base_image` (IMAGE, required): Source image for the scene
-- `poses_dir` (STRING): Root directory for storing scenes (defaults to `ComfyUI/poses/`)
-- `pose_name` (STRING): Name for this scene (default: "default_pose")
+- `scenes_dir` (STRING): Root directory for storing scenes (defaults to `ComfyUI/output/scenes/`)
+- `scene_name` (STRING): Name for this scene (default: "default_scene")
 - `resolution` (INT): Target resolution (default: 512)
 - `upscale_method` (COMBO): Upscaling method
   - Options: lanczos, nearest-exact, bilinear, area, bicubic
@@ -173,7 +189,7 @@ Creates a new scene from a base image by generating all pose, depth, and edge de
 - `scene_info` (SCENE_INFO): Complete scene data structure
 
 **Behavior:**
-1. Creates scene directory structure: `{poses_dir}/{pose_name}/`
+1. Creates scene directory structure: `{scenes_dir}/{scene_name}/`
 2. Upscales base image according to settings
 3. Generates all pose detections (DensePose, DWPose, OpenPose)
 4. Generates all depth maps (Depth Anything v1/v2, MiDaS, Zoe, Zoe Any)
@@ -246,8 +262,10 @@ Visualizes a scene with selectable depth and pose types, displaying prompts.
 **Outputs:**
 - `depth_image` (IMAGE): Selected depth visualization
 - `pose_image` (IMAGE): Selected pose visualization
-- `pose_name` (STRING): Name of the scene
-- `pose_dir` (STRING): Directory path
+- `mask_image` (IMAGE): Selected mask visualization
+- `mask` (MASK): Alpha mask derived from selected mask image
+- `scene_name` (STRING): Name of the scene
+- `scene_dir` (STRING): Directory path of the scene
 - `girl_pos` (STRING): Female character prompt
 - `male_pos` (STRING): Male character prompt
 
@@ -274,14 +292,14 @@ Saves all scene data to disk in a structured format.
 
 **Inputs:**
 - `scene_info` (SCENE_INFO, required): Scene data to save
-- `pose_dir` (STRING, optional): Override save directory
+- `scene_dir` (STRING, optional): Override save directory
 
 **Outputs:**
 - UI preview showing save confirmation and prompts
 
 **File Structure Created:**
 ```
-{pose_dir}/
+{scene_dir}/
 ├── input/              # Input images directory (created)
 ├── output/             # Output images directory (created)
 ├── depth.png           # Depth Anything v2
@@ -296,6 +314,8 @@ Saves all scene data to disk in a structured format.
 ├── pose_open.png       # OpenPose
 ├── canny.png           # Canny edges
 ├── upscale.png         # Upscaled base image
+├── base.png            # Base image (if converted from base.webp or created from upscale)
+├── thumbnail.png       # 128x128 preview (auto-generated)
 ├── girl_mask_bkgd.png  # Female mask with background
 ├── male_mask_bkgd.png  # Male mask with background
 ├── combined_mask_bkgd.png # Combined mask with background
@@ -393,6 +413,70 @@ Provides a dropdown UI for selecting from available scenes in a directory.
 - Browse available scenes
 - Chain to SceneSelect for loading
 
+### 7. SceneWanVideoLoraMultiSave
+
+Saves LoRA configurations from WanVideoWrapper nodes to an existing scene's directory.
+
+**Important:** This node requires the [ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper/) extension to be installed.
+
+**Inputs:**
+- `scene_info` (SCENE_INFO, required): Scene to save LoRA configurations to
+- `loras_high` (WANVIDLORA, required): High-quality LoRA configuration from WanVideoLoraSelectMulti
+- `loras_low` (WANVIDLORA, required): Low-quality LoRA configuration from WanVideoLoraSelectMulti
+
+**Outputs:**
+- `scene_info` (SCENE_INFO): Updated scene information (unchanged from input)
+
+**Behavior:**
+1. Validates that scene_info contains a valid scene directory
+2. Accepts LoRA configurations from WanVideoLoraSelectMulti nodes
+3. Saves both high and low LoRA presets to `loras.json` in the scene directory
+4. Overwrites any existing LoRA configurations
+5. Logs the number of LoRA entries saved for each quality level
+6. Returns the input scene_info unchanged
+
+**LoRA Data Format:**
+Each LoRA entry contains:
+- `lora_name`: Filename of the LoRA (e.g., "detail_enhancer.safetensors")
+- `strength`: Weight/strength value (0.0-1.0)
+- `blocks`: Block-specific settings (dict)
+- `layer_filter`: Layer filtering string
+- `low_mem_load`: Whether to use low-memory loading (boolean)
+- `merge_loras`: Whether to merge LoRAs (boolean)
+
+**File Output:**
+Creates/overwrites `{scene_dir}/loras.json`:
+```json
+{
+  "high": [
+    { "lora_name": "style1.safetensors", "strength": 0.8, ... }
+  ],
+  "low": [
+    { "lora_name": "style2.safetensors", "strength": 0.5, ... }
+  ]
+}
+```
+
+**Use Cases:**
+- Save LoRA presets to existing scenes without regenerating images
+- Update LoRA configurations separately from other scene updates
+- Create LoRA presets that can be loaded by SceneSelect or SceneOutput
+- Manage different quality tiers (high/low) for different generation needs
+
+**Workflow Example:**
+```
+SceneSelect → SceneWanVideoLoraMultiSave → SceneSave
+    ↓               ↑ ↑
+[Load scene]        | |
+                    | └─ WanVideoLoraSelectMulti (low quality)
+                    └─── WanVideoLoraSelectMulti (high quality)
+```
+
+**Connection Requirements:**
+- **Input nodes**: Must use WanVideoLoraSelectMulti or WanVideoLoraSelect from WanVideoWrapper
+- **Not compatible**: Standard ComfyUI LoRA nodes cannot connect to this node
+- **Output compatibility**: Scene's LoRA outputs can only connect to WanVideo-compatible nodes
+
 ## Mask Generation (Future Integration)
 
 Currently, masks must be generated externally using tools like Photoshop, GIMP, or other segmentation software. The six mask variants should be saved in the scene directory with these filenames:
@@ -487,19 +571,48 @@ SceneLoad → SceneUpdate → SceneSave
         [Keep everything else]
 ```
 
+### Example 6: LoRA Configuration Workflow
+```
+                                    ┌─ WanVideoLoraSelectMulti (high quality)
+                                    │
+LoadImage → SceneCreate ────────────┼─ WanVideoLoraSelectMulti (low quality)
+              ↓                     │
+         [With LoRAs]               └─ Connected to loras_high/loras_low inputs
+              ↓
+          SceneSave
+```
+
+### Example 7: Adding LoRAs to Existing Scene
+```
+SceneSelect → SceneWanVideoLoraMultiSave → SceneSave
+    ↓               ↑ [loras_high]
+[Load scene]        |
+                    └─ WanVideoLoraSelectMulti × 2 (high and low)
+```
+
+### Example 8: Complete Generation Pipeline with LoRAs
+```
+SceneSelect → [loras_high output] → WanVideo Generation Nodes
+    ↓ [depth_image]
+    ↓ [pose_image]  
+    ↓ [mask_image]
+    └─ [prompt_out] → Text Generation
+```
+
 ## Directory Structure
 
-**Default poses directory:** `ComfyUI/poses/`
+**Default scenes directory:** `ComfyUI/output/scenes/`
 
 **Per-scene structure:**
 ```
-poses/
+scenes/
 ├── scene_name_1/
 │   ├── input/              # For input images
 │   ├── output/             # For generated outputs
 │   ├── [depth images]      # 5 depth variants
 │   ├── [pose images]       # 7 pose variants
 │   ├── [mask images]       # 6 mask variants (manually created)
+│   ├── thumbnail.png       # 128x128 preview (auto-generated)
 │   ├── prompts.json        # 5 prompt types
 │   ├── pose.json           # Keypoint data
 │   └── loras.json          # LoRA configurations
@@ -511,7 +624,23 @@ poses/
 
 ## Prompt Management
 
-### Prompt Types
+### Prompt System Overview
+
+SceneInfo supports two prompt systems:
+
+**V2 PromptCollection System (Recommended):**
+- Flexible prompt categories (positive, negative, advanced, etc.)
+- Composition system for combining prompts
+- Libber integration for advanced prompt processing
+- Used by ScenePromptManager node
+- Stored in `prompts.json` with `"version": 2` field
+
+**Legacy Prompt Fields (Backward Compatible):**
+- Individual string fields (girl_pos, male_pos, etc.)
+- Automatically migrated to PromptCollection when loaded
+- Still accessible for existing workflows
+
+### Legacy Prompt Types
 
 1. **girl_pos**: Positive prompt for female character
    - Focus: Appearance, clothing, style
@@ -563,6 +692,42 @@ Two methods for editing prompts:
 
 ## LoRA Configuration
 
+### Required Dependencies
+
+#### comfyui_controlnet_aux (REQUIRED)
+
+**CRITICAL:** All Scene nodes require the [comfyui_controlnet_aux](https://github.com/Fannovel16/comfyui_controlnet_aux) extension for pose detection, depth estimation, and canny edge detection.
+
+**Functionality provided:**
+- **Pose Detection**: DWPose, OpenPose, DensePose, face detection
+- **Depth Estimation**: Depth Anything v2, MiDaS, Zoe depth, and more
+- **Edge Detection**: Canny edge detection for pose images
+
+**Affected nodes:** SceneCreate, SceneUpdate (any node that generates pose/depth images)
+
+**Installation:** Search for "controlnet aux" in ComfyUI-Manager and install, or:
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/Fannovel16/comfyui_controlnet_aux.git
+```
+
+#### ComfyUI-WanVideoWrapper (OPTIONAL)
+
+**IMPORTANT:** LoRA functionality in Scene nodes requires the [ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper/) extension to be installed.
+
+The Scene system uses the custom `WANVIDLORA` data type, which is only compatible with specific nodes from the WanVideoWrapper extension:
+
+**Required Nodes:**
+- **WanVideoLoraSelectMulti**: For selecting and configuring multiple LoRAs
+- **WanVideoLoraSelect**: For selecting and configuring a single LoRA
+
+**Connection Requirements:**
+- LoRA **inputs** to Scene nodes (SceneCreate, SceneUpdate) must come from WanVideoLoraSelectMulti or WanVideoLoraSelect nodes
+- LoRA **outputs** from Scene nodes (SceneSelect, SceneOutput) can only connect to WanVideo-compatible nodes
+- Standard ComfyUI LoRA nodes are **not compatible** with Scene LoRA inputs/outputs
+
+### LoRA Data Structure
+
 LoRAs (Low-Rank Adaptations) are stored in `loras.json`:
 
 ```json
@@ -590,6 +755,116 @@ LoRAs (Low-Rank Adaptations) are stored in `loras.json`:
 }
 ```
 
+### LoRA Workflow
+
+**Setting LoRAs (Input to Scene):**
+```
+WanVideoLoraSelectMulti → SceneCreate → SceneSave
+        ↓                      ↓
+  [Configure High]      [Saves loras.json]
+
+WanVideoLoraSelectMulti → SceneUpdate → SceneSave
+        ↓                      ↓
+  [Configure Low]       [Updates loras.json]
+```
+
+**Loading LoRAs (Output from Scene):**
+```
+SceneSelect → [loras_high] → WanVideo Generation Nodes
+              [loras_low]
+```
+
+### Managing LoRAs
+
+**Using SceneWanVideoLoraMultiSave Node:**
+
+This specialized node allows you to save LoRA configurations to an existing scene:
+
+```
+SceneSelect → SceneWanVideoLoraMultiSave
+              ↑ [scene_info]
+              |
+WanVideoLoraSelectMulti → [loras_high]
+WanVideoLoraSelectMulti → [loras_low]
+```
+
+**Inputs:**
+- `scene_info` (SCENE_INFO): Scene to save LoRAs to
+- `loras_high` (WANVIDLORA): High-quality LoRA configuration from WanVideoLoraSelectMulti
+- `loras_low` (WANVIDLORA): Low-quality LoRA configuration from WanVideoLoraSelectMulti
+
+**Outputs:**
+- `scene_info` (SCENE_INFO): Updated scene information
+
+**Behavior:**
+- Saves both high and low LoRA configurations to `loras.json` in the scene directory
+- Overwrites existing LoRA configurations
+- Validates scene directory exists before saving
+```
+
+## Thumbnails
+
+### Automatic Generation
+
+Thumbnails are automatically generated when scenes are created or saved:
+
+**Generation Timing:**
+- **SceneCreate**: Automatically generates thumbnail from base image when scene is first created
+- **SceneSave**: Regenerates thumbnail whenever scene is saved
+- **SceneInfo.save_all_images()**: Generates thumbnail as part of save operation
+
+**Source Priority:**
+1. **base.png** (primary source) - Used if available
+2. **base.webp** (converted to base.png first) - Automatically converted if base.png doesn't exist
+3. **upscale.png** (fallback) - Used if no base image exists
+4. **Default gray image** - Created if no source images are available
+
+**Resolution Handling:**
+- When creating base.png from upscale.png, resolution is determined by:
+  1. **depth.png dimensions** (if valid and not 64x64 empty placeholder)
+  2. **1024x1024 default** (if depth.png is invalid or missing)
+- Thumbnail is always generated at **128x128 pixels**
+- Maintains aspect ratio using high-quality LANCZOS resampling
+
+### Manual Regeneration
+
+Thumbnails can be manually regenerated for existing scenes:
+
+**Via Python API:**
+```python
+# Regenerate thumbnail (skip if already exists)
+scene_info.regenerate_thumbnail(scene_dir)
+
+# Force regeneration (overwrite existing)
+scene_info.regenerate_thumbnail(scene_dir, force=True)
+```
+
+**Via StoryEdit Node:**
+- Use the "Regen Thumbnails" button in the StoryEdit node
+- Regenerates thumbnails for all scenes in a story
+- Overwrites existing thumbnails
+- Updates cache-busted URLs for immediate display
+
+**REST API Endpoint:**
+```
+POST /fbtools/story/regenerate_thumbnails
+Body: { "story_name": "my_story" }
+```
+
+### File Format
+
+- **Format**: PNG
+- **Size**: 128x128 pixels maximum (maintains aspect ratio)
+- **Location**: `{scene_dir}/thumbnail.png`
+- **Resampling**: LANCZOS (high-quality downscaling)
+
+### Display
+
+Thumbnails are displayed in:
+- **StoryEdit Node**: Thumbnail column in scenes table
+- **REST API**: `/fbtools/scene/thumbnail/{scene_name}` endpoint
+- **Cache Control**: Uses timestamp query parameters to prevent browser caching
+
 ## Best Practices
 
 ### Scene Creation
@@ -598,12 +873,24 @@ LoRAs (Low-Rank Adaptations) are stored in `loras.json`:
 3. **Set resolution to match your generation needs** (512, 768, 1024)
 4. **Create descriptive scene names** for easy identification
 5. **Generate masks externally** (for now) before using scenes
+6. **Thumbnails are auto-generated** - no manual intervention needed
+
+### LoRA Management
+1. **Install WanVideoWrapper extension first** - Required for all LoRA functionality
+2. **Use WanVideoLoraSelectMulti nodes** for scene LoRA inputs
+3. **Configure high/low quality tiers** appropriately:
+   - **High quality**: Detailed style LoRAs, character LoRAs, quality enhancers (strength 0.7-1.0)
+   - **Low quality**: Fast style LoRAs, simplified versions (strength 0.4-0.6)
+4. **Save LoRAs with SceneWanVideoLoraMultiSave** for modularity
+5. **Test LoRA combinations** before committing to scenes
+6. **Document LoRA purposes** in scene naming or external notes
 
 ### Scene Organization
 1. **Use consistent naming conventions** (e.g., `character_action_variant`)
 2. **Group related scenes** in subdirectories when appropriate
 3. **Document special requirements** in scene names or separate readme
 4. **Keep backup copies** of important scenes
+5. **Use thumbnails for quick visual identification** in story workflows
 
 ### Prompt Management
 1. **Be specific and detailed** in character descriptions
@@ -629,7 +916,7 @@ LoRAs (Low-Rank Adaptations) are stored in `loras.json`:
 ### Common Issues
 
 **Issue:** "Scene not found" error
-- **Solution:** Check `poses_dir` path and `pose_name` spelling
+- **Solution:** Check `scenes_dir` path and `scene_name` spelling
 - **Solution:** Ensure scene directory exists with required files
 
 **Issue:** Missing mask images in output
@@ -645,6 +932,24 @@ LoRAs (Low-Rank Adaptations) are stored in `loras.json`:
 - **Solution:** Check LoRA file paths are correct
 - **Solution:** Ensure LoRA files exist in ComfyUI loras folder
 
+**Issue:** LoRA connection errors / type mismatch
+- **Solution:** Install ComfyUI-WanVideoWrapper extension (https://github.com/kijai/ComfyUI-WanVideoWrapper/)
+- **Solution:** Use WanVideoLoraSelectMulti or WanVideoLoraSelect nodes
+- **Solution:** Do not use standard ComfyUI LoRA nodes with Scene nodes
+- **Solution:** Check that WANVIDLORA type is available in node connection menu
+
+**Issue:** SceneWanVideoLoraMultiSave not saving
+- **Solution:** Verify scene_info input is valid and contains scene_dir
+- **Solution:** Check that both loras_high and loras_low are connected
+- **Solution:** Ensure scene directory exists and is writable
+- **Solution:** Check console logs for detailed error messages
+
+**Issue:** Thumbnails not displaying or outdated
+- **Solution:** Use "Regen Thumbnails" button in StoryEdit node to force regeneration
+- **Solution:** Check that base.png or upscale.png exists in scene directory
+- **Solution:** Clear browser cache or use hard refresh (Ctrl+F5)
+- **Solution:** Verify thumbnail.png file exists and is not corrupted
+
 **Issue:** Depth/pose images look incorrect
 - **Solution:** Try different model selections (vitl vs vitb)
 - **Solution:** Adjust resolution settings
@@ -657,7 +962,7 @@ LoRAs (Low-Rank Adaptations) are stored in `loras.json`:
 - **Solution:** Update one component at a time instead of all
 
 ### File Permission Issues
-- Ensure ComfyUI has write permissions to `poses_dir`
+- Ensure ComfyUI has write permissions to `scenes_dir`
 - Check that scene directories are not read-only
 - Verify disk space is available
 
@@ -674,13 +979,22 @@ Use SceneView to verify:
 
 ```python
 # Class methods (static)
-SceneInfo.load_depth_images(pose_dir: str) -> dict
-SceneInfo.load_pose_images(pose_dir: str) -> dict
-SceneInfo.load_mask_images(pose_dir: str) -> dict
-SceneInfo.load_all_images(pose_dir: str) -> dict
-SceneInfo.from_pose_directory(
-    pose_dir: str,
-    pose_name: str,
+SceneInfo.load_depth_images(scene_dir: str, keys: Optional[list[str]] = None) -> dict
+SceneInfo.load_pose_images(scene_dir: str, keys: Optional[list[str]] = None) -> dict
+SceneInfo.load_mask_images(scene_dir: str, keys: Optional[list[str]] = None) -> tuple[dict, dict]
+SceneInfo.load_all_images(scene_dir: str) -> dict
+SceneInfo.load_preview_assets(
+    scene_dir: str,
+    depth_attr: str,
+    pose_attr: str,
+    mask_type: str,
+    mask_background: bool = True,
+    include_upscale: bool = False,
+    include_canny: bool = False
+) -> dict
+SceneInfo.from_scene_directory(
+    scene_dir: str,
+    scene_name: str,
     prompt_data: Optional[dict] = None,
     pose_json: str = "",
     loras_high: Optional[list] = None,
@@ -688,18 +1002,37 @@ SceneInfo.from_pose_directory(
 ) -> SceneInfo
 
 # Instance methods
-scene_info.save_all_images(pose_dir: Optional[str] = None)
-scene_info.save_prompts(pose_dir: Optional[str] = None)
-scene_info.save_pose_json(pose_dir: Optional[str] = None)
-scene_info.save_loras(pose_dir: Optional[str] = None)
-scene_info.ensure_directories(pose_dir: Optional[str] = None)
-scene_info.save_all(pose_dir: Optional[str] = None)
+scene_info.save_all_images(scene_dir: Optional[str] = None)
+scene_info.save_prompts(scene_dir: Optional[str] = None)
+scene_info.save_pose_json(scene_dir: Optional[str] = None)
+scene_info.save_loras(scene_dir: Optional[str] = None)
+scene_info.regenerate_thumbnail(scene_dir: Optional[str] = None, force: bool = False)
+scene_info.ensure_directories(scene_dir: Optional[str] = None)
+scene_info.save_all(scene_dir: Optional[str] = None)
 
 # Utility methods
 scene_info.three_image_prompt() -> str
 scene_info.input_img_glob() -> str
 scene_info.input_img_dir() -> str
 scene_info.output_dir() -> str
+```
+
+**Thumbnail Generation Details:**
+```python
+# regenerate_thumbnail() behavior:
+# 1. If thumbnail exists and force=False, skips generation
+# 2. Priority order for source images:
+#    a. Convert base.webp → base.png if needed
+#    b. Use base_image from memory
+#    c. Use base.png from disk
+#    d. Use upscale_image from memory
+#    e. Create base.png from upscale at proper resolution
+#    f. Use upscale.png for thumbnail if base.png exists
+#    g. Create default gray 128x128 thumbnail
+# 3. Resolution for base.png creation:
+#    - Uses depth.png dimensions if valid (not 64x64)
+#    - Defaults to 1024x1024 if depth invalid/missing
+# 4. Thumbnail always 128x128 PNG, LANCZOS resampling
 ```
 
 ### Default Mappings

@@ -64,6 +64,17 @@ sys.modules['folder_paths'] = MagicMock()
 sys.modules['nodes'] = MagicMock()
 sys.modules['node_helpers'] = MagicMock()
 
+# Mock torch for tests that need it (like NLF pose)
+torch_mock = MagicMock()
+torch_mock.Tensor = MagicMock
+torch_mock.tensor = MagicMock(return_value=MagicMock())
+torch_mock.zeros = MagicMock(return_value=MagicMock())
+torch_mock.is_tensor = MagicMock(return_value=True)
+torch_mock.no_grad = MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock()))
+torch_mock.cat = MagicMock(return_value=MagicMock())
+torch_mock.jit = MagicMock()
+sys.modules['torch'] = torch_mock
+
 # Server module with PromptServer mock
 server_mock = MagicMock()
 prompt_server_instance = MagicMock()

@@ -104,13 +104,35 @@ export function setupSceneSelect(nodeType, nodeData, app) {
         let currentPrompts = [];
         let currentSceneDir = null;
         
-        // Hook into widget changes to track scene_dir
-        const updateSceneDir = () => {
+        // Hook into widget changes to track scene_dir and update mask options
+        const updateSceneDir = async () => {
             const scenesDir = this.widgets?.find(w => w.name === "scenes_dir")?.value;
             const selectedScene = this.widgets?.find(w => w.name === "selected_scene")?.value;
             
             if (scenesDir && selectedScene) {
                 currentSceneDir = `${scenesDir}/${selectedScene}`;
+                
+                // Update mask_name combo options based on selected scene
+                const maskNameWidget = this.widgets?.find(w => w.name === "mask_name");
+                if (maskNameWidget) {
+                    try {
+                        const response = await sceneAPI.getScenePrompts(currentSceneDir);
+                        const masks = response.masks || {};
+                        const maskNames = Object.keys(masks);
+                        
+                        // Update combo options
+                        maskNameWidget.options.values = ["(none)", ...maskNames.sort()];
+                        
+                        // If current value is not in new options, reset to "(none)"
+                        if (!maskNameWidget.options.values.includes(maskNameWidget.value)) {
+                            maskNameWidget.value = "(none)";
+                        }
+                    } catch (error) {
+                        console.warn("fb_tools -> Failed to load mask options:", error);
+                        maskNameWidget.options.values = ["(none)"];
+                        maskNameWidget.value = "(none)";
+                    }
+                }
             }
         };
         
