@@ -44,10 +44,12 @@ from inspect import cleandoc
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 import os
 from pathlib import Path
 import json
+from enum import Enum
+from dataclasses import dataclass, asdict
 import uuid
 import re
 import copy
@@ -898,6 +900,106 @@ class QwenAspectRatio(io.ComfyNode):
 from .prompt_models import PromptMetadata, PromptCollection
 
 
+# ============================================================================
+# MASK SYSTEM - Generic User-Definable Masks
+# ============================================================================
+
+RGB = Tuple[int, int, int]
+
+class MaskType(str, Enum):
+    """Type of mask definition"""
+    TRANSPARENT = "transparent"  # alpha / transparency-based
+    COLOR = "color"              # color-defined regions
+
+
+@dataclass
+class MaskDefinition:
+    """Definition of a scene mask with arbitrary name and properties"""
+    name: str
+    type: MaskType
+    has_background: bool = True
+    color: Optional[RGB] = None  # Only used when type == COLOR
+
+    def validate(self) -> None:
+        """Validate mask definition constraints"""
+        if self.type == MaskType.TRANSPARENT:
+            if self.color is not None:
+                raise ValueError(
+                    f"Transparent mask '{self.name}' must not define a color."
+                )
+        elif self.type == MaskType.COLOR:
+            if self.color is None:
+                raise ValueError(
+                    f"Color mask '{self.name}' must define an RGB color."
+                )
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "name": self.name,
+            "type": self.type.value if isinstance(self.type, Enum) else self.type,
+            "has_background": self.has_background,
+            "color": self.color
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MaskDefinition":
+        """Create from dictionary"""
+        mask_type = MaskType(data["type"]) if isinstance(data["type"], str) else data["type"]
+        color = tuple(data["color"]) if data.get("color") and isinstance(data["color"], (list, tuple)) else data.get("color")
+        return cls(
+            name=data["name"],
+            type=mask_type,
+            has_background=data.get("has_background", True),
+            color=color
+        )
+
+    def get_filename(self) -> str:
+        """Generate filename for this mask"""
+        suffix = "_bkgd" if self.has_background else "_no_bkgd"
+        return f"{self.name}_mask{suffix}.png"
+
+
+def load_masks_json(scene_dir: str) -> Dict[str, MaskDefinition]:
+    """Load mask definitions from masks.json"""
+    masks_path = Path(scene_dir) / "masks.json"
+    if not masks_path.exists():
+        return {}
+    
+    try:
+        with open(masks_path, 'r') as f:
+            data = json.load(f)
+        
+        masks = {}
+        for mask_data in data.get("masks", []):
+            mask_def = MaskDefinition.from_dict(mask_data)
+            mask_def.validate()
+            masks[mask_def.name] = mask_def
+        
+        return masks
+    except Exception as e:
+        logger.error(f"Failed to load masks.json from {scene_dir}: {e}")
+        return {}
+
+
+def save_masks_json(scene_dir: str, masks: Dict[str, MaskDefinition]) -> None:
+    """Save mask definitions to masks.json"""
+    masks_path = Path(scene_dir) / "masks.json"
+    
+    try:
+        data = {
+            "version": 1,
+            "masks": [mask.to_dict() for mask in masks.values()]
+        }
+        
+        with open(masks_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        logger.info(f"Saved {len(masks)} mask definitions to {masks_path}")
+    except Exception as e:
+        logger.error(f"Failed to save masks.json to {scene_dir}: {e}")
+
+
 class SceneInfo(BaseModel):
     #metadata
     scene_dir: str
@@ -928,6 +1030,7 @@ class SceneInfo(BaseModel):
     pose_edit_image: Optional[torch.Tensor] = None
     pose_face_image: Optional[torch.Tensor] = None
     pose_open_image: Optional[torch.Tensor] = None
+    pose_nlf_image: Optional[torch.Tensor] = None  # NLF pose rendering
     canny_image: Optional[torch.Tensor] = None
     
     # Image hierarchy: base_image → upscale_image → derived images (pose, depth, canny)
@@ -937,7 +1040,11 @@ class SceneInfo(BaseModel):
     loras_high: Optional[list] = None
     loras_low: Optional[list] = None
 
-    # masks
+    # Mask system - generic user-definable masks
+    masks: Optional[Dict[str, MaskDefinition]] = None  # Mask definitions by name
+    mask_images: Optional[Dict[str, torch.Tensor]] = None  # Mask image tensors by name
+    
+    # Legacy mask fields - maintained for backward compatibility with existing scenes
     girl_mask_bkgd_image: Optional[torch.Tensor] = None
     male_mask_bkgd_image: Optional[torch.Tensor] = None
     combined_mask_bkgd_image: Optional[torch.Tensor] = None
@@ -999,6 +1106,7 @@ class SceneInfo(BaseModel):
             'pose_edit_image': "pose_edit.png",
             'pose_face_image': "pose_face.png",
             'pose_open_image': "pose_open.png",
+            'pose_nlf_image': "pose_nlf.png",  # NLF pose rendering
             'canny_image': "canny.png",
             'upscale_image': "upscale.png",
         }
@@ -1017,9 +1125,59 @@ class SceneInfo(BaseModel):
         return images
 
     @classmethod
-    def load_mask_images(cls, scene_dir: str, keys: Optional[list[str]] = None) -> tuple[dict, dict]:
-        """Load mask images and their masks from a scene directory.
+    def load_mask_images(cls, scene_dir: str, mask_names: Optional[list[str]] = None) -> tuple[dict, dict]:
+        """Load mask images and their alpha masks from a scene directory.
 
+        Returns a tuple `(images, masks)` where images maps mask names to IMAGE tensors,
+        and masks maps the same names to [B,H,W] float masks (1.0 means masked-out).
+        
+        Args:
+            scene_dir: Path to scene directory
+            mask_names: Optional list of mask names to load. If None, loads all from masks.json
+        
+        Returns:
+            (images_dict, masks_dict) tuple
+        """
+        # Load mask definitions
+        mask_defs = load_masks_json(scene_dir)
+        
+        # If no masks.json exists, try legacy format
+        if not mask_defs:
+            logger.debug(f"No masks.json found in {scene_dir}, trying legacy mask format")
+            return cls._load_legacy_mask_images(scene_dir, mask_names)
+        
+        images = {}
+        masks = {}
+        
+        # Determine which masks to load
+        names_to_load = mask_names if mask_names else list(mask_defs.keys())
+        
+        for name in names_to_load:
+            if name not in mask_defs:
+                logger.warning(f"Mask '{name}' not found in mask definitions")
+                continue
+            
+            mask_def = mask_defs[name]
+            filename = mask_def.get_filename()
+            filepath = os.path.join(scene_dir, filename)
+            
+            if not os.path.exists(filepath):
+                logger.warning(f"Mask file not found: {filepath}")
+                continue
+            
+            try:
+                image, mask = load_image_comfyui(filepath, include_mask=True)
+                images[name] = image
+                masks[name] = mask
+            except Exception as e:
+                logger.error(f"Failed to load mask '{name}' from {filepath}: {e}")
+        
+        return images, masks
+
+    @classmethod
+    def _load_legacy_mask_images(cls, scene_dir: str, keys: Optional[list[str]] = None) -> tuple[dict, dict]:
+        """Load legacy hardcoded mask images for backward compatibility.
+        
         Returns a tuple `(images, masks)` where images maps mask keys to IMAGE tensors,
         and masks maps the same keys to [B,H,W] float masks (1.0 means masked-out).
         """
@@ -1040,9 +1198,16 @@ class SceneInfo(BaseModel):
             filename = mapping.get(key)
             if not filename:
                 continue
-            image, mask = load_image_comfyui(os.path.join(scene_dir, filename), include_mask=True)
-            images[key] = image
-            masks[key] = mask
+            filepath = os.path.join(scene_dir, filename)
+            if not os.path.exists(filepath):
+                continue
+            
+            try:
+                image, mask = load_image_comfyui(filepath, include_mask=True)
+                images[key] = image
+                masks[key] = mask
+            except Exception as e:
+                logger.debug(f"Could not load legacy mask {filename}: {e}")
 
         return images, masks
 
@@ -1062,8 +1227,8 @@ class SceneInfo(BaseModel):
             scene_dir: str,
             depth_attr: str,
             pose_attr: str,
-            mask_type: str,
-            mask_background: bool = True,
+            mask_name: str,
+            mask_background: Optional[bool] = None,  # None = use mask name directly (new system), True/False = legacy behavior
             include_upscale: bool = False,
             include_canny: bool = False,
     ) -> dict:
@@ -1074,19 +1239,33 @@ class SceneInfo(BaseModel):
             base_image, canny_image, preview_batch (list of tensors), H, W, resolution,
             plus raw dictionaries depth_images/pose_images/mask_images for downstream SceneInfo population.
         
+        Args:
+            scene_dir: Path to scene directory
+            depth_attr: Depth image attribute name to load
+            pose_attr: Pose image attribute name to load
+            mask_name: Name of mask to load
+            mask_background: For legacy masks - whether to include background. If None, uses mask_name directly
+            include_upscale: Whether to include upscale image (kept for compatibility)
+            include_canny: Whether to include canny image
+        
         Note: include_upscale parameter is kept for compatibility but base_image is always loaded for previews.
         """
-        mask_key = resolve_mask_key(mask_type, mask_background)
+        mask_key = resolve_mask_key(mask_name, mask_background)
 
         depth_keys = {depth_attr, "depth_image"}
         pose_keys = {pose_attr, "pose_open_image", "base_image"}  # Always load base_image for preview
         if include_canny:
             pose_keys.add("canny_image")
-        mask_keys = {mask_key, "combined"}
+        
+        # For masks, try to load the requested mask
+        # For legacy compatibility, also try to load "combined" as fallback
+        mask_names_to_load = [mask_key]
+        if mask_key != "combined":
+            mask_names_to_load.append("combined")
 
         depth_images = cls.load_depth_images(scene_dir, keys=list(depth_keys))
         pose_images = cls.load_pose_images(scene_dir, keys=list(pose_keys))
-        mask_images, mask_tensors = cls.load_mask_images(scene_dir, keys=list(mask_keys))
+        mask_images, mask_tensors = cls.load_mask_images(scene_dir, mask_names=mask_names_to_load)
 
         # Determine spatial size from available images
         empty_image = make_empty_image(1, 512, 512)
@@ -1290,7 +1469,7 @@ class SceneInfo(BaseModel):
             scene_dir,
             depth_attr=depth_attr,
             pose_attr=pose_attr,
-            mask_type=scene.mask_type,
+            mask_name=scene.mask_name,
             mask_background=scene.mask_background,
             include_upscale=include_upscale,
             include_canny=include_canny,
@@ -1356,6 +1535,15 @@ class SceneInfo(BaseModel):
         # Load all images
         all_images = cls.load_all_images(scene_dir)
         
+        # Load mask definitions and separate out mask images
+        mask_defs = load_masks_json(scene_dir)
+        mask_images_dict = {}
+        
+        # Extract mask images from all_images based on mask definitions
+        for mask_name in list(mask_defs.keys()):
+            if mask_name in all_images:
+                mask_images_dict[mask_name] = all_images.pop(mask_name)
+        
         # Determine resolution from depth_image
         depth_image = all_images.get('depth_image')
         if depth_image is not None:
@@ -1372,6 +1560,8 @@ class SceneInfo(BaseModel):
             resolution=resolution,
             loras_high=loras_high,
             loras_low=loras_low,
+            masks=mask_defs if mask_defs else None,
+            mask_images=mask_images_dict if mask_images_dict else None,
             **all_images
         )
 
@@ -1447,12 +1637,27 @@ class SceneInfo(BaseModel):
             save_image_comfyui(self.pose_face_image, scene_path / "pose_face.png")
         if self.pose_open_image is not None:
             save_image_comfyui(self.pose_open_image, scene_path / "pose_open.png")
+        if self.pose_nlf_image is not None:
+            save_image_comfyui(self.pose_nlf_image, scene_path / "pose_nlf.png")
         if self.canny_image is not None:
             save_image_comfyui(self.canny_image, scene_path / "canny.png")
         if self.upscale_image is not None:
             save_image_comfyui(self.upscale_image, scene_path / "upscale.png")
         
-        # Save mask images
+        # Save new mask system images and definitions
+        if self.masks and self.mask_images:
+            # Save mask definitions
+            save_masks_json(str(scene_path), self.masks)
+            
+            # Save mask image files
+            for mask_name, mask_tensor in self.mask_images.items():
+                if mask_tensor is not None and mask_name in self.masks:
+                    mask_def = self.masks[mask_name]
+                    filename = mask_def.get_filename()
+                    save_image_comfyui(mask_tensor, scene_path / filename)
+                    logger.debug(f"Saved mask '{mask_name}' to {filename}")
+        
+        # Save legacy mask images (for backward compatibility)
         if self.girl_mask_bkgd_image is not None:
             save_image_comfyui(self.girl_mask_bkgd_image, scene_path / "girl_mask_bkgd.png")
         if self.male_mask_bkgd_image is not None:
@@ -1938,6 +2143,11 @@ class SceneSelect(io.ComfyNode):
         default_scene = default_options[0]
         pose_options = list(default_pose_options.keys())
         depth_options = list(default_depth_options.keys())
+        
+        # Load mask names from default scene
+        default_scene_dir = os.path.join(default_dir, default_scene)
+        masks_dict = load_masks_json(default_scene_dir)
+        mask_options = ["(none)"] + sorted(masks_dict.keys()) if masks_dict else ["(none)"]
 
         return io.Schema(
             node_id=prefixed_node_id("SceneSelect"),
@@ -1948,8 +2158,8 @@ class SceneSelect(io.ComfyNode):
                 io.Combo.Input('selected_scene', options=default_options, default=default_scene, tooltip="Select a scene name"),
                 io.Combo.Input(id="depth_image_type", display_name="depth_image_type", options=depth_options, default="depth", tooltip="Type of depth image to use from the scene"),
                 io.Combo.Input(id="pose_image_type", display_name="pose_image_type", options=pose_options, default="open", tooltip="Type of pose image to use from the scene"),
-                io.Boolean.Input(id="mask_background", display_name="mask_background", default=True, tooltip="Whether to mask the background in the scene"),
-                io.Combo.Input(id="mask_type", display_name="mask_type", options=["girl", "male", "combined"], default="combined", tooltip="Subject mask to apply"),
+                io.Combo.Input(id="mask_name", display_name="mask_name", options=mask_options, default="(none)", tooltip="Name of the mask to use from the scene (select '(none)' to skip mask selection)"),
+                io.Boolean.Input(id="mask_background", display_name="mask_background", default=True, tooltip="Whether to use the background variant of the mask (True=with background, False=no background)"),
             ],
             outputs=[
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene information and images with PromptCollection"),
@@ -1984,8 +2194,8 @@ class SceneSelect(io.ComfyNode):
         selected_scene="default_scene",
         depth_image_type="depth",
         pose_image_type="open",
+        mask_name="",
         mask_background=True,
-        mask_type="combined",
     ) -> io.NodeOutput:
         className = cls.__name__
         input_types = cls.INPUT_TYPES()
@@ -2031,18 +2241,22 @@ class SceneSelect(io.ComfyNode):
         # Load selected/normalized assets (and mask preview/output separation)
         selected_depth_attr = default_depth_options.get(depth_image_type, "depth_image")
         selected_pose_attr = default_pose_options.get(pose_image_type, "pose_open_image")
-        mask_key = resolve_mask_key(mask_type, mask_background)
+        
+        # Load assets with mask_name (supports both new and legacy mask systems)
+        # Treat "(none)" as empty string to skip mask loading
+        actual_mask_name = "" if mask_name == "(none)" else mask_name
         logger.info(
-            "%s: Loading assets from scene_dir='%s'; mask_key='%s'",
+            "%s: Loading assets from scene_dir='%s'; mask_name='%s', mask_background=%s",
             className,
             scene_dir,
-            mask_key,
+            actual_mask_name,
+            mask_background,
         )
         assets = SceneInfo.load_preview_assets(
             scene_dir,
             depth_attr=selected_depth_attr,
             pose_attr=selected_pose_attr,
-            mask_type=mask_type,
+            mask_name=actual_mask_name,
             mask_background=mask_background,
             include_upscale=True,
             include_canny=True,
@@ -2051,7 +2265,21 @@ class SceneSelect(io.ComfyNode):
         # Also load full images for SceneInfo completeness (depth variants, masks, canny)
         depth_images_full = SceneInfo.load_depth_images(scene_dir)
         pose_images_full = SceneInfo.load_pose_images(scene_dir)
-        mask_images_full, mask_tensors_full = SceneInfo.load_mask_images(scene_dir)
+        
+        # Load new mask system if available
+        masks_dict = load_masks_json(scene_dir)
+        mask_images_dict = {}
+        if masks_dict:
+            # Load images for all masks in masks.json
+            mask_names = list(masks_dict.keys())
+            mask_images_full, _ = SceneInfo.load_mask_images(scene_dir, mask_names=mask_names)
+            mask_images_dict = mask_images_full
+            logger.info(f"%s: Loaded {len(masks_dict)} masks from new system", className)
+        else:
+            # Fall back to legacy mask loading
+            mask_images_full, _ = SceneInfo.load_mask_images(scene_dir)
+            logger.info(f"%s: Loaded masks from legacy system", className)
+        
         # Ensure canny present even if missing on disk
         canny_image = pose_images_full.get("canny_image")
 
@@ -2092,6 +2320,8 @@ class SceneSelect(io.ComfyNode):
             pose_json=pose_json,
             resolution=resolution,
             prompts=prompt_collection,
+            masks=masks_dict,
+            mask_images=mask_images_dict,
             depth_image=depth_images_full.get("depth_image"),
             depth_any_image=depth_images_full.get("depth_any_image"),
             depth_midas_image=depth_images_full.get("depth_midas_image"),
@@ -2104,12 +2334,12 @@ class SceneSelect(io.ComfyNode):
             pose_open_image=pose_images_full.get("pose_open_image"),
             canny_image=canny_image,
             upscale_image=pose_images_full.get("upscale_image"),
-            girl_mask_bkgd_image=mask_images_full.get('girl'),
-            male_mask_bkgd_image=mask_images_full.get('male'),
-            combined_mask_bkgd_image=mask_images_full.get('combined'),
-            girl_mask_no_bkgd_image=mask_images_full.get('girl_no_bg'),
-            male_mask_no_bkgd_image=mask_images_full.get('male_no_bg'),
-            combined_mask_no_bkgd_image=mask_images_full.get('combined_no_bg'),
+            girl_mask_bkgd_image=mask_images_full.get('girl') if not masks_dict else None,
+            male_mask_bkgd_image=mask_images_full.get('male') if not masks_dict else None,
+            combined_mask_bkgd_image=mask_images_full.get('combined') if not masks_dict else None,
+            girl_mask_no_bkgd_image=mask_images_full.get('girl_no_bg') if not masks_dict else None,
+            male_mask_no_bkgd_image=mask_images_full.get('male_no_bg') if not masks_dict else None,
+            combined_mask_no_bkgd_image=mask_images_full.get('combined_no_bg') if not masks_dict else None,
             loras_high=loras_high,
             loras_low=loras_low,
         )
@@ -2172,6 +2402,7 @@ default_pose_options = {
     "edit": "pose_edit_image",
     "face": "pose_face_image",
     "open": "pose_open_image",
+    "nlf": "pose_nlf_image",
 }
 
 default_mask_options = {
@@ -2183,11 +2414,30 @@ default_mask_options = {
     "combined_no_bg": "combined_mask_no_bkgd",
 }
 
-def resolve_mask_key(mask_type: str, mask_background: bool) -> str:
-    """Return the mask key to use given mask type and background preference."""
-    key = mask_type or "combined"
+def resolve_mask_key(mask_name: str, mask_background: Optional[bool] = None) -> str:
+    """Return the mask key to use. 
+    
+    For new mask system: just returns mask_name
+    For legacy system: handles _no_bg suffix based on mask_background flag
+    
+    Args:
+        mask_name: Name of the mask
+        mask_background: Optional flag for legacy masks. If provided, adds/removes _no_bg suffix
+    
+    Returns:
+        Mask key/name to use for lookups
+    """
+    # If mask_background is not specified, return name as-is (new system)
+    if mask_background is None:
+        return mask_name
+    
+    # Legacy behavior: add/remove _no_bg suffix
+    key = mask_name or "combined"
     if not mask_background and not key.endswith("_no_bg"):
         key = f"{key}_no_bg"
+    elif mask_background and key.endswith("_no_bg"):
+        # Remove _no_bg if background is requested
+        key = key.replace("_no_bg", "")
     return key
 
 def build_positive_prompt(prompt_type: str, prompt_data: dict, custom_prompt: str = "") -> str:
@@ -2353,7 +2603,54 @@ class SceneCreate(io.ComfyNode):
                     tooltip="Canny edge detector high threshold",
                     default=200, min=0, max=255, step=1
                 ),
+                io.Boolean.Input(
+                    id="generate_nlf_pose",
+                    display_name="generate_nlf_pose",
+                    default=False,
+                    tooltip="Generate NLF (Neural Lifting Framework) pose from base image"
+                ),
+                io.String.Input(
+                    id="nlf_model_path",
+                    display_name="nlf_model_path",
+                    default="",
+                    tooltip="Path to NLF model file (leave empty to auto-download default model)"
+                ),
+                io.Boolean.Input(
+                    id="nlf_draw_face",
+                    display_name="nlf_draw_face",
+                    default=True,
+                    tooltip="Draw face keypoints in NLF pose rendering"
+                ),
+                io.Boolean.Input(
+                    id="nlf_draw_hands",
+                    display_name="nlf_draw_hands",
+                    default=True,
+                    tooltip="Draw hand keypoints in NLF pose rendering"
+                ),
+                io.Combo.Input(
+                    id="nlf_render_device",
+                    display_name="nlf_render_device",
+                    options=["gpu", "cpu", "opengl", "cuda", "vulkan", "metal"],
+                    default="gpu",
+                    tooltip="Device to use for NLF pose rendering (Taichi backend)"
+                ),
+                io.Boolean.Input(
+                    id="nlf_scale_hands",
+                    display_name="nlf_scale_hands",
+                    default=True,
+                    tooltip="Scale hand keypoints in NLF pose rendering"
+                ),
+                io.Combo.Input(
+                    id="nlf_render_backend",
+                    display_name="nlf_render_backend",
+                    options=["torch", "taichi"],
+                    default="torch",
+                    tooltip="Rendering backend for NLF poses (torch=more compatible, taichi=faster if installed)"
+                ),
                 io.Image.Input(id="base_image", display_name="base_image", tooltip="Base image for the scene"),
+                io.String.Input(id="mask_definitions", display_name="mask_definitions", default="", multiline=True, 
+                    tooltip="JSON array of mask definitions: [{\"name\":\"character1\",\"type\":\"transparent\",\"has_background\":true,\"color\":null}, ...]"),
+                io.Image.Input(id="mask_images", display_name="mask_images", tooltip="Batch of mask images corresponding to mask_definitions (in same order)", optional=True),
                 io.Custom("WANVIDLORA").Input(id="loras_high", display_name="loras_high", tooltip="WanVideoWrapper High Multi-Lora list", optional=True),
                 io.Custom("WANVIDLORA").Input(id="loras_low", display_name="loras_low", tooltip="WanVideoWrapper Low Multi-Lora list", optional=True),
             ],
@@ -2380,7 +2677,16 @@ class SceneCreate(io.ComfyNode):
         zoe_environment="indoor",
         canny_low_threshold=100,
         canny_high_threshold=200,
+        generate_nlf_pose=False,
+        nlf_model_path="",
+        nlf_draw_face=True,
+        nlf_draw_hands=True,
+        nlf_render_device="gpu",
+        nlf_scale_hands=True,
+        nlf_render_backend="torch",
         base_image=None,
+        mask_definitions="",
+        mask_images=None,
         loras_high=None,
         loras_low=None,
     ) -> io.NodeOutput:
@@ -2434,9 +2740,92 @@ class SceneCreate(io.ComfyNode):
         pose_open_image = openpose(normalized_upscale_image, include_face=False, resolution=resolution)
         canny_image = canny(upscale_image, low_threshold=canny_low_threshold, high_threshold=canny_high_threshold, resolution=resolution)
 
+        # NLF Pose Generation
+        pose_nlf_image = None
+        if generate_nlf_pose:
+            try:
+                from .utils.nlf_pose import load_nlf_model, predict_nlf_pose, render_nlf_pose, nlfpred_to_pose_keypoint
+                
+                logger.info("SceneCreate: Generating NLF pose...")
+                
+                # Load NLF model
+                nlf_model_path_str = nlf_model_path if nlf_model_path else None
+                nlf_model = load_nlf_model(nlf_model_path_str, warmup=True)
+                
+                # Predict poses from upscale image
+                nlf_pred, bboxes = predict_nlf_pose(nlf_model, upscale_image)
+                logger.info(f"SceneCreate: NLF detected {len(bboxes)} person(s)")
+                
+                # Render NLF poses
+                pose_nlf_image, nlf_mask = render_nlf_pose(
+                    nlf_pred, W, H,
+                    draw_face=nlf_draw_face,
+                    draw_hands=nlf_draw_hands,
+                    render_device=nlf_render_device,
+                    scale_hands=nlf_scale_hands,
+                    render_backend=nlf_render_backend
+                )
+                
+                # Convert to POSE_KEYPOINT format for potential editing
+                pose_keypoints = nlfpred_to_pose_keypoint(nlf_pred, W, H)
+                
+                # Update pose_json with NLF-derived keypoints
+                # This allows users to edit the pose with OpenposeEditorNode
+                if pose_keypoints:
+                    pose_json = pose_keypoints  # Keep as list for now, will be converted to JSON string below
+                    logger.info("SceneCreate: Updated pose.json with NLF-derived keypoints")
+                
+                logger.info("SceneCreate: NLF pose generation complete")
+                
+            except ImportError as e:
+                logger.error(f"SceneCreate: Failed to import NLF utilities: {e}")
+                logger.error("Make sure utils/nlf_pose.py exists and dependencies are installed")
+            except Exception as e:
+                logger.error(f"SceneCreate: NLF pose generation failed: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+
         # todo: consider whether or not the Face Detection using onnx is even worth it (WanAnimatePreprocess (v2) modified based upon post on github)
         # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
-        pose_dwpose_json = json.dumps(pose_json)
+        
+        # Convert pose_json (list of dicts) to JSON string for storage
+        if isinstance(pose_json, list):
+            pose_dwpose_json = json.dumps({'people': pose_json})
+        else:
+            pose_dwpose_json = json.dumps(pose_json)
+
+        # Process mask definitions and images
+        masks_dict = None
+        mask_images_dict = None
+        
+        if mask_definitions:
+            try:
+                mask_defs_list = json.loads(mask_definitions)
+                if mask_defs_list and isinstance(mask_defs_list, list):
+                    masks_dict = {}
+                    mask_images_dict = {}
+                    
+                    for idx, mask_def_data in enumerate(mask_defs_list):
+                        mask_def = MaskDefinition.from_dict(mask_def_data)
+                        mask_def.validate()
+                        masks_dict[mask_def.name] = mask_def
+                        
+                        # If mask images batch is provided, extract corresponding image
+                        if mask_images is not None and torch.is_tensor(mask_images):
+                            batch_size = mask_images.shape[0]
+                            if idx < batch_size:
+                                # Extract single image from batch
+                                mask_image = mask_images[idx:idx+1]
+                                mask_images_dict[mask_def.name] = mask_image
+                                logger.info(f"SceneCreate: Added mask '{mask_def.name}' from batch index {idx}")
+                            else:
+                                logger.warning(f"SceneCreate: Mask definition '{mask_def.name}' at index {idx} has no corresponding image in batch (size {batch_size})")
+                    
+                    logger.info(f"SceneCreate: Loaded {len(masks_dict)} mask definitions")
+            except json.JSONDecodeError as e:
+                logger.error(f"SceneCreate: Failed to parse mask_definitions JSON: {e}")
+            except Exception as e:
+                logger.error(f"SceneCreate: Error processing masks: {e}")
 
         # Create empty PromptCollection for new scenes
         # Users will add prompts via ScenePromptManager
@@ -2449,6 +2838,8 @@ class SceneCreate(io.ComfyNode):
             prompts=prompt_collection,
             base_image=base_image_normalized,
             upscale_image=upscale_image,
+            masks=masks_dict,
+            mask_images=mask_images_dict,
             depth_image=depth_image,
             depth_any_image=depth_any_image,
             depth_midas_image=midas_depth_image,
@@ -2460,7 +2851,8 @@ class SceneCreate(io.ComfyNode):
             pose_dwpose_json=pose_dwpose_json,
             pose_open_image=pose_open_image,
             pose_face_image=pose_face_image,
-            pose_json=pose_json,
+            pose_nlf_image=pose_nlf_image,
+            pose_json=pose_dwpose_json,  # Store as JSON string
             canny_image=canny_image,
             loras_high=loras_high,
             loras_low=loras_low,
@@ -2497,6 +2889,27 @@ class SceneUpdate(io.ComfyNode):
                 io.Boolean.Input(id="update_facepose", display_name="update_facepose", tooltip="If true, will update the Face Pose image in the scene_info", default=False),
                 io.Boolean.Input(id="update_editpose", display_name="update_editpose", tooltip="If true, will update the Edit Pose image in the scene_info", default=False),
                 io.Boolean.Input(id="update_dwpose", display_name="update_dwpose", tooltip="If true, will update the DensePose image in the scene_info", default=False),
+                io.Boolean.Input(id="update_nlf_pose", display_name="update_nlf_pose", tooltip="If true, will update the NLF pose in the scene_info", default=False),
+                io.Image.Input(id="pose_image", display_name="pose_image", tooltip="Custom pose image to use (if provided with pose_keypoint, skips generation)", optional=True),
+                io.Custom("POSE_KEYPOINT").Input(id="pose_keypoint", display_name="pose_keypoint", tooltip="Custom pose keypoints (if provided with pose_image, skips generation)", optional=True),
+                io.Boolean.Input(id="nlf_draw_face", display_name="nlf_draw_face", default=True, tooltip="Draw face keypoints in NLF pose rendering"),
+                io.Boolean.Input(id="nlf_draw_hands", display_name="nlf_draw_hands", default=True, tooltip="Draw hand keypoints in NLF pose rendering"),
+                io.Combo.Input(
+                    id="nlf_render_device",
+                    display_name="nlf_render_device",
+                    options=["gpu", "cpu", "opengl", "cuda", "vulkan", "metal"],
+                    default="gpu",
+                    tooltip="Device to use for NLF pose rendering (Taichi backend)"
+                ),
+                io.Boolean.Input(id="nlf_scale_hands", display_name="nlf_scale_hands", default=True, tooltip="Scale hand keypoints in NLF pose rendering"),
+                io.Combo.Input(
+                    id="nlf_render_backend",
+                    display_name="nlf_render_backend",
+                    options=["torch", "taichi"],
+                    default="torch",
+                    tooltip="Rendering backend for NLF poses (torch=more compatible, taichi=faster if installed)"
+                ),
+                io.String.Input(id="nlf_model_path", display_name="nlf_model_path", default="", tooltip="Path to NLF model file (leave empty to auto-download default model)"),
                 io.Boolean.Input(id="update_high_loras", display_name="update_high_loras", tooltip="If true, will update the High LoRAs list in the scene_info", default=False),
                 io.Boolean.Input(id="update_low_loras", display_name="update_low_loras", tooltip="If true, will update the Low LoRAs list in the scene_info", default=False),
                 io.String.Input(id="pose_json", display_name="pose_json", tooltip="JSON string for the pose keypoints"),
@@ -2573,6 +2986,10 @@ class SceneUpdate(io.ComfyNode):
                     tooltip="Canny edge detector high threshold",
                     default=200, min=0, max=255, step=1
                 ),
+                io.Boolean.Input(id="update_masks", display_name="update_masks", tooltip="If true, will update masks in the scene_info", default=False),
+                io.String.Input(id="mask_definitions", display_name="mask_definitions", tooltip="JSON array of mask definitions to add/update [{name, type, has_background, color}]", default=""),
+                io.Image.Input(id="mask_images", display_name="mask_images", tooltip="Batch of mask images corresponding to mask_definitions", optional=True),
+                io.String.Input(id="remove_mask_names", display_name="remove_mask_names", tooltip="Comma-separated list of mask names to remove", default=""),
                 io.Custom("WANVIDLORA").Input(id="high_loras", display_name="high_loras", tooltip="WanVideoWrapper Multi-Lora list", optional=True ),
                 io.Custom("WANVIDLORA").Input(id="low_loras", display_name="low_loras", tooltip="WanVideoWrapper Multi-Lora list", optional=True ),
             ],
@@ -2598,6 +3015,15 @@ class SceneUpdate(io.ComfyNode):
         update_facepose=False,
         update_editpose=False,
         update_dwpose=False,
+        update_nlf_pose=False,
+        pose_image=None,
+        pose_keypoint=None,
+        nlf_draw_face=True,
+        nlf_draw_hands=True,
+        nlf_render_device="gpu",
+        nlf_scale_hands=True,
+        nlf_render_backend="torch",
+        nlf_model_path="",
         update_high_loras=False,
         update_low_loras=False,
         pose_json="[]",
@@ -2613,6 +3039,10 @@ class SceneUpdate(io.ComfyNode):
         zoe_environment="indoor",
         canny_low_threshold=100,
         canny_high_threshold=200,
+        update_masks=False,
+        mask_definitions="",
+        mask_images=None,
+        remove_mask_names="",
         high_loras=None,
         low_loras=None,
     ):
@@ -2700,6 +3130,73 @@ class SceneUpdate(io.ComfyNode):
             scene_info_out.pose_dw_image = pose_dw_image
             #scene_info_out.pose_json = pose_json
 
+        # Update NLF pose
+        if update_nlf_pose:
+            from .utils.nlf_pose import (
+                load_nlf_model,
+                predict_nlf_pose,
+                render_nlf_pose,
+                nlfpred_to_pose_keypoint
+            )
+            
+            # Check if custom pose image and keypoint were provided (edited workflow)
+            if pose_image is not None and pose_keypoint is not None:
+                logger.info("SceneUpdate: Using provided pose_image and pose_keypoint for NLF pose")
+                scene_info_out.pose_nlf_image = pose_image
+                # Update pose.json with custom keypoints for editing support
+                # pose_keypoint is a list of dicts in OpenPose format
+                if isinstance(pose_keypoint, list):
+                    # Store as JSON string
+                    import json
+                    scene_info_out.pose_json = json.dumps({
+                        'people': pose_keypoint
+                    })
+                    logger.info("SceneUpdate: Updated pose.json with custom pose keypoints")
+            else:
+                # Regenerate NLF pose from base_image (or upscale_image if base not available)
+                source_image = base_image if base_image is not None else upscale_image
+                if source_image is None:
+                    logger.error("SceneUpdate: Cannot generate NLF pose - no source image available")
+                else:
+                    logger.info("SceneUpdate: Regenerating NLF pose from source image")
+                    try:
+                        # Load NLF model
+                        nlf_model = load_nlf_model(nlf_model_path, warmup=True)
+                        
+                        # Generate NLF predictions (returns tuple of dict and list)
+                        nlf_pred_dict, nlf_pred_list = predict_nlf_pose(nlf_model, source_image, per_batch=1)
+                        
+                        # Get dimensions from source image
+                        h, w = source_image.shape[1], source_image.shape[2]
+                        
+                        # Render NLF pose (returns tuple of image tensor and mask tensor)
+                        pose_nlf_image, nlf_mask = render_nlf_pose(
+                            nlf_pred_dict,
+                            w, h,
+                            draw_face=nlf_draw_face,
+                            draw_hands=nlf_draw_hands,
+                            render_device=nlf_render_device,
+                            scale_hands=nlf_scale_hands,
+                            render_backend=nlf_render_backend
+                        )
+                        
+                        scene_info_out.pose_nlf_image = pose_nlf_image
+                        logger.info("SceneUpdate: Generated NLF pose image (%sx%s)", w, h)
+                        
+                        # Convert NLF prediction to POSE_KEYPOINT format for editing
+                        # nlfpred_to_pose_keypoint expects just the dict, not the tuple
+                        pose_keypoint_list = nlfpred_to_pose_keypoint(nlf_pred_dict, w, h)
+                        
+                        # Store as JSON string
+                        import json
+                        scene_info_out.pose_json = json.dumps({
+                            'people': pose_keypoint_list
+                        })
+                        logger.info("SceneUpdate: Updated pose.json with NLF-derived keypoints for editing")
+                        
+                    except Exception as e:
+                        logger.error("SceneUpdate: Failed to generate NLF pose: %s", str(e), exc_info=True)
+
         # Determine target dimensions from reference images
         # Use upscale_image dimensions as the reference since it's the source
         ref_h, ref_w = upscale_image.shape[1], upscale_image.shape[2]
@@ -2741,7 +3238,7 @@ class SceneUpdate(io.ComfyNode):
                     ))
         
         # Normalize all pose images to reference dimensions
-        for pose_attr in ['pose_dense_image', 'pose_dw_image', 'pose_edit_image', 'pose_face_image', 'pose_open_image']:
+        for pose_attr in ['pose_dense_image', 'pose_dw_image', 'pose_edit_image', 'pose_face_image', 'pose_open_image', 'pose_nlf_image']:
             img = getattr(scene_info_out, pose_attr, None)
             if img is not None and torch.is_tensor(img):
                 img_h, img_w = img.shape[1], img.shape[2]
@@ -2767,6 +3264,56 @@ class SceneUpdate(io.ComfyNode):
 
         # todo: consider whether or not the Face Detection using onnx is even worth it (WanAnimatePreprocess (v2) modified based upon post on github)
         # would require specifying params for ONNX detection model: vitpose, yolo, onnx_device and then all the params for "Pose and Face Detection"
+
+        # Update masks
+        if update_masks:
+            # Initialize masks dict if it doesn't exist
+            if scene_info_out.masks is None:
+                scene_info_out.masks = {}
+            if scene_info_out.mask_images is None:
+                scene_info_out.mask_images = {}
+            
+            # Remove masks if specified
+            if remove_mask_names:
+                names_to_remove = [name.strip() for name in remove_mask_names.split(',') if name.strip()]
+                for name in names_to_remove:
+                    if name in scene_info_out.masks:
+                        del scene_info_out.masks[name]
+                        logger.info(f"SceneUpdate: Removed mask definition '{name}'")
+                    if name in scene_info_out.mask_images:
+                        del scene_info_out.mask_images[name]
+                        logger.info(f"SceneUpdate: Removed mask image '{name}'")
+            
+            # Add/update masks from mask_definitions
+            if mask_definitions:
+                try:
+                    mask_defs_list = json.loads(mask_definitions)
+                    if mask_defs_list and isinstance(mask_defs_list, list):
+                        for idx, mask_def_data in enumerate(mask_defs_list):
+                            mask_def = MaskDefinition.from_dict(mask_def_data)
+                            mask_def.validate()
+                            
+                            # Check if this is an update to existing mask or a new one
+                            is_update = mask_def.name in scene_info_out.masks
+                            scene_info_out.masks[mask_def.name] = mask_def
+                            
+                            # If mask images batch is provided, extract corresponding image
+                            if mask_images is not None and torch.is_tensor(mask_images):
+                                batch_size = mask_images.shape[0]
+                                if idx < batch_size:
+                                    mask_image = mask_images[idx:idx+1]
+                                    scene_info_out.mask_images[mask_def.name] = mask_image
+                                    logger.info(f"SceneUpdate: {'Updated' if is_update else 'Added'} mask '{mask_def.name}' with image from batch index {idx}")
+                                else:
+                                    logger.warning(f"SceneUpdate: Mask definition '{mask_def.name}' at index {idx} has no corresponding image in batch (size {batch_size})")
+                            else:
+                                logger.info(f"SceneUpdate: {'Updated' if is_update else 'Added'} mask definition '{mask_def.name}' without image")
+                        
+                        logger.info(f"SceneUpdate: Processed {len(mask_defs_list)} mask definitions")
+                except json.JSONDecodeError as e:
+                    logger.error(f"SceneUpdate: Failed to parse mask_definitions JSON: {e}")
+                except Exception as e:
+                    logger.error(f"SceneUpdate: Error processing masks: {e}")
 
         # Update LoRAs
         if update_high_loras and high_loras is not None:
@@ -2802,7 +3349,7 @@ class SceneView(io.ComfyNode):
                 io.Combo.Input(
                     id="pose_type", options=list(default_pose_options.keys())
                 ),
-                io.Combo.Input(id="mask_type", display_name="mask_type", options=["girl", "male", "combined"], default="combined", tooltip="Mask to preview"),
+                io.String.Input(id="mask_name", display_name="mask_name", default="", tooltip="Name of mask to preview (leave empty to skip)"),
                 io.Boolean.Input(id="include_mask_bg", display_name="include_mask_bg", default=True, tooltip="Include background in mask selection"),
             ],
             outputs=[
@@ -2824,7 +3371,7 @@ class SceneView(io.ComfyNode):
         scene_info=Optional[SceneInfo],
         depth_type="depth",
         pose_type="dense",
-        mask_type="combined",
+        mask_name="",
         include_mask_bg=True,
     ) -> io.NodeOutput:
         if scene_info is None:
@@ -2839,7 +3386,7 @@ class SceneView(io.ComfyNode):
             scene_info.scene_dir,
             depth_attr=depth_type,
             pose_attr=pose_type,
-            mask_type=mask_type,
+            mask_name=mask_name,
             mask_background=include_mask_bg,
             include_canny=True,
         )
@@ -3176,7 +3723,7 @@ class StoryCreate(io.ComfyNode):
                 io.String.Input(id="story_name", display_name="story_name", default="my_story", tooltip="Name of the story"),
                 io.String.Input(id="story_dir", display_name="story_dir", default=default_stories_dir_path, tooltip="Directory to save the story"),
                 io.Combo.Input(id="initial_scene", display_name="initial_scene", options=available_scenes, default=available_scenes[0], tooltip="First scene to add to the story"),
-                io.Combo.Input(id="mask_type", display_name="mask_type", options=["girl", "male", "combined", "girl_no_bg", "male_no_bg", "combined_no_bg"], default="combined", tooltip="Mask type for the scene"),
+                io.String.Input(id="mask_name", display_name="mask_name", default="", tooltip="Name of mask from the scene (leave empty to skip)"),
                 io.Boolean.Input(id="mask_background", display_name="mask_background", default=True, tooltip="Include background in mask"),
                 io.Combo.Input(id="prompt_source", display_name="prompt_source", options=["prompt", "composition", "custom"], default="prompt", tooltip="Source of the prompt: 'prompt' (from prompt_dict), 'composition' (from composition_dict), or 'custom'"),
                 io.String.Input(id="prompt_key", display_name="prompt_key", default="", tooltip="Key from scene's prompt_dict or composition_dict (leave empty for custom)"),
@@ -3195,7 +3742,7 @@ class StoryCreate(io.ComfyNode):
         story_name="my_story",
         story_dir="",
         initial_scene="default_scene",
-        mask_type="combined",
+        mask_name="",
         mask_background=True,
         prompt_source="prompt",
         prompt_key="",
@@ -3214,7 +3761,7 @@ class StoryCreate(io.ComfyNode):
         initial_scene_obj = SceneInStory(
             scene_name=initial_scene,
             scene_order=0,
-            mask_type=mask_type,
+            mask_name=mask_name,
             mask_background=mask_background,
             prompt_source=prompt_source,
             prompt_key=prompt_key,
@@ -3384,7 +3931,7 @@ class StoryEdit(io.ComfyNode):
                 scene_dir,
                 depth_attr=depth_attr,
                 pose_attr=pose_attr,
-                mask_type=scene.mask_type,
+                mask_name=scene.mask_name,
                 mask_background=scene.mask_background,
                 include_upscale=True,
                 include_canny=False,
@@ -3570,7 +4117,7 @@ class StoryView(io.ComfyNode):
             scene_config = SceneInStory(
                 scene_name=selected_scene,
                 scene_order=0,
-                mask_type="combined",
+                mask_name="",
                 mask_background=True,
                 prompt_source="prompt",
                 prompt_key="",
@@ -4059,7 +4606,7 @@ class StoryScenePick(io.ComfyNode):
             scene_id=descriptor.get("scene_id", ""),
             scene_name=descriptor.get("scene_name", ""),
             scene_order=descriptor.get("scene_order", 0),
-            mask_type=descriptor.get("mask_type", "combined"),
+            mask_name=descriptor.get("mask_name", descriptor.get("mask_type", "")),  # Support both new and legacy
             mask_background=descriptor.get("mask_background", True),
             prompt_source=descriptor.get("prompt_source", "prompt"),
             prompt_key=prompt_key,
@@ -5863,12 +6410,20 @@ async def scene_get_prompts(request):
         if 'scene_flags' in collection_dict:
             scene_flags = collection_dict['scene_flags']
         
-        # Return compositions as dict with scene_flags
+        # Load masks from masks.json
+        masks_dict = load_masks_json(scene_dir)
+        masks_data = {}
+        if masks_dict:
+            # Convert MaskDefinition objects to dict format
+            masks_data = {name: mask.to_dict() for name, mask in masks_dict.items()}
+        
+        # Return compositions as dict with scene_flags and masks
         return web.json_response({
             "prompts": prompts_list,
             "compositions": collection.compositions,
             "scene_flags": scene_flags,
-            "libbers": libbers_list
+            "libbers": libbers_list,
+            "masks": masks_data
         })
     
     except Exception as e:
@@ -6245,7 +6800,7 @@ async def story_save(request):
                 scene_id=scene_data.get("scene_id", ""),
                 scene_name=scene_data.get("scene_name", ""),
                 scene_order=scene_data.get("scene_order", 0),
-                mask_type=scene_data.get("mask_type", "combined"),
+                mask_name=scene_data.get("mask_name", scene_data.get("mask_type", "")),  # Support both new and legacy
                 mask_background=scene_data.get("mask_background", True),
                 prompt_source=scene_data.get("prompt_source", "prompt"),
                 prompt_key=scene_data.get("prompt_key", ""),

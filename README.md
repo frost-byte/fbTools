@@ -1,4 +1,8 @@
-# fb-tools (frost-byte Tools)
+<div align="center">
+  <img src="logo.png" alt="fbTools Logo" width="200"/>
+</div>
+
+# fbTools (frost-byte Tools)
 
 A comprehensive collection of custom nodes for ComfyUI focused on storytelling, scene management, and prompt templating workflows.
 
@@ -35,11 +39,32 @@ A comprehensive collection of custom nodes for ComfyUI focused on storytelling, 
 
 1. Install [ComfyUI](https://docs.comfy.org/get_started)
 2. Install [ComfyUI-Manager](https://github.com/ltdrdata/ComfyUI-Manager)
-3. Look up "fb-tools" or "comfyui-fbTools" in ComfyUI-Manager, or manually clone:
+3. Install required dependencies (see below)
+4. Look up "fb-tools" or "comfyui-fbTools" in ComfyUI-Manager, or manually clone:
    ```bash
    cd ComfyUI/custom_nodes
    git clone https://github.com/frost-byte/comfyui-fbTools.git
    ```
+5. Restart ComfyUI
+
+## Dependencies
+
+### Required
+- **[comfyui_controlnet_aux](https://github.com/Fannovel16/comfyui_controlnet_aux)** - Required for pose detection, depth estimation, and canny edge detection
+  - Provides: DWPose, OpenPose, DensePose, face detection
+  - Provides: Depth Anything v2, MiDaS, Zoe depth estimation
+  - Provides: Canny edge detection
+  - Used by: All Scene nodes (SceneCreate, SceneUpdate, etc.)
+
+### Optional
+- **[ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper/)** - Required only for LoRA functionality in Scene nodes
+  - Provides: WANVIDLORA type for high/low quality LoRA configurations
+  - Used by: SceneWanVideoLoraMultiSave node
+
+**Installation via ComfyUI-Manager:**
+1. Open ComfyUI-Manager
+2. Search for "controlnet aux" and install
+3. (Optional) Search for "WanVideoWrapper" if using LoRA features
 4. Restart ComfyUI
 
 ## Node Categories
@@ -90,17 +115,50 @@ All nodes are organized under the **🧊 frost-byte** category in ComfyUI.
 
 ## Documentation
 
-- **[LIBBER_NODES_README.md](LIBBER_NODES_README.md)**: Comprehensive Libber system documentation
-- **[STORY_NODES_README.md](STORY_NODES_README.md)**: Story building system guide
-- **[SCENE_NODES_README.md](SCENE_NODES_README.md)**: Scene management documentation
-- **[TESTING_STRATEGY.md](TESTING_STRATEGY.md)**: Testing approach and data model organization
-- **[TEST_RESULTS.md](TEST_RESULTS.md)**: PromptCollection test coverage results
+### 📖 Core Documentation
 
-### JavaScript Architecture
-- **[js/README.md](js/README.md)**: Frontend modular architecture overview
-- **[js/INTEGRATION_GUIDE.md](js/INTEGRATION_GUIDE.md)**: How to use API clients
-- **[js/MODULAR_ARCHITECTURE.md](js/MODULAR_ARCHITECTURE.md)**: Architecture decisions
-- **[js/QUICK_REFERENCE.md](js/QUICK_REFERENCE.md)**: API quick reference
+#### Node Systems
+- **[Libber Nodes](docs/LIBBER_NODES_README.md)**: Template system for reusable text snippets
+- **[Story Nodes](docs/STORY_NODES_README.md)**: Multi-scene story building system
+- **[Scene Nodes](docs/SCENE_NODES_README.md)**: Scene management with poses, depth, and masks
+- **[Scene Prompt System](docs/SCENE_PROMPT_SYSTEM.md)**: Scene prompt architecture and usage
+- **[Story Video](docs/STORY_VIDEO_README.md)**: Video generation from stories
+
+#### Mask System (NEW!)
+- **[Mask System Guide](docs/MASK_SYSTEM.md)**: Generic mask system with arbitrary mask names
+  - Custom mask definitions (not limited to "girl", "male", "combined")
+  - Mask types: transparent and color-keyed
+  - Background variant support
+  - Migration guide from legacy system
+
+#### Prompt Management
+- **[Scene Prompt Usage](docs/SCENE_PROMPT_USAGE.md)**: How to use scene prompts
+- **[Scene Prompt Manager Tabs](docs/SCENE_PROMPT_MANAGER_TABS.md)**: UI tabs reference
+
+#### UI Documentation
+- **[Video Prompt UI Layout](docs/VIDEO_PROMPT_UI_LAYOUT.md)**: Video prompt interface design
+- **[Video Prompt UX Implementation](docs/VIDEO_PROMPT_UX_IMPLEMENTATION.md)**: Video prompt user experience
+
+### 🔧 Development & Debugging
+- **[Debugging Guide](docs/DEBUGGING.md)**: Runtime debug flag system and troubleshooting
+- **[Development Notes](docs/DEVELOPMENT_NOTES.md)**: Developer notes and implementation details
+- **[Implementation Steps](docs/IMPLEMENTATION_STEPS_1_2.md)**: Feature implementation history
+
+### 🧪 Testing Documentation
+All testing documentation is in [docs/testing/](docs/testing/):
+- **[Testing Strategy](docs/testing/TESTING_STRATEGY.md)**: Overall testing approach
+- **[Testing Guide](docs/testing/TESTING_GUIDE.md)**: How to run and write tests
+- **[Test Results](docs/testing/TEST_RESULTS.md)**: Test coverage and results
+- **[Test Summary](docs/testing/TEST_SUMMARY.md)**: Testing overview
+- **[Test Coverage Summary](docs/testing/TEST_COVERAGE_SUMMARY.md)**: Coverage metrics
+- **[Story Edit Testing](docs/testing/STORY_EDIT_TESTING_GUIDE.md)**: Story editor testing procedures
+- **[Scene Tabs Testing](docs/testing/TESTING_SCENE_TABS.md)**: Scene UI testing procedures
+
+### 💻 Frontend Architecture
+- **[JavaScript Overview](js/README.md)**: Frontend modular architecture
+- **[Integration Guide](js/INTEGRATION_GUIDE.md)**: How to use API clients
+- **[Modular Architecture](js/MODULAR_ARCHITECTURE.md)**: Architecture decisions
+- **[Quick Reference](js/QUICK_REFERENCE.md)**: API quick reference
 
 ## Key Features Explained
 
@@ -231,6 +289,8 @@ python -m pytest tests/ --cov=. --cov-report=html
 - ✅ Edge case and boundary testing
 - ✅ File I/O operations
 
+See [Testing Guide](docs/testing/TESTING_GUIDE.md) for detailed instructions.
+
 #### JavaScript Tests
 
 ```bash
@@ -275,7 +335,7 @@ The project uses:
 - **Error Handling**: Automatic toast notifications and logging
 - **Testability**: Mock-friendly design with dependency injection
 
-See [js/README.md](js/README.md) for frontend architecture details.
+See [Frontend Documentation](js/README.md) for architecture details.
 
 ## Contributing
 
@@ -309,7 +369,18 @@ See [LICENSE](LICENSE) file.
 
 ## Changelog
 
+See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
+
 ### Recent Updates
+
+**2025-01-18: Generic Mask System**
+- ✅ Arbitrary mask names (not limited to girl/male/combined)
+- ✅ Mask types: TRANSPARENT and COLOR with RGB support
+- ✅ Dynamic mask loading via masks.json
+- ✅ Migration script for legacy scenes
+- ✅ Full backward compatibility
+- ✅ Updated all Scene and Story nodes
+- ✅ Comprehensive documentation and tests
 
 **2024-12-19: Libber System Overhaul**
 - ✅ Interactive table editor in LibberManager
@@ -356,18 +427,11 @@ git push
 An example custom node is located in [node.py](src/fb_tools/nodes.py). To learn more, read the [docs](https://docs.comfy.org/essentials/custom_node_overview).
 
 
-## Documentation
-
-- [Debugging Guide](DEBUGGING.md) - Runtime debug flag system for troubleshooting
-- [Testing Guide](TESTING_SCENE_TABS.md) - UI testing procedures
-- [Scene Prompt System](SCENE_PROMPT_SYSTEM.md) - Scene management architecture
-- [Story Nodes](STORY_NODES_README.md) - Story system documentation
-- [Libber Nodes](LIBBER_NODES_README.md) - Template system documentation
-- [Scene Nodes](SCENE_NODES_README.md) - Scene nodes reference
-
 ## Tests
 
-This repo contains unit tests written in Pytest in the `tests/` directory. It is recommended to unit test your custom node.
+This repo contains unit tests written in Pytest in the `tests/` directory and JavaScript tests in `js-tests/`. 
+
+See [Testing Guide](docs/testing/TESTING_GUIDE.md) for detailed testing procedures and [Test Results](docs/testing/TEST_RESULTS.md) for coverage reports.
 
 - [build-pipeline.yml](.github/workflows/build-pipeline.yml) will run pytest and linter on any open PRs
 - [validate.yml](.github/workflows/validate.yml) will run [node-diff](https://github.com/Comfy-Org/node-diff) to check for breaking changes

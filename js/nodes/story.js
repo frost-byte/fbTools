@@ -329,15 +329,16 @@ export function setupStoryEdit(nodeType, nodeData, app) {
 
             // Table rows
             const rows = currentScenes.map((scene, idx) => {
-                const maskTypes = ["girl", "male", "combined", "girl_no_bg", "male_no_bg", "combined_no_bg"];
                 const promptSources = ["prompt", "composition", "custom"];
                 const depthTypes = ["depth", "depth_any", "midas", "zoe", "zoe_any"];
-                const poseTypes = ["dense", "dw", "edit", "face", "open"];
+                const poseTypes = ["dense", "dw", "edit", "face", "open", "nlf"];
 
-                const maskOptions = maskTypes.map(m => `<option value="${m}" ${scene.mask_type === m ? 'selected' : ''}>${m}</option>`).join('');
                 const promptSourceOptions = promptSources.map(p => `<option value="${p}" ${scene.prompt_source === p ? 'selected' : ''}>${p}</option>`).join('');
                 const depthOptions = depthTypes.map(d => `<option value="${d}" ${scene.depth_type === d ? 'selected' : ''}>${d}</option>`).join('');
                 const poseOptions = poseTypes.map(p => `<option value="${p}" ${scene.pose_type === p ? 'selected' : ''}>${p}</option>`).join('');
+                
+                // Support both new mask_name and legacy mask_type
+                const maskValue = scene.mask_name || scene.mask_type || '';
 
                 const thumbnailUrl = `/fbtools/scene/thumbnail/${scene.scene_name}?t=${Date.now()}`;
                 
@@ -359,9 +360,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                             }
                         </td>
                         <td style="padding: 4px; border: 1px solid var(--border-color);">
-                            <select class="mask-type-select" style="width: 95%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
-                                ${maskOptions}
-                            </select>
+                            <input type="text" class="mask-name-input" value="${maskValue}" placeholder="mask name" style="width: 95%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;" />
                         </td>
                         <td style="padding: 4px; border: 1px solid var(--border-color); text-align: center;">
                             <input type="checkbox" class="mask-bg-checkbox" ${scene.mask_background ? 'checked' : ''} style="cursor: pointer;" />
@@ -723,7 +722,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             });
 
             // Track changes in table inputs
-            container.querySelectorAll('.scene-order-input, .scene-name-select, .mask-type-select, .mask-bg-checkbox, .prompt-source-select, .prompt-key-input, .custom-prompt-input, .depth-type-select, .pose-type-select').forEach(input => {
+            container.querySelectorAll('.scene-order-input, .scene-name-select, .mask-name-input, .mask-bg-checkbox, .prompt-source-select, .prompt-key-input, .custom-prompt-input, .depth-type-select, .pose-type-select').forEach(input => {
                 input.addEventListener('change', (e) => {
                     updateSceneFromInput(e.target);
                 });
@@ -845,8 +844,10 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             } else if (input.classList.contains('scene-name-select')) {
                 scene.scene_name = input.value;
                 delete scene._isNewScene;  // Remove flag once scene is selected
-            } else if (input.classList.contains('mask-type-select')) {
-                scene.mask_type = input.value;
+            } else if (input.classList.contains('mask-name-input')) {
+                scene.mask_name = input.value;
+                // Clear legacy mask_type if present
+                delete scene.mask_type;
             } else if (input.classList.contains('mask-bg-checkbox')) {
                 scene.mask_background = input.checked;
             } else if (input.classList.contains('prompt-source-select')) {
@@ -871,7 +872,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 scene_id: `scene_${Date.now()}`,
                 scene_name: firstScene,
                 scene_order: currentScenes.length,
-                mask_type: "combined",
+                mask_name: "",
                 mask_background: true,
                 prompt_source: "prompt",
                 prompt_key: "",

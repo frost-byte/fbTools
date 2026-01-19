@@ -23,11 +23,15 @@ class SceneInStory(BaseModel):
     - video_prompt_source: "prompt" | "composition" | "custom" | "auto" (default: "auto")
     - video_prompt_key: key from scene's prompt_dict or composition_dict for video
     - video_custom_prompt: custom prompt for video generation
+    
+    Mask Fields:
+    - mask_name: Name of the mask from the scene (supports arbitrary user-defined masks)
+    - mask_background: Whether to use the background variant (True=with background, False=no background)
     """
     scene_id: str = ""  # Unique identifier for this scene instance
     scene_name: str
     scene_order: int
-    mask_type: str = "combined"  # girl, male, combined, girl_no_bg, male_no_bg, combined_no_bg
+    mask_name: str = ""  # Name of mask from scene (empty string means no mask)
     mask_background: bool = True
     
     # V2 fields - Image generation
@@ -42,6 +46,7 @@ class SceneInStory(BaseModel):
     
     # Legacy V1 fields (for backwards compatibility during migration)
     prompt_type: str = ""  # DEPRECATED: girl_pos, male_pos, etc.
+    mask_type: str = ""  # DEPRECATED: Use mask_name instead
     
     depth_type: str = "depth"
     pose_type: str = "open"
@@ -55,6 +60,17 @@ class SceneInStory(BaseModel):
         if 'scene_id' not in data or not data['scene_id']:
             import uuid
             data['scene_id'] = str(uuid.uuid4())
+        
+        # Migrate mask_type to mask_name if needed
+        if 'mask_type' in data and data.get('mask_type') and not data.get('mask_name'):
+            # Legacy mask_type values: girl, male, combined, girl_no_bg, male_no_bg, combined_no_bg
+            mask_type = data['mask_type']
+            if mask_type.endswith('_no_bg'):
+                data['mask_name'] = mask_type.replace('_no_bg', '')
+                data['mask_background'] = False
+            else:
+                data['mask_name'] = mask_type
+                data['mask_background'] = True
         
         # Migrate V1 to V2 if needed
         if 'prompt_type' in data and data.get('prompt_type') and not data.get('prompt_source'):
