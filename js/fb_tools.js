@@ -395,7 +395,8 @@ const tabContainerId = "fb_tools_container";
 let _isLoaded = false;
 
 // Import node-specific modules
-import { setupSceneSelect, setupScenePromptManager } from "./nodes/scene.js";
+import { setupSceneSelect, setupScenePromptManager, setupSceneView } from "./nodes/scene.js";
+import { setupSceneUpdateStatus } from "./nodes/sceneUpdateStatus.js";
 import { setupStoryEdit, setupStoryView, setupStorySceneBatch } from "./nodes/story.js";
 import { setupLibberManager, setupLibberApply } from "./nodes/libber.js";
 
@@ -472,6 +473,12 @@ app.registerExtension({
         // Scene nodes
         if (isNode("SceneSelect")) {
             setupSceneSelect(nodeType, nodeData, app);
+        }
+        else if (isNode("SceneUpdate")) {
+            setupSceneUpdateStatus(nodeType, nodeData, app);
+        }
+        else if (isNode("SceneView")) {
+            setupSceneView(nodeType, nodeData, app);
         }
         else if (isNode("ScenePromptManager")) {
             setupScenePromptManager(nodeType, nodeData, app);

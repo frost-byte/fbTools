@@ -3,5 +3,10 @@
         "name": "comfyui_controlnet_aux",
         "url": "https://github.com/Fannovel16/comfyui_controlnet_aux",
         "description": "Required for Depth Detection: DepthAnythingV2, MiDaS, ZoeDepth, and more."
+    },
+    {
+        "name": "ComfyUI-SCAIL-Pose",
+        "url": "https://github.com/kijai/ComfyUI-SCAIL-Pose",
+        "description": "Optional: Required for NLF (Neural Lifting Framework) 3D pose generation in SceneUpdate node. Without this, basic DWPose functionality will still work."
     }]
 }

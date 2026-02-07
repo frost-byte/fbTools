@@ -46,12 +46,13 @@ SceneInfo(
     depth_zoe_image: Tensor    # Zoe depth
     depth_zoe_any_image: Tensor # Zoe Anything depth
     
-    # Pose Images (7 variants)
+    # Pose Images (8 variants)
     pose_dense_image: Tensor   # DensePose visualization
     pose_dw_image: Tensor      # DWPose output
     pose_edit_image: Tensor    # Editable pose
     pose_face_image: Tensor    # Face-focused pose
     pose_open_image: Tensor    # OpenPose output
+    pose_nlf_image: Tensor     # NLF 3D pose rendering (requires ComfyUI-SCAIL-Pose)
     canny_image: Tensor        # Canny edge detection
     
     # Image Hierarchy (base → upscale → derived)
@@ -156,6 +157,21 @@ Creates a new scene from a base image by generating all pose, depth, and edge de
   - densepose_r101_fpn_dl.torchscript
 - `densepose_cmap` (COMBO): DensePose colormap (viridis, parula)
 
+**NLF 3D Pose Settings** (requires ComfyUI-SCAIL-Pose):
+- `generate_nlf_pose` (BOOLEAN): Generate NLF 3D pose from base image (default: False)
+- `nlf_model_path` (STRING): NLF model name (default: empty = auto-download)
+  - nlf_l_multi_0.3.2.torchscript (default)
+  - nlf_l_multi_0.2.2.torchscript
+- `nlf_draw_face` (BOOLEAN): Draw face keypoints in NLF rendering (default: True)
+- `nlf_draw_hands` (BOOLEAN): Draw hand keypoints in NLF rendering (default: True)
+- `nlf_render_device` (COMBO): Rendering device for Taichi backend (default: gpu)
+  - Options: gpu, cpu, opengl, cuda, vulkan, metal
+- `nlf_scale_hands` (BOOLEAN): Scale hand keypoints (default: True)
+- `nlf_render_backend` (COMBO): Rendering backend (default: torch)
+  - torch: More compatible, works without taichi
+  - taichi: Faster GPU-accelerated rendering (requires `pip install taichi`)
+- **Note:** Without ComfyUI-SCAIL-Pose installed, NLF features are gracefully disabled
+
 **Depth Estimation Settings:**
 - `depth_any_ckpt` (COMBO): Depth Anything v1 checkpoint
   - depth_anything_vitl14.pth
@@ -222,8 +238,19 @@ Updates specific components of an existing scene without regenerating everything
 - `update_facepose`: Regenerate face pose
 - `update_editpose`: Regenerate edit pose
 - `update_dwpose`: Regenerate DWPose
+- `update_nlf_pose`: Regenerate NLF 3D pose (requires ComfyUI-SCAIL-Pose)
 - `update_high_loras`: Update high-quality LoRAs
 - `update_low_loras`: Update low-quality LoRAs
+
+**NLF 3D Pose Settings** (requires ComfyUI-SCAIL-Pose):
+- `nlf_model` (COMBO): NLF model to use (default: nlf_l_multi_0.3.2.torchscript)
+  - nlf_l_multi_0.3.2.torchscript
+  - nlf_l_multi_0.2.2.torchscript
+- `nlf_draw_face` (BOOLEAN): Draw face keypoints (default: True)
+- `nlf_draw_hands` (BOOLEAN): Draw hand keypoints (default: True)
+- `nlf_render_device` (COMBO): Rendering device (default: gpu)
+- `nlf_scale_hands` (BOOLEAN): Scale hand keypoints (default: True)
+- `nlf_render_backend` (COMBO): torch or taichi (default: torch)
 
 **Settings:** (Same as SceneCreate for relevant updates)
 - Resolution, upscaling, model selection parameters

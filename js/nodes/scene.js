@@ -69,6 +69,93 @@ function scheduleNodeRefresh(node, app) {
 }
 
 /**
+ * Setup SceneView node to dynamically populate mask options from scene directory
+ */
+export function setupSceneView(nodeType, nodeData, app) {
+    console.log("fb_tools -> SceneView node detected");
+    
+    // Hook into onExecuted to get scene_dir and update mask options
+    const onExecuted = nodeType.prototype.onExecuted;
+    nodeType.prototype.onExecuted = function(message) {
+        const result = onExecuted?.apply(this, arguments);
+        
+        // Extract scene_dir from text output (STRING outputs only: scene_name=text[0], scene_dir=text[1])
+        const scene_dir = message?.text?.[1]; // scene_dir is the 2nd STRING output
+        
+        console.log("fb_tools -> SceneView.onExecuted - scene_dir:", scene_dir);
+        console.log("fb_tools -> SceneView.onExecuted - message.text:", message?.text);
+        
+        if (scene_dir) {
+            console.log("fb_tools -> SceneView executed with scene_dir:", scene_dir);
+            
+            // Load mask options from scene
+            const maskNameWidget = this.widgets?.find(w => w.name === "mask_name");
+            if (maskNameWidget) {
+                console.log("fb_tools -> SceneView: Found mask_name widget, current value:", maskNameWidget.value);
+                console.log("fb_tools -> SceneView: Current options:", maskNameWidget.options?.values);
+                sceneAPI.getScenePrompts(scene_dir)
+                    .then(response => {
+                        console.log("fb_tools -> SceneView: API response:", response);
+                        const masks = response.masks || {};
+                        const maskNames = Object.keys(masks);
+                        
+                        console.log("fb_tools -> SceneView: Loaded mask names:", maskNames);
+                        
+                        // Update combo options - need to handle both options.values and options directly
+                        const newOptions = ["none", ...maskNames.sort()];
+                        if (maskNameWidget.options && typeof maskNameWidget.options === 'object') {
+                            if (Array.isArray(maskNameWidget.options.values)) {
+                                maskNameWidget.options.values = newOptions;
+                            } else {
+                                maskNameWidget.options.values = newOptions;
+                            }
+                        } else {
+                            // If options is an array directly
+                            maskNameWidget.options = { values: newOptions };
+                        }
+                        console.log("fb_tools -> SceneView: Updated options to:", maskNameWidget.options);
+                        
+                        // If a mask was auto-selected by the backend, update the widget to show it
+                        // The backend auto-selects the first mask if mask_name was "none"
+                        if (maskNameWidget.value === "none" && maskNames.length > 0) {
+                            const firstMask = maskNames.sort()[0];
+                            maskNameWidget.value = firstMask;
+                            console.log(`fb_tools -> SceneView: Auto-selected first mask: ${firstMask}`);
+                        }
+                        
+                        // Ensure current value is in options
+                        const validValues = maskNameWidget.options?.values || maskNameWidget.options || [];
+                        if (!validValues.includes(maskNameWidget.value)) {
+                            console.log(`fb_tools -> SceneView: Current mask '${maskNameWidget.value}' not in options, resetting to 'none'`);
+                            maskNameWidget.value = "none";
+                        }
+                        
+                        // Force widget refresh if it has an inputEl
+                        if (maskNameWidget.inputEl) {
+                            maskNameWidget.inputEl.value = maskNameWidget.value;
+                        }
+                        
+                        // Force node resize and canvas redraw
+                        this.setDirtyCanvas(true, true);
+                        app.graph.setDirtyCanvas(true, false);
+                    })
+                    .catch(error => {
+                        console.error("fb_tools -> SceneView: Failed to load mask options:", error);
+                        maskNameWidget.options = { values: ["none"] };
+                    });
+            } else {
+                console.warn("fb_tools -> SceneView: mask_name widget not found");
+                console.log("fb_tools -> SceneView: Available widgets:", this.widgets?.map(w => ({ name: w.name, type: w.type })));
+            }
+        } else {
+            console.warn("fb_tools -> SceneView: No scene_dir in message");
+        }
+        
+        return result;
+    };
+}
+
+/**
  * Setup SceneSelect node extensions
  */
 export function setupSceneSelect(nodeType, nodeData, app) {
@@ -512,6 +599,70 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         this.size[0] = Math.max(this.size[0], 600);
         this.size[1] = Math.max(this.size[1], 450);
         
+        // Hide the collection_json widget (it will be wrapped in an accordion)
+        if (collectionJsonWidget) {
+            collectionJsonWidget.type = "converted-widget";
+            Object.defineProperty(collectionJsonWidget, "computeSize", {
+                value: () => [0, -4],
+                writable: false
+            });
+        }
+        
+        // Create accordion wrapper for collection_json
+        const accordionContainer = document.createElement("div");
+        accordionContainer.style.cssText = 'width: 100%; margin-bottom: 8px; background: var(--comfy-input-bg); border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden;';
+        
+        const accordionHeader = document.createElement("div");
+        accordionHeader.style.cssText = 'display: flex; align-items: center; padding: 8px; cursor: pointer; background: var(--comfy-menu-bg); user-select: none; min-height: 32px;';
+        accordionHeader.innerHTML = `
+            <span style="margin-right: 8px; transition: transform 0.2s;" class="accordion-caret">▶</span>
+            <span style="color: var(--fg-color); font-weight: 500;">Scene JSON</span>
+        `;
+        
+        const accordionContent = document.createElement("div");
+        accordionContent.style.cssText = 'display: none; padding: 8px; max-height: 200px; overflow-y: auto; background: var(--comfy-input-bg);';
+        
+        const collectionTextarea = document.createElement("textarea");
+        collectionTextarea.style.cssText = 'width: 100%; min-height: 150px; font-family: monospace; font-size: 11px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 4px; padding: 4px; box-sizing: border-box; resize: vertical;';
+        collectionTextarea.value = collectionJsonWidget?.value || "";
+        collectionTextarea.readOnly = true;
+        
+        accordionContent.appendChild(collectionTextarea);
+        accordionContainer.appendChild(accordionHeader);
+        accordionContainer.appendChild(accordionContent);
+        
+        // Toggle accordion
+        let isAccordionOpen = false;
+        accordionHeader.addEventListener("click", () => {
+            isAccordionOpen = !isAccordionOpen;
+            accordionContent.style.display = isAccordionOpen ? "block" : "none";
+            const caret = accordionHeader.querySelector(".accordion-caret");
+            if (caret) {
+                caret.style.transform = isAccordionOpen ? "rotate(90deg)" : "rotate(0deg)";
+            }
+        });
+        
+        // Add accordion as DOM widget
+        const accordionWidget = this.addDOMWidget("collection_json_accordion", "preview", accordionContainer, {
+            serialize: false,
+            hideOnZoom: false,
+            getValue() {
+                return "";
+            },
+            setValue(v) {
+                // Update the textarea when collection_json changes
+                collectionTextarea.value = v || "";
+            }
+        });
+        
+        accordionWidget.computeSize = function(width) {
+            return [width, isAccordionOpen ? 210 : 48];
+        };
+        
+        // Store references
+        this._accordionWidget = accordionWidget;
+        this._collectionTextarea = collectionTextarea;
+        
         // Create container for editable table
         const container = document.createElement("div");
         container.style.cssText = 'width: 100%; min-height: 250px; padding: 8px; background: var(--comfy-input-bg); border: 1px solid var(--border-color); border-radius: 4px; overflow-y: auto; overflow-x: auto; box-sizing: border-box;';
@@ -694,6 +845,10 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                                 }
                             });
                             collectionJsonWidget.value = JSON.stringify(collection, null, 2);
+                            // Update accordion textarea
+                            if (node._collectionTextarea) {
+                                node._collectionTextarea.value = collectionJsonWidget.value;
+                            }
                         }
 
                         console.log("fb_tools -> ScenePromptManager: Loaded", promptsList.length, "prompts and", compositionsList.length, "compositions");
@@ -1052,6 +1207,10 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             
             if (collectionJsonWidget) {
                 collectionJsonWidget.value = JSON.stringify(collection, null, 2);
+                // Update accordion textarea
+                if (node._collectionTextarea) {
+                    node._collectionTextarea.value = collectionJsonWidget.value;
+                }
             }
         };
         
@@ -1660,6 +1819,10 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                     // Update collection_json widget
                     if (collectionJsonWidget && message.text[0]) {
                         collectionJsonWidget.value = message.text[0];
+                        // Update accordion textarea
+                        if (node._collectionTextarea) {
+                            node._collectionTextarea.value = message.text[0];
+                        }
                     }
 
                     // Parse and render prompts list

@@ -27,6 +27,7 @@ A comprehensive collection of custom nodes for ComfyUI focused on storytelling, 
 
 ### 🎭 Pose & Depth Processing
 - **Multiple Pose Formats**: DWPose, OpenPose, DensePose, and face detection
+- **NLF 3D Pose**: Neural Lifting Framework for advanced 3D pose estimation (optional, requires ComfyUI-SCAIL-Pose)
 - **Depth Estimation**: Depth Anything v2, MiDaS, Zoe, and more
 - **Mask Generation**: Character segmentation with background control
 
@@ -57,6 +58,12 @@ A comprehensive collection of custom nodes for ComfyUI focused on storytelling, 
   - Used by: All Scene nodes (SceneCreate, SceneUpdate, etc.)
 
 ### Optional
+- **[ComfyUI-SCAIL-Pose](https://github.com/kijai/ComfyUI-SCAIL-Pose)** - Required for NLF (Neural Lifting Framework) 3D pose generation
+  - Provides: Advanced 3D pose estimation and rendering with torch/taichi backends
+  - Used by: SceneUpdate node (update_nlf_pose parameter)
+  - Without this: Basic DWPose functionality still works, NLF features gracefully disabled
+  - Optional dependency: `taichi` for faster GPU-accelerated rendering
+
 - **[ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper/)** - Required only for LoRA functionality in Scene nodes
   - Provides: WANVIDLORA type for high/low quality LoRA configurations
   - Used by: SceneWanVideoLoraMultiSave node
@@ -64,8 +71,9 @@ A comprehensive collection of custom nodes for ComfyUI focused on storytelling, 
 **Installation via ComfyUI-Manager:**
 1. Open ComfyUI-Manager
 2. Search for "controlnet aux" and install
-3. (Optional) Search for "WanVideoWrapper" if using LoRA features
-4. Restart ComfyUI
+3. (Optional) Search for "SCAIL-Pose" or "ComfyUI-SCAIL-Pose" if using NLF pose features
+4. (Optional) Search for "WanVideoWrapper" if using LoRA features
+5. Restart ComfyUI
 
 ## Node Categories
 

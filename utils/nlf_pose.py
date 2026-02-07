@@ -8,12 +8,12 @@ import torch
 import copy
 import json
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple, Any, TYPE_CHECKING
 
 import comfy.model_management as mm
 from comfy.utils import load_torch_file
 import folder_paths
-
+from .util import import_virtual_package, add_custom_node_to_syspath
 # Import logging utils - handle both relative and absolute imports for testing
 try:
     from .logging_utils import get_logger
@@ -24,6 +24,31 @@ logger = get_logger(__name__)
 
 device = mm.get_torch_device()
 offload_device = mm.unet_offload_device()
+candidates=["ComfyUI-SCAIL-Pose", "comfyui-scail-pose"]
+scail_pose_path = add_custom_node_to_syspath(candidates)
+
+if scail_pose_path is not None:
+    import_virtual_package("scail_pose", scail_pose_path)
+
+# Check if ComfyUI-SCAIL-Pose is available at module load time
+_SCAIL_POSE_AVAILABLE = scail_pose_path is not None
+
+if _SCAIL_POSE_AVAILABLE:
+    logger.info("ComfyUI-SCAIL-Pose detected - NLF pose rendering will be available")
+    try:
+        from scail_pose.NLFPoseExtract.nlf_render import ( # type: ignore
+            render_nlf_as_images,
+            render_multi_nlf_as_images,
+            intrinsic_matrix_from_field_of_view
+        )
+        _HAS_NLF_RENDER = True
+    except ImportError as e:
+        logger.warning(f"Failed to import from NLFPoseExtract.nlf_render: {e}")
+else:
+    logger.warning(
+        "ComfyUI-SCAIL-Pose not found. NLF pose features will be disabled. "
+        "Install from ComfyUI-Manager or https://github.com/kijai/ComfyUI-SCAIL-Pose"
+    )
 
 # Add model folder paths
 folder_paths.add_model_folder_path("nlf", os.path.join(folder_paths.models_dir, "nlf"))
@@ -33,6 +58,12 @@ folder_paths.add_model_folder_path("detection", os.path.join(folder_paths.models
 NLF_MODEL_URLS = [
     "https://github.com/isarandi/nlf/releases/download/v0.3.2/nlf_l_multi_0.3.2.torchscript",
     "https://github.com/isarandi/nlf/releases/download/v0.2.2/nlf_l_multi_0.2.2.torchscript",
+]
+
+# Available NLF model names (basename of URLs)
+NLF_MODEL_NAMES = [
+    "nlf_l_multi_0.3.2.torchscript",
+    "nlf_l_multi_0.2.2.torchscript",
 ]
 
 def check_jit_script_function():
@@ -58,12 +89,12 @@ def check_jit_script_function():
             )
 
 
-def load_nlf_model(model_path: Optional[str] = None, warmup: bool = True) -> torch.jit.ScriptModule:
+def load_nlf_model(model_name: Optional[str] = None, warmup: bool = True) -> torch.jit.ScriptModule:
     """
     Load NLF model from file or download if needed
     
     Args:
-        model_path: Path to model file, or None to use default
+        model_name: Model filename (e.g., 'nlf_l_multi_0.3.2.torchscript'), or None to use default
         warmup: Whether to warmup the model after loading
     
     Returns:
@@ -71,21 +102,40 @@ def load_nlf_model(model_path: Optional[str] = None, warmup: bool = True) -> tor
     """
     check_jit_script_function()
     
-    if model_path is None:
-        # Use default path
-        model_path = os.path.join(folder_paths.models_dir, "nlf", "nlf_l_multi_0.3.2.torchscript")
+    # Handle empty string as None
+    if model_name is not None and not model_name.strip():
+        model_name = None
+    
+    if model_name is None:
+        # Use default model name
+        model_name = NLF_MODEL_NAMES[0]
+    
+    # Construct full path in models/nlf directory
+    model_path = os.path.join(folder_paths.models_dir, "nlf", model_name)
     
     # Download if not exists
     if not os.path.exists(model_path):
-        logger.info(f"Downloading NLF model to: {model_path}")
+        logger.info(f"Downloading NLF model '{model_name}' to: {model_path}")
+        
+        # Find corresponding URL for this model name
+        model_url = None
+        for url in NLF_MODEL_URLS:
+            if url.endswith(model_name):
+                model_url = url
+                break
+        
+        if model_url is None:
+            raise ValueError(f"Unknown NLF model name: {model_name}. Available: {NLF_MODEL_NAMES}")
+        
         import requests
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        response = requests.get(NLF_MODEL_URLS[0])
+        response = requests.get(model_url)
         if response.status_code == 200:
             with open(model_path, "wb") as f:
                 f.write(response.content)
+            logger.info(f"Successfully downloaded NLF model: {model_name}")
         else:
-            raise RuntimeError(f"Failed to download NLF model: {response.status_code}")
+            raise RuntimeError(f"Failed to download NLF model from {model_url}: {response.status_code}")
     
     model = torch.jit.load(model_path).eval()
     
@@ -338,12 +388,38 @@ def nlfpred_to_pose_keypoint(nlf_pred: Dict, width: int = 512, height: int = 768
     Returns:
         List of OpenPose format dictionaries
     """
-    # Extract 3D joints
-    joints3d = nlf_pred.get('joints3d_nonparam', [[]])[0]
+    logger.debug("nlfpred_to_pose_keypoint: Input nlf_pred keys: %s", list(nlf_pred.keys()) if nlf_pred else 'None')
+    
+    # Extract 3D joints with better error handling
+    joints3d_nested = nlf_pred.get('joints3d_nonparam', [[]])
+    logger.debug("nlfpred_to_pose_keypoint: joints3d_nested type: %s, length: %s", 
+                type(joints3d_nested), len(joints3d_nested) if hasattr(joints3d_nested, '__len__') else 'N/A')
+    
+    if not joints3d_nested or len(joints3d_nested) == 0:
+        logger.warning("nlfpred_to_pose_keypoint: No joints3d_nonparam data, returning empty list")
+        return [{'canvas_width': width, 'canvas_height': height, 'people': []}]
+    
+    joints3d = joints3d_nested[0]
+    logger.debug("nlfpred_to_pose_keypoint: joints3d type: %s, length: %s", 
+                type(joints3d), len(joints3d) if hasattr(joints3d, '__len__') else 'N/A')
+    
+    if not joints3d or len(joints3d) == 0:
+        logger.warning("nlfpred_to_pose_keypoint: joints3d is empty, returning empty list")
+        return [{'canvas_width': width, 'canvas_height': height, 'people': []}]
     
     pose_keypoints = []
     
-    for joints in joints3d:
+    for idx, joints in enumerate(joints3d):
+        logger.debug("nlfpred_to_pose_keypoint: Processing person %d, joints type: %s", idx, type(joints))
+        
+        # Check for empty tensor/array
+        if isinstance(joints, torch.Tensor) and joints.numel() == 0:
+            logger.warning("nlfpred_to_pose_keypoint: Person %d has empty tensor, skipping", idx)
+            continue
+        elif hasattr(joints, '__len__') and len(joints) == 0:
+            logger.warning("nlfpred_to_pose_keypoint: Person %d has empty data, skipping", idx)
+            continue
+        
         # Simple orthographic projection (just use x, y coordinates)
         # This is a simplified conversion - ideally we'd use proper camera projection
         if isinstance(joints, torch.Tensor):
@@ -392,6 +468,31 @@ def nlfpred_to_pose_keypoint(nlf_pred: Dict, width: int = 512, height: int = 768
     return pose_keypoints if pose_keypoints else [{'canvas_width': width, 'canvas_height': height, 'people': []}]
 
 
+def test_taichi_init(render_device: str = "gpu") -> Tuple[bool, Optional[str]]:
+    """
+    Test taichi initialization with the same parameters used by NLF rendering.
+    Returns (success, error_message)
+    """
+    try:
+        import taichi as ti
+        device_map = {
+            "cpu": ti.cpu,
+            "gpu": ti.gpu,
+            "opengl": ti.opengl,
+            "cuda": ti.cuda,
+            "vulkan": ti.vulkan,
+            "metal": ti.metal,
+        }
+        arch = device_map.get(render_device.lower())
+        logger.info(f"Testing taichi initialization with arch={arch} (device={render_device})")
+        ti.init(arch=arch)
+        logger.info(f"Taichi initialized successfully on {arch}")
+        return True, None
+    except ImportError as e:
+        return False, f"ImportError: {e}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
 def render_nlf_pose(
     nlf_pred: Dict,
     width: int,
@@ -422,19 +523,13 @@ def render_nlf_pose(
     Returns:
         Tuple of (rendered images tensor, mask tensor)
     """
-    # Import rendering functions from external dependencies if available
-    try:
-        from ..external.nlf_render import (
-            render_nlf_as_images,
-            render_multi_nlf_as_images,
-            intrinsic_matrix_from_field_of_view
-        )
-        _HAS_NLF_RENDER = True
-    except:
-        logger.warning("NLF rendering functions not available. Creating placeholder.")
-        _HAS_NLF_RENDER = False
+
     
     if not _HAS_NLF_RENDER:
+        logger.info(
+            "Returning black placeholder for NLF pose. "
+            "To enable NLF functionality, install ComfyUI-SCAIL-Pose via ComfyUI-Manager."
+        )
         # Return placeholder image
         placeholder = torch.zeros(1, height, width, 3)
         mask = torch.zeros(1, height, width)
@@ -451,23 +546,57 @@ def render_nlf_pose(
     # Get camera intrinsics
     intrinsic_matrix = intrinsic_matrix_from_field_of_view([height, width])
     
-    # Render poses
-    if pose_input[0].shape[0] > 1:
-        frames_np = render_multi_nlf_as_images(
-            pose_input, dw_pose_input, height, width, len(pose_input),
-            intrinsic_matrix=intrinsic_matrix,
-            draw_face=draw_face,
-            draw_hands=draw_hands,
-            render_backend=render_backend
-        )
-    else:
-        frames_np = render_nlf_as_images(
-            pose_input, dw_pose_input, height, width, len(pose_input),
-            intrinsic_matrix=intrinsic_matrix,
-            draw_face=draw_face,
-            draw_hands=draw_hands,
-            render_backend=render_backend
-        )
+    # Test taichi if requested
+    if render_backend == "taichi":
+        success, error = test_taichi_init(render_device)
+        if not success:
+            logger.warning(f"Taichi initialization test failed: {error}")
+            logger.warning("This is the specific error that causes fallback to torch backend")
+    
+    # Render poses with detailed error logging
+    try:
+        logger.debug(f"Calling render with backend={render_backend}, device={render_device}")
+        if pose_input[0].shape[0] > 1:
+            frames_np = render_multi_nlf_as_images(
+                pose_input, dw_pose_input, height, width, len(pose_input),
+                intrinsic_matrix=intrinsic_matrix,
+                draw_face=draw_face,
+                draw_hands=draw_hands,
+                render_backend=render_backend
+            )
+        else:
+            frames_np = render_nlf_as_images(
+                pose_input, dw_pose_input, height, width, len(pose_input),
+                intrinsic_matrix=intrinsic_matrix,
+                draw_face=draw_face,
+                draw_hands=draw_hands,
+                render_backend=render_backend
+            )
+        logger.debug(f"Render completed successfully with {render_backend} backend")
+    except Exception as e:
+        logger.error(f"Error during NLF rendering with {render_backend} backend: {type(e).__name__}: {e}", exc_info=True)
+        # If taichi failed, try falling back to torch
+        if render_backend == "taichi":
+            logger.warning("Falling back to torch backend after taichi error")
+            render_backend = "torch"
+            if pose_input[0].shape[0] > 1:
+                frames_np = render_multi_nlf_as_images(
+                    pose_input, dw_pose_input, height, width, len(pose_input),
+                    intrinsic_matrix=intrinsic_matrix,
+                    draw_face=draw_face,
+                    draw_hands=draw_hands,
+                    render_backend=render_backend
+                )
+            else:
+                frames_np = render_nlf_as_images(
+                    pose_input, dw_pose_input, height, width, len(pose_input),
+                    intrinsic_matrix=intrinsic_matrix,
+                    draw_face=draw_face,
+                    draw_hands=draw_hands,
+                    render_backend=render_backend
+                )
+        else:
+            raise
     
     frames_tensor = torch.from_numpy(np.stack(frames_np, axis=0)).contiguous() / 255.0
     frames_tensor, mask = frames_tensor[..., :3], frames_tensor[..., -1] > 0.5
