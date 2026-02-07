@@ -1,3 +1,4 @@
+from __future__ import annotations
 import math
 import json
 import numpy as np
@@ -8,7 +9,108 @@ from comfy.utils import ProgressBar
 from comfy_api.latest import io, ui
 from typing import List, Dict
 from server import PromptServer
+
+import importlib.util
+from pathlib import Path
+import sys
+import logging
+from typing import Iterable, Optional
+from types import ModuleType
+
 eps = 0.01
+
+# Import logging utils - handle both relative and absolute imports for testing
+try:
+    from .logging_utils import get_logger
+except ImportError:
+    from utils.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+def import_virtual_package(pkg_name: str, pkg_dir: Path) -> ModuleType:
+    """
+    Treat an arbitrary directory as a Python package by loading its __init__.py
+    (or creating a namespace package if none exists), under a safe package name.
+    This allows relative imports inside that directory to work.
+    """
+    pkg_dir = pkg_dir.resolve()
+    init_py = pkg_dir / "__init__.py"
+
+    if init_py.exists():
+        spec = importlib.util.spec_from_file_location(
+            pkg_name,
+            str(init_py),
+            submodule_search_locations=[str(pkg_dir)],
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Failed to create spec for {init_py}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[pkg_name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    # No __init__.py — create a namespace-style package
+    module = ModuleType(pkg_name)
+    module.__path__ = [str(pkg_dir)]  # type: ignore[attr-defined]
+    sys.modules[pkg_name] = module
+    return module
+
+def add_custom_node_to_syspath(
+    candidates: Iterable[str],
+    anchor_file: Optional[Path] = None,
+) -> Optional[Path]:
+    """
+    Locate a sibling custom node folder under ComfyUI/custom_nodes
+    and add it to sys.path.
+
+    Parameters
+    ----------
+    candidates:
+        Iterable of folder names to try, e.g.
+        ["ComfyUI-SCAIL-Pose", "comfyui-scail-pose"]
+
+    anchor_file:
+        Optional Path used as the search starting point.
+        Defaults to the calling file (__file__).
+
+    Returns
+    -------
+    Path | None
+        Resolved path to the found custom node directory,
+        or None if not found.
+    """
+    if anchor_file is None:
+        anchor_file = Path(__file__)
+
+    anchor_file = anchor_file.resolve()
+
+    # Find the nearest ancestor named "custom_nodes"
+    custom_nodes_dir = next(
+        (p for p in anchor_file.parents if p.name == "custom_nodes"),
+        None,
+    )
+
+    if custom_nodes_dir is None:
+        logger.warning(
+            "Could not locate 'custom_nodes' directory from %s",
+            anchor_file,
+        )
+        return None
+
+    for name in candidates:
+        candidate_path = (custom_nodes_dir / name).resolve()
+        if candidate_path.exists() and candidate_path.is_dir():
+            if str(candidate_path) not in sys.path:
+                sys.path.insert(0, str(candidate_path))
+                logger.info("Added custom node to sys.path: %s", candidate_path)
+            return candidate_path
+
+    logger.info(
+        "None of the candidate custom nodes were found under %s: %s",
+        custom_nodes_dir,
+        ", ".join(candidates),
+    )
+    return None
 
 def select_text_by_action(
     editable_text: str,

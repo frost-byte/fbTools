@@ -35,14 +35,15 @@ Created comprehensive utility functions for NLF pose operations:
 **Required Changes**:
 ```python
 # Add inputs for NLF pose generation:
-- nlf_model_path (STRING or COMBO): Path to NLF model
+- nlf_model (COMBO): NLF model selection (auto-downloads if needed)
+  - Options: ["nlf_l_multi_0.3.2.torchscript", "nlf_l_multi_0.2.2.torchscript"]
+  - Default: "nlf_l_multi_0.3.2.torchscript"
 - generate_nlf_pose (BOOLEAN): Toggle NLF pose generation
 - nlf_draw_face (BOOLEAN): Draw face keypoints (default: True)
 - nlf_draw_hands (BOOLEAN): Draw hand keypoints (default: True)
 - nlf_render_device (COMBO): ["gpu", "cpu", "opengl", "cuda", "vulkan", "metal"]
 - nlf_scale_hands (BOOLEAN): Scale hands (default: True)
 - nlf_render_backend (COMBO): ["taichi", "torch"] (default: "torch")
-- vitpose_model (COMBO): VitPose model selection from detection folder
 ```
 
 **Implementation**:

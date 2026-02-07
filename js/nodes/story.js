@@ -360,7 +360,9 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                             }
                         </td>
                         <td style="padding: 4px; border: 1px solid var(--border-color);">
-                            <input type="text" class="mask-name-input" value="${maskValue}" placeholder="mask name" style="width: 95%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;" />
+                            <select class="mask-name-select" style="width: 100%; padding: 2px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
+                                ${(scene.available_masks || ['none']).map(m => `<option value="${m}" ${maskValue === m ? 'selected' : ''}>${m}</option>`).join('')}
+                            </select>
                         </td>
                         <td style="padding: 4px; border: 1px solid var(--border-color); text-align: center;">
                             <input type="checkbox" class="mask-bg-checkbox" ${scene.mask_background ? 'checked' : ''} style="cursor: pointer;" />
@@ -410,23 +412,36 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 const promptSources = ["prompt", "composition", "custom"];
                 const promptSourceOptions = promptSources.map(p => `<option value="${p}" ${scene.prompt_source === p ? 'selected' : ''}>${p}</option>`).join('');
                 
+                const promptSource = scene.prompt_source || 'prompt';
+                const showImageDropdown = promptSource === 'prompt' || promptSource === 'composition';
+                const showImageCustomPrompt = promptSource === 'custom';
+                
                 return `
                 <div style="padding: 8px; margin-bottom: 8px; background: var(--comfy-menu-bg); border: 1px solid var(--border-color); border-radius: 4px;">
                     <div style="font-weight: 600; margin-bottom: 6px; color: var(--fg-color);">${scene.scene_name || `Scene ${idx}`}</div>
                     
                     <div style="margin-bottom: 8px;">
                         <div style="font-size: 11px; color: var(--descrip-text); margin-bottom: 4px;">🖼️ Image Prompt Settings:</div>
-                        <div style="display: grid; grid-template-columns: 150px 1fr; gap: 8px; align-items: ${scene.prompt_source === 'custom' ? 'start' : 'center'}; margin-bottom: 12px;">
+                        <div style="display: grid; grid-template-columns: 150px 1fr; gap: 8px; align-items: ${showImageCustomPrompt ? 'start' : 'center'}; margin-bottom: 12px;">
                             <label style="font-size: 12px;">prompt_source:</label>
                             <select class="prompt-source-select-flags" data-scene-idx="${idx}" style="padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
                                 ${promptSourceOptions}
                             </select>
                             
-                            <label style="font-size: 12px; ${scene.prompt_source === 'custom' ? 'padding-top: 4px;' : ''}">${scene.prompt_source === 'custom' ? 'custom_prompt:' : 'prompt_key:'}</label>
-                            ${scene.prompt_source === 'custom' ? 
-                                `<textarea class="custom-prompt-input-flags" data-scene-idx="${idx}" style="width: 100%; min-height: 80px; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px; resize: vertical; font-family: monospace;">${scene.custom_prompt || ''}</textarea>` :
-                                `<input type="text" class="prompt-key-input-flags" data-scene-idx="${idx}" value="${scene.prompt_key || ''}" placeholder="key" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;" />`
-                            }
+                            ${!showImageCustomPrompt ? `
+                            <label style="font-size: 12px;">prompt_key:</label>
+                            <div class="prompt-key-container" data-scene-idx="${idx}">
+                                ${showImageDropdown ? 
+                                    `<select class="prompt-key-select" data-scene-idx="${idx}" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;">
+                                        <option value="">Loading...</option>
+                                    </select>` :
+                                    `<input type="text" class="prompt-key-input-flags" data-scene-idx="${idx}" value="${scene.prompt_key || ''}" placeholder="key" style="width: 100%; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px;" />`
+                                }
+                            </div>
+                            ` : `
+                            <label style="font-size: 12px; padding-top: 4px;">custom_prompt:</label>
+                            <textarea class="custom-prompt-input-flags" data-scene-idx="${idx}" style="width: 100%; min-height: 80px; padding: 4px; background: var(--comfy-input-bg); color: var(--input-text); border: 1px solid var(--border-color); border-radius: 2px; font-size: 11px; resize: vertical; font-family: monospace;">${scene.custom_prompt || ''}</textarea>
+                            `}
                         </div>
                     </div>
                     
@@ -495,17 +510,18 @@ export function setupStoryEdit(nodeType, nodeData, app) {
         const populateVideoPromptControls = async () => {
             for (let idx = 0; idx < currentScenes.length; idx++) {
                 const scene = currentScenes[idx];
+                const promptSource = scene.prompt_source || 'prompt';
                 const videoPromptSource = scene.video_prompt_source || 'auto';
                 
-                // Get the container for this scene
+                // Get the containers for this scene
+                const imageKeyContainer = container.querySelector(`.prompt-key-container[data-scene-idx="${idx}"]`);
                 const keyContainer = container.querySelector(`.video-prompt-key-container[data-scene-idx="${idx}"]`);
                 const previewTextarea = container.querySelector(`.video-prompt-preview[data-scene-idx="${idx}"]`);
                 
-                if (!keyContainer || !previewTextarea) continue;
-                
                 try {
-                    // Fetch scene prompts if needed
-                    if (videoPromptSource === 'prompt' || videoPromptSource === 'composition') {
+                    // Fetch scene prompts if needed for either image or video prompts
+                    if (promptSource === 'prompt' || promptSource === 'composition' || 
+                        videoPromptSource === 'prompt' || videoPromptSource === 'composition') {
                         const sceneDir = `output/scenes/${scene.scene_name}`;
                         const promptData = await sceneAPI.getScenePrompts(sceneDir);
                         
@@ -521,40 +537,72 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                         }
                         scene._promptsMap = promptsMap;
                         
-                        // Get available keys
-                        let keys = [];
-                        if (videoPromptSource === 'prompt' && promptData.prompts) {
-                            keys = promptData.prompts.map(p => p.key);
-                        } else if (videoPromptSource === 'composition' && promptData.compositions) {
-                            keys = Object.keys(promptData.compositions);
-                        }
-                        
-                        // Update dropdown
-                        const selectEl = keyContainer.querySelector('.video-prompt-key-select');
-                        if (selectEl) {
-                            const currentValue = scene.video_prompt_key || '';
-                            
-                            // If current value is empty or not in the list, use first key
-                            if (keys.length > 0 && (!currentValue || !keys.includes(currentValue))) {
-                                scene.video_prompt_key = keys[0];
+                        // Populate IMAGE prompt dropdown if needed
+                        if (imageKeyContainer && (promptSource === 'prompt' || promptSource === 'composition')) {
+                            let keys = [];
+                            if (promptSource === 'prompt' && promptData.prompts) {
+                                keys = promptData.prompts.map(p => p.key);
+                            } else if (promptSource === 'composition' && promptData.compositions) {
+                                keys = Object.keys(promptData.compositions);
                             }
                             
-                            selectEl.innerHTML = keys.map(k => 
-                                `<option value="${k}" ${k === scene.video_prompt_key ? 'selected' : ''}>${k}</option>`
-                            ).join('');
+                            const selectEl = imageKeyContainer.querySelector('.prompt-key-select');
+                            if (selectEl) {
+                                const currentValue = scene.prompt_key || '';
+                                
+                                // If current value is empty or not in the list, use first key
+                                if (keys.length > 0 && (!currentValue || !keys.includes(currentValue))) {
+                                    scene.prompt_key = keys[0];
+                                }
+                                
+                                selectEl.innerHTML = keys.map(k => 
+                                    `<option value="${k}" ${k === scene.prompt_key ? 'selected' : ''}>${k}</option>`
+                                ).join('');
+                                
+                                if (keys.length === 0) {
+                                    selectEl.innerHTML = '<option value="">No keys available</option>';
+                                    scene.prompt_key = '';
+                                }
+                            }
+                        }
+                        
+                        // Populate VIDEO prompt dropdown if needed
+                        if (keyContainer && (videoPromptSource === 'prompt' || videoPromptSource === 'composition')) {
+                            let keys = [];
+                            if (videoPromptSource === 'prompt' && promptData.prompts) {
+                                keys = promptData.prompts.map(p => p.key);
+                            } else if (videoPromptSource === 'composition' && promptData.compositions) {
+                                keys = Object.keys(promptData.compositions);
+                            }
                             
-                            if (keys.length === 0) {
-                                selectEl.innerHTML = '<option value="">No keys available</option>';
-                                scene.video_prompt_key = '';
+                            const selectEl = keyContainer.querySelector('.video-prompt-key-select');
+                            if (selectEl) {
+                                const currentValue = scene.video_prompt_key || '';
+                                
+                                // If current value is empty or not in the list, use first key
+                                if (keys.length > 0 && (!currentValue || !keys.includes(currentValue))) {
+                                    scene.video_prompt_key = keys[0];
+                                }
+                                
+                                selectEl.innerHTML = keys.map(k => 
+                                    `<option value="${k}" ${k === scene.video_prompt_key ? 'selected' : ''}>${k}</option>`
+                                ).join('');
+                                
+                                if (keys.length === 0) {
+                                    selectEl.innerHTML = '<option value="">No keys available</option>';
+                                    scene.video_prompt_key = '';
+                                }
                             }
                         }
                     }
                     
                     // Update preview
-                    await updateVideoPromptPreview(idx);
+                    if (previewTextarea) {
+                        await updateVideoPromptPreview(idx);
+                    }
                     
                 } catch (error) {
-                    console.error(`Error populating video prompt controls for scene ${idx}:`, error);
+                    console.error(`Error populating prompt controls for scene ${idx}:`, error);
                     if (previewTextarea) {
                         previewTextarea.value = `Error loading prompt data: ${error.message}`;
                     }
@@ -722,7 +770,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             });
 
             // Track changes in table inputs
-            container.querySelectorAll('.scene-order-input, .scene-name-select, .mask-name-input, .mask-bg-checkbox, .prompt-source-select, .prompt-key-input, .custom-prompt-input, .depth-type-select, .pose-type-select').forEach(input => {
+            container.querySelectorAll('.scene-order-input, .scene-name-select, .mask-name-select, .mask-bg-checkbox, .prompt-source-select, .prompt-key-input, .custom-prompt-input, .depth-type-select, .pose-type-select').forEach(input => {
                 input.addEventListener('change', (e) => {
                     updateSceneFromInput(e.target);
                 });
@@ -807,7 +855,17 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 });
             });
             
-            // Handle prompt key input changes in flags tab
+            // Handle prompt key select changes in flags tab (dropdown)
+            container.querySelectorAll('.prompt-key-select').forEach(select => {
+                select.addEventListener('change', (e) => {
+                    const idx = parseInt(e.target.dataset.sceneIdx);
+                    if (currentScenes[idx]) {
+                        currentScenes[idx].prompt_key = e.target.value;
+                    }
+                });
+            });
+            
+            // Handle prompt key input changes in flags tab (text input fallback)
             container.querySelectorAll('.prompt-key-input-flags').forEach(input => {
                 input.addEventListener('change', (e) => {
                     const idx = parseInt(e.target.dataset.sceneIdx);
@@ -844,7 +902,7 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             } else if (input.classList.contains('scene-name-select')) {
                 scene.scene_name = input.value;
                 delete scene._isNewScene;  // Remove flag once scene is selected
-            } else if (input.classList.contains('mask-name-input')) {
+            } else if (input.classList.contains('mask-name-select')) {
                 scene.mask_name = input.value;
                 // Clear legacy mask_type if present
                 delete scene.mask_type;

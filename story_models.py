@@ -139,7 +139,7 @@ def save_story(story_info: StoryInfo, story_json_path: str):
             scene_data = {
                 "scene_name": scene.scene_name,
                 "scene_order": scene.scene_order,
-                "mask_type": scene.mask_type,
+                "mask_name": scene.mask_name,
                 "mask_background": scene.mask_background,
                 "prompt_source": scene.prompt_source,
                 "prompt_key": scene.prompt_key,
