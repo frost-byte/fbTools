@@ -282,6 +282,118 @@ class DictType:
             super().__init__(**kwargs)
 
 
+class MultiLoraLoader(io.ComfyNode):
+    """
+    MultiLoraLoader: Load and apply multiple LoRAs to a diffusion model.
+    All LoRA slots are always visible (up to 10), but only the number specified
+    in 'num_loras_to_apply' will be processed. This preserves user selections
+    when changing the count.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self.loaded_loras = {}
+    
+    @classmethod
+    def define_schema(cls):
+        lora_files = folder_paths.get_filename_list("loras")
+        
+        # Create all 10 LoRA slots upfront (they'll always be visible)
+        lora_inputs = [
+            io.Model.Input("model", tooltip="The diffusion model that the LoRAs will be applied to"),
+            io.Int.Input(
+                "num_loras_to_apply",
+                default=1,
+                min=0,
+                max=10,
+                tooltip="How many of the LoRA slots below to actually apply (0-10)"
+            ),
+        ]
+        
+        # Add 10 LoRA slots
+        for i in range(1, 11):
+            lora_inputs.extend([
+                io.Combo.Input(
+                    f"lora_name_{i}",
+                    options=lora_files,
+                    optional=True,
+                    tooltip=f"LoRA file #{i} (optional - leave empty to skip)"
+                ),
+                io.Float.Input(
+                    f"strength_{i}",
+                    default=1.0,
+                    min=-100.0,
+                    max=100.0,
+                    step=0.01,
+                    tooltip=f"Strength for LoRA #{i} (can be negative)"
+                ),
+            ])
+        
+        return io.Schema(
+            node_id=prefixed_node_id("MultiLoraLoader"),
+            display_name="Multi LoRA Loader",
+            category="🧊 frost-byte/Loaders",
+            inputs=lora_inputs,
+            outputs=[
+                io.Model.Output("model", tooltip="The modified diffusion model with LoRAs applied"),
+            ],
+        )
+    
+    @classmethod
+    def execute(cls, model, num_loras_to_apply=1, **kwargs):
+        """
+        Load and apply multiple LoRAs to the model sequentially.
+        
+        Args:
+            model: The input diffusion model
+            num_loras_to_apply: How many LoRA slots to process (0-10)
+            **kwargs: Contains lora_name_N and strength_N parameters
+        
+        Returns:
+            NodeOutput with the modified model
+        """
+        import comfy.utils
+        import comfy.sd
+        
+        # Ensure num_loras_to_apply is within bounds
+        num_to_apply = max(0, min(10, int(num_loras_to_apply)))
+        
+        # Apply each LoRA sequentially up to the specified count
+        current_model = model
+        applied_count = 0
+        
+        for i in range(1, num_to_apply + 1):
+            lora_name = kwargs.get(f"lora_name_{i}")
+            strength = kwargs.get(f"strength_{i}", 1.0)
+            
+            # Skip if no LoRA name provided or strength is zero
+            if not lora_name or strength == 0:
+                logger.debug(f"Skipping LoRA slot {i}: lora_name='{lora_name}', strength={strength}")
+                continue
+            
+            try:
+                # Get the full path to the LoRA file
+                lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
+                
+                # Load the LoRA
+                lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
+                
+                # Apply the LoRA to the model (model only, no clip)
+                current_model, _ = comfy.sd.load_lora_for_models(
+                    current_model, None, lora, strength, 0
+                )
+                
+                applied_count += 1
+                logger.info(f"Applied LoRA {applied_count}/{num_to_apply}: {lora_name} (strength: {strength})")
+            except Exception as e:
+                logger.error(f"Failed to apply LoRA {i} ({lora_name}): {e}")
+        
+        if applied_count == 0:
+            logger.warning("No LoRAs were applied")
+        
+        return io.NodeOutput(model=current_model)
+
+
 class SAMPreprocessNHWC(io.ComfyNode):
     """
     Prepare IMAGE for SAM predictor inside other nodes:
@@ -6007,8 +6119,17 @@ class LibberApply(io.ComfyNode):
     
     @classmethod
     def define_schema(cls):
+        libber_dir = default_libber_dir()
         manager = LibberStateManager.instance()
-        available_libbers = manager.list_libbers()
+        available_libbers = set(manager.list_libbers())
+
+        # Include libbers available on disk (same source behavior as LibberManager)
+        if os.path.isdir(libber_dir):
+            for f in os.listdir(libber_dir):
+                if f.endswith('.json'):
+                    available_libbers.add(f[:-5])
+
+        available_libbers = sorted(available_libbers)
         
         if not available_libbers:
             available_libbers = ["none"]
@@ -6042,6 +6163,9 @@ class LibberApply(io.ComfyNode):
     @classmethod
     def execute(cls, libber_name="my_libber", text=""):
         manager = LibberStateManager.instance()
+
+        if libber_name == "none":
+            return io.NodeOutput(text, "Select a libber in LibberManager or create one first.")
         
         # Try to reload from file to ensure we have the latest data
         libber_dir = default_libber_dir()
@@ -6920,6 +7044,7 @@ async def libber_list(request):
         return web.json_response({
             "libbers": libbers,
             "files": files,
+            "libber_dir": libber_dir,
             "count": len(libbers)
         })
     
@@ -7530,6 +7655,7 @@ class FBToolsExtension(ComfyExtension):
             SAMPreprocessNHWC,
             QwenAspectRatio,
             SubdirLister,
+            MultiLoraLoader,
             # NodeInputSelect,
             SceneCreate,
             SceneUpdate,

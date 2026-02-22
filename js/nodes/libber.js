@@ -433,6 +433,26 @@ export function setupLibberApply(nodeType, nodeData, app) {
         const widgets = this.widgets || [];
         const libberNameWidget = widgets.find(w => w.name === "libber_name");
         const inputTextWidget = widgets.find(w => w.name === "text");
+
+        const getLibberNamesFromListResponse = (data) => {
+            const names = new Set();
+
+            if (data?.libbers && Array.isArray(data.libbers)) {
+                for (const name of data.libbers) {
+                    if (name) names.add(String(name));
+                }
+            }
+
+            if (data?.files && Array.isArray(data.files)) {
+                for (const file of data.files) {
+                    if (!file) continue;
+                    const name = String(file).replace(/\.json$/i, "");
+                    if (name) names.add(name);
+                }
+            }
+
+            return [...names].sort();
+        };
         
         // Store last known cursor position
         let lastCursorStart = 0;
@@ -689,9 +709,18 @@ export function setupLibberApply(nodeType, nodeData, app) {
             } catch (err) {
                 console.log("fbTools -> LibberApply: libber not loaded, attempting to load from file");
                 try {
-                    const libberDir = "output/libbers";
-                    const filename = `${libberName}.json`;
-                    const loadPath = `${libberDir}/${filename}`;
+                    const listData = await libberAPI.listLibbers();
+                    const libberDir = listData?.libber_dir;
+                    const files = Array.isArray(listData?.files) ? listData.files : [];
+
+                    const exactFilename = `${libberName}.json`;
+                    const matchedFilename = files.find((f) => String(f).toLowerCase() === exactFilename.toLowerCase());
+                    if (!libberDir || !matchedFilename) {
+                        console.warn(`fbTools -> LibberApply: no file found for '${libberName}' in list response`);
+                        return false;
+                    }
+
+                    const loadPath = `${libberDir}/${matchedFilename}`;
                     await libberAPI.loadLibber(libberName, loadPath);
                     console.log(`fbTools -> LibberApply: loaded '${libberName}' from file`);
                     return true;
@@ -708,13 +737,8 @@ export function setupLibberApply(nodeType, nodeData, app) {
                 const currentSelection = libberNameWidget.value;
                 const data = await libberAPI.listLibbers();
                 console.log("fbTools -> LibberApply: refreshed libber list", data);
-                
-                let libbers = [];
-                if (data && data.libbers && data.libbers.length > 0) {
-                    libbers = data.libbers;
-                } else if (data && data.files && data.files.length > 0) {
-                    libbers = data.files.map(f => f.replace('.json', ''));
-                }
+
+                const libbers = getLibberNamesFromListResponse(data);
                 
                 if (libbers.length === 0) {
                     updateDisplay(null, `
@@ -768,18 +792,16 @@ export function setupLibberApply(nodeType, nodeData, app) {
         // Fetch and populate available libbers
         libberAPI.listLibbers().then(async data => {
             if (data && libberNameWidget) {
-                let libbers = [];
-                if (data.libbers && data.libbers.length > 0) {
-                    libbers = data.libbers;
-                } else if (data.files && data.files.length > 0) {
-                    libbers = data.files.map(f => f.replace('.json', ''));
-                }
+                const libbers = getLibberNamesFromListResponse(data);
                 
                 if (libbers.length === 0) {
-                    libbers = ["none"];
+                    libberNameWidget.options.values = ["none"];
+                    libberNameWidget.value = "none";
+                    updateDisplay("none");
+                    return;
                 }
-                
-                libberNameWidget.options.values = libbers;
+
+                libberNameWidget.options.values = ["none", ...libbers];
                 if (!libberNameWidget.value || !libbers.includes(libberNameWidget.value)) {
                     libberNameWidget.value = libbers[0];
                 }
