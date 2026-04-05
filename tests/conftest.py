@@ -19,6 +19,7 @@ UNIFIED TEST IMPORT APPROACH:
 
 import os
 import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock
 import importlib.util
@@ -31,19 +32,12 @@ comfyui_root = os.path.abspath(os.path.join(project_root, '../..'))
 sys.path.insert(0, comfyui_root)  # For custom_nodes.comfyui-fbTools imports
 sys.path.insert(0, project_root)  # For direct imports from project root
 
-# Create a mock utils package so prompt_models.py's relative imports work
-# when imported directly as a top-level module
+# Ensure "utils" behaves like a package during direct file imports.
+# A plain MagicMock here breaks imports like "from utils.util import ...".
 if 'utils' not in sys.modules:
-    utils_mock = MagicMock()
-    logging_utils_mock = MagicMock()
-    # Create a real logger that works for tests
-    import logging
-    def get_logger(name):
-        return logging.getLogger(name)
-    logging_utils_mock.get_logger = get_logger
-    utils_mock.logging_utils = logging_utils_mock
-    sys.modules['utils'] = utils_mock
-    sys.modules['utils.logging_utils'] = logging_utils_mock
+    utils_pkg = types.ModuleType('utils')
+    utils_pkg.__path__ = [str(Path(project_root) / 'utils')]
+    sys.modules['utils'] = utils_pkg
 
 # Mock all ComfyUI modules BEFORE any extension imports
 # Core ComfyUI modules
@@ -74,6 +68,9 @@ torch_mock.no_grad = MagicMock(return_value=MagicMock(__enter__=MagicMock(), __e
 torch_mock.cat = MagicMock(return_value=MagicMock())
 torch_mock.jit = MagicMock()
 sys.modules['torch'] = torch_mock
+sys.modules['torch.nn'] = MagicMock()
+sys.modules['torch.nn.functional'] = MagicMock()
+sys.modules['torch.hub'] = MagicMock()
 
 # Server module with PromptServer mock
 server_mock = MagicMock()

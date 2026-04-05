@@ -744,6 +744,41 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
         let currentSceneDir = null;  // Track current scene directory for API calls
         const node = this;  // Store node reference for closures
 
+        const getLibberNamesFromListResponse = (data) => {
+            const names = new Set();
+
+            if (data?.libbers && Array.isArray(data.libbers)) {
+                for (const name of data.libbers) {
+                    if (name) names.add(String(name));
+                }
+            }
+
+            if (data?.files && Array.isArray(data.files)) {
+                for (const file of data.files) {
+                    if (!file) continue;
+                    const name = String(file).replace(/\.json$/i, "");
+                    if (name) names.add(name);
+                }
+            }
+
+            return [...names].sort();
+        };
+
+        const normalizeLibberNames = (...sources) => {
+            const names = new Set();
+
+            for (const source of sources) {
+                if (!source) continue;
+                for (const item of source) {
+                    if (!item || item === "none") continue;
+                    const name = String(item).replace(/\.json$/i, "");
+                    if (name) names.add(name);
+                }
+            }
+
+            return ["none", ...[...names].sort()];
+        };
+
         // --- Scene Flags State ---
         let sceneFlags = {
             use_depth: false,
@@ -852,7 +887,15 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                         }
 
                         console.log("fb_tools -> ScenePromptManager: Loaded", promptsList.length, "prompts and", compositionsList.length, "compositions");
-                        renderTable(promptsList, data.libbers || ["none"], compositionsList, promptDict);
+                        let mergedLibbers = normalizeLibberNames(data.libbers || []);
+                        try {
+                            const libberListData = await libberAPI.listLibbers();
+                            mergedLibbers = normalizeLibberNames(data.libbers || [], getLibberNamesFromListResponse(libberListData));
+                        } catch (libberErr) {
+                            console.warn("fb_tools -> ScenePromptManager: Could not refresh global libber list", libberErr);
+                        }
+
+                        renderTable(promptsList, mergedLibbers, compositionsList, promptDict);
                     } catch (error) {
                         console.error("fb_tools -> ScenePromptManager: Failed to load prompts:", error);
                         showToast({ severity: "error", summary: "Failed to load prompts", detail: error.message, life: 3000 });
@@ -908,12 +951,7 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
             currentPromptsData = promptsList || [];
             currentCompositionsData = compositionsList || [];
             currentPromptDict = promptDict || {};
-            availableLibbers = libbersList || ["none"];
-
-            // Ensure "none" is always first
-            if (!availableLibbers.includes("none")) {
-                availableLibbers.unshift("none");
-            }
+            availableLibbers = normalizeLibberNames(libbersList || []);
 
             // --- Scene Flags UI ---
             const flagsHTML = `
@@ -1302,13 +1340,14 @@ export function setupScenePromptManager(nodeType, nodeData, app) {
                         if (libberSelect.value === 'none') {
                             try {
                                 const response = await libberAPI.listLibbers();
-                                if (response && response.libbers && response.libbers.length > 0) {
+                                const mergedLibbers = normalizeLibberNames(getLibberNamesFromListResponse(response));
+                                if (mergedLibbers.length > 1) {
                                     // Update availableLibbers list
-                                    availableLibbers = ["none", ...response.libbers];
+                                    availableLibbers = mergedLibbers;
                                     
                                     // Repopulate the dropdown options
                                     libberSelect.innerHTML = availableLibbers.map(lib => {
-                                        const selected = lib === response.libbers[0] ? 'selected' : '';
+                                        const selected = lib === availableLibbers[1] ? 'selected' : '';
                                         return `<option value="${lib}" ${selected}>${lib}</option>`;
                                     }).join('');
                                     

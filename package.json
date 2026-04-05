@@ -22,7 +22,8 @@
     "collectCoverageFrom": [
       "js/api/**/*.js",
       "js/utils/**/*.js",
-      "js/ui/**/*.js"
+      "js/ui/**/*.js",
+      "js/nodes/**/*.js"
     ]
   }
 }
