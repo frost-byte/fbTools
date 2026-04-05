@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 const EXT_PREFIX = "fbt_";
 
@@ -144,6 +145,66 @@ const clipboardErrorToast = {
     detail: "Failed to copy node JSON to clipboard, requires HTTPS connection",
     life: 4000,
 }
+
+const DATASET_STATUS_SOURCE = "dataset_captioner";
+const datasetStatusToastState = {
+    lastStatus: "",
+    lastTs: 0,
+};
+
+function statusToSeverity(level, statusText = "") {
+    const normalized = String(level || "").toLowerCase();
+    if (normalized === "error" || /error|failed/i.test(statusText)) return "error";
+    if (normalized === "warn" || /warn/i.test(statusText)) return "warn";
+    if (normalized === "success" || /complete|ready|loaded|unloaded|ok/i.test(statusText)) return "success";
+    return "info";
+}
+
+function isDatasetToastMilestone(statusText = "") {
+    const text = String(statusText).toLowerCase();
+
+    // Start milestones
+    const isStart =
+        text.includes("loading") && text.includes("model")
+        || text.includes("generating caption");
+
+    // End milestones
+    const isEnd =
+        text.includes("completed")
+        || text.includes("complete")
+        || text.includes("failed")
+        || text.includes("error")
+        || text.includes("no images to process");
+
+    return isStart || isEnd;
+}
+
+api.addEventListener("fbtools.status", (event) => {
+    try {
+        const detail = event?.detail || {};
+        if (detail.source !== DATASET_STATUS_SOURCE) return;
+
+        const status = String(detail.status || "").trim();
+        if (!status) return;
+        if (!isDatasetToastMilestone(status)) return;
+
+        const now = Date.now();
+        const isDuplicate = status === datasetStatusToastState.lastStatus && (now - datasetStatusToastState.lastTs) < 1200;
+        if (isDuplicate) return;
+
+        datasetStatusToastState.lastStatus = status;
+        datasetStatusToastState.lastTs = now;
+
+        app.extensionManager?.toast?.add({
+            severity: statusToSeverity(detail.level, status),
+            summary: "Dataset Captioner",
+            detail: status,
+            life: 2600,
+        });
+    } catch (err) {
+        console.error("fb_tools -> DatasetCaptioner status toast handler error", err);
+    }
+});
 
 function serializedNodes() {
     const nodes = app.canvas?.selected_nodes || {};
@@ -399,6 +460,8 @@ import { setupSceneSelect, setupScenePromptManager, setupSceneView } from "./nod
 import { setupSceneUpdateStatus } from "./nodes/sceneUpdateStatus.js";
 import { setupStoryEdit, setupStoryView, setupStorySceneBatch } from "./nodes/story.js";
 import { setupLibberManager, setupLibberApply } from "./nodes/libber.js";
+import { setupDatasetCaptionViewer } from "./nodes/dataset_caption_viewer.js";
+import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
 
 // Add context menu entry for extracting a node as json
 app.registerExtension({
@@ -464,11 +527,14 @@ app.registerExtension({
         return ["fb_tools.extract-node-json"];
     },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData?.category?.indexOf(FROST_CATEGORY) < 0) {
+        const isNode = (baseName) => nodeData.name === `${EXT_PREFIX}${baseName}` || nodeData.name === baseName;
+        const isFrostCategory = nodeData?.category?.indexOf(FROST_CATEGORY) >= 0;
+
+        // Most node handlers are frost-byte category scoped, but DatasetCaptionViewer
+        // currently lives under Dataset/Caption and still needs frontend integration.
+        if (!isFrostCategory && !isNode("DatasetCaptionViewer")) {
             return;
         }
-        
-        const isNode = (baseName) => nodeData.name === `${EXT_PREFIX}${baseName}` || nodeData.name === baseName;
         
         // Scene nodes
         if (isNode("SceneSelect")) {
@@ -502,13 +568,23 @@ app.registerExtension({
         else if (isNode("LibberApply")) {
             setupLibberApply(nodeType, nodeData, app);
         }
+
+        // Dataset captioning nodes
+        else if (isNode("DatasetCaptioner")) {
+            setupDatasetCaptionerStatus(nodeType, nodeData, app);
+        }
+        else if (isNode("DatasetCaptionViewer")) {
+            setupDatasetCaptionViewer(nodeType, nodeData, app);
+        }
         
-        // Add context menu for all frost-byte nodes
-        addMenuHandler(nodeType, function (_, options) {
-            options.push({
-                content: "Extract Node as JSON",
-                callback: handleNodes,
+        // Add context menu for frost-byte nodes only.
+        if (isFrostCategory) {
+            addMenuHandler(nodeType, function (_, options) {
+                options.push({
+                    content: "Extract Node as JSON",
+                    callback: handleNodes,
+                });
             });
-        });
+        }
     },
 });

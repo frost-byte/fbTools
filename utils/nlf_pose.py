@@ -13,7 +13,11 @@ from typing import Optional, Dict, List, Tuple, Any, TYPE_CHECKING
 import comfy.model_management as mm
 from comfy.utils import load_torch_file
 import folder_paths
-from .util import import_virtual_package, add_custom_node_to_syspath
+try:
+    from .util import import_virtual_package, add_custom_node_to_syspath
+except ImportError:
+    # Test harness imports this module as top-level; allow absolute fallback.
+    from utils.util import import_virtual_package, add_custom_node_to_syspath
 # Import logging utils - handle both relative and absolute imports for testing
 try:
     from .logging_utils import get_logger

@@ -1,3 +1,26 @@
 kornia~=0.8
 opencv_python~=4.11
 scikit-image~=0.25
+# ComfyUI Dataset Caption Nodes — Python dependencies
+#
+# Install into your ComfyUI Python environment:
+#   pip install -r requirements.txt
+#
+# For Qwen2.5-VL (recommended, lighter, image-focused):
+transformers>=4.50.0
+accelerate>=0.30.0
+qwen-vl-utils>=0.0.8
+
+# For Qwen2.5-Omni (heavier, matches LTX trainer):
+# Same transformers + accelerate above, plus:
+qwen-omni-utils>=0.0.4
+
+# For Gemini Flash (cloud API, optional):
+google-generativeai>=0.8.0
+
+# Image handling (usually already present in ComfyUI env):
+Pillow>=9.0.0
+torch>=2.1.0
+
+# Optional: 8-bit quantisation support (reduces VRAM by ~50%)
+bitsandbytes>=0.43.0

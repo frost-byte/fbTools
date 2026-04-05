@@ -9,8 +9,6 @@
  * - Backward compatibility with legacy mask_type
  */
 
-const { describe, it, expect, beforeEach } = require('./test_utils');
-
 describe('Mask System UI', () => {
     let mockScene;
     

@@ -36,6 +36,13 @@ A comprehensive collection of custom nodes for ComfyUI focused on storytelling, 
 - **Aspect Ratio**: Qwen-specific aspect ratio calculation and layout detection
 - **SAM Preprocessing**: Prepare images for Segment Anything Model
 
+### Dataset Captioning
+- **Dataset Captioner**: Run a VLM over a directory, write one `.txt` per image
+- **Dataset Caption Editor**: Batch edit captions: prepend trigger word, find/replace
+- **Dataset Caption Viewer**: Interactive table — view, edit and re-caption images in-graph
+- **Dataset Export Summary**: Dataset health check: counts, word stats, missing captions, CSV export
+- **Caption Model Unloader**: Release captioner from VRAM before running generation
+
 ## Quickstart
 
 1. Install [ComfyUI](https://docs.comfy.org/get_started)
@@ -67,6 +74,25 @@ A comprehensive collection of custom nodes for ComfyUI focused on storytelling, 
 - **[ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper/)** - Required only for LoRA functionality in Scene nodes
   - Provides: WANVIDLORA type for high/low quality LoRA configurations
   - Used by: SceneWanVideoLoraMultiSave node
+
+### Optional Captioning Backends
+
+Install one or more of these only if you use Dataset Captioning nodes:
+
+```bash
+# Qwen2.5-VL (recommended; image-focused, ~16GB VRAM in bf16)
+pip install "transformers>=4.50.0" accelerate qwen-vl-utils
+
+# Qwen2.5-Omni (heavier omni model, ~20GB VRAM)
+pip install "transformers>=4.50.0" accelerate qwen-omni-utils
+
+# Gemini Flash (cloud, no local VRAM needed)
+pip install google-generativeai
+export GEMINI_API_KEY=your_key_here
+
+# Optional: 8-bit quantization (~50% VRAM reduction)
+pip install bitsandbytes
+```
 
 **Installation via ComfyUI-Manager:**
 1. Open ComfyUI-Manager
@@ -121,6 +147,13 @@ All nodes are organized under the **🧊 frost-byte** category in ComfyUI.
 - **SubdirLister**: List subdirectories with full paths
 - **NodeInputSelect**: Select and output node input metadata
 
+### Dataset Captioning Nodes
+- **Dataset Captioner**: Run caption generation over a folder of images and write one `.txt` per image
+- **Dataset Caption Editor**: Batch edit caption files with prepend/append/find/replace operations
+- **Dataset Caption Viewer**: Review images and captions in a table UI with per-image re-caption/clear actions
+- **Dataset Export Summary**: Report dataset health and optionally export `dataset_summary.csv`
+- **Caption Model Unloader**: Explicitly unload cached caption models from VRAM
+
 ## Documentation
 
 ### 📖 Core Documentation
@@ -129,6 +162,7 @@ All nodes are organized under the **🧊 frost-byte** category in ComfyUI.
 - **[Libber Nodes](docs/LIBBER_NODES_README.md)**: Template system for reusable text snippets
 - **[Story Nodes](docs/STORY_NODES_README.md)**: Multi-scene story building system
 - **[Scene Nodes](docs/SCENE_NODES_README.md)**: Scene management with poses, depth, and masks
+- **[Dataset Caption Nodes](docs/DATASET_CAPTION_NODES.md)**: Dataset captioning workflow, node parameters, API routes, and troubleshooting
 - **[Scene Prompt System](docs/SCENE_PROMPT_SYSTEM.md)**: Scene prompt architecture and usage
 - **[Story Video](docs/STORY_VIDEO_README.md)**: Video generation from stories
 
@@ -229,6 +263,82 @@ collection.add_prompt(
 - Metadata: categories, descriptions, tags
 - Backward compatible with legacy fields
 - REST API for JavaScript integration
+
+### Dataset Captioning Workflow
+
+Use this flow when preparing LoRA training captions:
+
+```text
+[Dataset Captioner]
+  |
+  v
+[Dataset Caption Editor]   <- optional post-processing (trigger word, find/replace)
+  |
+  v
+[Dataset Caption Viewer]   <- review/edit/re-caption individual images
+  |
+  v
+[Dataset Export Summary]   <- verify coverage and caption statistics
+```
+
+Then feed your dataset directory into your training configuration.
+
+#### Captioner Inputs
+
+`Dataset Captioner` supports:
+- `input_directory`, `output_directory`, `recursive`
+- `captioner_type`: `qwen_vl` (recommended), `qwen_omni`, or `gemini_flash`
+- `instruction`, `trigger_word`, `clean_caption`
+- `device`: `auto`, `cuda`, or `cpu`
+- `use_8bit` (requires `bitsandbytes`)
+- `override_existing`, `unload_after`, `gemini_api_key`
+
+Outputs: `dataset_path`, `caption_count`, `failed_count`
+
+`Dataset Caption Editor` runs in dry-run mode by default (`dry_run=true`) and only writes changes when disabled.
+
+`Dataset Caption Viewer` provides thumbnail rows, caption editing, per-image re-caption, and clear-caption actions.
+
+The current viewer table viewport is intentionally fixed-height for layout stability; the table scrolls internally.
+
+`Dataset Export Summary` reports total/captioned/missing counts and caption length stats; set `export_csv=true` to write `dataset_summary.csv`.
+
+#### Batch Caption Edits via Fish Script
+
+Use `scripts/dataset_caption_edit.fish` for repeatable multi-pass find/replace edits against the `/fbtools/dataset_caption/edit` API.
+
+```fish
+# Dry-run (default)
+fish scripts/dataset_caption_edit.fish --dataset rara \
+  --pass 'old phrase=>new phrase' \
+  --pass 'another old=>another new'
+
+# Apply changes
+fish scripts/dataset_caption_edit.fish --dataset rara --apply \
+  --pass 'old phrase=>new phrase' \
+  --pass 'another old=>another new'
+```
+
+Notes:
+- Pass pairs are formatted as `find=>replace`.
+- Script payload uses `find_text` and `replace_text` fields expected by the API.
+- Use `--output <dir>` when captions are stored in a separate output directory.
+
+#### VRAM Guidance
+
+| Model | Precision | Approx VRAM |
+|-------|-----------|-------------|
+| Qwen2.5-VL-7B | bf16 | ~16 GB |
+| Qwen2.5-VL-7B | 8-bit | ~8 GB |
+| Qwen2.5-Omni-7B | bf16 | ~20 GB |
+| Qwen2.5-Omni-7B | 8-bit | ~11 GB |
+| Gemini Flash | cloud | 0 GB |
+
+#### LoRA Captioning Tips
+
+- Set `trigger_word` in `Dataset Captioner` instead of relying on prompt wording for consistency.
+- Review captions in `Dataset Caption Viewer` to correct hallucinations before training.
+- Aim for moderate caption length (roughly 60-150 words) and use `Dataset Export Summary` to validate.
 
 ## Development
 
@@ -406,54 +516,4 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 - REST API for frontend integration
 - Modular code organization
 
-## Develop
-
-To install the dev dependencies and pre-commit (will run the ruff hook), do:
-
-```bash
-cd fb_tools
-pip install -e .[dev]
-pre-commit install
-```
-
-The `-e` flag above will result in a "live" install, in the sense that any changes you make to your node extension will automatically be picked up the next time you run ComfyUI.
-
-## Publish to Github
-
-Install Github Desktop or follow these [instructions](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent) for ssh.
-
-1. Create a Github repository that matches the directory name. 
-2. Push the files to Git
-```
-git add .
-git commit -m "project scaffolding"
-git push
-``` 
-
-## Writing custom nodes
-
-An example custom node is located in [node.py](src/fb_tools/nodes.py). To learn more, read the [docs](https://docs.comfy.org/essentials/custom_node_overview).
-
-
-## Tests
-
-This repo contains unit tests written in Pytest in the `tests/` directory and JavaScript tests in `js-tests/`. 
-
-See [Testing Guide](docs/testing/TESTING_GUIDE.md) for detailed testing procedures and [Test Results](docs/testing/TEST_RESULTS.md) for coverage reports.
-
-- [build-pipeline.yml](.github/workflows/build-pipeline.yml) will run pytest and linter on any open PRs
-- [validate.yml](.github/workflows/validate.yml) will run [node-diff](https://github.com/Comfy-Org/node-diff) to check for breaking changes
-
-## Publishing to Registry
-
-If you wish to share this custom node with others in the community, you can publish it to the registry. We've already auto-populated some fields in `pyproject.toml` under `tool.comfy`, but please double-check that they are correct.
-
-You need to make an account on https://registry.comfy.org and create an API key token.
-
-- [ ] Go to the [registry](https://registry.comfy.org). Login and create a publisher id (everything after the `@` sign on your registry profile). 
-- [ ] Add the publisher id into the pyproject.toml file.
-- [ ] Create an api key on the Registry for publishing from Github. [Instructions](https://docs.comfy.org/registry/publishing#create-an-api-key-for-publishing).
-- [ ] Add it to your Github Repository Secrets as `REGISTRY_ACCESS_TOKEN`.
-
-A Github action will run on every git push. You can also run the Github action manually. Full instructions [here](https://docs.comfy.org/registry/publishing). Join our [discord](https://discord.com/invite/comfyorg) if you have any questions!
 
