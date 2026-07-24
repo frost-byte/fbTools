@@ -9,7 +9,7 @@ __all__ = [
 
 __author__ = """frost-byte"""
 __email__ = "brian@frost-byte.net"
-__version__ = "0.1.1"
+__version__ = "1.0.0"
 # Basic colors
 R = RED     = "\033[31m"
 G = GREEN   = "\033[32m"
