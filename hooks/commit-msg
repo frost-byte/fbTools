@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Enforce Conventional Commits format: https://www.conventionalcommits.org/
+
+commit_msg=$(cat "$1")
+
+# Skip merge, revert, fixup, and squash commits
+if echo "$commit_msg" | grep -qE '^(Merge|Revert|fixup!|squash!)'; then
+  exit 0
+fi
+
+pattern='^(feat|fix|docs|style|refactor|perf|test|chore|revert|ci|build)(\([a-zA-Z0-9_/.-]+\))?(!)?: .+'
+
+if ! echo "$commit_msg" | grep -qE "$pattern"; then
+  echo "ERROR: Commit message does not follow Conventional Commits format."
+  echo ""
+  echo "  type(scope)?: description"
+  echo ""
+  echo "  feat: add LoRA stack export"
+  echo "  fix(scene): handle missing mask_name"
+  echo "  docs: update CLAUDE.md commit convention"
+  echo ""
+  echo "Valid types: feat, fix, docs, style, refactor, perf, test, chore, revert, ci, build"
+  echo "Your message: $commit_msg"
+  exit 1
+fi
