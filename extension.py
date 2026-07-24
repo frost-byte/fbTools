@@ -9674,6 +9674,14 @@ class LoraStackCollect(io.ComfyNode):
                 LoraStackData.Output("lora_stack_data", display_name="Stack Data"),
                 io.String.Output("stack_json",          display_name="Stack JSON"),
                 io.Int.Output("entry_count",            display_name="Entry Count"),
+                io.Custom("LORA_STACK").Output(
+                    "lora_stack",
+                    display_name="LoRA Stack",
+                    tooltip=(
+                        "Easy-use compatible LORA_STACK: list of (lora_name, model_strength, clip_strength) tuples. "
+                        "Connect to EasyLoraStack, PowerLoraLoader, or any node that accepts LORA_STACK."
+                    ),
+                ),
             ],
         )
 
@@ -9701,7 +9709,12 @@ class LoraStackCollect(io.ComfyNode):
         merged = list(seen.values())
 
         stack_json = _lora_stack_to_json(merged)
-        return io.NodeOutput(merged, stack_json, len(merged))
+        easy_stack = [
+            (e["lora"], e["strength_model"], e["strength_clip"])
+            for e in merged
+            if e.get("enabled", True) and e.get("lora", "None") != "None"
+        ]
+        return io.NodeOutput(merged, stack_json, len(merged), easy_stack)
 
 
 # ── Node: LoraStackView ──────────────────────────────────────────────────────
@@ -10235,19 +10248,17 @@ class WanPresetDefine(io.ComfyNode):
                     default="Preset",
                     tooltip="Human-readable name for this preset.",
                 ),
-                io.Combo.Input(
+                io.Custom("LORA_STACK").Input(
                     "lora_h",
-                    display_name="LoRA (High Noise)",
-                    options=_lora_get_list(),
-                    default="None",
-                    tooltip="LoRA applied to the high-noise model stage.",
+                    display_name="LoRA Stack (High Noise)",
+                    optional=True,
+                    tooltip="LoRA stack for the high-noise model stage. Connect from LoraStackCollect, EasyLoraStack, PowerLoraLoader, or any LORA_STACK source.",
                 ),
-                io.Combo.Input(
+                io.Custom("LORA_STACK").Input(
                     "lora_l",
-                    display_name="LoRA (Low Noise)",
-                    options=_lora_get_list(),
-                    default="None",
-                    tooltip="LoRA applied to the low-noise model stage.",
+                    display_name="LoRA Stack (Low Noise)",
+                    optional=True,
+                    tooltip="LoRA stack for the low-noise model stage. Connect from LoraStackCollect, EasyLoraStack, PowerLoraLoader, or any LORA_STACK source.",
                 ),
                 io.String.Input(
                     "prompt",
@@ -10319,8 +10330,8 @@ class WanPresetSelect(io.ComfyNode):
             ],
             outputs=[
                 io.String.Output("name",              display_name="Name"),
-                io.String.Output("lora_h",            display_name="LoRA (High Noise)"),
-                io.String.Output("lora_l",            display_name="LoRA (Low Noise)"),
+                io.Custom("LORA_STACK").Output("lora_h", display_name="LoRA Stack (High Noise)"),
+                io.Custom("LORA_STACK").Output("lora_l", display_name="LoRA Stack (Low Noise)"),
                 io.String.Output("prompt",            display_name="Prompt"),
                 io.String.Output("available_presets", display_name="Available Presets"),
             ],
