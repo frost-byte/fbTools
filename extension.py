@@ -1,11 +1,14 @@
+from __future__ import annotations
+
+from PIL import Image
 import node_helpers
 import math
 from comfy.utils import common_upscale
 import folder_paths
+from folder_paths import get_input_directory, get_output_directory
 import comfy.model_management as model_management
 
 from typing_extensions import override
-from folder_paths import get_input_directory, get_output_directory
 from nodes import ImageScaleBy
 from .utils.util import (
     draw_pose_json,
@@ -53,10 +56,21 @@ from dataclasses import dataclass, asdict
 import uuid
 import re
 import copy
+import hashlib
 from pydantic import BaseModel, ConfigDict
 from .utils.logging_utils import get_logger
 from .story_models import SceneInStory, StoryInfo, save_story, load_story
 from .captioner import caption_image, get_model, unload_model
+
+from .utils.subject_compositor import (
+    tensor_to_pil,
+    pil_to_tensor,
+    parse_color,
+    process_layer,
+    compute_paste_position,
+    composite_onto_canvas,
+    snap_to_divisible,
+)
 
 logger = get_logger(__name__)
 
@@ -162,6 +176,481 @@ def _resolve_dataset_output_directory(raw_path: str) -> Path | None:
         return None
     return _resolve_relative_to(get_output_directory(), cleaned)
 
+
+def _directory_fingerprint(path: Path) -> tuple[str, int, int]:
+    """Return a stable fingerprint for a directory tree.
+
+    The hash includes relative paths plus mtime_ns/size for every file and directory,
+    so edits, creates, deletes, and renames will invalidate cached nodes.
+    """
+    if not path.exists() or not path.is_dir():
+        return ("missing", 0, 0)
+
+    digest = hashlib.sha1()
+    dir_count = 0
+    file_count = 0
+
+    for root, dirnames, filenames in os.walk(path):
+        dirnames.sort()
+        filenames.sort()
+
+        root_path = Path(root)
+        rel_root = root_path.relative_to(path).as_posix()
+        rel_root = rel_root if rel_root else "."
+
+        try:
+            root_stat = root_path.stat()
+            root_mtime_ns = int(root_stat.st_mtime_ns)
+        except Exception:
+            root_mtime_ns = 0
+
+        digest.update(f"D|{rel_root}|{root_mtime_ns}\n".encode("utf-8"))
+        dir_count += 1
+
+        for filename in filenames:
+            file_path = root_path / filename
+            rel_file = file_path.relative_to(path).as_posix()
+            try:
+                st = file_path.stat()
+                file_mtime_ns = int(st.st_mtime_ns)
+                file_size = int(st.st_size)
+            except Exception:
+                file_mtime_ns = 0
+                file_size = 0
+
+            digest.update(f"F|{rel_file}|{file_mtime_ns}|{file_size}\n".encode("utf-8"))
+            file_count += 1
+
+    return (digest.hexdigest(), dir_count, file_count)
+
+# ── Custom type: SUBJECT_LAYER ────────────────────────────────────────────────
+
+SUBJECT_LAYER_TYPE = "SUBJECT_LAYER"
+
+
+@io.comfytype(io_type=SUBJECT_LAYER_TYPE)
+class SubjectLayer:
+    """
+    Custom type passed between SubjectLayerDefine and SubjectCompositor.
+    Carries the raw image tensor plus all per-layer parameters.
+    Processing (bg removal, padding, scaling) is deferred to the compositor
+    so it has access to the final canvas dimensions.
+    """
+    Type = dict  # { image, mask, remove_background, bg_model,
+                 #   pad_top, pad_bottom, pad_left, pad_right,
+                 #   offset_x, offset_y }
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "layer", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+# ── Node 1: SubjectLayerDefine ────────────────────────────────────────────────
+
+BG_MODELS = [
+    "BiRefNet-general",
+    "BiRefNet-portrait",
+    "BiRefNet-general-lite",
+    "u2net",
+    "u2net_human_seg",
+    "isnet-general-use",
+]
+
+OUTPUT_MODES = ["composite", "individual", "both"]
+
+
+class SubjectLayerDefine(io.ComfyNode):
+    """
+    Define a single subject layer for use with SubjectCompositor.
+
+    Padding is specified as a fraction of the image's longer dimension.
+    pad_top=0.2 adds 20% of max(width, height) as transparent space at the top,
+    effectively making the subject appear smaller relative to other layers.
+
+    Offset positions the subject's center relative to the canvas center.
+    offset_x=0.0, offset_y=0.0 places the subject at the canvas center.
+    offset_x=0.5 shifts the subject halfway toward the right edge.
+    offset_x=-0.5 shifts the subject halfway toward the left edge.
+    offset_y=-0.5 shifts the subject halfway toward the top edge.
+
+    An optional mask input (ComfyUI MASK) can be supplied instead of using
+    automatic background removal — useful when an upstream RMBG node is
+    already in the workflow.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=prefixed_node_id("SubjectLayerDefine"),
+            display_name="Subject Layer Define",
+            category="🧊 frost-byte/compositing",
+            description=(
+                "Define a subject layer for SubjectCompositor. "
+                "Specify padding (as fraction of longer dimension), "
+                "canvas offset (fraction of half-canvas from center), "
+                "and optional background removal."
+            ),
+            inputs=[
+                io.Image.Input(
+                    "image",
+                    display_name="Image",
+                    tooltip="Input image containing the subject.",
+                ),
+                io.Mask.Input(
+                    "mask",
+                    display_name="Mask",
+                    optional=True,
+                    tooltip=(
+                        "Optional pre-computed alpha mask (ComfyUI MASK, 1=keep). "
+                        "If provided, overrides background removal."
+                    ),
+                ),
+                io.Float.Input(
+                    "pad_top",
+                    display_name="Pad Top",
+                    default=0.0,
+                    min=0.0,
+                    max=10.0,
+                    step=0.01,
+                    tooltip="Transparent padding added above the subject, as fraction of longer dimension.",
+                ),
+                io.Float.Input(
+                    "pad_bottom",
+                    display_name="Pad Bottom",
+                    default=0.0,
+                    min=0.0,
+                    max=10.0,
+                    step=0.01,
+                    tooltip="Transparent padding added below the subject, as fraction of longer dimension.",
+                ),
+                io.Float.Input(
+                    "pad_left",
+                    display_name="Pad Left",
+                    default=0.0,
+                    min=0.0,
+                    max=10.0,
+                    step=0.01,
+                    tooltip="Transparent padding added to the left of the subject, as fraction of longer dimension.",
+                ),
+                io.Float.Input(
+                    "pad_right",
+                    display_name="Pad Right",
+                    default=0.0,
+                    min=0.0,
+                    max=10.0,
+                    step=0.01,
+                    tooltip="Transparent padding added to the right of the subject, as fraction of longer dimension.",
+                ),
+                io.Float.Input(
+                    "offset_x",
+                    display_name="Offset X",
+                    default=0.0,
+                    min=-2.0,
+                    max=2.0,
+                    step=0.01,
+                    tooltip=(
+                        "Horizontal offset of subject center relative to canvas center. "
+                        "0.0=center, 1.0=right edge, -1.0=left edge."
+                    ),
+                ),
+                io.Float.Input(
+                    "offset_y",
+                    display_name="Offset Y",
+                    default=0.0,
+                    min=-2.0,
+                    max=2.0,
+                    step=0.01,
+                    tooltip=(
+                        "Vertical offset of subject center relative to canvas center. "
+                        "0.0=center, 1.0=bottom edge, -1.0=top edge."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "remove_background",
+                    display_name="Remove Background",
+                    default=True,
+                    tooltip="Automatically remove the background. Ignored if a mask is connected.",
+                ),
+                io.Combo.Input(
+                    "bg_model",
+                    display_name="BG Removal Model",
+                    options=BG_MODELS,
+                    default="BiRefNet-general",
+                    optional=True,
+                    tooltip="Background removal model to use. BiRefNet-portrait works best for people.",
+                ),
+            ],
+            outputs=[
+                SubjectLayer.Output(
+                    "layer",
+                    display_name="Layer",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        image: torch.Tensor,
+        pad_top: float = 0.0,
+        pad_bottom: float = 0.0,
+        pad_left: float = 0.0,
+        pad_right: float = 0.0,
+        offset_x: float = 0.0,
+        offset_y: float = 0.0,
+        remove_background: bool = True,
+        bg_model: str = "BiRefNet-general",
+        mask: Optional[torch.Tensor] = None,
+    ) -> io.NodeOutput:
+
+        layer = {
+            "image":             image,
+            "mask":              mask,
+            "remove_background": remove_background,
+            "bg_model":          bg_model,
+            "pad_top":           pad_top,
+            "pad_bottom":        pad_bottom,
+            "pad_left":          pad_left,
+            "pad_right":         pad_right,
+            "offset_x":          offset_x,
+            "offset_y":          offset_y,
+        }
+
+        return io.NodeOutput(layer)
+
+
+# ── Node 2: SubjectCompositor ─────────────────────────────────────────────────
+
+class SubjectCompositor(io.ComfyNode):
+    """
+    Composite multiple subject layers onto a canvas.
+
+    Accepts 1–20 SUBJECT_LAYER inputs (from SubjectLayerDefine).
+    Layers are processed in order — layer_0 is placed first (furthest back),
+    later layers are composited on top.
+
+    Output modes:
+      composite   — one image with all layers composited together
+      individual  — one image per layer, each placed at its offset on its own canvas
+      both        — returns both composite and individual images
+
+    The individual images output is a batch tensor [N, H, W, 3] where N is
+    the number of connected layers. Each image in the batch corresponds to
+    the layer at the same index, and can be fed directly into ReferenceLatent
+    or other conditioning nodes.
+
+    The canvas dimensions are snapped to the nearest lower multiple of
+    divisible_by (default 32, required by most video/image models).
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            input=SubjectLayer.Input("layer", optional=True),
+            prefix="layer",
+            min=1,
+            max=20,
+        )
+
+        return io.Schema(
+            node_id=prefixed_node_id("SubjectCompositor"),
+            display_name="Subject Compositor",
+            category="🧊 frost-byte/compositing",
+            description=(
+                "Composite multiple subject layers onto a canvas. "
+                "Outputs a composite image and/or individual per-subject images "
+                "at the target resolution, suitable for ReferenceLatent or "
+                "other multi-image conditioning nodes."
+            ),
+            inputs=[
+                io.Int.Input(
+                    "canvas_width",
+                    display_name="Canvas Width",
+                    default=1344,
+                    min=64,
+                    max=8192,
+                    step=1,
+                    tooltip="Output canvas width in pixels. Snapped to divisible_by.",
+                ),
+                io.Int.Input(
+                    "canvas_height",
+                    display_name="Canvas Height",
+                    default=768,
+                    min=64,
+                    max=8192,
+                    step=1,
+                    tooltip="Output canvas height in pixels. Snapped to divisible_by.",
+                ),
+                io.String.Input(
+                    "canvas_color",
+                    display_name="Canvas Color",
+                    default="#222222",
+                    multiline=False,
+                    tooltip=(
+                        "Background color of the canvas. "
+                        "Accepts hex (#RRGGBB), named colors, or 'transparent'."
+                    ),
+                ),
+                io.Combo.Input(
+                    "output_mode",
+                    display_name="Output Mode",
+                    options=OUTPUT_MODES,
+                    default="both",
+                    tooltip=(
+                        "composite: one merged image. "
+                        "individual: one image per layer. "
+                        "both: composite and individual batch."
+                    ),
+                ),
+                io.Int.Input(
+                    "divisible_by",
+                    display_name="Divisible By",
+                    default=32,
+                    min=1,
+                    max=256,
+                    step=1,
+                    tooltip=(
+                        "Snap canvas dimensions to nearest lower multiple of this value. "
+                        "Use 32 for LTX/most video models, 64 for some diffusion models, "
+                        "1 to disable snapping."
+                    ),
+                ),
+                io.Autogrow.Input("layers", template=autogrow_template),
+            ],
+            outputs=[
+                io.Image.Output(
+                    "composite",
+                    display_name="Composite Image",
+                ),
+                io.Image.Output(
+                    "individual_images",
+                    display_name="Individual Images",
+                ),
+                io.Int.Output(
+                    "layer_count",
+                    display_name="Layer Count",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        canvas_width: int,
+        canvas_height: int,
+        canvas_color: str,
+        output_mode: str,
+        divisible_by: int,
+        layers: io.Autogrow.Type,
+    ) -> io.NodeOutput:
+
+        # ── 1. Snap canvas dimensions ─────────────────────────────────────────
+        cw = snap_to_divisible(canvas_width,  divisible_by)
+        ch = snap_to_divisible(canvas_height, divisible_by)
+
+        if cw != canvas_width or ch != canvas_height:
+            print(
+                f"[SubjectCompositor] Canvas snapped from "
+                f"{canvas_width}×{canvas_height} to {cw}×{ch} "
+                f"(divisible_by={divisible_by})",
+                flush=True,
+            )
+
+        # ── 2. Collect connected layers ───────────────────────────────────────
+        # Autogrow gives us a dict mapping input names to values.
+        # Filter out None entries (unconnected optional slots).
+        layer_list = [v for v in layers.values() if v is not None]
+
+        if not layer_list:
+            raise ValueError(
+                "[SubjectCompositor] No layers connected. "
+                "Connect at least one SubjectLayerDefine to layer_0."
+            )
+
+        layer_count = len(layer_list)
+        bg_color = parse_color(canvas_color)
+
+        # ── 3. Process each layer ─────────────────────────────────────────────
+        processed: list[tuple[Image.Image, int, int, float, float]] = []
+
+        for i, layer_def in enumerate(layer_list):
+            try:
+                img_rgba, scaled_w, scaled_h = process_layer(
+                    image_tensor      = layer_def["image"],
+                    mask_tensor       = layer_def.get("mask"),
+                    remove_background = layer_def.get("remove_background", True),
+                    bg_model          = layer_def.get("bg_model", "BiRefNet-general"),
+                    pad_top           = layer_def.get("pad_top",    0.0),
+                    pad_bottom        = layer_def.get("pad_bottom", 0.0),
+                    pad_left          = layer_def.get("pad_left",   0.0),
+                    pad_right         = layer_def.get("pad_right",  0.0),
+                    canvas_w          = cw,
+                    canvas_h          = ch,
+                )
+                processed.append((
+                    img_rgba,
+                    scaled_w,
+                    scaled_h,
+                    layer_def.get("offset_x", 0.0),
+                    layer_def.get("offset_y", 0.0),
+                ))
+            except Exception as e:
+                print(f"[SubjectCompositor] Error processing layer {i}: {e}")
+                raise
+
+        # ── 4. Build composite image ──────────────────────────────────────────
+        composite_tensor = None
+
+        if output_mode in ("composite", "both"):
+            canvas = Image.new("RGBA", (cw, ch), bg_color)
+
+            for img_rgba, sw, sh, ox, oy in processed:
+                px, py = compute_paste_position(sw, sh, cw, ch, ox, oy)
+                canvas = composite_onto_canvas(canvas, img_rgba, px, py)
+
+            # Flatten RGBA to RGB over the background color
+            bg = Image.new("RGB", (cw, ch), bg_color[:3])
+            bg.paste(canvas.convert("RGB"), mask=canvas.split()[3])
+            composite_tensor = pil_to_tensor(bg)
+
+        # ── 5. Build individual images ────────────────────────────────────────
+        individual_tensor = None
+
+        if output_mode in ("individual", "both"):
+            individual_tensors = []
+
+            for img_rgba, sw, sh, ox, oy in processed:
+                ind_canvas = Image.new("RGBA", (cw, ch), bg_color)
+                px, py = compute_paste_position(sw, sh, cw, ch, ox, oy)
+                ind_canvas = composite_onto_canvas(ind_canvas, img_rgba, px, py)
+
+                # Flatten to RGB
+                bg = Image.new("RGB", (cw, ch), bg_color[:3])
+                bg.paste(ind_canvas.convert("RGB"), mask=ind_canvas.split()[3])
+                individual_tensors.append(pil_to_tensor(bg))  # [1, H, W, 3]
+
+            # Stack into batch [N, H, W, 3]
+            individual_tensor = torch.cat(individual_tensors, dim=0)
+
+        # ── 6. Handle output_mode fallbacks ──────────────────────────────────
+        # If composite was not generated, create a placeholder (first individual)
+        if composite_tensor is None and individual_tensor is not None:
+            composite_tensor = individual_tensor[0:1]
+
+        # If individual was not generated, return composite repeated N times
+        if individual_tensor is None and composite_tensor is not None:
+            individual_tensor = composite_tensor.repeat(layer_count, 1, 1, 1)
+
+        return io.NodeOutput(
+            composite_tensor,
+            individual_tensor,
+            layer_count,
+        )
 
 # ── Node: DatasetCaptioner ────────────────────────────────────────────────────
 
@@ -1857,8 +2346,7 @@ class SceneInfo(BaseModel):
     base_image: Optional[torch.Tensor] = None  # Original input image (saved as base.png)
     upscale_image: Optional[torch.Tensor] = None  # Scaled version of base_image (source for derived images)
     
-    loras_high: Optional[list] = None
-    loras_low: Optional[list] = None
+    lora_stack: Optional[list] = None  # list of LORA_ENTRY dicts (LoraStackCollect format)
 
     # Mask system - generic user-definable masks
     masks: Optional[Dict[str, MaskDefinition]] = None  # Mask definitions by name
@@ -2283,8 +2771,7 @@ class SceneInfo(BaseModel):
         pose_json_obj = load_json_file(pose_json_path)
         pose_json = json.dumps(pose_json_obj) if pose_json_obj else "[]"
 
-        loras_path = os.path.join(scene_dir, "loras.json")
-        loras_high, loras_low = load_loras(loras_path) if os.path.isfile(loras_path) else (None, None)
+        lora_stack = load_lora_stack(scene_dir)
 
         depth_attr = default_depth_options.get(scene.depth_type, "depth_image")
         pose_attr = default_pose_options.get(scene.pose_type, "pose_open_image")
@@ -2316,8 +2803,7 @@ class SceneInfo(BaseModel):
             pose_json=pose_json,
             resolution=assets.get("resolution", 0),
             prompts=prompt_collection,  # Now using PromptCollection
-            loras_high=loras_high,
-            loras_low=loras_low,
+            lora_stack=lora_stack,
             **depth_images,
             **pose_images,
             **mask_images,
@@ -2332,8 +2818,8 @@ class SceneInfo(BaseModel):
         return scene_info, assets, selected_prompt or "", return_prompt_data, prompt_widget_text
 
     @classmethod
-    def from_scene_directory(cls, scene_dir: str, scene_name: str, prompt_data: Optional[dict] = None, 
-                           pose_json: str = "", loras_high: Optional[list] = None, loras_low: Optional[list] = None):
+    def from_scene_directory(cls, scene_dir: str, scene_name: str, prompt_data: Optional[dict] = None,
+                           pose_json: str = "", lora_stack: Optional[list] = None):
         """Create a SceneInfo instance by loading all data from a scene directory"""
         if prompt_data is None:
             prompt_json_path = os.path.join(scene_dir, "prompts.json")
@@ -2382,8 +2868,7 @@ class SceneInfo(BaseModel):
             prompts=prompt_collection,
             pose_json=pose_json,
             resolution=resolution,
-            loras_high=loras_high,
-            loras_low=loras_low,
+            lora_stack=lora_stack,
             masks=mask_defs if mask_defs else None,
             mask_images=mask_images_dict if mask_images_dict else None,
             **all_images
@@ -2539,16 +3024,15 @@ class SceneInfo(BaseModel):
         save_json_file(pose_json_path, json.loads(self.pose_json))
 
     def save_loras(self, scene_dir: Optional[str] = None):
-        """Save LoRAs to loras.json in the pose directory"""
+        """Save LoRA stack to lora_stack.json in the scene directory."""
         from pathlib import Path
-        
-        if self.loras_high is None and self.loras_low is None:
+
+        if self.lora_stack is None:
             return
-        
+
         scene_path = Path(scene_dir) if scene_dir else Path(self.scene_dir)
-        loras_path = scene_path / "loras.json"
-        # save_loras function handles None values, but we need to provide defaults
-        save_loras(self.loras_high or [], self.loras_low or [], str(loras_path))
+        lora_stack_path = scene_path / "lora_stack.json"
+        save_json_file(str(lora_stack_path), self.lora_stack)
 
     def ensure_directories(self, scene_dir: Optional[str] = None):
         """Ensure scene directory and input/output subdirectories exist"""
@@ -2706,98 +3190,118 @@ class SceneInfo(BaseModel):
 # SceneInStory and StoryInfo have been extracted to story_models.py for easier
 # testing and reusability. See story_models.py for the full definitions.
 
-def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
-    if os.path.isfile(loras_json_path):
-        data = load_json_file(loras_json_path)
-        # logger.debug("load_loras: loaded data from %s: %s", loras_json_path, data)
-        loras_high = []
-        loras_low = []
-        if not data or not isinstance(data, dict):
-            return (loras_high, loras_low)
+def _migrate_loras_json_to_stack(loras_json_path: str) -> list:
+    """Convert a legacy loras.json (high/low WANVIDLORA format) to a lora_stack list.
 
-        for lora_type in ["high", "low"]:
-            preset = data.get(lora_type, "")
-            if not preset:
+    Each 'high' entry becomes a Wan2.2-Wrapper-High LORA_ENTRY dict;
+    each 'low' entry becomes a Wan2.2-Wrapper-Low entry.
+    Per-entry blocks, layer_filter, low_mem_load, and merge_loras are preserved
+    so WANVIDLORA output remains bit-for-bit identical to the old output.
+    """
+    data = load_json_file(loras_json_path)
+    if not data or not isinstance(data, dict):
+        return []
+
+    entries: list[dict] = []
+    for target, lora_type in [("Wan2.2-Wrapper-High", "high"), ("Wan2.2-Wrapper-Low", "low")]:
+        for item in data.get(lora_type, []):
+            lora_name = item.get("lora_name", "")
+            strength  = item.get("strength", 1.0)
+            if not lora_name or lora_name.lower() == "none":
                 continue
-            for item in preset:
-                lora_name = item["lora_name"]
-                strength = item["strength"]
-                low_mem_load = item.get("low_mem_load", False)
-                merge_loras = item.get("merge_loras", False)
+            entries.append({
+                "lora":           lora_name,
+                "model_target":   target,
+                "strength_model": strength,
+                "strength_clip":  1.0,
+                "enabled":        True,
+                # Preserve WanVideoWrapper-specific fields verbatim
+                "blocks":         item.get("blocks", {}),
+                "layer_filter":   item.get("layer_filter", ""),
+                "low_mem_load":   item.get("low_mem_load", False),
+                "merge_loras":    item.get("merge_loras", False),
+            })
+    return entries
 
-                if not lora_name or lora_name == "none" or strength == 0.0:
-                    continue
-                try:
-                    full_path = folder_paths.get_full_path_or_raise("loras", lora_name)
-                except Exception as e:
-                    logger.warning("Could not resolve path for LoRA '%s': %s", lora_name, e)
-                    continue
 
-                # Use saved blocks/layer_filter if present
-                saved_blocks = item.get("blocks", {})
-                saved_layer_filter = item.get("layer_filter", "")
+def load_lora_stack(scene_dir: str) -> Optional[list]:
+    """Load the LoRA stack for a scene.
 
-                if lora_type == "low":
-                    target_list = loras_low
-                else:
-                    target_list = loras_high
+    Checks for lora_stack.json first (new format).
+    Falls back to migrating loras.json (old Wan-only WANVIDLORA format) if not found.
+    Returns None if neither file exists.
+    """
+    lora_stack_path = os.path.join(scene_dir, "lora_stack.json")
+    if os.path.isfile(lora_stack_path):
+        data = load_json_file(lora_stack_path)
+        return data if isinstance(data, list) else None
 
-                target_list.append({
-                    "path": full_path,
-                    "strength": strength,
-                    "name": os.path.splitext(lora_name)[0],
-                    "blocks": saved_blocks,
-                    "layer_filter": saved_layer_filter,
-                    "low_mem_load": low_mem_load,
-                    "merge_loras": merge_loras,
-                })
+    # Legacy migration path — does not write anything; StorySceneBatch/SceneSelect
+    # will transparently use migrated data.  Run the migration script to persist.
+    loras_json_path = os.path.join(scene_dir, "loras.json")
+    if os.path.isfile(loras_json_path):
+        return _migrate_loras_json_to_stack(loras_json_path)
 
-        return (loras_high, loras_low)
-    
-    return (None,None)        
+    return None
+
+
+def save_lora_stack(scene_dir: str, lora_stack: list) -> None:
+    """Persist a lora_stack list to lora_stack.json in the given scene directory."""
+    lora_stack_path = os.path.join(scene_dir, "lora_stack.json")
+    save_json_file(lora_stack_path, lora_stack)
+
+
+# ── Legacy helpers kept for backward compat with any external callers ─────────
+
+def load_loras(loras_json_path: str) -> tuple[list, list] | tuple[None, None]:
+    """DEPRECATED: use load_lora_stack(scene_dir) instead.
+    Retained so any external callers don't break immediately."""
+    entries = _migrate_loras_json_to_stack(loras_json_path) if os.path.isfile(loras_json_path) else []
+    high = [e for e in entries if e.get("model_target") == "Wan2.2-Wrapper-High"]
+    low  = [e for e in entries if e.get("model_target") == "Wan2.2-Wrapper-Low"]
+    # Re-shape back to old path/strength/blocks/layer_filter/low_mem_load/merge_loras dicts
+    def _to_wanvid(entry: dict) -> dict:
+        try:
+            path = folder_paths.get_full_path_or_raise("loras", entry["lora"])
+        except Exception:
+            path = folder_paths.get_full_path("loras", entry["lora"]) or entry["lora"]
+        return {
+            "path": path,
+            "strength": entry["strength_model"],
+            "name": os.path.splitext(entry["lora"])[0],
+            "blocks": entry.get("blocks", {}),
+            "layer_filter": entry.get("layer_filter", ""),
+            "low_mem_load": entry.get("low_mem_load", False),
+            "merge_loras": entry.get("merge_loras", False),
+        }
+    loras_high = [_to_wanvid(e) for e in high]
+    loras_low  = [_to_wanvid(e) for e in low]
+    return (loras_high or None, loras_low or None)
+
 
 def save_loras(loras_high: list, loras_low: list, loras_json_path: str):
-    high = []
-    low = []
-
-    for lora in loras_high:
-        lora_name = os.path.basename(lora["path"])
-        strength = lora["strength"]
-        blocks = lora.get("blocks", {})
-        layer_filter = lora.get("layer_filter", "")
-        low_mem_load = lora.get("low_mem_load", False)
-        merge_loras = lora.get("merge_loras", False)
-
+    """DEPRECATED: use save_lora_stack(scene_dir, lora_stack) instead.
+    Retained so SceneWanVideoLoraMultiSave continues to function unchanged."""
+    high, low = [], []
+    for lora in (loras_high or []):
         high.append({
-            "lora_name": lora_name,
-            "strength": strength,
-            "blocks": blocks,
-            "layer_filter": layer_filter,
-            "low_mem_load": low_mem_load,
-            "merge_loras": merge_loras,
+            "lora_name":    os.path.basename(lora["path"]),
+            "strength":     lora["strength"],
+            "blocks":       lora.get("blocks", {}),
+            "layer_filter": lora.get("layer_filter", ""),
+            "low_mem_load": lora.get("low_mem_load", False),
+            "merge_loras":  lora.get("merge_loras", False),
         })
-    for lora in loras_low:
-        lora_name = os.path.basename(lora["path"])
-        strength = lora["strength"]
-        blocks = lora.get("blocks", {})
-        layer_filter = lora.get("layer_filter", "")
-        low_mem_load = lora.get("low_mem_load", False)
-        merge_loras = lora.get("merge_loras", False)
-
+    for lora in (loras_low or []):
         low.append({
-            "lora_name": lora_name,
-            "strength": strength,
-            "blocks": blocks,
-            "layer_filter": layer_filter,
-            "low_mem_load": low_mem_load,
-            "merge_loras": merge_loras,
+            "lora_name":    os.path.basename(lora["path"]),
+            "strength":     lora["strength"],
+            "blocks":       lora.get("blocks", {}),
+            "layer_filter": lora.get("layer_filter", ""),
+            "low_mem_load": lora.get("low_mem_load", False),
+            "merge_loras":  lora.get("merge_loras", False),
         })
-
-    data =  {
-        "high": high,
-        "low": low
-    }
-    save_json_file(loras_json_path, data)
+    save_json_file(loras_json_path, {"high": high, "low": low})
 
 def get_available_stories():
     stories_dir = default_stories_dir() if callable(globals().get('default_stories_dir')) else os.path.join(get_output_directory(), "stories")
@@ -3009,8 +3513,9 @@ class SceneSelect(io.ComfyNode):
                 io.Image.Output(id='canny_image', display_name='canny_image', tooltip='Canny IMAGE from the scene'),
                 io.Image.Output(id='pose_image', display_name='pose_image', tooltip='Pose IMAGE from the scene'),
                 io.Image.Output(id='upscale_image', display_name='upscale_image', tooltip='Upscaled base IMAGE from the scene'),
-                io.Custom("WANVIDLORA").Output(id="loras_high_out", display_name="loras_high", tooltip="WanVideoWrapper Multi-Lora list" ),
-                io.Custom("WANVIDLORA").Output(id="loras_low_out", display_name="loras_low", tooltip="WanVideoWrapper Multi-Lora list" ),
+                LoraStackData.Output("lora_stack_data", display_name="lora_stack_data", tooltip="Full multi-target LoRA stack (LORA_STACK_DATA). Feed into LoraStackApply."),
+                io.Custom("WANVIDLORA").Output(id="loras_high_out", display_name="loras_high", tooltip="WanVideoWrapper WANVIDLORA list for the Wan2.2-Wrapper-High (first-pass) model"),
+                io.Custom("WANVIDLORA").Output(id="loras_low_out",  display_name="loras_low",  tooltip="WanVideoWrapper WANVIDLORA list for the Wan2.2-Wrapper-Low (second-pass) model"),
             ],
             hidden=[
                 io.Hidden.unique_id,
@@ -3019,6 +3524,34 @@ class SceneSelect(io.ComfyNode):
             is_output_node=True,
         )
     
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        scenes_dir: str = "",
+        selected_scene: str = "",
+        depth_image_type: str = "",
+        pose_image_type: str = "",
+        mask_name: str = "",
+        mask_background: bool = True,
+        **_,
+    ):
+        """Invalidate cache whenever any file inside the selected scene folder changes."""
+        resolved_dir = scenes_dir if scenes_dir else default_scenes_dir()
+        if not resolved_dir or not selected_scene:
+            return None
+        scene_path = Path(resolved_dir) / selected_scene
+        scene_hash, dir_count, file_count = _directory_fingerprint(scene_path)
+        return (
+            str(scene_path),
+            scene_hash,
+            dir_count,
+            file_count,
+            depth_image_type,
+            pose_image_type,
+            mask_name,
+            mask_background,
+        )
+
     @classmethod
     def execute(
         cls,
@@ -3062,13 +3595,16 @@ class SceneSelect(io.ComfyNode):
         else:
             pose_json = json.dumps(pose_json)
 
-        # Load LoRAs
-        loras_path = os.path.join(scene_dir, "loras.json")
-        loras_high, loras_low = None, None
-        if not os.path.isfile(loras_path):
-            logger.warning("%s: loras.json not found at '%s'", className, loras_path)
-        else:
-            loras_high, loras_low = load_loras(loras_path)
+        # Load LoRA stack (new format, with automatic legacy migration)
+        lora_stack = load_lora_stack(scene_dir)
+        if lora_stack is None:
+            logger.warning("%s: no lora_stack.json or loras.json found in '%s'", className, scene_dir)
+
+        # Derive WANVIDLORA outputs for backward-compatible workflow wiring
+        wan_high_entries = _lora_entries_for_target(lora_stack or [], "Wan2.2-Wrapper-High")
+        wan_low_entries  = _lora_entries_for_target(lora_stack or [], "Wan2.2-Wrapper-Low")
+        loras_high, _ = _lora_build_wanvid(wan_high_entries, None, False, True)
+        loras_low,  _ = _lora_build_wanvid(wan_low_entries,  None, False, True)
 
         # Load selected/normalized assets (and mask preview/output separation)
         selected_depth_attr = default_depth_options.get(depth_image_type, "depth_image")
@@ -3173,8 +3709,7 @@ class SceneSelect(io.ComfyNode):
             girl_mask_no_bkgd_image=mask_images_full.get('girl_no_bg') if not masks_dict else None,
             male_mask_no_bkgd_image=mask_images_full.get('male_no_bg') if not masks_dict else None,
             combined_mask_no_bkgd_image=mask_images_full.get('combined_no_bg') if not masks_dict else None,
-            loras_high=loras_high,
-            loras_low=loras_low,
+            lora_stack=lora_stack,
         )
 
         # Build prompt_dict and comp_dict from PromptCollection
@@ -3216,8 +3751,9 @@ class SceneSelect(io.ComfyNode):
             canny_image,
             pose_image,
             base_image,
-            loras_high,
-            loras_low,
+            lora_stack,   # LORA_STACK_DATA — full multi-target stack
+            loras_high,   # WANVIDLORA — Wan2.2-Wrapper-High entries (backward compat)
+            loras_low,    # WANVIDLORA — Wan2.2-Wrapper-Low entries (backward compat)
             ui=ui_data
         )
 
@@ -3353,6 +3889,81 @@ class SceneWanVideoLoraMultiSave(io.ComfyNode):
 
         return io.NodeOutput(info_in)
 
+
+class SceneLoraStackSave(io.ComfyNode):
+    """Save a LoRA stack (from LoraStackCollect) to the given scene directory.
+
+    Writes lora_stack.json — the new multi-target format that replaces the
+    Wan-only loras.json.  Connect the lora_stack_data output of LoraStackCollect
+    here, or supply a raw stack_json STRING if you prefer text storage.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("SceneLoraStackSave"),
+            display_name="SceneLoraStackSave",
+            category="🧊 frost-byte/Scene",
+            description=(
+                "Save a LoRA stack to the scene directory as lora_stack.json. "
+                "Connect LoraStackCollect's lora_stack_data output here. "
+                "SceneSelect will load this file automatically."
+            ),
+            inputs=[
+                io.Custom("SCENE_INFO").Input(
+                    id="scene_info",
+                    display_name="scene_info",
+                    tooltip="SceneInfo providing the scene directory path.",
+                ),
+                LoraStackData.Input(
+                    "lora_stack_data",
+                    display_name="Stack Data",
+                    optional=True,
+                    tooltip="Connect from LoraStackCollect. Takes priority over stack_json.",
+                ),
+                io.String.Input(
+                    "stack_json",
+                    display_name="Stack JSON",
+                    default="[]",
+                    multiline=False,
+                    optional=True,
+                    tooltip="Raw JSON string (stack_json output of LoraStackCollect). Used when Stack Data is not connected.",
+                ),
+            ],
+            outputs=[
+                io.Custom("SCENE_INFO").Output(
+                    id="scene_info_out",
+                    display_name="scene_info",
+                    tooltip="Pass-through scene_info.",
+                ),
+                io.Int.Output("entry_count", display_name="Entry Count"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        scene_info,
+        lora_stack_data: Optional[list] = None,
+        stack_json: str = "[]",
+    ) -> io.NodeOutput:
+        if scene_info is None:
+            logger.error("SceneLoraStackSave: scene_info is None")
+            return io.NodeOutput(None, 0)
+
+        scene_dir = scene_info.scene_dir
+        if not scene_dir or not os.path.isdir(scene_dir):
+            logger.error("SceneLoraStackSave: invalid scene_dir '%s'", scene_dir)
+            return io.NodeOutput(scene_info, 0)
+
+        stack = lora_stack_data if lora_stack_data is not None else _lora_json_to_stack(stack_json)
+
+        save_lora_stack(scene_dir, stack)
+        logger.info("SceneLoraStackSave: saved %d entries to '%s/lora_stack.json'", len(stack), scene_dir)
+
+        return io.NodeOutput(scene_info, len(stack))
+
+
 class SceneCreate(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -3482,8 +4093,7 @@ class SceneCreate(io.ComfyNode):
                     tooltip="Rendering backend for NLF poses (torch=more compatible, taichi=faster if installed)"
                 ),
                 io.Image.Input(id="base_image", display_name="base_image", tooltip="Base image for the scene"),
-                io.Custom("WANVIDLORA").Input(id="loras_high", display_name="loras_high", tooltip="WanVideoWrapper High Multi-Lora list", optional=True),
-                io.Custom("WANVIDLORA").Input(id="loras_low", display_name="loras_low", tooltip="WanVideoWrapper Low Multi-Lora list", optional=True),
+                LoraStackData.Input("lora_stack_data", display_name="LoRA Stack", optional=True, tooltip="Optional LoRA stack to assign to this scene (from LoraStackCollect)."),
             ],
             outputs=[
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene Information"),
@@ -3516,8 +4126,7 @@ class SceneCreate(io.ComfyNode):
         nlf_scale_hands=True,
         nlf_render_backend="torch",
         base_image=None,
-        loras_high=None,
-        loras_low=None,
+        lora_stack_data=None,
     ) -> io.NodeOutput:
         if base_image is None:
             logger.error("SceneCreate: base_image is None")
@@ -3647,8 +4256,7 @@ class SceneCreate(io.ComfyNode):
             pose_nlf_image=pose_nlf_image,
             pose_json=pose_dwpose_json,  # Store as JSON string
             canny_image=canny_image,
-            loras_high=loras_high,
-            loras_low=loras_low,
+            lora_stack=lora_stack_data,
         )
         
         # Save all scene data using the helper method
@@ -3709,8 +4317,7 @@ class SceneUpdate(io.ComfyNode):
                     default="nlf_l_multi_0.3.2.torchscript",
                     tooltip="NLF model to use (will auto-download if not present)"
                 ),
-                io.Boolean.Input(id="update_high_loras", display_name="update_high_loras", tooltip="If true, will update the High LoRAs list in the scene_info", default=False),
-                io.Boolean.Input(id="update_low_loras", display_name="update_low_loras", tooltip="If true, will update the Low LoRAs list in the scene_info", default=False),
+                io.Boolean.Input(id="update_loras", display_name="update_loras", tooltip="If true, replaces the scene's LoRA stack with the provided lora_stack_data", default=False),
                 io.String.Input(id="pose_json", display_name="pose_json", tooltip="JSON string for the pose keypoints"),
                 io.Int.Input(id="resolution", display_name="resolution", tooltip="Resolution for the pose, depth and other images", default=512),
                 io.Combo.Input(
@@ -3785,8 +4392,7 @@ class SceneUpdate(io.ComfyNode):
                     tooltip="Canny edge detector high threshold",
                     default=200, min=0, max=255, step=1
                 ),
-                io.Custom("WANVIDLORA").Input(id="high_loras", display_name="high_loras", tooltip="WanVideoWrapper Multi-Lora list", optional=True ),
-                io.Custom("WANVIDLORA").Input(id="low_loras", display_name="low_loras", tooltip="WanVideoWrapper Multi-Lora list", optional=True ),
+                LoraStackData.Input("lora_stack_data", display_name="LoRA Stack", optional=True, tooltip="New LoRA stack to replace the scene's existing stack (requires update_loras=True)."),
             ],
             hidden=[
                 io.Hidden.unique_id,
@@ -3822,8 +4428,7 @@ class SceneUpdate(io.ComfyNode):
         nlf_scale_hands=True,
         nlf_render_backend="torch",
         nlf_model="nlf_l_multi_0.3.2.torchscript",
-        update_high_loras=False,
-        update_low_loras=False,
+        update_loras=False,
         pose_json="[]",
         resolution=512,
         upscale_method="nearest-exact",
@@ -3837,8 +4442,7 @@ class SceneUpdate(io.ComfyNode):
         zoe_environment="indoor",
         canny_low_threshold=100,
         canny_high_threshold=200,
-        high_loras=None,
-        low_loras=None,
+        lora_stack_data=None,
     ):
         # Get node ID for status updates
         node_id = cls.hidden.unique_id
@@ -3886,15 +4490,33 @@ class SceneUpdate(io.ComfyNode):
             # Start with existing upscale_image from scene
             upscale_image = scene_info_in.upscale_image
             
-            # If user wants to rescale the upscale_image (without changing base), do it now
+            # If user wants to refresh upscale_image, prefer regenerating from base_image.
+            # This ensures updates to base.png are reflected even when update_base is False.
             if update_upscale:
-                logger.info(
-                    "SceneUpdate: Rescaling upscale_image by factor %s using %s",
-                    upscale_factor,
-                    upscale_method,
-                )
-                upscale_image, = ImageScaleBy().upscale(upscale_image, upscale_method=upscale_method, scale_by=upscale_factor)
-                scene_info_out.upscale_image = upscale_image
+                source_base = base_image if base_image is not None else scene_info_in.base_image
+
+                if source_base is not None:
+                    logger.info(
+                        "SceneUpdate: Regenerating upscale_image from base_image using factor %s and method %s",
+                        upscale_factor,
+                        upscale_method,
+                    )
+                    if base_image is not None:
+                        logger.info("SceneUpdate: Applying provided base_image while update_base=False")
+                        scene_info_out.base_image = base_image
+                    base_image = source_base
+                    upscale_image, = ImageScaleBy().upscale(source_base, upscale_method=upscale_method, scale_by=upscale_factor)
+                    scene_info_out.upscale_image = upscale_image
+                elif upscale_image is not None:
+                    logger.warning(
+                        "SceneUpdate: base_image unavailable; falling back to rescaling existing upscale_image by factor %s using %s",
+                        upscale_factor,
+                        upscale_method,
+                    )
+                    upscale_image, = ImageScaleBy().upscale(upscale_image, upscale_method=upscale_method, scale_by=upscale_factor)
+                    scene_info_out.upscale_image = upscale_image
+                else:
+                    logger.error("SceneUpdate: Cannot update upscale_image - no base_image or existing upscale_image available")
         
         if upscale_image is None:
             logger.error("SceneUpdate: upscale_image is None, cannot regenerate derived images")
@@ -4196,19 +4818,16 @@ class SceneUpdate(io.ComfyNode):
                         logger.info(f"SceneUpdate: Resizing mask '{mask_name}' from {old_W}x{old_H} to {new_W}x{new_H}")
                         scene_info_out.mask_images[mask_name] = normalize_image_tensor(mask_image, new_H, new_W)
 
-        # Update LoRAs
-        if update_high_loras and high_loras is not None:
-            scene_info_out.loras_high = high_loras
-        
-        if update_low_loras and low_loras is not None:
-            scene_info_out.loras_low = low_loras
-        
-        # Save LoRAs if updated
-        if update_high_loras or update_low_loras:
+        # Update LoRA stack
+        if update_loras and lora_stack_data is not None:
+            scene_info_out.lora_stack = lora_stack_data
+
+        if update_loras:
             scene_info_out.save_loras()
             logger.info(
-                "SceneUpdate: Saved LoRA presets to: %s",
-                f"{scene_info_in.scene_dir}/loras.json",
+                "SceneUpdate: Saved LoRA stack (%d entries) to: %s/lora_stack.json",
+                len(scene_info_out.lora_stack or []),
+                scene_info_in.scene_dir,
             )
 
         # Log which pose images are set for debugging
@@ -4866,8 +5485,7 @@ class SceneOutput(io.ComfyNode):
                 io.Image.Output(id="girl_mask_nobg_image", display_name="girl_mask_nobg_image", tooltip="Girl Mask Image, no background"),
                 io.Image.Output(id="male_mask_nobg_image", display_name="male_mask_nobg_image", tooltip="Male Mask Image, no background"),
                 io.Image.Output(id="combined_mask_nobg_image", display_name="combined_mask_nobg_image", tooltip="Combined Mask Image, no background"),
-                io.Custom("WANVIDLORA").Output(id="high_loras", display_name="high_loras", tooltip="WanVideoWrapper High Multi-Lora list"),
-                io.Custom("WANVIDLORA").Output(id="low_loras", display_name="low_loras", tooltip="WanVideoWrapper Low Multi-Lora list"),
+                LoraStackData.Output("lora_stack_data", display_name="lora_stack_data", tooltip="Multi-target LoRA stack for this scene. Feed into LoraStackApply."),
             ],
         )
 
@@ -4886,7 +5504,6 @@ class SceneOutput(io.ComfyNode):
                 "",
                 "",
                 "",
-                None,
                 None,
                 None,
                 None,
@@ -4945,8 +5562,7 @@ class SceneOutput(io.ComfyNode):
             scene_info.girl_mask_no_bkgd_image,
             scene_info.male_mask_no_bkgd_image,
             scene_info.combined_mask_no_bkgd_image,
-            scene_info.high_loras,
-            scene_info.low_loras,
+            scene_info.lora_stack,
         )
 
 class SceneSave(io.ComfyNode):
@@ -5022,8 +5638,7 @@ class SceneInput(io.ComfyNode):
                 io.Image.Input(id="girl_mask_nobg_image", display_name="girl_mask_nobg_image", tooltip="Girl Mask Image, no background", optional=True),
                 io.Image.Input(id="male_mask_nobg_image", display_name="male_mask_nobg_image", tooltip="Male Mask Image, no background", optional=True),
                 io.Image.Input(id="combined_mask_nobg_image", display_name="combined_mask_nobg_image", tooltip="Combined Mask Image, no background", optional=True),
-                io.Custom("WANVIDLORA").Input(id="high_loras", display_name="high_loras", tooltip="WanVideoWrapper High Multi-Lora list", optional=True ),
-                io.Custom("WANVIDLORA").Input(id="low_loras", display_name="low_loras", tooltip="WanVideoWrapper Low Multi-Lora list", optional=True),
+                LoraStackData.Input("lora_stack_data", display_name="LoRA Stack", optional=True, tooltip="Multi-target LoRA stack. If omitted, loaded from scene directory on disk."),
             ],
             outputs=[
                 io.Custom("SCENE_INFO").Output(id="scene_info", display_name="scene_info", tooltip="Scene information and images"),
@@ -5059,8 +5674,7 @@ class SceneInput(io.ComfyNode):
         girl_mask_no_bkgd_image=None,
         male_mask_no_bkgd_image=None,
         combined_mask_no_bkgd_image=None,
-        high_loras=None,
-        low_loras=None,
+        lora_stack_data=None,
     ) -> io.NodeOutput:
         if not scene_dir or not os.path.isdir(scene_dir):
             logger.error("SceneInput: scene_dir '%s' is invalid", scene_dir)
@@ -5096,8 +5710,7 @@ class SceneInput(io.ComfyNode):
             combined_mask_no_bkgd_image=combined_mask_no_bkgd_image,
             canny_image=canny_image,
             upscale_image=upscale_image,
-            loras_high=high_loras,
-            loras_low=low_loras,
+            lora_stack=lora_stack_data if lora_stack_data is not None else load_lora_stack(scene_dir),
             resolution=resolution,
         )
 
@@ -5757,15 +6370,40 @@ class StorySceneBatch(io.ComfyNode):
 
     @classmethod
     def fingerprint_inputs(cls, story_name: str = "", job_id: str = ""):
-        """Generate fingerprint based on story.json modification time and size to handle caching."""
+        """Generate fingerprint based on story.json and all referenced scene directory content."""
         if story_name:
             logger.debug("StorySceneBatch: Generating fingerprint for story '%s'", story_name)
             stories_dir = default_stories_dir()
             story_json_path = Path(stories_dir) / story_name / "story.json"
             if story_json_path.exists():
                 try:
-                    st = os.stat(story_json_path)
-                    return (str(story_json_path), int(st.st_mtime), int(st.st_size))
+                    story_stat = os.stat(story_json_path)
+                    story_info = load_story(str(story_json_path))
+
+                    if not story_info or not getattr(story_info, "scenes", None):
+                        return (
+                            str(story_json_path),
+                            int(story_stat.st_mtime_ns),
+                            int(story_stat.st_size),
+                            (),
+                            job_id.strip(),
+                        )
+
+                    scenes_dir = Path(default_scenes_dir())
+                    scene_fingerprints: list[tuple[str, str, int, int]] = []
+
+                    for scene in sorted(story_info.scenes, key=lambda s: (s.scene_order, s.scene_name)):
+                        scene_dir = scenes_dir / scene.scene_name
+                        scene_hash, dir_count, file_count = _directory_fingerprint(scene_dir)
+                        scene_fingerprints.append((scene.scene_name, scene_hash, dir_count, file_count))
+
+                    return (
+                        str(story_json_path),
+                        int(story_stat.st_mtime_ns),
+                        int(story_stat.st_size),
+                        tuple(scene_fingerprints),
+                        job_id.strip(),
+                    )
                 except Exception as e:
                     logger.warning("StorySceneBatch: Failed to stat story.json for fingerprinting: %s", e)
         # Return None to use default fingerprinting behavior
@@ -6356,15 +6994,19 @@ from .utils.story_video import (
 
 
 class StoryVideoBatch(io.ComfyNode):
-    """Generate video prompts and aggregate LoRAs for story scene transitions
-    
+    """Generate video prompts and aggregate LoRAs for story scene transitions.
+
     Self-contained node with story and job selection via combo widgets.
-    
+    Use `lora_target_filter` to select which model pipeline will be used;
+    the aggregated `lora_stack_data` output can be fed directly into
+    `LoraStackApply` (which handles High/Low routing internally for Wan2.2).
+
     Outputs:
-    1. input_folder_path - Path to the job's input folder containing ordered scene images
-    2. video_prompts - Multiline string with one prompt per scene transition
-    3. loras_high - Aggregated high-priority LoRAs (unique by name)
-    4. loras_low - Aggregated low-priority LoRAs (unique by name)
+    1. input_folder_path - Path to the job's input folder with ordered scene images
+    2. video_prompts     - Multiline string, one prompt per scene transition
+    3. lora_stack_data   - Aggregated unique LoRA stack filtered by lora_target_filter
+    4. video_count       - Total number of video transitions
+    5. story_name_out    - Selected story name
     """
     
     @classmethod
@@ -6391,12 +7033,24 @@ class StoryVideoBatch(io.ComfyNode):
             inputs=[
                 io.Combo.Input(id="story_name", display_name="story_name", options=available_stories, default=default_story, tooltip="Select story from available stories"),
                 io.Combo.Input(id="job_id", display_name="job_id", options=default_jobs, default=default_jobs[0] if default_jobs else "", tooltip="Select job ID from available jobs (leave empty to use most recent)"),
+                io.Combo.Input(
+                    id="lora_target_filter",
+                    display_name="LoRA Target Filter",
+                    options=["All"] + LORA_MODEL_TARGETS,
+                    default="All",
+                    tooltip=(
+                        "Filter the aggregated LoRA stack to a specific model target. "
+                        "'All' includes every entry regardless of target. "
+                        "Select e.g. 'Wan2.2-Wrapper-High' to output only entries for that pass, "
+                        "or 'LTX2.3' for LTX inference. "
+                        "Feed the output into LoraStackApply."
+                    ),
+                ),
             ],
             outputs=[
                 io.String.Output(id="input_folder_path", display_name="input_folder_path", tooltip="Path to job input folder with ordered scene images"),
                 io.String.Output(id="video_prompts", display_name="video_prompts", tooltip="Multiline string with one prompt per transition"),
-                io.Custom("WANVIDLORA").Output(id="loras_high", display_name="loras_high", tooltip="Aggregated high-priority LoRAs across all scenes"),
-                io.Custom("WANVIDLORA").Output(id="loras_low", display_name="loras_low", tooltip="Aggregated low-priority LoRAs across all scenes"),
+                LoraStackData.Output("lora_stack_data", display_name="lora_stack_data", tooltip="Aggregated unique LoRA stack across all story scenes, filtered by lora_target_filter. Feed into LoraStackApply."),
                 io.Int.Output(id="video_count", display_name="video_count", tooltip="Total number of video transitions"),
                 io.String.Output(id="story_name_out", display_name="story_name", tooltip="Selected story name"),
             ],
@@ -6427,14 +7081,39 @@ class StoryVideoBatch(io.ComfyNode):
     
     @classmethod
     def fingerprint_inputs(cls, story_name: str = "default_story", job_id: str = ""):
-        """Generate fingerprint based on story.json modification time and size to handle caching."""
+        """Generate fingerprint based on story.json and all referenced scene directory content."""
         if story_name:
             stories_dir = default_stories_dir()
             story_json_path = os.path.join(stories_dir, story_name, "story.json")
             if os.path.isfile(story_json_path):
                 try:
-                    st = os.stat(story_json_path)
-                    return (str(story_json_path), int(st.st_mtime), int(st.st_size))
+                    story_stat = os.stat(story_json_path)
+                    story_info = load_story(story_json_path)
+
+                    if not story_info or not getattr(story_info, "scenes", None):
+                        return (
+                            str(story_json_path),
+                            int(story_stat.st_mtime_ns),
+                            int(story_stat.st_size),
+                            (),
+                            job_id.strip(),
+                        )
+
+                    scenes_dir = Path(default_scenes_dir())
+                    scene_fingerprints: list[tuple[str, str, int, int]] = []
+
+                    for scene in sorted(story_info.scenes, key=lambda s: (s.scene_order, s.scene_name)):
+                        scene_dir = scenes_dir / scene.scene_name
+                        scene_hash, dir_count, file_count = _directory_fingerprint(scene_dir)
+                        scene_fingerprints.append((scene.scene_name, scene_hash, dir_count, file_count))
+
+                    return (
+                        str(story_json_path),
+                        int(story_stat.st_mtime_ns),
+                        int(story_stat.st_size),
+                        tuple(scene_fingerprints),
+                        job_id.strip(),
+                    )
                 except Exception as e:
                     logger.warning("StoryVideoBatch: Failed to stat story.json for fingerprinting: %s", e)
         # Return None to use default fingerprinting behavior
@@ -6445,9 +7124,10 @@ class StoryVideoBatch(io.ComfyNode):
         cls,
         story_name: str = "default_story",
         job_id: str = "",
+        lora_target_filter: str = "All",
     ) -> io.NodeOutput:
         # Debug logging to track what parameters are being received
-        logger.info("StoryVideoBatch.execute called with story_name='%s', job_id='%s'", story_name, job_id)
+        logger.info("StoryVideoBatch.execute called with story_name='%s', job_id='%s', lora_target_filter='%s'", story_name, job_id, lora_target_filter)
         
         # Load story from story_name
         stories_dir = default_stories_dir()
@@ -6455,18 +7135,18 @@ class StoryVideoBatch(io.ComfyNode):
         
         if not os.path.isfile(story_json_path):
             logger.warning("StoryVideoBatch: Story file not found: '%s'", story_json_path)
-            return io.NodeOutput("", "", [], [], 0, story_name)
+            return io.NodeOutput("", "", None, 0, story_name)
         
         story_info = load_story(story_json_path)
         if story_info is None or not getattr(story_info, "scenes", None):
             logger.warning("StoryVideoBatch: Failed to load story or story has no scenes")
-            return io.NodeOutput("", "", [], [], 0, story_name)
+            return io.NodeOutput("", "", None, 0, story_name)
         
         # List available job IDs
         available_jobs = list_job_ids(story_info.story_dir)
         if not available_jobs:
             logger.warning("StoryVideoBatch: No jobs found in story directory '%s'", story_info.story_dir)
-            return io.NodeOutput("", "", [], [], 0, story_name)
+            return io.NodeOutput("", "", None, 0, story_name)
         
         logger.info("StoryVideoBatch: Available job_ids for story '%s': %s", story_name, available_jobs)
         
@@ -6486,7 +7166,7 @@ class StoryVideoBatch(io.ComfyNode):
         
         if not Path(job_input_dir).exists():
             logger.warning("StoryVideoBatch: Job input directory does not exist: '%s'", job_input_dir)
-            return io.NodeOutput("", "", [], [], 0, story_name)
+            return io.NodeOutput("", "", None, 0, story_name)
         
         scenes_dir = default_scenes_dir()
         scenes_sorted = sorted(story_info.scenes, key=lambda s: s.scene_order)
@@ -6498,9 +7178,8 @@ class StoryVideoBatch(io.ComfyNode):
             selected_job,
         )
         
-        # Dictionaries to aggregate unique LoRAs by name
-        loras_high_dict = {}
-        loras_low_dict = {}
+        # Dict keyed by (lora, model_target) to aggregate unique entries across scenes
+        loras_stack_dict: dict[tuple[str, str], dict] = {}
         
         # Build scene descriptors with processed prompts
         scene_descriptors = []
@@ -6537,24 +7216,13 @@ class StoryVideoBatch(io.ComfyNode):
                 # Legacy format
                 prompt_dict = prompt_data_raw
             
-            # Load LoRa data and aggregate
-            loras_path = os.path.join(scene_dir, "loras.json")
-            loras_high, loras_low = load_loras(loras_path) if os.path.isfile(loras_path) else (None, None)
-            
-            # Aggregate high LoRAs (unique by lora name)
-            if loras_high:
-                for lora in loras_high:
-                    lora_name = os.path.basename(lora["path"])
-                    if lora_name not in loras_high_dict:
-                        loras_high_dict[lora_name] = lora
-            
-            # Aggregate low LoRAs (unique by lora name)
-            if loras_low:
-                for lora in loras_low:
-                    lora_name = os.path.basename(lora["path"])
-                    if lora_name not in loras_low_dict:
-                        loras_low_dict[lora_name] = lora
-            
+            # Load LoRA stack and aggregate unique entries
+            scene_lora_stack = load_lora_stack(scene_dir) or []
+            for entry in scene_lora_stack:
+                key = (entry.get("lora", ""), entry.get("model_target", ""))
+                if key[0] and key[0].lower() != "none":
+                    loras_stack_dict[key] = entry  # last scene's value wins
+
             scene_descriptors.append({
                 "scene": scene,
                 "prompt_dict": prompt_dict,
@@ -6600,26 +7268,27 @@ class StoryVideoBatch(io.ComfyNode):
                 video_prompt[:50] + "..." if len(video_prompt) > 50 else video_prompt,
             )
         
-        # Convert aggregated LoRAs to lists
-        loras_high_list = list(loras_high_dict.values())
-        loras_low_list = list(loras_low_dict.values())
+        # Build the aggregated stack, applying the target filter
+        aggregated_stack = list(loras_stack_dict.values())
+        if lora_target_filter and lora_target_filter != "All":
+            aggregated_stack = [e for e in aggregated_stack if e.get("model_target") == lora_target_filter]
+        lora_stack_out = aggregated_stack if aggregated_stack else None
         
         # Join video prompts into multiline string
         video_prompts_multiline = "\n".join(video_prompts)
         
         logger.info(
-            "StoryVideoBatch: Generated %d video prompts, %d unique high LoRAs, %d unique low LoRAs for story '%s'",
+            "StoryVideoBatch: Generated %d video prompts, %d unique LoRA entries (filter=%s) for story '%s'",
             len(video_prompts),
-            len(loras_high_list),
-            len(loras_low_list),
+            len(aggregated_stack),
+            lora_target_filter,
             story_name,
         )
         
         return io.NodeOutput(
             job_input_dir,
             video_prompts_multiline,
-            loras_high_list,
-            loras_low_list,
+            lora_stack_out,
             len(video_prompts),
             story_name,
         )
@@ -8617,16 +9286,909 @@ async def story_save(request):
             "success": True,
             "message": f"Saved story '{story_name}' with {len(updated_scenes)} scenes"
         })
-    
+
     except Exception as e:
         logger.exception("Error saving story")
         return web.json_response({"error": str(e)}, status=500)
+
+
+# ── LoRA civitai info endpoint ────────────────────────────────────────────────
+
+_lora_info_cache: dict[str, dict] = {}
+
+
+def _compute_lora_hash(path: str) -> str:
+    """Full-file SHA256 — matches the hash CivitAI indexes in its by-hash API."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@routes.get("/fbtools/lora/civitai_info")
+async def get_lora_civitai_info(request):
+    """Fetch model version info from civitai by lora filename.
+
+    Query params: lora=<filename relative to loras folder>
+    Returns civitai model-version JSON or {"error": "..."}.
+    Results are cached in memory and a .civitai.info sidecar is checked first
+    (compatible with rgthree-comfy sidecar files).
+    """
+    import aiohttp as _aiohttp
+
+    lora_name = request.rel_url.query.get("lora", "").strip()
+    if not lora_name or lora_name == "None":
+        return web.json_response({"error": "lora parameter required"}, status=400)
+
+    lora_path = folder_paths.get_full_path("loras", lora_name)
+    if not lora_path:
+        return web.json_response({"error": f"LoRA not found: {lora_name}"}, status=404)
+
+    if lora_path in _lora_info_cache:
+        return web.json_response(_lora_info_cache[lora_path])
+
+    # Honour existing rgthree-style sidecar without re-fetching.
+    # rgthree names sidecars "<filename>.civitai.info" (full filename preserved),
+    # e.g. "my_lora.safetensors.civitai.info".
+    sidecar = Path(lora_path).parent / (Path(lora_path).name + ".civitai.info")
+    if sidecar.exists():
+        try:
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            _lora_info_cache[lora_path] = data
+            return web.json_response(data)
+        except Exception:
+            pass
+
+    try:
+        sha256 = _compute_lora_hash(lora_path)
+    except Exception as e:
+        return web.json_response({"error": f"Hash computation failed: {e}"}, status=500)
+
+    civitai_url = f"https://civitai.com/api/v1/model-versions/by-hash/{sha256}"
+    try:
+        async with _aiohttp.ClientSession() as session:
+            async with session.get(
+                civitai_url,
+                headers={"User-Agent": "comfyui-fbTools/1.0"},
+                timeout=_aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    _lora_info_cache[lora_path] = data
+                    return web.json_response(data)
+                elif resp.status == 404:
+                    return web.json_response(
+                        {"error": "LoRA not found on Civitai"}, status=404
+                    )
+                else:
+                    return web.json_response(
+                        {"error": f"Civitai returned HTTP {resp.status}"}, status=502
+                    )
+    except Exception as e:
+        return web.json_response({"error": f"Civitai request failed: {e}"}, status=502)
+
+
+# ============================================================================
+# LORA SCENE NODES — persist and apply LoRA settings per model target
+# ============================================================================
+
+# Model targets supported by the LoRA scene system.
+# Wan2.2 uses two separate diffusion models — one for the high-pass (structure) sampler
+# and one for the low-pass (detail) sampler — so each has its own target.
+# All other models have a single pass and need no High/Low distinction.
+LORA_MODEL_TARGETS = [
+    "LTX2.3",
+    "Wan2.2-Native-High",   # first-pass (structure) model — outputs LORA_STACK for easy-use
+    "Wan2.2-Native-Low",    # second-pass (detail) model — outputs LORA_STACK for easy-use
+    "Wan2.2-Wrapper-High",  # first-pass (structure) model — outputs WANVIDLORA for WanVideoWrapper
+    "Wan2.2-Wrapper-Low",   # second-pass (detail) model  — outputs WANVIDLORA for WanVideoWrapper
+    "Flux2/Klein",
+    "Qwen",
+    "Z-Image",
+]
+
+# Weight key fragments that belong to LTX2.3 audio layers
+LORA_AUDIO_KEYWORDS = [
+    "audio", "vocoder", "speech", "audio_stream",
+    "cross_modal", "video_to_audio", "av_ca",
+]
+
+LORA_ENTRY_TYPE      = "LORA_ENTRY"
+LORA_STACK_DATA_TYPE = "LORA_STACK_DATA"
+
+
+@io.comfytype(io_type=LORA_ENTRY_TYPE)
+class LoraEntry:
+    """
+    Carries a single LoRA definition between LoraEntryDefine and LoraStackCollect.
+    Internal dict structure:
+      {
+        "lora":           str,    # filename from loras folder
+        "strength_model": float,
+        "strength_clip":  float,
+        "enabled":        bool,
+        "model_target":   str,    # one of LORA_MODEL_TARGETS
+        "audio_enabled":  bool,   # LTX2.3 only — include audio weights
+      }
+    """
+    Type = dict
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "lora_entry", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+@io.comfytype(io_type=LORA_STACK_DATA_TYPE)
+class LoraStackData:
+    """
+    Carries the collected stack (list of LORA_ENTRY dicts) between nodes.
+    Also serialisable to/from JSON for scene persistence.
+    """
+    Type = list  # list[dict]
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "lora_stack_data", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+# ── LoRA scene helpers ────────────────────────────────────────────────────────
+
+def _lora_get_list() -> list[str]:
+    return ["None"] + folder_paths.get_filename_list("loras")
+
+
+def _lora_load_weights(lora_name: str) -> dict:
+    """Load raw LoRA weights from disk."""
+    path = folder_paths.get_full_path("loras", lora_name)
+    if not path:
+        raise FileNotFoundError(f"LoRA not found: {lora_name}")
+    import comfy.utils as _comfy_utils
+    return _comfy_utils.load_torch_file(path, safe_load=True)
+
+
+def _lora_entries_for_target(entries: list[dict], model_target: str) -> list[dict]:
+    """Filter to enabled entries matching the given model_target."""
+    return [
+        e for e in entries
+        if e.get("enabled", True)
+        and e.get("lora", "None") != "None"
+        and e.get("model_target") == model_target
+    ]
+
+
+def _lora_stack_to_json(entries: list[dict]) -> str:
+    return json.dumps(entries, indent=2, ensure_ascii=False)
+
+
+def _lora_json_to_stack(json_str: str) -> list[dict]:
+    try:
+        data = json.loads(json_str)
+        if isinstance(data, list):
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return []
+
+
+# ── Node: LoraEntryDefine ─────────────────────────────────────────────────────
+
+class LoraEntryDefine(io.ComfyNode):
+    """
+    Define a single LoRA entry for a specific model target.
+    Connect one or more of these to LoraStackCollect.
+
+    video/audio/cross-attention strength controls only have effect when
+    model_target is LTX2.3.  Set audio=0 and audio_to_video=0 to fully
+    mute audio layers (equivalent to the old audio_enabled=False).
+    strength_clip is ignored for model targets that have no CLIP encoder.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=prefixed_node_id("LoraEntryDefine"),
+            display_name="LoRA Entry Define",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Define one LoRA for a specific model target. "
+                "Connect to LoraStackCollect to build a persisted stack."
+            ),
+            inputs=[
+                io.Combo.Input(
+                    "lora",
+                    display_name="LoRA",
+                    options=_lora_get_list(),
+                    default="None",
+                    tooltip="Select the LoRA file.",
+                ),
+                io.Combo.Input(
+                    "model_target",
+                    display_name="Model Target",
+                    options=LORA_MODEL_TARGETS,
+                    default="LTX2.3",
+                    tooltip="Which model pipeline this LoRA applies to.",
+                ),
+                io.Float.Input(
+                    "strength_model",
+                    display_name="Strength (Model)",
+                    default=1.0,
+                    min=-10.0,
+                    max=10.0,
+                    step=0.0001,
+                    tooltip="LoRA strength applied to the UNet/transformer model weights.",
+                ),
+                io.Float.Input(
+                    "strength_clip",
+                    display_name="Strength (CLIP)",
+                    default=1.0,
+                    min=-10.0,
+                    max=10.0,
+                    step=0.0001,
+                    tooltip=(
+                        "LoRA strength applied to the text encoder (CLIP). "
+                        "Ignored for model targets that have no CLIP component."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "enabled",
+                    display_name="Enabled",
+                    default=True,
+                    tooltip="Disable to skip this LoRA without removing it from the stack.",
+                ),
+                io.Float.Input(
+                    "video",
+                    display_name="Video",
+                    default=1.0, min=0.0, max=1.0, step=0.01,
+                    tooltip="LTX2.3: strength multiplier for video attention/feedforward layers.",
+                ),
+                io.Float.Input(
+                    "video_to_audio",
+                    display_name="Video→Audio",
+                    default=1.0, min=0.0, max=1.0, step=0.01,
+                    tooltip="LTX2.3: strength multiplier for video-to-audio cross-attention layers.",
+                ),
+                io.Float.Input(
+                    "audio",
+                    display_name="Audio",
+                    default=1.0, min=0.0, max=1.0, step=0.01,
+                    tooltip="LTX2.3: strength multiplier for audio attention/feedforward layers. Set to 0 to fully mute audio.",
+                ),
+                io.Float.Input(
+                    "audio_to_video",
+                    display_name="Audio→Video",
+                    default=1.0, min=0.0, max=1.0, step=0.01,
+                    tooltip="LTX2.3: strength multiplier for audio-to-video cross-attention layers. Set to 0 to fully mute audio→video.",
+                ),
+                io.Float.Input(
+                    "other",
+                    display_name="Other",
+                    default=1.0, min=0.0, max=1.0, step=0.01,
+                    tooltip="LTX2.3: strength multiplier for any layers not matched by the above filters.",
+                ),
+            ],
+            outputs=[
+                LoraEntry.Output("lora_entry", display_name="LoRA Entry"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        lora: str,
+        model_target: str,
+        strength_model: float,
+        strength_clip: float,
+        enabled: bool,
+        video: float = 1.0,
+        video_to_audio: float = 1.0,
+        audio: float = 1.0,
+        audio_to_video: float = 1.0,
+        other: float = 1.0,
+    ) -> io.NodeOutput:
+        entry = {
+            "lora":           lora,
+            "model_target":   model_target,
+            "strength_model": strength_model,
+            "strength_clip":  strength_clip,
+            "enabled":        enabled,
+            "video":          video,
+            "video_to_audio": video_to_audio,
+            "audio":          audio,
+            "audio_to_video": audio_to_video,
+            "other":          other,
+        }
+        return io.NodeOutput(entry)
+
+
+# ── Node: LoraStackCollect ────────────────────────────────────────────────────
+
+class LoraStackCollect(io.ComfyNode):
+    """
+    Collect multiple LoRA entries into a persisted stack.
+
+    Outputs a JSON string suitable for storing in a scene node,
+    and a LORA_STACK_DATA object for direct connection to LoraStackApply.
+
+    Merging/override rules (last-write-wins on (lora, model_target) key):
+      1. existing_json entries are loaded first (lowest priority).
+      2. prev_stack entries override existing_json duplicates.
+      3. Connected LoraEntryDefine entries override everything.
+
+    To edit a single entry in an existing scene stack without rebuilding it:
+      SceneSelect.lora_stack_data → prev_stack
+      LoraEntryDefine (same lora + model_target, new params) → entry_0
+      → SceneLoraStackSave
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            input=LoraEntry.Input("entry", optional=True),
+            prefix="entry",
+            min=1,
+            max=20,
+        )
+        return io.Schema(
+            node_id=prefixed_node_id("LoraStackCollect"),
+            display_name="LoRA Stack Collect",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Collect LoRA entries into a deduplicated stack. "
+                "New entries (entry_0, entry_1…) override prev_stack/existing_json "
+                "entries with the same (lora, model_target) key."
+            ),
+            inputs=[
+                io.Autogrow.Input("entries", template=autogrow_template),
+                LoraStackData.Input(
+                    "prev_stack",
+                    display_name="Prev Stack",
+                    optional=True,
+                    tooltip=(
+                        "Existing LORA_STACK_DATA to merge into (e.g. from SceneSelect). "
+                        "New entries on entry_0/entry_1/… override any duplicate "
+                        "(lora, model_target) pairs from this stack."
+                    ),
+                ),
+                io.String.Input(
+                    "existing_json",
+                    display_name="Existing JSON",
+                    default="[]",
+                    multiline=False,
+                    optional=True,
+                    tooltip=(
+                        "Existing stack as a JSON string. Used if Prev Stack is not "
+                        "connected. New entries override duplicates here too."
+                    ),
+                ),
+            ],
+            outputs=[
+                LoraStackData.Output("lora_stack_data", display_name="Stack Data"),
+                io.String.Output("stack_json",          display_name="Stack JSON"),
+                io.Int.Output("entry_count",            display_name="Entry Count"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        entries: io.Autogrow.Type,
+        prev_stack: Optional[list] = None,
+        existing_json: str = "[]",
+    ) -> io.NodeOutput:
+        # Build ordered base: existing_json first, prev_stack overrides it
+        base: list[dict] = _lora_json_to_stack(existing_json)
+        if prev_stack:
+            base.extend(prev_stack)
+
+        # New entries (from LoraEntryDefine) have highest priority
+        new_entries = [v for v in entries.values() if v is not None]
+        base.extend(new_entries)
+
+        # Deduplicate: last entry for each (lora, model_target) key wins
+        seen: dict[tuple, dict] = {}
+        for entry in base:
+            key = (entry.get("lora", ""), entry.get("model_target", ""))
+            seen[key] = entry
+        merged = list(seen.values())
+
+        stack_json = _lora_stack_to_json(merged)
+        return io.NodeOutput(merged, stack_json, len(merged))
+
+
+# ── Node: LoraStackView ──────────────────────────────────────────────────────
+
+class LoraStackView(io.ComfyNode):
+    """
+    Inspect the contents of a LORA_STACK_DATA without modifying it.
+
+    Outputs a human-readable summary string (connect to a Show Text node)
+    and the raw stack_json STRING (connect to LoraStackCollect.existing_json
+    if you need to extend the stack without the prev_stack input).
+    Pass-through lora_stack_data output lets you chain this inline.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=prefixed_node_id("LoraStackView"),
+            display_name="LoRA Stack View",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Display the contents of a LoRA stack as readable text. "
+                "Also outputs the raw JSON string and a pass-through stack "
+                "so it can sit inline between SceneSelect and LoraStackCollect."
+            ),
+            inputs=[
+                LoraStackData.Input(
+                    "lora_stack_data",
+                    display_name="Stack Data",
+                    optional=True,
+                    tooltip="Connect from SceneSelect, StoryVideoBatch, or LoraStackCollect.",
+                ),
+            ],
+            outputs=[
+                io.String.Output("summary",         display_name="Summary",    tooltip="Human-readable list of LoRA entries."),
+                io.String.Output("stack_json",       display_name="Stack JSON", tooltip="Raw JSON — connect to LoraStackCollect.existing_json if needed."),
+                LoraStackData.Output("lora_stack_data", display_name="Stack Data", tooltip="Pass-through — same stack, unchanged."),
+                io.Int.Output("entry_count",         display_name="Entry Count"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        lora_stack_data: Optional[list] = None,
+    ) -> io.NodeOutput:
+        stack = lora_stack_data or []
+        lines: list[str] = [f"LoRA Stack ({len(stack)} entries):"]
+        for i, entry in enumerate(stack):
+            lora        = entry.get("lora", "?") or "?"
+            target      = entry.get("model_target", "?") or "?"
+            strength    = entry.get("strength_model", 1.0)
+            enabled     = entry.get("enabled", True)
+            status      = "" if enabled else "  [DISABLED]"
+            lines.append(f"  [{i}] {lora}  |  {target}  |  strength={strength:.4f}{status}")
+        summary = "\n".join(lines) if stack else "(empty stack)"
+        stack_json = _lora_stack_to_json(stack)
+        return io.NodeOutput(summary, stack_json, stack if stack else None, len(stack))
+
+
+# ── Node: LoraStackApply ──────────────────────────────────────────────────────
+
+class LoraStackApply(io.ComfyNode):
+    """
+    Apply a persisted LoRA stack to the active model at inference time.
+
+    Set model_target to match the pipeline you are running.
+    Only LoRA entries tagged for that target will be loaded and applied.
+
+    Output behaviour by target:
+      LTX2.3        → MODEL, CLIP (audio weights filtered per entry flag)
+      Wan2.2-Native → MODEL, CLIP, LORA_STACK (easy-use compatible tuple list)
+      Wan2.2-Wrapper→ MODEL, CLIP, WANVIDLORA (WanVideoWrapper compatible dict list)
+      Flux2/Klein   → MODEL, CLIP (standard load_lora_for_models)
+      Qwen          → MODEL, CLIP (standard load_lora_for_models)
+      Z-Image       → MODEL, CLIP (standard load_lora_for_models)
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=prefixed_node_id("LoraStackApply"),
+            display_name="LoRA Stack Apply",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Apply a persisted LoRA stack to the active model. "
+                "Set model_target to match the pipeline you are running. "
+                "Only LoRAs tagged for that target are applied."
+            ),
+            inputs=[
+                io.Combo.Input(
+                    "model_target",
+                    display_name="Model Target",
+                    options=LORA_MODEL_TARGETS,
+                    default="LTX2.3",
+                    tooltip="Which model pipeline to apply LoRAs for.",
+                ),
+                LoraStackData.Input(
+                    "lora_stack_data",
+                    display_name="Stack Data",
+                    optional=True,
+                    tooltip="Connect from LoraStackCollect.",
+                ),
+                io.String.Input(
+                    "stack_json",
+                    display_name="Stack JSON",
+                    default="[]",
+                    multiline=False,
+                    optional=True,
+                    tooltip=(
+                        "JSON string from a scene node. "
+                        "Used if Stack Data input is not connected."
+                    ),
+                ),
+                io.Model.Input(
+                    "model",
+                    display_name="Model",
+                    optional=True,
+                    tooltip="Connect the MODEL to patch with LoRA weights.",
+                ),
+                io.Clip.Input(
+                    "clip",
+                    display_name="CLIP",
+                    optional=True,
+                    tooltip="Connect the CLIP/text encoder to patch with LoRA weights.",
+                ),
+                io.Custom("LORA_STACK").Input(
+                    "prev_lora_stack",
+                    display_name="Prev LoRA Stack",
+                    optional=True,
+                    tooltip=(
+                        "Wan2.2-Native only: chain from another LORA_STACK output "
+                        "to prepend existing entries."
+                    ),
+                ),
+                io.Custom("WANVIDLORA").Input(
+                    "prev_wanvid_lora",
+                    display_name="Prev WanVid LoRA",
+                    optional=True,
+                    tooltip=(
+                        "Wan2.2-Wrapper only: chain from another WANVIDLORA output "
+                        "to prepend existing entries."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "low_mem_load",
+                    display_name="Low VRAM Load",
+                    default=False,
+                    optional=True,
+                    tooltip="Wan2.2-Wrapper only: load LoRA with reduced VRAM usage.",
+                ),
+                io.Boolean.Input(
+                    "merge_loras",
+                    display_name="Merge LoRAs",
+                    default=True,
+                    optional=True,
+                    tooltip=(
+                        "Wan2.2-Wrapper only: merge LoRAs into model weights. "
+                        "Disable for GGUF / scaled fp8 models."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "int8_model",
+                    display_name="INT8 Model",
+                    default=False,
+                    optional=True,
+                    tooltip=(
+                        "Enable when the model is INT8-quantized (ComfyUI-INT8-Fast). "
+                        "LoRAs are applied directly to the model via INT8ModelPatcher's "
+                        "dequantize→apply→requantize cycle, bypassing Wan2.2 stack outputs."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Model.Output("model",        display_name="Model"),
+                io.Clip.Output("clip",          display_name="CLIP"),
+                io.Custom("LORA_STACK").Output("lora_stack",   display_name="LoRA Stack"),
+                io.Custom("WANVIDLORA").Output("wanvid_lora",  display_name="WanVid LoRA"),
+                io.Int.Output("applied_count",  display_name="Applied Count"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model_target: str,
+        lora_stack_data: Optional[list] = None,
+        stack_json: str = "[]",
+        model: Optional[object] = None,
+        clip: Optional[object] = None,
+        prev_lora_stack: Optional[list] = None,
+        prev_wanvid_lora: Optional[list] = None,
+        low_mem_load: bool = False,
+        merge_loras: bool = True,
+        int8_model: bool = False,
+    ) -> io.NodeOutput:
+        all_entries = lora_stack_data if lora_stack_data is not None else _lora_json_to_stack(stack_json)
+        target_entries = _lora_entries_for_target(all_entries, model_target)
+
+        if int8_model:
+            # INT8 models (ComfyUI-INT8-Fast INT8ModelPatcher) require direct patching.
+            # Wan2.2 stack outputs (LORA_STACK / WANVIDLORA) are not usable with INT8 because
+            # their downstream consumers have no knowledge of INT8 dequant/requant.
+            # For LTX2.3 targets, use per-layer filtering; for all others, use flat apply.
+            if model_target == "LTX2.3":
+                model, clip, count = _lora_apply_ltx23(model, clip, target_entries)
+            else:
+                model, clip, count = _lora_apply_standard(model, clip, target_entries)
+            return io.NodeOutput(model, clip, None, None, count)
+
+        if model_target == "LTX2.3":
+            model, clip, count = _lora_apply_ltx23(model, clip, target_entries)
+            return io.NodeOutput(model, clip, None, None, count)
+        elif model_target in ("Wan2.2-Native-High", "Wan2.2-Native-Low"):
+            lora_stack, count = _lora_build_stack(target_entries, prev_lora_stack)
+            return io.NodeOutput(model, clip, lora_stack, None, count)
+        elif model_target in ("Wan2.2-Wrapper-High", "Wan2.2-Wrapper-Low"):
+            wanvid_lora, count = _lora_build_wanvid(
+                target_entries, prev_wanvid_lora, low_mem_load, merge_loras
+            )
+            return io.NodeOutput(model, clip, None, wanvid_lora, count)
+        else:
+            # Flux2/Klein, Qwen, Z-Image — standard load_lora_for_models
+            model, clip, count = _lora_apply_standard(model, clip, target_entries)
+            return io.NodeOutput(model, clip, None, None, count)
+
+
+# ── LoRA apply implementations ────────────────────────────────────────────────
+
+def _lora_apply_ltx23(model, clip, entries: list[dict]) -> tuple:
+    """LTX2.3 apply: per-key strength scaling for audio/video/cross-attn layers.
+
+    Mirrors the per-layer filter logic of LTX2LoraLoaderAdvanced (kjnodes).
+    Backward compat: if an old entry has audio_enabled=False and no explicit
+    audio/audio_to_video keys, those layers are treated as strength 0.
+    """
+    import comfy.lora as _comfy_lora
+    import comfy.utils as _comfy_utils
+    m, c = model, clip
+    count = 0
+    for entry in entries:
+        lora_name = entry.get("lora", "None")
+        if not lora_name or lora_name == "None":
+            continue
+
+        # Per-layer strengths — backward-compat with old audio_enabled boolean
+        _old_audio = entry.get("audio_enabled", None)
+        if _old_audio is False and "audio" not in entry:
+            audio_s    = 0.0
+            audio_to_v = 0.0
+        else:
+            audio_s    = float(entry.get("audio",          1.0))
+            audio_to_v = float(entry.get("audio_to_video", 1.0))
+        video_s    = float(entry.get("video",          1.0))
+        video_to_a = float(entry.get("video_to_audio", 1.0))
+        other_s    = float(entry.get("other",          1.0))
+
+        strength_model = entry.get("strength_model", 1.0)
+        strength_clip  = entry.get("strength_clip",  1.0)
+
+        try:
+            raw = _lora_load_weights(lora_name)
+
+            # Build combined key map (model + clip)
+            key_map = {}
+            if m is not None:
+                key_map = _comfy_lora.model_lora_keys_unet(m.model, key_map)
+            if c is not None:
+                key_map = _comfy_lora.model_lora_keys_clip(c.cond_stage_model, key_map)
+
+            loaded = _comfy_lora.load_lora(raw, key_map)
+
+            # Per-key scaling — fast path if all strengths are 1.0
+            if not (video_s == 1.0 and video_to_a == 1.0
+                    and audio_s == 1.0 and audio_to_v == 1.0 and other_s == 1.0):
+                keys_to_delete = []
+                for key, value in loaded.items():
+                    ks = key if isinstance(key, str) else (key[0] if isinstance(key, tuple) else str(key))
+                    # Most-specific patterns first (mirrors LTX2LoraLoaderAdvanced)
+                    if   "video_to_audio_attn" in ks: mult = video_to_a
+                    elif "audio_to_video_attn" in ks: mult = audio_to_v
+                    elif "audio_attn" in ks or "audio_ff.net" in ks: mult = audio_s
+                    elif "attn" in ks or "ff.net" in ks: mult = video_s
+                    else: mult = other_s
+
+                    if mult == 0.0:
+                        keys_to_delete.append(key)
+                    elif mult != 1.0 and hasattr(value, "weights"):
+                        wl = list(value.weights)
+                        wl[2] = (wl[2] if wl[2] is not None else 1.0) * mult
+                        loaded[key].weights = tuple(wl)
+                for key in keys_to_delete:
+                    loaded.pop(key, None)
+
+            if m is not None:
+                new_m = m.clone()
+                new_m.add_patches(loaded, strength_model)
+                m = new_m
+            if c is not None:
+                new_c = c.clone()
+                new_c.add_patches(loaded, strength_clip)
+                c = new_c
+            count += 1
+        except Exception as e:
+            print(f"[LoraStackApply] LTX2.3: failed to load '{lora_name}': {e}")
+    return m, c, count
+
+
+def _lora_apply_standard(model, clip, entries: list[dict]) -> tuple:
+    """Standard apply via load_lora_for_models (Flux2/Klein, Qwen, Z-Image)."""
+    import comfy.sd as _comfy_sd
+    import comfy.utils as _comfy_utils
+    m, c = model, clip
+    count = 0
+    for entry in entries:
+        lora_name = entry.get("lora", "None")
+        if not lora_name or lora_name == "None":
+            continue
+        try:
+            path = folder_paths.get_full_path("loras", lora_name)
+            if not path:
+                print(f"[LoraStackApply] LoRA not found: {lora_name}")
+                continue
+            weights = _comfy_utils.load_torch_file(path, safe_load=True)
+            m, c = _comfy_sd.load_lora_for_models(
+                m, c, weights,
+                entry.get("strength_model", 1.0),
+                entry.get("strength_clip",  1.0),
+            )
+            count += 1
+        except Exception as e:
+            print(f"[LoraStackApply] Standard: failed to load '{lora_name}': {e}")
+    return m, c, count
+
+
+def _lora_build_stack(entries: list[dict], prev_lora_stack: Optional[list]) -> tuple:
+    """Build a LORA_STACK compatible with easy-use loraStack."""
+    stack: list[tuple] = []
+    if prev_lora_stack:
+        stack.extend([l for l in prev_lora_stack if l[0] != "None"])
+    count = 0
+    for entry in entries:
+        lora_name = entry.get("lora", "None")
+        if not lora_name or lora_name == "None":
+            continue
+        stack.append((lora_name, entry.get("strength_model", 1.0), entry.get("strength_clip", 1.0)))
+        count += 1
+    return stack if stack else None, count
+
+
+def _lora_build_wanvid(
+    entries: list[dict],
+    prev_wanvid_lora: Optional[list],
+    low_mem_load: bool,
+    merge_loras: bool,
+) -> tuple:
+    """Build a WANVIDLORA compatible with WanVideoWrapper.
+
+    Per-entry 'low_mem_load', 'merge_loras', 'blocks', and 'layer_filter' fields
+    take precedence over the node-level arguments when present (preserved from
+    migrated loras.json data or explicitly set by the user).
+    """
+    loras_list: list[dict] = []
+    if prev_wanvid_lora:
+        loras_list.extend(list(prev_wanvid_lora))
+    count = 0
+    for entry in entries:
+        lora_name = entry.get("lora", "None")
+        if not lora_name or lora_name == "None":
+            continue
+        # Per-entry values override node-level infrastructure settings when present
+        entry_merge    = entry.get("merge_loras",  merge_loras)
+        entry_low_mem  = entry.get("low_mem_load", low_mem_load)
+        if not entry_merge:
+            entry_low_mem = False  # matches WanVideoWrapper behaviour
+        try:
+            path = folder_paths.get_full_path_or_raise("loras", lora_name)
+        except Exception:
+            path = folder_paths.get_full_path("loras", lora_name)
+            if not path:
+                print(f"[LoraStackApply] WanVid: LoRA not found: {lora_name}")
+                continue
+        loras_list.append({
+            "path":         path,
+            "strength":     round(entry.get("strength_model", 1.0), 4),
+            "name":         os.path.splitext(os.path.basename(lora_name))[0],
+            "blocks":       entry.get("blocks", {}),
+            "layer_filter": entry.get("layer_filter", ""),
+            "low_mem_load": entry_low_mem,
+            "merge_loras":  entry_merge,
+        })
+        count += 1
+    return loras_list if loras_list else None, count
+
+
+# ── Node: WanVidLoraStack ─────────────────────────────────────────────────────
+
+class WanVidLoraStack(io.ComfyNode):
+    """
+    Build a WANVIDLORA list for WanVideoWrapper directly from LORA_ENTRY inputs.
+
+    Accepts 1–20 LORA_ENTRY inputs (from LoraEntryDefine) and converts them into a
+    WANVIDLORA list compatible with WanVideoWrapper's sampler nodes. All enabled,
+    non-None entries are included regardless of their model_target tag, making this
+    node the Wan-specific alternative to LoraStackApply.
+
+    Use prev_wanvid_lora to chain with upstream WanVideoLoraSelect nodes.
+    Per-entry low_mem_load/merge_loras values (from migrated loras.json data) take
+    precedence over the node-level settings when present.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            input=LoraEntry.Input("entry", optional=True),
+            prefix="entry",
+            min=1,
+            max=20,
+        )
+        return io.Schema(
+            node_id=prefixed_node_id("WanVidLoraStack"),
+            display_name="WanVid LoRA Stack",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Build a WANVIDLORA list from LoRA entries for WanVideoWrapper. "
+                "Connect LoraEntryDefine nodes to entry_0, entry_1… inputs. "
+                "Outputs WANVIDLORA compatible with WanVideoWrapper sampler nodes."
+            ),
+            inputs=[
+                io.Autogrow.Input("entries", template=autogrow_template),
+                io.Custom("WANVIDLORA").Input(
+                    "prev_wanvid_lora",
+                    display_name="Prev WanVid LoRA",
+                    optional=True,
+                    tooltip="Chain from another WANVIDLORA output to prepend existing entries.",
+                ),
+                io.Boolean.Input(
+                    "low_mem_load",
+                    display_name="Low VRAM Load",
+                    default=False,
+                    optional=True,
+                    tooltip=(
+                        "Load LoRAs with reduced VRAM usage, at the cost of slower loading. "
+                        "No effect when merge_loras is False."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "merge_loras",
+                    display_name="Merge LoRAs",
+                    default=True,
+                    optional=True,
+                    tooltip=(
+                        "Merge LoRAs into model weights before sampling. "
+                        "Disable for GGUF or scaled fp8 models."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Custom("WANVIDLORA").Output(
+                    "wanvid_lora",
+                    display_name="WanVid LoRA",
+                    tooltip="Connect to WanVideoWrapper sampler nodes.",
+                ),
+                io.Int.Output("entry_count", display_name="Entry Count"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        entries: io.Autogrow.Type,
+        prev_wanvid_lora: Optional[list] = None,
+        low_mem_load: bool = False,
+        merge_loras: bool = True,
+    ) -> io.NodeOutput:
+        all_entries = [v for v in entries.values() if v is not None]
+        enabled = [e for e in all_entries if e.get("enabled", True)]
+        wanvid_lora, count = _lora_build_wanvid(enabled, prev_wanvid_lora, low_mem_load, merge_loras)
+        return io.NodeOutput(wanvid_lora, count)
 
 
 class FBToolsExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
+            SubjectLayerDefine,
+            SubjectCompositor,
             CaptionModelUnloader,
             DatasetCaptioner,
             DatasetCaptionEditor,
@@ -8646,6 +10208,8 @@ class FBToolsExtension(ComfyExtension):
             SceneOutput,
             SceneView,
             SceneSelect,
+            SceneWanVideoLoraMultiSave,
+            SceneLoraStackSave,
             StorySceneBatch,
             StoryScenePick,
             StoryVideoBatch,
@@ -8665,4 +10229,9 @@ class FBToolsExtension(ComfyExtension):
             # Scene Prompt Management nodes
             ScenePromptManager,
             PromptComposer,
+            # LoRA scene nodes
+            LoraEntryDefine,
+            LoraStackCollect,
+            LoraStackApply,
+            WanVidLoraStack,
         ]

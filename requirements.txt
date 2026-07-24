@@ -20,7 +20,14 @@ google-generativeai>=0.8.0
 
 # Image handling (usually already present in ComfyUI env):
 Pillow>=9.0.0
+numpy>=1.24.0
 torch>=2.1.0
 
 # Optional: 8-bit quantisation support (reduces VRAM by ~50%)
 bitsandbytes>=0.43.0
+
+# Background removal (required for automatic bg removal):
+# Installs BiRefNet and u2net model support via rembg
+rembg[gpu]>=2.0.50
+# Use rembg (no [gpu]) if you want CPU-only:
+# rembg>=2.0.50
