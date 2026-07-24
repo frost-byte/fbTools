@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+# LORA_STACK is the easy-use compatible format: list[tuple[str, float, float]]
+# Each tuple is (lora_name, model_strength, clip_strength).
+LoraStack = list[tuple[str, float, float]]
+
 
 def preset_define(
     name: str,
-    lora_h: str,
-    lora_l: str,
+    lora_h: LoraStack | None,
+    lora_l: LoraStack | None,
     prompt: str,
     preset_list: list | None = None,
 ) -> list:
@@ -16,20 +20,20 @@ def preset_define(
     return result
 
 
-def preset_select(preset_list: list, index: int) -> tuple[str, str, str, str, str]:
+def preset_select(preset_list: list, index: int) -> tuple[str, LoraStack | None, LoraStack | None, str, str]:
     """
     Return (name, lora_h, lora_l, prompt, available_presets) for the entry
     at *index*, clamped to the last valid position.
     """
     if not preset_list:
-        return ("", "", "", "", "No presets available.")
+        return ("", None, None, "", "No presets available.")
     idx = min(index, len(preset_list) - 1)
     preset = preset_list[idx]
     available = "\n".join(f"[{i}] {p.get('name', '')}" for i, p in enumerate(preset_list))
     return (
         preset.get("name", ""),
-        preset.get("lora_h", ""),
-        preset.get("lora_l", ""),
+        preset.get("lora_h"),
+        preset.get("lora_l"),
         preset.get("prompt", ""),
         available,
     )
