@@ -19,12 +19,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "bump-my-version",
-    "coverage",  # testing
-    "mypy",  # linting
-    "pre-commit", # runs linting on commit
-    "pytest",  # testing
-    "ruff",  # linting
+    "python-semantic-release",
+    "coverage",
+    "mypy",
+    "pre-commit",
+    "pytest",
+    "ruff",
 ]
 
 [project.urls]
@@ -76,6 +76,19 @@ warn_no_return = true
 module = "tests.*"
 allow_untyped_defs = true
 disable_error_code = "attr-defined"
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["__init__.py:__version__"]
+branch = "main"
+tag_format = "v{version}"
+changelog_file = "CHANGELOG.md"
+upload_to_pypi = false
+build_command = ""
+
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
 
 [tool.ruff]
 # extend-exclude = ["static", "ci/templates"]
