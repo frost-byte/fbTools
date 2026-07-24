@@ -36,6 +36,15 @@ A comprehensive collection of custom nodes for ComfyUI focused on storytelling, 
 - **Aspect Ratio**: Qwen-specific aspect ratio calculation and layout detection
 - **SAM Preprocessing**: Prepare images for Segment Anything Model
 
+### 🖼️ Image Compositing
+- **SubjectLayerDefine**: Define a single subject layer — image, optional mask, fractional padding, canvas offset, and background removal model
+- **SubjectCompositor**: Composite 1–20 subject layers onto a canvas; output a merged composite, individual per-subject images, or both
+
+### 🎛️ LoRA Scene Management
+- **LoraEntryDefine**: Define one LoRA for a specific model target with per-LoRA audio guard (LTX2.3), enable/disable toggle, and separate model/clip strengths
+- **LoraStackCollect**: Collect 1–20 LoRA entries into a JSON string for scene persistence; optionally merges with existing stack JSON
+- **LoraStackApply**: Apply the right LoRAs at inference time by model target — patching MODEL+CLIP directly (LTX2.3, Flux, Qwen, Z-Image), building a LORA_STACK (Wan2.2-Native), or building a WANVIDLORA (Wan2.2-Wrapper)
+
 ### Dataset Captioning
 - **Dataset Captioner**: Run a VLM over a directory, write one `.txt` per image
 - **Dataset Caption Editor**: Batch edit captions: prepend trigger word, find/replace
@@ -74,6 +83,27 @@ A comprehensive collection of custom nodes for ComfyUI focused on storytelling, 
 - **[ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper/)** - Required only for LoRA functionality in Scene nodes
   - Provides: WANVIDLORA type for high/low quality LoRA configurations
   - Used by: SceneWanVideoLoraMultiSave node
+
+### Optional LoRA Apply Note
+
+The `LoraStackApply` node requires `comfy.sd.load_lora_for_models` for direct-apply targets (LTX2.3, Flux2/Klein, Qwen, Z-Image) — available in the standard ComfyUI install.
+For Wan2.2-Native targets, connect the `lora_stack` output to **easy-use**'s `loraStack` node.
+For Wan2.2-Wrapper targets, connect the `wanvid_lora` output to **[ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper/)**.
+
+### Optional Compositing Backend
+
+Install only if you use the Subject Compositor / SubjectLayerDefine nodes and want automatic background removal:
+
+```bash
+# BiRefNet via rembg (recommended — GPU-accelerated)
+pip install "rembg[gpu]"
+
+# CPU-only fallback
+pip install rembg
+```
+
+Models (~100–400 MB each) are downloaded on first use and cached in `~/.u2net/` or the rembg cache directory.
+If you prefer to supply your own mask, leave `remove_background` off and connect any upstream MASK output to SubjectLayerDefine.
 
 ### Optional Captioning Backends
 
@@ -136,6 +166,15 @@ All nodes are organized under the **🧊 frost-byte** category in ComfyUI.
   - Dynamic table display with cursor tracking
   - Native undo/redo support
 
+### Compositing Nodes (`🧊 frost-byte/compositing`)
+- **SubjectLayerDefine**: Define one subject layer per image. Specify fractional padding, canvas offset, and optional background removal. Outputs a `SUBJECT_LAYER` token consumed by SubjectCompositor.
+- **SubjectCompositor**: Composite 1–20 `SUBJECT_LAYER` inputs onto a canvas. Outputs a merged `composite` image, an `individual_images` batch (one per layer), a `layer_count` int, and the snapped canvas dimensions.
+
+### LoRA Scene Nodes (`🧊 frost-byte/lora`)
+- **LoraEntryDefine**: Define one LoRA for a specific model target. Supports `enabled` toggle, audio weight guard (LTX2.3), and separate model/clip strengths.
+- **LoraStackCollect**: Collect up to 20 `LORA_ENTRY` inputs into a JSON string for scene persistence. Autogrow inputs. Optionally merges with existing JSON.
+- **LoraStackApply**: Apply a persisted LoRA stack at inference time. Filters by `model_target`; routes to direct model patching, LORA_STACK (easy-use), or WANVIDLORA (WanVideoWrapper) output as appropriate.
+
 ### Image Processing Nodes
 - **TailEnhancePro**: Frame enhancement with deflicker, color matching, and sharpening
 - **TailSplit**: Split image batches into main and tail sections
@@ -165,6 +204,8 @@ All nodes are organized under the **🧊 frost-byte** category in ComfyUI.
 - **[Dataset Caption Nodes](docs/DATASET_CAPTION_NODES.md)**: Dataset captioning workflow, node parameters, API routes, and troubleshooting
 - **[Scene Prompt System](docs/SCENE_PROMPT_SYSTEM.md)**: Scene prompt architecture and usage
 - **[Story Video](docs/STORY_VIDEO_README.md)**: Video generation from stories
+- **Subject Compositor** (inline below): Multi-subject image compositing with SubjectLayerDefine + SubjectCompositor
+- **LoRA Scene Nodes** (inline below): Per-target LoRA persistence and apply with LoraEntryDefine + LoraStackCollect + LoraStackApply
 
 #### Mask System (NEW!)
 - **[Mask System Guide](docs/MASK_SYSTEM.md)**: Generic mask system with arbitrary mask names
@@ -263,6 +304,181 @@ collection.add_prompt(
 - Metadata: categories, descriptions, tags
 - Backward compatible with legacy fields
 - REST API for JavaScript integration
+
+### Subject Compositor
+
+Compose two or more subjects onto a single canvas for use with image-conditioning workflows (LTX-Video, Qwen Edit, ReferenceLatent, etc.).
+
+```
+[SubjectLayerDefine]  [SubjectLayerDefine]  ...up to 20
+        |                    |
+        └─────── layer_0 ────┘
+                    ↓
+           [SubjectCompositor]
+                    ↓
+     composite / individual_images / layer_count
+```
+
+#### SubjectLayerDefine inputs
+
+| Input | Type | Default | Notes |
+|---|---|---|---|
+| `image` | IMAGE | — | Input image |
+| `mask` | MASK | optional | Pre-computed alpha mask. Overrides bg removal if connected. |
+| `pad_top/bottom/left/right` | FLOAT | 0.0 | Padding as fraction of longer dimension. 0.2 = 20% padding. |
+| `offset_x` | FLOAT | 0.0 | Horizontal offset. 0=center, 1.0=right edge, −1.0=left edge. |
+| `offset_y` | FLOAT | 0.0 | Vertical offset. 0=center, 1.0=bottom, −1.0=top. |
+| `remove_background` | BOOLEAN | True | Auto background removal via rembg/BiRefNet. |
+| `bg_model` | COMBO | BiRefNet-general | Background removal model. |
+
+Output: `SUBJECT_LAYER` (custom type passed to SubjectCompositor)
+
+#### SubjectCompositor inputs
+
+| Input | Type | Default | Notes |
+|---|---|---|---|
+| `canvas_width` | INT | 1344 | Target width. Snapped to `divisible_by`. |
+| `canvas_height` | INT | 768 | Target height. Snapped to `divisible_by`. |
+| `canvas_color` | STRING | #222222 | Background color. Accepts hex, named colors, `"transparent"`. |
+| `output_mode` | COMBO | both | `composite` / `individual` / `both` |
+| `divisible_by` | INT | 32 | Snap dimensions to this multiple. 32 for LTX/video models. |
+| `layer_0..N` | SUBJECT_LAYER | — | Autogrow inputs. Connect SubjectLayerDefine outputs. |
+
+Outputs: `composite` (IMAGE), `individual_images` (IMAGE batch `[N, H, W, 3]`), `layer_count` (INT)
+
+#### Padding semantics
+
+Padding is specified as a fraction of the image's **longer dimension**:
+
+```
+pad = 0.2,  image = 800×600
+longer = 800
+pad_pixels = 0.2 × 800 = 160 px added on that side
+```
+
+This makes the subject appear smaller relative to the canvas and to other
+layers — the primary use case for selectively scaling subjects down.
+
+#### Offset coordinate system
+
+```
+(−1, −1) ── (0, −1) ── (1, −1)
+    |            |            |
+(−1,  0) ── (0,  0) ── (1,  0)   ← center of canvas
+    |            |            |
+(−1,  1) ── (0,  1) ── (1,  1)
+```
+
+The subject's center is placed at the computed canvas position.
+Values beyond ±1.0 are allowed and will partially clip the subject at the edge.
+
+#### Output mode guide
+
+| Mode | Use when… |
+|---|---|
+| `composite` | Feeding a single merged image to `ReferenceLatent` or `TextEncoderQwenImageEditPlus` |
+| `individual` | Feeding separate per-subject images to multiple `ReferenceLatent` nodes or a multi-reference conditioning node |
+| `both` | You want flexibility without re-running the compositor |
+
+#### Background removal models
+
+| Model | Best for |
+|---|---|
+| BiRefNet-general | General subjects, objects, scenery |
+| BiRefNet-portrait | Human faces and portraits |
+| BiRefNet-general-lite | Faster, slightly lower quality |
+| u2net | General — good fallback |
+| u2net_human_seg | Human silhouettes |
+| isnet-general-use | High-detail foreground extraction |
+
+#### Using an external mask instead of auto removal
+
+If your workflow already has a bg-removal node (e.g. RMBG, BiRefNet from ComfyUI-BRIA),
+connect its MASK output to the `mask` input of SubjectLayerDefine.
+The `remove_background` flag is ignored when a mask is connected.
+
+---
+
+### LoRA Scene Nodes
+
+Persist and apply LoRA settings per model target. Replaces the abandoned `LTX2MasterLoaderLD` and consolidates LoRA management across LTX2.3, Wan2.2 (Native and Wrapper), Flux2/Klein, Qwen, and Z-Image.
+
+```
+# Scene definition (save once)
+LoraEntryDefine (LTX2.3, my_character.safetensors, audio_enabled=True)
+      ↓ lora_entry
+LoraEntryDefine (Wan2.2-Native, my_character_wan.safetensors)
+      ↓ lora_entry
+LoraStackCollect
+      ↓ stack_json  →  [Scene Node / String storage]
+      ↓ lora_stack_data
+
+# Inference (LTX2.3 pipeline)
+[Scene Node] → stack_json
+                    ↓
+LoraStackApply (model_target=LTX2.3)
+  model ← [your model]
+  clip  ← [your clip]
+      ↓ model  →  [LTX2.3 sampler]
+      ↓ clip   →  [text encoder]
+```
+
+#### LoraEntryDefine inputs
+
+| Input | Default | Notes |
+|---|---|---|
+| `lora` | None | File picker from loras folder |
+| `model_target` | LTX2.3 | Which pipeline this LoRA applies to |
+| `strength_model` | 1.0 | UNet/transformer weight strength |
+| `strength_clip` | 1.0 | Text encoder strength (ignored where N/A) |
+| `enabled` | True | Toggle off without removing from stack |
+| `audio_enabled` | True | LTX2.3 only: include audio weights |
+
+Output: `LORA_ENTRY` (custom type)
+
+#### LoraStackCollect inputs
+
+| Input | Notes |
+|---|---|
+| `entry_0..N` | Autogrow LORA_ENTRY inputs (up to 20) |
+| `existing_json` | Optional — merge with existing scene JSON |
+
+Outputs: `lora_stack_data` (LORA_STACK_DATA), `stack_json` (STRING), `entry_count` (INT)
+
+#### LoraStackApply inputs
+
+| Input | Notes |
+|---|---|
+| `model_target` | Must match the target you set in LoraEntryDefine |
+| `lora_stack_data` | Connect from LoraStackCollect (preferred) |
+| `stack_json` | OR a JSON STRING from a scene node |
+| `model` | MODEL to patch (optional) |
+| `clip` | CLIP to patch (optional) |
+| `prev_lora_stack` | Wan2.2-Native: chain from existing LORA_STACK |
+| `prev_wanvid_lora` | Wan2.2-Wrapper: chain from existing WANVIDLORA |
+| `low_mem_load` | Wan2.2-Wrapper infrastructure setting |
+| `merge_loras` | Wan2.2-Wrapper infrastructure setting |
+
+Outputs: `model` (MODEL), `clip` (CLIP), `lora_stack` (LORA_STACK), `wanvid_lora` (WANVIDLORA), `applied_count` (INT)
+
+#### Output behaviour by target
+
+| Target | model | clip | lora_stack | wanvid_lora |
+|---|---|---|---|---|
+| LTX2.3 | ✓ patched | ✓ patched | — | — |
+| Wan2.2-Native | passthrough | passthrough | ✓ built | — |
+| Wan2.2-Wrapper | passthrough | passthrough | — | ✓ built |
+| Flux2/Klein | ✓ patched | ✓ patched | — | — |
+| Qwen | ✓ patched | ✓ patched | — | — |
+| Z-Image | ✓ patched | ✓ patched | — | — |
+
+#### LTX2.3 audio guard
+
+The `audio_enabled` flag controls whether audio-related weight keys are included. When `audio_enabled=False`, keys containing these strings are stripped: `audio`, `vocoder`, `speech`, `audio_stream`, `cross_modal`, `video_to_audio`, `av_ca`.
+
+This replicates the behaviour of the abandoned `LTX2MasterLoaderLD` node, now per-LoRA with V3 API.
+
+---
 
 ### Dataset Captioning Workflow
 
@@ -490,6 +706,21 @@ See [LICENSE](LICENSE) file.
 See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ### Recent Updates
+
+**2026-04-09: LoRA Scene Nodes**
+- ✅ `LoraEntryDefine` — define one LoRA for a specific model target with per-LoRA audio guard, enable toggle, and separate model/clip strengths
+- ✅ `LoraStackCollect` — collect up to 20 LORA_ENTRY inputs into a persisted JSON stack with optional merge from existing JSON
+- ✅ `LoraStackApply` — apply persisted stack at inference time; routes to direct patching (LTX2.3, Flux, Qwen, Z-Image), LORA_STACK (Wan2.2-Native), or WANVIDLORA (Wan2.2-Wrapper)
+- ✅ Custom `LORA_ENTRY` and `LORA_STACK_DATA` types for type-safe wiring
+- ✅ Replaces abandoned `LTX2MasterLoaderLD` with V3 API per-LoRA granularity
+
+**2026-04-08: Subject Compositor Nodes**
+- ✅ `SubjectLayerDefine` — define a subject layer with fractional padding, canvas offset, and optional background removal
+- ✅ `SubjectCompositor` — composite 1–20 layers onto a canvas (composite, individual, or both output modes)
+- ✅ Custom `SUBJECT_LAYER` type wiring between the two nodes
+- ✅ Autogrow inputs (up to 20 layers) on SubjectCompositor
+- ✅ Canvas dimension snapping (`divisible_by`, default 32 for LTX/video models)
+- ✅ rembg/BiRefNet integration with model selector; external mask support
 
 **2025-01-18: Generic Mask System**
 - ✅ Arbitrary mask names (not limited to girl/male/combined)
