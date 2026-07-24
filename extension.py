@@ -10183,6 +10183,159 @@ class WanVidLoraStack(io.ComfyNode):
         return io.NodeOutput(wanvid_lora, count)
 
 
+# ── Custom type: PRESET_LIST ──────────────────────────────────────────────────
+
+PRESET_LIST_TYPE = "PRESET_LIST"
+
+
+@io.comfytype(io_type=PRESET_LIST_TYPE)
+class PresetList:
+    """
+    Carries an ordered list of Wan video generation presets between nodes.
+    Each entry is a dict: { name, lora_h, lora_l, prompt }.
+    """
+    Type = list  # list[dict]
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "preset_list", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+# ── Node: WanPresetDefine ─────────────────────────────────────────────────────
+
+class WanPresetDefine(io.ComfyNode):
+    """
+    Define one Wan video generation preset and append it to an optional
+    incoming preset list.  Chain multiple WanPresetDefine nodes sequentially
+    to build a collection; leave preset_list unconnected on the first node.
+
+    lora_h / lora_l select LoRA filenames for the high-noise and low-noise
+    model stages respectively.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=prefixed_node_id("WanPresetDefine"),
+            display_name="Wan Preset Define",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Define one Wan video preset (name, high/low LoRA, prompt) "
+                "and append it to an optional incoming preset list. "
+                "Chain multiple nodes to build a preset collection."
+            ),
+            inputs=[
+                io.String.Input(
+                    "name",
+                    display_name="Preset Name",
+                    default="Preset",
+                    tooltip="Human-readable name for this preset.",
+                ),
+                io.Combo.Input(
+                    "lora_h",
+                    display_name="LoRA (High Noise)",
+                    options=_lora_get_list(),
+                    default="None",
+                    tooltip="LoRA applied to the high-noise model stage.",
+                ),
+                io.Combo.Input(
+                    "lora_l",
+                    display_name="LoRA (Low Noise)",
+                    options=_lora_get_list(),
+                    default="None",
+                    tooltip="LoRA applied to the low-noise model stage.",
+                ),
+                io.String.Input(
+                    "prompt",
+                    display_name="Prompt",
+                    default="",
+                    multiline=True,
+                    tooltip="Positive prompt text for this preset.",
+                ),
+                PresetList.Input(
+                    "preset_list",
+                    display_name="Preset List",
+                    optional=True,
+                    tooltip="Incoming list from a previous WanPresetDefine node. Leave unconnected on the first node in the chain.",
+                ),
+            ],
+            outputs=[
+                PresetList.Output("preset_list", display_name="Preset List"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        name: str,
+        lora_h: str,
+        lora_l: str,
+        prompt: str,
+        preset_list: Optional[list] = None,
+    ) -> io.NodeOutput:
+        from .utils.wan_presets import preset_define
+        return io.NodeOutput(preset_define(name, lora_h, lora_l, prompt, preset_list))
+
+
+# ── Node: WanPresetSelect ─────────────────────────────────────────────────────
+
+class WanPresetSelect(io.ComfyNode):
+    """
+    Select one preset from a WanPresetDefine chain by zero-based index.
+    Outputs individual fields for downstream consumption and a formatted
+    summary of all available presets (wire to a Show Text node).
+
+    Index is clamped to the last valid entry if out of range.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=prefixed_node_id("WanPresetSelect"),
+            display_name="Wan Preset Select",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Select one preset from a completed WanPresetDefine chain "
+                "by index. Outputs individual fields and an available-presets "
+                "summary string."
+            ),
+            inputs=[
+                PresetList.Input(
+                    "preset_list",
+                    display_name="Preset List",
+                    tooltip="The complete preset list from the end of a WanPresetDefine chain.",
+                ),
+                io.Int.Input(
+                    "index",
+                    display_name="Index",
+                    default=0,
+                    min=0,
+                    tooltip="Zero-based index of the preset to select. Clamped to the last valid entry.",
+                ),
+            ],
+            outputs=[
+                io.String.Output("name",              display_name="Name"),
+                io.String.Output("lora_h",            display_name="LoRA (High Noise)"),
+                io.String.Output("lora_l",            display_name="LoRA (Low Noise)"),
+                io.String.Output("prompt",            display_name="Prompt"),
+                io.String.Output("available_presets", display_name="Available Presets"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        preset_list: list,
+        index: int,
+    ) -> io.NodeOutput:
+        from .utils.wan_presets import preset_select
+        return io.NodeOutput(*preset_select(preset_list, index))
+
+
 class FBToolsExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
@@ -10234,4 +10387,7 @@ class FBToolsExtension(ComfyExtension):
             LoraStackCollect,
             LoraStackApply,
             WanVidLoraStack,
+            # Wan preset nodes
+            WanPresetDefine,
+            WanPresetSelect,
         ]
