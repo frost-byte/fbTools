@@ -1,4 +1,855 @@
-# Changelog
-## [0.1.0] - 2026-01-17
-### Added
-- Initial public release.
+# CHANGELOG
+
+
+## v1.0.0 (2026-07-24)
+
+### Bug Fixes
+
+- Add control flags to StorySceneBatch descriptor and fix StoryEdit scene data persistence
+  ([`4045691`](https://github.com/frost-byte/fbTools/commit/4045691ea7a538253c16cbf4adf328feb53c49c3))
+
+- Add use_depth, use_mask, use_pose, use_canny flags to batch descriptor - Add logging to
+  StorySceneBatch for scene configuration debugging - Add logging to StoryScenePick for pose_type
+  resolution tracking - Fix StoryEdit duplicate renderTable call that was overwriting normalized
+  scene data - Add fingerprint_inputs to StorySceneBatch for proper cache invalidation
+
+This fixes issues where: 1. Control flags weren't being passed from story config to batch processing
+  2. StoryEdit UI changes (pose_type, depth_type) weren't persisting to story.json 3. Cache wasn't
+  invalidating when story.json was modified externally
+
+- Complete mask system migration from mask_type to mask_name
+  ([`2da731d`](https://github.com/frost-byte/fbTools/commit/2da731d1cf5002293d68cfd2f041d8c99df1714f))
+
+BREAKING CHANGES: - Story persistence now uses mask_name instead of mask_type - Backward
+  compatibility maintained for loading old stories
+
+Backend Changes: - story_models.py: Updated save_story() to persist mask_name field (line 142) -
+  extension.py: Fixed StorySceneBatch to use mask_name in scene descriptors (lines 5135, 5162) -
+  extension.py: Added backward-compatible fallback to mask_type for legacy data - extension.py: All
+  mask loading/preview functions now use mask_name consistently
+
+Frontend Changes: - js/nodes/story.js: StoryEdit mask column now uses dropdown instead of text input
+  - js/nodes/story.js: Dropdowns populated from scene's available_masks array - js/nodes/story.js:
+  Updated prompt_key rendering for conditional dropdown/textarea - js/nodes/story.js: Extended
+  populateVideoPromptControls to handle both image and video prompts - js/nodes/story.js: Added
+  event listeners for mask-name-select and prompt-key-select
+
+API Changes: - /fbtools/story/load: Returns available_masks array per scene for dropdown population
+  - /fbtools/story/save: Accepts mask_name with fallback to mask_type
+
+Migration: - Old stories with mask_type are automatically migrated to mask_name on load -
+  SceneInStory.__init__ converts mask_type to mask_name during initialization - All file I/O now
+  uses v2 format with mask_name as primary field
+
+Testing: - Verified backward compatibility with v1 story.json files - Verified mask dropdown
+  population from masks.json and legacy PNGs - Verified batch system
+  (StorySceneBatch/StoryScenePick) uses correct mask field
+
+Closes: Mask persistence bug, prompt_key dropdown regression, batch system migration gap
+
+- Dynamically fetch available libbers when switching to libber type
+  ([`a7a3eb5`](https://github.com/frost-byte/fbTools/commit/a7a3eb5de1b8f3dd2e5d3570c56d1098bcbc9b35))
+
+- Import libberAPI in scene.js - When user selects 'libber' type and current value is 'none': *
+  Fetch latest libbers from API endpoint * Repopulate dropdown with current libbers * Auto-select
+  first available libber * Fallback to existing list if API fails - Prevents showing 'none' when
+  libbers exist - Ensures dropdown always shows current state
+
+No service restart needed - just refresh browser (Ctrl+Shift+R)
+
+- Libber nodes now reload from file to prevent stale cache
+  ([`643b2bb`](https://github.com/frost-byte/fbTools/commit/643b2bb478109a911b89b7fb5282ac87267462c3))
+
+LibberManager and LibberApply nodes were using in-memory Libber instances that weren't being updated
+  when changes were saved via the REST API/web UI.
+
+Changes: - LibberManager: Now reloads from JSON file if it exists on each execution - LibberApply:
+  Also reloads from file before applying substitutions - Ensures nodes always use the latest lib
+  values from disk - In-memory cache is effectively refreshed on every node execution
+
+This fixes the issue where updating keys in LibberManager wouldn't reflect in LibberApply results
+  until server restart.
+
+- Update canny during SceneUpdate
+  ([`d43c1f5`](https://github.com/frost-byte/fbTools/commit/d43c1f5107934ac2ff5e79b97b75875d8f443bae))
+
+- **LibberApply**: Improve table display and resize behavior
+  ([`692116c`](https://github.com/frost-byte/fbTools/commit/692116c84d5563e764b5e32bd1afe74a06336488))
+
+- Replaced JSONView formatter with clean HTML table layout - Added two-column table format with 🗝️
+  Lib and 🪙 Value headers - Implemented scrollable container with overflow-y and overflow-x - Fixed
+  table persistence after node execution by storing and reusing updateDisplay function - Added
+  dynamic sizing with proper height calculation based on available node space - Implemented resize
+  hooks (onResize) to update container height when node is resized - Added height constraints (min:
+  150px, max: 600px) to prevent infinite growth - Fixed bottom edge overlap by adding 15px bottom
+  margin - Improved widget height computation to account for previous widgets' space - Added HTML
+  escaping for safe display of lib values
+
+The table now properly displays libber key-value pairs, persists after execution, and maintains
+  reasonable sizing constraints while allowing user resizing.
+
+- **ScenePromptManager**: Fix scene selection, saving, and libber integration
+  ([`431be57`](https://github.com/frost-byte/fbTools/commit/431be57a2fb3398afe1b3511ce7a7bad756d1631))
+
+- Fix scene tracking to read widget values at click time instead of cached values - Scene dropdown
+  now correctly reloads prompts when changed - Apply Changes now saves to the correct scene
+  directory (was using first available scene) - Fix prompt data structure handling (API returns
+  array, code expected object) - Add scene save API endpoint POST /fbtools/scene/save_scene_prompts
+  - Fix libber_name preservation and libber dropdown population - API now returns libber_name field
+  and available libbers list - Add 100ms delay for initial widget value loading to ensure proper
+  initialization - Add extensive debug logging for scene tracking and widget values
+
+Resolves issues where: - Changing scene dropdown didn't update the UI - Apply Changes saved to wrong
+  scene directory - Libber selections weren't preserved - Prompt keys showed as array indices
+  instead of names
+
+### Chores
+
+- Add Conventional Commits hook, semantic release, and CLAUDE.md
+  ([`d73123a`](https://github.com/frost-byte/fbTools/commit/d73123a83c720a3b004a52b52596c49d85109dc7))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- Add developer utility scripts
+  ([`eef9dda`](https://github.com/frost-byte/fbTools/commit/eef9ddaa0ef2a926aa72235bf93cf152f11080ae))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+### Documentation
+
+- Add comprehensive test coverage summary
+  ([`dce7115`](https://github.com/frost-byte/fbTools/commit/dce7115fafca3843c519f56d6eb3e8e966de7d69))
+
+- 90 tests passing (100% pass rate) - Coverage breakdown by test file and category - Real-world
+  workflow validation - Backend testing complete - Ready for UI implementation
+
+- Add NLF pose implementation guide and additional tests
+  ([`20dd41a`](https://github.com/frost-byte/fbTools/commit/20dd41aa3b8d803087ed9d0ffe3ae61381a2105d))
+
+Complete documentation and test coverage for NLF pose feature:
+
+- NLF_POSE_IMPLEMENTATION.md: Comprehensive implementation guide with: - Step-by-step checklist -
+  Format specifications (DWPose, OpenPose, NLFPRED, POSE_KEYPOINT) - Three workflow examples
+  (generation, editing, regeneration) - Model requirements and downloads - Configuration options
+  reference
+
+- utils/nlf_pose.py: NLF utilities module (476 lines) - load_nlf_model, predict_nlf_pose,
+  render_nlf_pose - Format conversion functions - Supports both relative and absolute imports for
+  testing
+
+- tests/test_nlf_integration.py: 13 integration tests - Module import validation -
+  SceneCreate/SceneUpdate input verification - SceneInfo data model checks - Pose JSON format
+  validation - Workflow structure verification
+
+- js-tests/story_nlf_pose.test.js: 11 frontend tests (all passing) - Pose type dropdown includes
+  'nlf' - Backend/frontend consistency - Scene serialization with NLF pose - Backward compatibility
+
+Ready for testing in ComfyUI.
+
+- Add Scene Prompt Management System implementation plan
+  ([`f6f8e1c`](https://github.com/frost-byte/fbTools/commit/f6f8e1ce95aafe17f303ff2ffde4e2027d933fbd))
+
+- Clarify two workflow approaches - Complete vs Atomic prompts
+  ([`33b4311`](https://github.com/frost-byte/fbTools/commit/33b431174fc1009f1b4844a642761132917ae5f7))
+
+- Added 'Two Workflow Approaches' section explaining both strategies - Approach 1: Complete Prompts
+  (traditional, recommended for most users) * Each prompt is self-contained and complete * Libber
+  handles dynamic parts within single prompt * Example: wan_high with full prompt text - Approach 2:
+  Atomic Composition (advanced) * Break into small reusable pieces * Maximum flexibility for
+  mixing/matching - Comparison table showing pros/cons of each - Hybrid approach combining both
+  strategies - Real-world usage patterns with examples - Migration strategy from legacy prompts -
+  Complete examples for both approaches
+
+- Comprehensive documentation and test coverage update
+  ([`4426092`](https://github.com/frost-byte/fbTools/commit/44260929ea41429bc2e3ccc7cba0e6709ba3ce80))
+
+Major documentation improvements:
+
+Root README.md: - Complete feature overview with all node categories - Detailed usage examples for
+  Libber, Story, and PromptCollection - Development setup and testing instructions - Project
+  structure and architecture explanation - Changelog with recent Libber overhaul details
+
+LIBBER_NODES_README.md (NEW): - Complete Libber system documentation - Interactive table editor
+  features and workflow - Click-to-insert functionality guide - REST API endpoint reference - Use
+  cases and best practices - Troubleshooting guide - JavaScript integration examples
+
+TEST_RESULTS.md: - Updated with Libber test coverage (30 tests) - Summary of all Python tests (70+
+  tests total) - Summary of all JavaScript tests (30+ tests) - Execution instructions for both test
+  suites
+
+New Tests: - tests/test_libber.py: 30 comprehensive unit tests * Basic operations (create, add,
+  remove, list) * Substitution with recursion and depth limiting * Custom delimiters * File
+  operations (save/load) * Edge cases (unicode, large values, special chars) * Integration workflows
+  - js-tests/libber_api.test.js: 21+ API client tests * CRUD operations * Error handling *
+  Integration workflows
+
+All tests passing: - Python: 30/30 Libber tests ✓ - Python: 32/32 PromptCollection tests ✓ -
+  JavaScript: API client tests ready
+
+This commit provides complete documentation for users and developers, with comprehensive test
+  coverage ensuring reliability.
+
+- Create comprehensive plan for flexible prompt system and workflow improvements
+  ([`23f5048`](https://github.com/frost-byte/fbTools/commit/23f5048def5ed131628c2c525337c18019fe94f1))
+
+Add detailed implementation plan (plan-flexibleMultiPromptSystemLibberBugFix.prompt.md) covering:
+
+- PromptCollection data model with v2 format and non-destructive migration - SceneInfo refactoring
+  with backward-compatible @property methods - Scene REST API for lightweight metadata operations -
+  Dynamic prompt name discovery and selectors - PromptCollectionEdit node with REST backend - Story
+  execution-based output organization for two-stage workflows - StoryExecutionInit for execution
+  context management - StoryImageNamer/StoryPathResolver for standardized naming -
+  StoryImageCollector/StoryVideoNamer for video generation pipeline - Multiple path format outputs
+  (abs/rel, with/without extension) - Libber REST API with LibberStateManager for server-side state
+  - LibberEdit UI refactoring to fix synchronization bugs
+
+Plan prioritizes Scene/PromptCollection improvements (Steps 1-5), Story workflow enhancements (Step
+  6), then Libber bug fixes (Steps 7-8).
+
+Key features: - Non-destructive migration with v1_backup preservation - Execution-aware directory
+  structure for multi-run workflows - Support for image generation → video generation pipeline -
+  Flexible path outputs for different SaveImage node conventions - Backward compatibility maintained
+  throughout
+
+Refs: LibberEdit add operation bug, Story output organization requirements
+
+### Features
+
+- Add compositions support to PromptCollection
+  ([`f9e3493`](https://github.com/frost-byte/fbTools/commit/f9e3493c816b2a8d5e3c827ed405e6d24a781fc9))
+
+Backend changes: - Add compositions field to PromptCollection: {output_name: [prompt_keys]} - Add
+  composition CRUD methods: add_composition, remove_composition, list_composition_names - Update
+  to_dict/from_dict to serialize/deserialize compositions - Update ScenePromptManager to output
+  prompt_dict (composed prompts) - Compose prompts automatically when compositions exist - Include
+  compositions_list and prompt_dict in UI data
+
+Data structure: - compositions saved in prompts.json alongside prompts - Backward compatible (empty
+  dict if no compositions) - compose_prompts() handles libber substitution
+
+ScenePromptManager outputs: - scene_info (updated with prompts + compositions) - prompt_dict
+  (Dict[str, str] - composed outputs) - status
+
+Ready for frontend tab implementation
+
+- Add comprehensive testing for PromptCollection with maintainable architecture
+  ([`19b5cdc`](https://github.com/frost-byte/fbTools/commit/19b5cdc4b9f0cdd5f972dd792ff129ba1298a882))
+
+Extract data models to standalone module and implement full test coverage for v1→v2 prompt migration
+  system.
+
+Changes: - Create prompt_models.py: Pure data models with no ComfyUI dependencies * PromptMetadata:
+  Single prompt with metadata fields * PromptCollection: V2 multi-prompt system with migration
+  support
+
+- Refactor extension.py: Import from prompt_models instead of inline definitions * Reduces
+  extension.py by ~130 lines * Enables independent testing of data models
+
+- Add comprehensive test suite (tests/test_prompt_collection.py): * 32 tests across 8 test classes *
+  V1→V2 migration with v1_backup preservation * CRUD operations (add, remove, get, list) *
+  Serialization/deserialization roundtrips * Backward compatibility validation * Edge cases
+  (unicode, large values, 1000+ prompts) * File I/O operations * Integration workflows * All tests
+  passing in 0.19 seconds
+
+- Update test infrastructure: * conftest.py: Mock setup for ComfyUI dependencies * pytest.ini: Clean
+  configuration
+
+- Documentation: * TEST_RESULTS.md: Detailed test coverage report * TESTING_STRATEGY.md:
+  Architecture decisions and benefits
+
+Benefits: ✓ Single source of truth - no code duplication ✓ Fast, isolated tests - no complex mocking
+  needed ✓ Maintainable - updates reflect everywhere automatically ✓ Validates v1→v2 migration
+  preserves original data ✓ Ensures backward compatibility
+
+- Add generic mask system and NLF pose generation
+  ([`0e65f19`](https://github.com/frost-byte/fbTools/commit/0e65f1934a701ba8e456f47908e956477f8fba33))
+
+Major Features:
+
+1. Generic Mask System (replaces hardcoded masks) - MaskDefinition dataclass with MaskType enum
+  (TRANSPARENT/COLOR) - User-definable masks via masks.json (v1 format) - SceneSelect: Dynamic
+  mask_name combo loaded from masks.json - SceneInfo: masks dict + mask_images dict (name-keyed) -
+  Migration support for legacy 'girl'/'male'/'combined' masks - Tests: test_mask_integration.py (8
+  tests), mask_system.test.js (frontend)
+
+2. NLF Pose Generation - utils/nlf_pose.py: Neural Lifting Framework integration - SceneCreate: 7
+  NLF inputs for pose generation - SceneUpdate: 9 NLF inputs for pose editing/regeneration -
+  SceneInfo: pose_nlf_image field with load/save - default_pose_options: 'nlf' -> 'pose_nlf_image'
+  mapping - Story node: 'nlf' added to pose type dropdown - Tests: test_nlf_integration.py (13
+  tests), story_nlf_pose.test.js (11 tests)
+
+3. Documentation Reorganization - Moved 23 docs to docs/ folder - Test docs to docs/testing/
+  subfolder - Updated README with logo, dependencies, testing links - New docs: MASK_SYSTEM.md,
+  PHASE_4_COMPLETE.md
+
+Changes by file: - extension.py: Mask system classes + NLF pose in SceneCreate/SceneUpdate -
+  js/nodes/scene.js: Dynamic mask combo via API - js/nodes/story.js: 'nlf' pose type in dropdown -
+  story_models.py: mask_name field in StoryScene - dependency.json: Fixed comfyui_controlnet_aux URL
+  - tests/conftest.py: Added torch mocking for NLF tests
+
+All tests passing: 213 Python tests, 11 JavaScript tests
+
+- Add modular frontend architecture with API clients and testing framework
+  ([`7695ac3`](https://github.com/frost-byte/fbTools/commit/7695ac36714cc8e0bb6b11e6a53e5b9fee4685e0))
+
+Create comprehensive modular JavaScript architecture for fbTools frontend with testable API clients,
+  shared utilities, and full Jest testing setup.
+
+New Structure: - js/api/ API client modules for REST endpoints - js/utils/ Shared utility functions
+  - js/tests/ Test framework with utilities - js/index.js Main exports file
+
+API Clients Added: - prompt_collection.js: PromptCollection REST API (fully implemented) *
+  createSession, addPrompt, removePrompt, listPromptNames, getCollection - scene.js: Scene metadata
+  operations (stub ready for backend) - libber.js: Libber placeholder management (stub ready for
+  backend) - story.js: Story-level operations (stub ready for backend)
+
+Utilities Added: - api_base.js: BaseAPI class with error handling and fetch wrapper * POST/GET
+  methods with automatic error handling * Toast notification helpers (showSuccess, handleError) *
+  APIError class for typed error responses - widgets.js: ComfyUI widget update helpers *
+  updateWidgetFromText: Update single widget from API response * updateNodeWidgets: Bulk widget
+  updates * scheduleNodeRefresh: Node resize/refresh utility
+
+Testing Framework: - test_utils.js: Testing utilities and mocks * mockFetch: Fetch API mocking for
+  isolated tests * createMockFn: ES module-compatible mock functions * createMockApp/createMockNode:
+  ComfyUI test fixtures * expectToast helpers: Toast assertion utilities -
+  prompt_collection_api.test.js: Example tests (9 tests, all passing) - package.json: Jest
+  configuration with ES module support - Fixed jest-environment-jsdom dependency for Jest 29 -
+  Custom createMockFn() to replace jest.fn() in ES modules
+
+Documentation: - README.md: Architecture overview and usage guide - INTEGRATION_GUIDE.md: Complete
+  integration examples - QUICK_REFERENCE.md: Copy-paste code snippets - MODULAR_ARCHITECTURE.md:
+  What we built and why - TESTING_SETUP.md: How to run tests and troubleshoot
+
+Benefits: ✓ Testable API clients isolated from ComfyUI dependencies ✓ Centralized error handling
+  with automatic user feedback ✓ Reusable utilities across all nodes ✓ Full test coverage capability
+  (9 passing tests) ✓ Progressive enhancement - works alongside existing code ✓ Easy to extend with
+  new API endpoints
+
+Migration Path: - No breaking changes to existing fb_tools.js - Import and use API clients as needed
+  - Gradually refactor nodes to use new architecture - Remove old fetch calls once migrated
+
+Test Results: Test Suites: 1 passed, 1 total Tests: 9 passed, 9 total
+
+Time: 0.526 s
+
+Usage Example: import { promptCollectionAPI } from "./api/prompt_collection.js";
+
+const session = await promptCollectionAPI.createSession(); const result = await
+  promptCollectionAPI.addPrompt( session.session_id, "girl_pos", "beautiful woman smiling" );
+
+- Add ScenePromptManager and PromptComposer nodes
+  ([`05e9e60`](https://github.com/frost-byte/fbTools/commit/05e9e600769ffc2f13d14aa9e505dddaed601b94))
+
+Implements dictionary-based prompt composition system:
+
+ScenePromptManager: - CRUD operations for scene prompts - Interactive table UI (will add JS in next
+  commit) - Manages PromptCollection within SceneInfo - Processing type configuration (raw/libber)
+
+PromptComposer: - Composes multiple output prompts from collection - Flexible output naming (no
+  hardcoded prompt_a/b/c) - Returns PROMPT_DICT with user-defined keys - Automatic libber
+  substitution during composition - Saves/loads composition maps as JSON
+
+PromptCollection.compose_prompts(): - New method for dynamic composition - Takes composition map:
+  {output_name: [prompt_keys]} - Processes libber substitutions inline - Returns dict of composed
+  prompt strings
+
+Benefits: - Infinitely extensible outputs (no fixed limit) - Self-documenting (key names describe
+  purpose) - Same prompts, different compositions per workflow - Single DICT output type simplifies
+  maintenance
+
+- Add ScenePromptManager interactive table UI
+  ([`fd5d315`](https://github.com/frost-byte/fbTools/commit/fd5d315f050c04084bec30d891b41b04a8d67804))
+
+- Created setupScenePromptManager() in js/nodes/scene.js - Interactive table similar to
+  LibberManager - Columns: Key | Value | Type (raw/libber dropdown) | Libber Name | Category |
+  Actions - Add/Remove prompts with visual feedback - Apply button to update collection_json -
+  Auto-updates from backend on execution - Type dropdown enables/disables libber name input -
+  Registered in fb_tools.js extension system - Toast notifications for user actions
+
+- Add StorySceneBatch job_id input, scene list API, and UI improvements
+  ([`325241a`](https://github.com/frost-byte/fbTools/commit/325241a87fb9b9be96592ed0c855068e1b2a6c65))
+
+- Add optional job_id input to StorySceneBatch node for reusable job directories - Add
+  /fbtools/scene/list REST API endpoint for available scenes - Improve StoryEdit UI: add scene
+  dropdown on new scenes, auto-load scenes - Add stylesheet loading in fb_tools.js init hook -
+  Create style.css for prompt textarea styling - Update story.js API client with listScenes method -
+  Filter internal flags from story save operations
+
+- Add StoryVideoSave node for video batch workflow
+  ([`fc0c215`](https://github.com/frost-byte/fbTools/commit/fc0c2153cd7c3ac557d399f5a374edb16e1f4a52))
+
+- Implement StoryVideoSave node to complete video generation workflow - Takes video output from
+  generation nodes + VIDEO_BATCH - Saves to correct path from video descriptor - Automatic directory
+  creation - Pass-through video output for chaining - Outputs filename, filepath, scene info
+
+- Node features: - Matches StorySceneImageSave pattern for consistency - Supports string path videos
+  (file copy) - Extensible for other video formats - Preview UI shows saved location and scene
+  details
+
+- Update STORY_VIDEO_README.md: - Add StoryVideoSave node documentation - Complete workflow examples
+  with save step - Show full iteration pattern
+
+Complete video workflow is now: StoryLoad → StoryVideoBatch → [Iterate] → Generate Video →
+  StoryVideoSave
+
+This completes the video generation system, providing full parity with the image generation workflow
+  (StorySceneBatch → Generate → StorySceneImageSave)
+
+- Add subject compositor utility and tests
+  ([`94834a9`](https://github.com/frost-byte/fbTools/commit/94834a90cca4561145fd5ae26ab7250367119dd1))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- Add video generation workflow support for story scenes
+  ([`9bd33cf`](https://github.com/frost-byte/fbTools/commit/9bd33cf996f98827c8713cd7d9c1640a9eb09ed4))
+
+- Add video prompt fields to SceneInStory model - video_prompt_source:
+  'auto'|'prompt'|'composition'|'custom' - video_prompt_key: key for prompt/composition lookup -
+  video_custom_prompt: custom video generation prompt
+
+- Create utils/story_video.py with testable video utilities - list_job_ids(): List available jobs
+  sorted by modification time - find_scene_image(): Locate scene images by order and name -
+  pair_consecutive_scenes(): Create scene transition pairs - generate_video_filename(): Generate
+  standardized video filenames - resolve_video_prompt(): Resolve video prompts from scene config -
+  build_video_descriptor(): Build complete video generation descriptor
+
+- Implement StoryVideoBatch node - Lists available job IDs from story directory - Iterates through
+  scene pairs for video transitions - Outputs VIDEO_BATCH with first/last frame paths, prompts, LoRa
+  data - Supports video_prompt_source modes: auto, prompt, composition, custom - Generates
+  standardized video filenames (001_to_002_opening_to_battle.mp4)
+
+- Add comprehensive test coverage - 29 new unit tests in tests/test_story_video.py - Tests job
+  listing, image finding, scene pairing, prompt resolution - All 150 tests passing (121 existing +
+  29 new)
+
+- Create STORY_VIDEO_README.md documentation - Complete workflow guide for video generation - Node
+  usage and configuration examples - Video descriptor format specification - Directory structure and
+  naming conventions - Integration patterns with video generation nodes
+
+Video generation workflow enables: 1. Load story with StoryLoad 2. Select job ID with
+  StoryVideoBatch (lists available jobs) 3. Iterate through video descriptors 4. Generate videos
+  between consecutive scenes 5. Use LoRa data and video prompts for consistent style 6. Save to
+  job_output_dir with standardized naming
+
+This extends the story building system from image generation to complete video generation workflows,
+  maintaining consistency with existing patterns and full test coverage.
+
+- Add websocket image save
+  ([`fa764fa`](https://github.com/frost-byte/fbTools/commit/fa764fadb8a21c1be31bdae41993c82b01cc1bcc))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- Complete LibberManager and LibberApply UX overhaul with modular architecture
+  ([`2224753`](https://github.com/frost-byte/fbTools/commit/2224753eb016ce074ae3fcd5a6338150cf826599))
+
+Major improvements to the Libber system with enhanced user experience:
+
+LibberManager: - Replaced dropdown-based operations with interactive editable table - Inline editing
+  with textarea inputs for uniform cell heights (38px) - Per-row action buttons (✏️ Update, ➖
+  Remove) matching cell height - Sticky action bar with 📂 Load, 💾 Save, and ➕ Create buttons -
+  Inline libber creation with text input field and create button - Auto-save after add/update/remove
+  operations - Simplified schema: single libber_name combo (basenames only, no .json extension) -
+  Smart auto-loading: checks memory → file → creates new libber
+
+LibberApply: - Click-to-insert functionality with delimiter wrapping - Cursor position tracking
+  across focus changes - Native browser undo/redo support using execCommand - Always-visible 🔄
+  Refresh button (sticky at top) - Smart libber discovery: scans memory and disk files - Empty state
+  messaging with helpful hints - Dynamic table sizing responding to node resize
+
+Code Architecture: - Modularized into separate node modules: * js/nodes/libber.js - LibberManager
+  and LibberApply * js/nodes/scene.js - SceneSelect extensions * js/nodes/story.js - StoryEdit and
+  StoryView extensions - Main fb_tools.js reduced from ~1400 to ~450 lines - Clean import structure
+  with node-type routing
+
+Technical Improvements: - LiteGraph NODE_TITLE_HEIGHT and NODE_WIDGET_HEIGHT for proper sizing - CSS
+  variables for theming (--comfy-input-bg, --border-color, --fg-color) - Sticky positioning
+  (position: sticky, top: 0, z-index: 10) - Button styling with min-height and flexbox centering -
+  Responsive table layout with proper overflow handling
+
+Breaking Changes: - LibberManager schema simplified (removed
+  operation/key_selector/lib_key/lib_value widgets) - libber_name and filename merged into single
+  libber_name Combo (basenames only) - Execute method auto-creates libber if not exists, skips if
+  "none" selected
+
+This commit represents a complete UX transformation from tedious dropdown operations to a modern,
+  interactive table-based workflow with significantly improved usability.
+
+- Dynamic job_id dropdown updates when story_name changes in StorySceneBatch
+  ([`d455b79`](https://github.com/frost-byte/fbTools/commit/d455b79f33c0a0739542c5ab0fc54e054d670d04))
+
+- Frontend: Added callback to story_name widget to fetch and update job_id options via
+  /fbtools/story/job_ids API - Frontend: job_id dropdown now auto-populates on node creation for
+  default story - Frontend: job_id options refresh automatically when user changes story selection -
+  Backend: Simplified job_id schema to start with empty option only (frontend handles population) -
+  Backend: Updated tooltip to clarify dynamic behavior - Improves UX by eliminating need to execute
+  node just to update job_id list
+
+- Enhance LibberManager and LibberApply nodes with improved UX
+  ([`9595c30`](https://github.com/frost-byte/fbTools/commit/9595c3068cca3acd19dfeaf68351a0cbab527f37))
+
+Backend changes: - Refactored Libber nodes into unified LibberManager node - Fixed get_libber_data
+  method to use libber.libs instead of libber.lib_dict - Consolidated LibberCreate, LibberLoad, and
+  LibberSave into single manager interface - Added operations: create, load, add_lib, remove_lib,
+  save - Implemented LibberStateManager for persistent state management - Added REST API endpoints
+  for Libber operations
+
+Frontend changes (LibberManager): - Fixed ComboWidget rendering by using widget.options.values
+  pattern - Added auto-save after add_lib and remove_lib operations - Implemented auto-clear of
+  lib_key field after successful operations - Added auto-select of newly added key or first
+  available after remove - Implemented auto-load of libber data on node creation/page refresh -
+  Added key normalization (lowercase, replace spaces/hyphens with underscores)
+
+Frontend changes (LibberApply): - Replaced JSONView formatter with clean HTML table display - Added
+  scrollable container with max-height: 250px - Implemented two-column table layout (Key | Value) -
+  Added theme-aware styling using CSS variables - Improved dynamic node sizing to fit content -
+  Added HTML escaping for safe value display
+
+Testing infrastructure: - Restructured test files from js/tests/ to js-tests/ - Updated package.json
+  with Jest configuration - Moved test utilities and test files to new structure
+
+This update significantly improves the Libber workflow by consolidating operations into a single
+  manager node, adding automatic persistence, and providing a clean table view for reviewing lib
+  definitions.
+
+- Implement PromptCollection v2 system with REST API (Steps 1-2)
+  ([`d4a735f`](https://github.com/frost-byte/fbTools/commit/d4a735ff5191b71b25d22bf7e3cd72b2cefea975))
+
+Add flexible multi-prompt system with non-destructive migration:
+
+- PromptCollection data model with PromptMetadata * Supports unlimited named prompts with
+  categories/tags * V2 format with v1_backup for rollback capability * Auto-migration from legacy v1
+  format
+
+- REST API infrastructure for prompt management * PromptCollectionStateManager with 30min TTL * POST
+  /fbtools/prompts/create, add, remove * GET /fbtools/prompts/list_names * Server-side session-based
+  state management
+
+- SceneInfo backward compatibility * Added prompts: Optional[PromptCollection] field * Legacy fields
+  (girl_pos, male_pos, etc.) still work * save_prompts() auto-migrates to v2 on save *
+  load_prompt_json() detects format and auto-migrates
+
+- Non-destructive migration strategy * All v1 data preserved in v1_backup field * Existing code
+  continues to work unchanged * Transparent auto-migration on file operations
+
+Refs: plan-flexibleMultiPromptSystemLibberBugFix.prompt.md Steps 1-2
+
+- Implement video prompt configuration with model extraction
+  ([`32d0378`](https://github.com/frost-byte/fbTools/commit/32d0378572ecd35a74c1608e3f09d3c82dba8e5e))
+
+Core Changes: - Extract SceneInStory and StoryInfo models to story_models.py * Enables isolated
+  testing without ComfyUI dependencies * Follows prompt_models.py architecture pattern * Reduces
+  extension.py by ~160 lines
+
+- Fix load_story() to deserialize video prompt fields from JSON * Added video_prompt_source,
+  video_prompt_key, video_custom_prompt to load logic * Fields were being saved but not loaded,
+  causing defaults on reload * Now properly restores saved video prompt configuration
+
+Frontend (js/nodes/story.js): - Dynamic video prompt UI in StoryEdit Advanced Flags tab *
+  Source-based input types: dropdown for prompt/composition, textarea for custom * Auto-populated
+  dropdowns with available prompt/composition keys * Live preview textarea showing resolved prompt
+  text * Proper event handling for all video prompt controls
+
+Backend (extension.py): - Updated load_story() V2 format parsing to include video fields - API
+  endpoints already had video field support via getattr() defaults - All save/load cycles now fully
+  support video prompt persistence
+
+Testing: - 6 comprehensive video prompt persistence tests - Tests validate: data structures,
+  serialization, deserialization, roundtrip - Full test suite: 156 tests passing (150 existing + 6
+  new) - Story models now testable in isolation
+
+Documentation: - VIDEO_PROMPT_UI_LAYOUT.md: Visual reference for UI layout and interactions -
+  VIDEO_PROMPT_UX_IMPLEMENTATION.md: Technical implementation details and data flow
+
+Fixes: - Video prompt fields now persist correctly through save/load cycles - Browser reload
+  properly restores video prompt configuration - Preview textarea updates dynamically based on
+  source and selection
+
+Architecture: - Improved code organization with model extraction - Better separation of concerns
+  (data models vs business logic) - Easier testing and maintenance going forward
+
+- Integrate scene_flags into PromptCollection and add overlay feedback utility
+  ([`753c1e0`](https://github.com/frost-byte/fbTools/commit/753c1e08c1aa3eea5d000f90f64f27b6f22ec03e))
+
+## Backend Changes - **PromptCollection Model (prompt_models.py)**: - Added scene_flags as
+  Optional[dict] field to store per-scene control flags (use_depth, use_mask, use_pose, use_canny) -
+  Updated to_dict() to include scene_flags when not None - Updated from_dict() to load scene_flags
+  from incoming data - Maintains backward compatibility (scene_flags is optional)
+
+- **Scene Prompts API (extension.py)**: - scene_get_prompts: Now returns scene_flags in response -
+  scene_save_prompts: Simplified to use model serialization (scene_flags preserved automatically)
+
+## Frontend Changes - **Reusable Overlay Utility (js/utils/feedback.js)**: - Created showOverlay()
+  function for consistent success/error feedback - Replaces hardcoded overlays and toast
+  notifications - Supports success (green) and error (red) types with auto-hide
+
+- **Updated Nodes**: - ScenePromptManager: Added 'Save Flags' button with overlay feedback -
+  StoryEdit: Migrated to use showOverlay instead of hardcoded overlay HTML
+
+## Test Coverage - **Backend Tests (13 new tests + 7 integration tests)**: -
+  test_scene_prompts_api.py: Comprehensive scene_flags testing (serialization, persistence,
+  compositions, array formats, migration) - test_prompt_collection.py: Added
+  TestSceneFlagsInCollection with 7 integration tests
+
+- **Frontend Tests**: - prompt_collection_api.test.js: Added scene_flags handling tests (3 tests)
+
+All 51 backend tests passing. Scene flags fully integrated through save/load cycle.
+
+- Migrate to structured logging and fix test infrastructure
+  ([`ec5c157`](https://github.com/frost-byte/fbTools/commit/ec5c157718e92f69a1eba05eca8ae0d5ae2a104b))
+
+Complete migration from print statements to structured logging with environment-configurable log
+  levels via FBTOOLS_LOG_LEVEL.
+
+Backend Changes: - Add utils/logging_utils.py with get_logger() for centralized logging - Replace
+  all print statements with logger calls in extension.py - REST managers now use
+  logger.info/warning/error/exception - Node execution uses appropriate log levels
+  (debug/info/warning) - Exception paths use logger.exception for full tracebacks - Update
+  utils/io.py and prompt_models.py to use structured logging - Add try/except fallback in
+  prompt_models.py for test compatibility
+
+Test Infrastructure Fixes: - Remove obsolete tests/test_fb_tools.py (referenced non-existent code) -
+  Remove tests/__init__.py (caused pytest package resolution issues) - Update tests/conftest.py to
+  properly handle package imports - Clean up unused src/fb_tools/ stub files
+
+Frontend Test Fixes: - Add getCalls() method to mockFetch utility for request inspection - Fix
+  libber_api.test.js mock setup and response handling - Suppress expected console.error in error
+  handling tests - Fix integration test to provide separate mocks per API call
+
+Test Results: - ✅ 99 Python tests passing (pytest) - ✅ 38 JavaScript tests passing (jest) - ✅ 137
+  total tests validating no regressions
+
+Log levels available: DEBUG, INFO, WARNING, ERROR, CRITICAL Set via: export FBTOOLS_LOG_LEVEL=DEBUG
+
+- Register compositing and LoRA stack nodes, update docs and deps
+  ([`31bc42e`](https://github.com/frost-byte/fbTools/commit/31bc42e81d26a8fa5f1532c85355478dc512e69a))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- Replace libber text input with dropdown in ScenePromptManager
+  ([`44fd667`](https://github.com/frost-byte/fbTools/commit/44fd667e61aecdc92612d61386a0e42609a15f69))
+
+Backend changes: - Get list of available libbers from LibberStateManager - Include libbers list in
+  UI text array (text[3]) - Always include 'none' as first option
+
+Frontend changes: - Replace prompt-libber-input with prompt-libber-select dropdown - Populate
+  dropdown with available libbers from backend - When Type='libber': enable dropdown, auto-select
+  first libber if 'none' - When Type='raw': disable dropdown, set to 'none' - Updated all event
+  handlers to use dropdown value - Apply button handles 'none' correctly (saves as null) - New row
+  starts with 'none' selected and disabled
+
+UX improvements: - No more manual libber name entry (prevents typos) - Clear visual indication of
+  available libbers - Consistent behavior between raw/libber types - Better defaults (first
+  available libber when switching to libber type)
+
+- Storyedit REST API + comprehensive testing
+  ([`8e15d67`](https://github.com/frost-byte/fbTools/commit/8e15d67a4aea3641995bb1984baac3f6a69b2113))
+
+Implement complete REST API architecture for StoryEdit node with immediate data loading and full
+  test coverage.
+
+## Features
+
+### REST API Implementation - Add GET /fbtools/story/load/{story_name} endpoint - Loads story.json
+  with full scene data - Returns JSON with scenes array - Add POST /fbtools/story/save endpoint -
+  Saves updated scenes to story.json - Validates story exists before saving - Frontend fetch() calls
+  replace execution-based data transfer - Immediate data loading on node initialization
+
+### Frontend Improvements - loadStoryData() - async load via REST API - saveStory() - async save via
+  REST API with success feedback - Enhanced error handling and user feedback - Detailed console
+  logging for debugging - Table initialization without workflow execution
+
+### Testing - 9 Python unit tests (all passing) - Helper method logic (prompt text, summary,
+  metadata) - Scene resolution and reordering - Data structure validation - 12 JavaScript tests (all
+  passing) - Node initialization and UI rendering - Scene management logic - Data validation -
+  Execution handler - Comprehensive testing documentation - STORY_EDIT_TESTING_GUIDE.md - manual
+  test scenarios - STORY_EDIT_TESTING_SUMMARY.md - test overview - STORY_EDIT_TESTING_FINAL.md -
+  results summary
+
+### Bug Fixes - Fix jest test compatibility (global.fetch mock) - Fix console.log expectation
+  ("Received story data") - Fix create_mask_overlay_image transparency logic - Add pyright
+  configuration for type checking
+
+### Configuration - Add nvm.fish persistence (nvm_default_version v20.19.6) - Configure fish shell
+  auto-load for Node.js
+
+## Test Results ✅ 9 Python tests passing in 0.02s ✅ 12 JavaScript tests passing in 0.60s ✅ 21 total
+  automated tests ✅ All manual test scenarios documented
+
+## Files Changed - extension.py - REST API endpoints + logging - js/nodes/story.js - Complete UI
+  redesign with API calls - js-tests/story_edit.test.js - Full test suite - tests/test_story_edit.py
+  - Unit tests - pyproject.toml - Add pyright config - utils/images.py - Fix mask overlay
+  transparency
+
+## Architecture Changed from execution-based data flow to REST API: - Before: Execute node → backend
+  sends data → frontend displays - After: Select story → frontend fetches via API → immediate
+  display
+
+Co-authored-by: GitHub Copilot <copilot@github.com>
+
+- **fbtools**: Add MultiLoraLoader and align LibberApply libber discovery/loading
+  ([`1e5f02a`](https://github.com/frost-byte/fbTools/commit/1e5f02aa253c748d77216d461f5e8805c0448135))
+
+add MultiLoraLoader node with up to 10 optional LoRA slots and sequential model-only application
+  register MultiLoraLoader in extension node list fix LibberApply.define_schema to include libbers
+  from both memory and disk (.json scan), like LibberManager handle libber_name == "none" early in
+  LibberApply.execute update frontend LibberApply dropdown population to merge/dedupe/sort libbers +
+  files from /fbtools/libber/list remove hardcoded frontend load path (libbers) and load using
+  backend-provided libber_dir + matching filename extend /fbtools/libber/list response with
+  libber_dir for consistent frontend/backend path resolution
+
+- **LibberApply**: Add interactive table with click-to-insert and undo support
+  ([`585288e`](https://github.com/frost-byte/fbTools/commit/585288e26329d57065a078e99159dbedaf7c7d50))
+
+Table Display & Sizing: - Fixed table persistence after node execution by storing updateDisplay
+  function reference - Implemented dynamic container height that adapts to node size changes - Added
+  resize hooks (onResize) to update table when user resizes node - Set height constraints (min:
+  150px, max: 600px) to prevent infinite growth - Fixed bottom edge overlap with 15px margin -
+  Improved widget height computation accounting for previous widgets
+
+Interactive Features: - Made table rows clickable to insert lib keys into text input - Added cursor
+  position tracking with event listeners (click, keyup, select, focus) - Keys are automatically
+  wrapped with configured delimiter when inserted - Stores last cursor position to handle focus
+  changes when clicking table - Added hover effect to table rows (background color highlight)
+
+Undo/Redo Support: - Implemented browser native undo/redo using document.execCommand('insertText') -
+  Users can now press Ctrl+Z/Cmd+Z to undo insertions - Users can press Ctrl+Y/Cmd+Shift+Z to redo -
+  Fallback to manual insertion if execCommand not supported - Maintains ComfyUI state
+  synchronization after insertions
+
+UX Improvements: - Corrected widget reference from "input_text" to "text" - Added visual feedback
+  with row hover states - Automatic focus return to input after insertion - Cursor positioned after
+  inserted text for continued editing
+
+Users can now click any lib key in the table to insert it at their cursor position with full
+  undo/redo support.
+
+- **lora**: Add LoRA stack API client and node UI
+  ([`8465b49`](https://github.com/frost-byte/fbTools/commit/8465b49faf2dd99444c6c8351f78e251764eec76))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- **lora**: Add LORA_STACK output to LoraStackCollect and update WanPreset nodes
+  ([`c80f400`](https://github.com/frost-byte/fbTools/commit/c80f400e4dc8b683e95c75058fd6ce6c0bb6b6b0))
+
+- LoraStackCollect: add easy-use compatible LORA_STACK output (list of (lora_name, model_strength,
+  clip_strength) tuples) for interop with EasyLoraStack, PowerLoraLoader, and other LORA_STACK
+  consumers - WanPresetDefine: replace single-lora Combo inputs with optional LORA_STACK inputs for
+  lora_h and lora_l, enabling multi-lora stacks per preset slot - WanPresetSelect: change
+  lora_h/lora_l outputs from STRING to LORA_STACK for direct connection to downstream loader nodes
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- **lora**: Add WanPresetDefine and WanPresetSelect nodes
+  ([`4ca75b3`](https://github.com/frost-byte/fbTools/commit/4ca75b3ccedb6c659050902a996101df04d4f19d))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- **lora**: Register WanPresetDefine and WanPresetSelect in extension
+  ([`2caa999`](https://github.com/frost-byte/fbTools/commit/2caa999654d4e57b3d7bbc4b3fe58f6bb1677752))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+### Refactoring
+
+- Extract testable scene image saving utilities and flatten directory structure
+  ([`d692f73`](https://github.com/frost-byte/fbTools/commit/d692f739072dfad246e231244d5da519949f6315))
+
+- Extract scene image save logic to utils/scene_image_save.py - Add SceneImageSaveConfig class for
+  pure data handling - Add ImageSaver class with static methods for I/O operations - Add
+  select_scene_descriptor() and generate_preview_text() pure functions - Enable comprehensive unit
+  testing without ComfyUI dependencies
+
+- Update extension.py to use extracted utilities - Refactor StorySceneBatch to create flat directory
+  structure - Change from job_root/{scene_order}_{scene_name}/output/ to job_root/input/ - Update
+  StorySceneImageSave to prefer job_input_dir over job_output_dir - Remove inline class definitions
+  in favor of imported utilities
+
+- Unify test import strategy across all test files - Create import_test_module() helper in
+  conftest.py - Update all 5 test files to use consistent import approach - Resolve module import
+  conflicts with built-in utils namespace - Ensure stable imports using importlib.util with unique
+  module names
+
+- Add comprehensive test coverage for scene image saving - Create tests/test_scene_image_save.py
+  with 22 unit tests - Test filename generation, filepath generation, descriptor parsing - Test
+  scene selection, sorting, index clamping - Test preview text generation for different formats -
+  Mock I/O operations for isolated unit testing
+
+- Document testing approach - Add TESTING_GUIDE.md with unified import patterns and best practices -
+  Add TEST_SUMMARY.md showing 121/121 tests passing - Include examples and troubleshooting guidance
+
+This refactoring improves testability, maintainability, and consistency across the codebase while
+  fixing the directory structure to use a flat job-level input/ directory instead of nested
+  per-scene subdirectories.
+
+- Make StoryVideoBatch self-contained with story/job combo widgets
+  ([`3b41d92`](https://github.com/frost-byte/fbTools/commit/3b41d92ea6cb2f923c38eefc19ee35d18d374121))
+
+- Removed STORY_INFO input requirement - Added story_name combo widget that lists available stories
+  - Added job_id combo widget that lists available jobs (auto-populated from first story) - Node now
+  loads story internally based on story_name selection - Added story_name output for reference -
+  Single execution needed - no need to run twice to populate job_id combo - Default behavior: loads
+  first available story and its jobs automatically
+
+- Remove legacy prompt inputs from SceneCreate, add auto-migration
+  ([`2651e3c`](https://github.com/frost-byte/fbTools/commit/2651e3c9235a082b038a55ef1f1107b20306320d))
+
+BREAKING CHANGE: SceneCreate no longer has individual prompt inputs.
+
+Changes: - SceneCreate: Removed girl_pos, male_pos, wan_prompt, wan_low_prompt, four_image_prompt
+  inputs - SceneCreate: Now creates empty PromptCollection, users add prompts via ScenePromptManager
+  - SceneInfo.from_pose_directory(): Auto-migrates legacy prompts.json files * Detects v2 format
+  (has 'version' field) → loads as-is * Detects legacy format → calls from_legacy_dict() for
+  migration * No prompts.json → creates empty collection - Simplified SceneCreate execute() -
+  removed prompt string handling
+
+Migration path for existing scenes: 1. Load scene with SceneSelect or from_pose_directory 2. Legacy
+  prompts.json automatically migrated to PromptCollection 3. Edit prompts via ScenePromptManager 4.
+  Compose outputs via PromptComposer
+
+This enables clean separation: SceneCreate handles assets, ScenePromptManager handles prompts.
+
+- Simplify PromptMetadata for node-level composition
+  ([`80930db`](https://github.com/frost-byte/fbTools/commit/80930db4ca53ae157def29fdd037c9e02b13b9de))
+
+BREAKING CHANGE: Removed output_slot and order from PromptMetadata. Output composition is now
+  handled at the node level, not in metadata.
+
+Changes: - PromptMetadata: Removed output_slot and order fields - PromptCollection: Removed
+  compose_output() and get_output_slots() - PromptCollection: Added get_prompt_metadata() and
+  get_prompts_by_category() - Legacy migration: Simplified to just convert prompts to raw type -
+  Tests: Updated to reflect simplified data model
+
+Rationale: Output composition should be workflow-specific, not prompt-specific. Same prompts can be
+  composed differently for images vs video workflows. This eliminates prompt duplication and allows
+  dynamic composition.
+
+- Simplify StoryVideoBatch to output input folder path, multiline prompts, and aggregated LoRAs
+  ([`7f668ee`](https://github.com/frost-byte/fbTools/commit/7f668ee85c1980bdf7fc31376715c33ff0efe38f))
+
+- Changed StoryVideoBatch to output: 1. input_folder_path - Path to job input folder with ordered
+  scene images 2. video_prompts - Multiline string with one prompt per transition (with
+  libber/composition processing) 3. loras_high - Aggregated high-priority LoRAs (unique by name) 4.
+  loras_low - Aggregated low-priority LoRAs (unique by name) - Removed complex VIDEO_BATCH
+  descriptor system - Removed StoryVideoSave node (no longer needed) - Video prompts now fully
+  processed with libber substitutions and composition support - LoRAs aggregated across all scenes
+  so each lora appears only once per output - Simpler workflow: load images from folder, use
+  multiline prompts, apply aggregated LoRAs
+
+### Testing
+
+- Add comprehensive integration tests for prompt composition system
+  ([`99004f9`](https://github.com/frost-byte/fbTools/commit/99004f95cdc9404a8cc05304dc75dd4f4105ff86))
+
+- TestPromptCollectionCompose: Test compose_prompts() method * Single/multiple outputs * Missing
+  keys handling * Libber substitution with/without manager * Mixed raw and libber prompts
+
+- TestPromptCompositionSerialization: Unicode and JSON roundtrip
+
+- TestLegacyPromptMigration: v1->v2 migration and v2 format detection
+
+- TestPromptCollectionFileOperations: Save/load operations
+
+- TestPromptCompositionWorkflows: Real-world scenarios * Image generation workflow * Video high/low
+  quality outputs * Multi-image compositions * Libber-enhanced workflows
+
+All 90 tests passing
