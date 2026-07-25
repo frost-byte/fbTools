@@ -20,16 +20,19 @@ def preset_define(
     return result
 
 
-def preset_select(preset_list: list, index: int) -> tuple[str, LoraStack | None, LoraStack | None, str, str]:
+def preset_select(preset_list: list, selected_preset: str) -> tuple[str, LoraStack | None, LoraStack | None, str, str]:
     """
     Return (name, lora_h, lora_l, prompt, available_presets) for the entry
-    at *index*, clamped to the last valid position.
+    whose name matches *selected_preset*.  Falls back to the first entry if
+    the name is empty or not found.
     """
     if not preset_list:
         return ("", None, None, "", "No presets available.")
-    idx = min(index, len(preset_list) - 1)
-    preset = preset_list[idx]
     available = "\n".join(f"[{i}] {p.get('name', '')}" for i, p in enumerate(preset_list))
+    preset = next(
+        (p for p in preset_list if p.get("name") == selected_preset),
+        preset_list[0],
+    )
     return (
         preset.get("name", ""),
         preset.get("lora_h"),

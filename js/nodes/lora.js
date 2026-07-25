@@ -101,6 +101,33 @@ function showCivitaiModal(data) {
 
 // ── Node handler: LoraEntryDefine ─────────────────────────────────────────────
 
+// ── Node handler: WanPresetSelect ─────────────────────────────────────────────
+
+export function setupWanPresetSelect(nodeType, nodeData, app) {
+    // The widget is a real COMBO in the schema (so it renders as a dropdown).
+    // VALIDATE_INPUTS on the server bypasses static-options validation so any
+    // preset name selected after the first run is accepted.
+    // On execution, update the combo options from the preset names sent via ui=.
+    const onExecuted = nodeType.prototype.onExecuted;
+    nodeType.prototype.onExecuted = function (message) {
+        if (onExecuted) onExecuted.apply(this, arguments);
+
+        const names = message?.ui?.preset_names || message?.preset_names;
+        if (!Array.isArray(names) || !names.length) return;
+
+        const widget = this.widgets?.find(w => w.name === "selected_preset");
+        if (!widget) return;
+
+        widget.options.values = names;
+
+        // Keep current selection if still valid; otherwise default to first
+        if (!names.includes(widget.value)) {
+            widget.value = names[0];
+        }
+    };
+}
+
+// ── Node handler: LoraEntryDefine ─────────────────────────────────────────────
 export function setupLoraEntryDefine(nodeType, nodeData, app) {
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
