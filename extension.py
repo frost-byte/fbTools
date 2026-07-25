@@ -10320,12 +10320,12 @@ class WanPresetSelect(io.ComfyNode):
                     display_name="Preset List",
                     tooltip="The complete preset list from the end of a WanPresetDefine chain.",
                 ),
-                io.Int.Input(
-                    "index",
-                    display_name="Index",
-                    default=0,
-                    min=0,
-                    tooltip="Zero-based index of the preset to select. Clamped to the last valid entry.",
+                io.Combo.Input(
+                    "selected_preset",
+                    display_name="Preset",
+                    options=["none"],
+                    default="none",
+                    tooltip="Select a preset by name. Connect a Preset List and run this node to populate the dropdown.",
                 ),
             ],
             outputs=[
@@ -10335,16 +10335,25 @@ class WanPresetSelect(io.ComfyNode):
                 io.String.Output("prompt",            display_name="Prompt"),
                 io.String.Output("available_presets", display_name="Available Presets"),
             ],
+            is_output_node=True,
         )
+
+    @classmethod
+    def validate_inputs(cls, selected_preset: str, **kwargs) -> bool | str:
+        # Accept any string — options are populated dynamically by the frontend
+        # after execution, so the static schema list ["none"] is just a placeholder.
+        return True
 
     @classmethod
     def execute(
         cls,
         preset_list: list,
-        index: int,
+        selected_preset: str,
     ) -> io.NodeOutput:
         from .utils.wan_presets import preset_select
-        return io.NodeOutput(*preset_select(preset_list, index))
+        result = preset_select(preset_list, selected_preset)
+        names = [p.get("name", "") for p in preset_list] if preset_list else []
+        return io.NodeOutput(*result, ui={"preset_names": names})
 
 
 class FBToolsExtension(ComfyExtension):

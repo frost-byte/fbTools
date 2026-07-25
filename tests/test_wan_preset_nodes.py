@@ -65,34 +65,40 @@ def _build_list(n: int) -> list:
     return presets
 
 
-def test_select_index_zero():
-    name, lora_h, lora_l, prompt, _ = preset_select(_build_list(3), 0)
+def test_select_by_name_first():
+    name, lora_h, lora_l, prompt, _ = preset_select(_build_list(3), "Style 0")
     assert name == "Style 0"
     assert lora_h == [("lora_0.safetensors", 1.0, 1.0)]
     assert lora_l == [("lora_0.safetensors", 1.0, 1.0)]
     assert prompt == "prompt 0"
 
 
-def test_select_index_two():
-    name, lora_h, _, _, _ = preset_select(_build_list(3), 2)
+def test_select_by_name_last():
+    name, lora_h, _, _, _ = preset_select(_build_list(3), "Style 2")
     assert name == "Style 2"
     assert lora_h == [("lora_2.safetensors", 1.0, 1.0)]
 
 
-def test_select_index_out_of_range_clamps():
-    name, _, _, _, _ = preset_select(_build_list(3), 99)
-    assert name == "Style 2"
+def test_select_unknown_name_falls_back_to_first():
+    name, _, _, _, _ = preset_select(_build_list(3), "Nonexistent")
+    assert name == "Style 0"
+
+
+def test_select_none_default_falls_back_to_first():
+    # "none" is the default combo value before the user runs the node
+    name, _, _, _, _ = preset_select(_build_list(3), "none")
+    assert name == "Style 0"
 
 
 def test_select_available_presets_format():
-    _, _, _, _, available = preset_select(_build_list(3), 0)
+    _, _, _, _, available = preset_select(_build_list(3), "Style 0")
     assert "[0] Style 0" in available
     assert "[1] Style 1" in available
     assert "[2] Style 2" in available
 
 
 def test_select_empty_list():
-    name, lora_h, lora_l, prompt, available = preset_select([], 0)
+    name, lora_h, lora_l, prompt, available = preset_select([], "anything")
     assert name == ""
     assert lora_h is None
     assert lora_l is None
