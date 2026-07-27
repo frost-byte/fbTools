@@ -1,6 +1,46 @@
 # CHANGELOG
 
 
+## v1.1.0 (2026-07-27)
+
+### Features
+
+- **lora**: Accordion-hide LTX2.3 layer weights in LoraEntryDefine
+  ([`435053e`](https://github.com/frost-byte/fbTools/commit/435053e81fb653edf7237203f3c80a1cd38f1ae9))
+
+When model_target is not LTX2.3, the video/audio/cross-attention strength inputs and toggle button
+  are hidden entirely. When LTX2.3 is selected, a ▶/▼ caret button between Enabled and the Civitai
+  button controls visibility. Accordion defaults to collapsed; onConfigure re-applies visibility
+  when a saved graph is loaded.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **lora**: Add dynamic combo and preview to WanPresetSelect
+  ([`2dd5e5b`](https://github.com/frost-byte/fbTools/commit/2dd5e5bd20f5b668f926242a5f477a07d6fdce69))
+
+- Replace index INT input with a COMBO widget (selected_preset) that starts with ["none"] and is
+  populated with preset names after each execution - Add validate_inputs to accept any string value,
+  bypassing static combo option validation so user-selected names are not rejected by the server -
+  Add is_output_node=True for standalone preview execution - Execute sends preset names to frontend
+  via ui={preset_names:[...]}; JS onExecuted updates widget.options.values and preserves current
+  selection - Switch preset lookup from index-based to name-based with first-entry fallback
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- **lora**: Add LoraPresetDefine and LoraPresetSelect nodes
+  ([`be84768`](https://github.com/frost-byte/fbTools/commit/be847688d1922a17a0741870950f3714e8111baf))
+
+Single-stack preset nodes for models without a dual-sampler stage (e.g. Flux2/Klein, Qwen). Uses a
+  separate LORA_PRESET_LIST custom type to prevent cross-wiring with Wan preset chains.
+  LoraPresetSelect uses the same dynamic combo + validate_inputs pattern as WanPresetSelect.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.0.0 (2026-07-24)
 
 ### Bug Fixes
