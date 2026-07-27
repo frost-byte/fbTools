@@ -10196,6 +10196,158 @@ class WanVidLoraStack(io.ComfyNode):
         return io.NodeOutput(wanvid_lora, count)
 
 
+# ── Custom type: LORA_PRESET_LIST ────────────────────────────────────────────
+
+LORA_PRESET_LIST_TYPE = "LORA_PRESET_LIST"
+
+
+@io.comfytype(io_type=LORA_PRESET_LIST_TYPE)
+class LoraPresetList:
+    """
+    Carries an ordered list of LoRA presets between nodes.
+    Each entry is a dict: { name, lora_stack, prompt }.
+    lora_stack holds a LORA_STACK_DATA value (list of dicts from LoraStackCollect).
+    """
+    Type = list  # list[dict]
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "preset_list", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+# ── Node: LoraPresetDefine ────────────────────────────────────────────────────
+
+class LoraPresetDefine(io.ComfyNode):
+    """
+    Define one LoRA preset and append it to an optional incoming preset list.
+    Chain multiple LoraPresetDefine nodes sequentially to build a collection;
+    leave preset_list unconnected on the first node.
+
+    Each preset holds a name, a single LORA_STACK_DATA, and an optional prompt.
+    Use this instead of WanPresetDefine for models with a single sampler stage.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=prefixed_node_id("LoraPresetDefine"),
+            display_name="LoRA Preset Define",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Define one LoRA preset (name, LoRA stack, prompt) "
+                "and append it to an optional incoming preset list. "
+                "Chain multiple nodes to build a preset collection."
+            ),
+            inputs=[
+                io.String.Input(
+                    "name",
+                    display_name="Preset Name",
+                    default="Preset",
+                    tooltip="Human-readable name for this preset.",
+                ),
+                LoraStackData.Input(
+                    "lora_stack",
+                    display_name="LoRA Stack",
+                    optional=True,
+                    tooltip="LoRA stack for this preset. Connect from LoraStackCollect's Stack Data output.",
+                ),
+                io.String.Input(
+                    "prompt",
+                    display_name="Prompt",
+                    default="",
+                    multiline=True,
+                    tooltip="Positive prompt text for this preset.",
+                ),
+                LoraPresetList.Input(
+                    "preset_list",
+                    display_name="Preset List",
+                    optional=True,
+                    tooltip="Incoming list from a previous LoraPresetDefine node. Leave unconnected on the first node in the chain.",
+                ),
+            ],
+            outputs=[
+                LoraPresetList.Output("preset_list", display_name="Preset List"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        name: str,
+        lora_stack: Optional[list] = None,
+        prompt: str = "",
+        preset_list: Optional[list] = None,
+    ) -> io.NodeOutput:
+        from .utils.lora_presets import preset_define
+        return io.NodeOutput(preset_define(name, lora_stack, prompt, preset_list))
+
+
+# ── Node: LoraPresetSelect ────────────────────────────────────────────────────
+
+class LoraPresetSelect(io.ComfyNode):
+    """
+    Select one preset from a LoraPresetDefine chain by name.
+    Outputs the preset's LoRA stack, prompt, and a formatted summary of all
+    available presets (wire to a Show Text node).
+
+    Falls back to the first preset if the selected name is not found.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=prefixed_node_id("LoraPresetSelect"),
+            display_name="LoRA Preset Select",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Select one preset from a completed LoraPresetDefine chain. "
+                "Outputs the LoRA stack and prompt for the selected preset."
+            ),
+            inputs=[
+                LoraPresetList.Input(
+                    "preset_list",
+                    display_name="Preset List",
+                    tooltip="The complete preset list from the end of a LoraPresetDefine chain.",
+                ),
+                io.Combo.Input(
+                    "selected_preset",
+                    display_name="Preset",
+                    options=["none"],
+                    default="none",
+                    tooltip="Select a preset by name. Connect a Preset List and run this node to populate the dropdown.",
+                ),
+            ],
+            outputs=[
+                io.String.Output("name",              display_name="Name"),
+                LoraStackData.Output("lora_stack",    display_name="LoRA Stack"),
+                io.String.Output("prompt",            display_name="Prompt"),
+                io.String.Output("available_presets", display_name="Available Presets"),
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def validate_inputs(cls, selected_preset: str, **kwargs) -> bool | str:
+        # Accept any string — options are populated dynamically by the frontend
+        # after execution, so the static schema list ["none"] is just a placeholder.
+        return True
+
+    @classmethod
+    def execute(
+        cls,
+        preset_list: list,
+        selected_preset: str,
+    ) -> io.NodeOutput:
+        from .utils.lora_presets import preset_select
+        result = preset_select(preset_list, selected_preset)
+        names = [p.get("name", "") for p in preset_list] if preset_list else []
+        return io.NodeOutput(*result, ui={"preset_names": names})
+
+
 # ── Custom type: PRESET_LIST ──────────────────────────────────────────────────
 
 PRESET_LIST_TYPE = "PRESET_LIST"
@@ -10408,6 +10560,8 @@ class FBToolsExtension(ComfyExtension):
             LoraStackApply,
             WanVidLoraStack,
             # Wan preset nodes
+            LoraPresetDefine,
+            LoraPresetSelect,
             WanPresetDefine,
             WanPresetSelect,
         ]

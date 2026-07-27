@@ -129,7 +129,7 @@ Key files:
 | `utils/scene_image_save.py` | Scene image save config/helpers |
 | `utils/story_video.py` | Story video generation helpers |
 
-**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, LoraEntryDefine, LoraStackCollect, LoraStackApply. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
+**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, LoraEntryDefine, LoraStackCollect, LoraStackApply, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
 
 **Node categories** — use one of these existing values when adding a new node:
 
@@ -192,6 +192,8 @@ Node wiring uses custom type strings for type safety:
 - `SUBJECT_LAYER` — between `SubjectLayerDefine` → `SubjectCompositor`
 - `LORA_ENTRY` — between `LoraEntryDefine` → `LoraStackCollect`
 - `LORA_STACK_DATA` — between `LoraStackCollect` → `LoraStackApply`
+- `LORA_PRESET_LIST` — between `LoraPresetDefine` → `LoraPresetSelect` (carries `{ name, lora_stack, prompt }` dicts)
+- `PRESET_LIST` — between `WanPresetDefine` → `WanPresetSelect` (carries `{ name, lora_h, lora_l, prompt }` dicts)
 
 ### Optional Dependencies
 
