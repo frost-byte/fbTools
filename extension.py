@@ -10196,6 +10196,68 @@ class WanVidLoraStack(io.ComfyNode):
         return io.NodeOutput(wanvid_lora, count)
 
 
+# ── Preset scene-image loader ─────────────────────────────────────────────────
+
+def _load_preset_scene_images(
+    scene_name: str,
+    pose_image_type: str,
+) -> "tuple[torch.Tensor | None, torch.Tensor | None]":
+    """Return (base_image, pose_image) tensors for a preset's linked scene.
+
+    Returns (None, None) when scene_name is "none"/empty or the directory
+    doesn't exist.  Callers should substitute a placeholder before wiring
+    these to io.Image outputs.
+    """
+    if not scene_name or scene_name == "none":
+        return None, None
+    scene_dir = os.path.join(default_scenes_dir(), scene_name)
+    if not os.path.isdir(scene_dir):
+        logger.warning("_load_preset_scene_images: scene_dir '%s' not found", scene_dir)
+        return None, None
+    pose_attr = default_pose_options.get(pose_image_type, "pose_open_image")
+    try:
+        assets = SceneInfo.load_preview_assets(
+            scene_dir,
+            depth_attr="depth_image",
+            pose_attr=pose_attr,
+            mask_name="",
+        )
+        return assets.get("base_image"), assets.get("pose_image")
+    except Exception:
+        logger.exception("_load_preset_scene_images: error loading assets for '%s'", scene_name)
+        return None, None
+
+
+def _preset_scene_ui_and_images(
+    preset: dict,
+    names: list[str],
+) -> "tuple[torch.Tensor, torch.Tensor, dict]":
+    """Build (base_image, pose_image, ui_data) for a *PresetSelect execute().
+
+    Always returns tensors (placeholder when no scene is linked).
+    ui_data includes preset_names and any preview images for is_output_node.
+    """
+    base_image, pose_image = _load_preset_scene_images(
+        preset.get("scene_name", "none"),
+        preset.get("pose_image_type", "open"),
+    )
+
+    placeholder = make_empty_image(1, 64, 64)
+    base_out = base_image if base_image is not None else placeholder
+    pose_out = pose_image if pose_image is not None else placeholder
+
+    preview_batch = [t for t in [base_image, pose_image] if t is not None]
+    preview_image = ui.PreviewImage(image=torch.cat(preview_batch, dim=0)) if preview_batch else None
+
+    ui_data: dict = {"preset_names": names}
+    if preview_image:
+        pd = preview_image.as_dict()
+        ui_data["images"] = pd.get("images", [])
+        ui_data["animated"] = pd.get("animated", False)
+
+    return base_out, pose_out, ui_data
+
+
 # ── Custom type: LORA_PRESET_LIST ────────────────────────────────────────────
 
 LORA_PRESET_LIST_TYPE = "LORA_PRESET_LIST"
@@ -10205,7 +10267,7 @@ LORA_PRESET_LIST_TYPE = "LORA_PRESET_LIST"
 class LoraPresetList:
     """
     Carries an ordered list of LoRA presets between nodes.
-    Each entry is a dict: { name, lora_stack, prompt }.
+    Each entry is a dict: { name, lora_stack, prompt, scene_name, pose_image_type }.
     lora_stack holds a LORA_STACK_DATA value (list of dicts from LoraStackCollect).
     """
     Type = list  # list[dict]
@@ -10227,7 +10289,8 @@ class LoraPresetDefine(io.ComfyNode):
     Chain multiple LoraPresetDefine nodes sequentially to build a collection;
     leave preset_list unconnected on the first node.
 
-    Each preset holds a name, a single LORA_STACK_DATA, and an optional prompt.
+    Each preset holds a name, a single LORA_STACK_DATA, optional prompt, and
+    an optional linked scene (for base/pose image output from LoraPresetSelect).
     Use this instead of WanPresetDefine for models with a single sampler stage.
     """
 
@@ -10238,7 +10301,7 @@ class LoraPresetDefine(io.ComfyNode):
             display_name="LoRA Preset Define",
             category="🧊 frost-byte/lora",
             description=(
-                "Define one LoRA preset (name, LoRA stack, prompt) "
+                "Define one LoRA preset (name, LoRA stack, prompt, optional scene) "
                 "and append it to an optional incoming preset list. "
                 "Chain multiple nodes to build a preset collection."
             ),
@@ -10262,6 +10325,23 @@ class LoraPresetDefine(io.ComfyNode):
                     multiline=True,
                     tooltip="Positive prompt text for this preset.",
                 ),
+                io.Combo.Input(
+                    "scene_name",
+                    display_name="Scene",
+                    options=["none"],
+                    default="none",
+                    tooltip=(
+                        "Optional scene to associate with this preset. "
+                        "When selected, LoraPresetSelect outputs the scene's base and pose images."
+                    ),
+                ),
+                io.Combo.Input(
+                    "pose_image_type",
+                    display_name="Pose Image Type",
+                    options=list(default_pose_options.keys()),
+                    default="open",
+                    tooltip="Which pose image variant to load from the scene.",
+                ),
                 LoraPresetList.Input(
                     "preset_list",
                     display_name="Preset List",
@@ -10275,15 +10355,22 @@ class LoraPresetDefine(io.ComfyNode):
         )
 
     @classmethod
+    def validate_inputs(cls, scene_name: str = "none", **kwargs) -> bool | str:
+        # scene_name is populated dynamically by the frontend; bypass static validation.
+        return True
+
+    @classmethod
     def execute(
         cls,
         name: str,
         lora_stack: Optional[list] = None,
         prompt: str = "",
+        scene_name: str = "none",
+        pose_image_type: str = "open",
         preset_list: Optional[list] = None,
     ) -> io.NodeOutput:
         from .utils.lora_presets import preset_define
-        return io.NodeOutput(preset_define(name, lora_stack, prompt, preset_list))
+        return io.NodeOutput(preset_define(name, lora_stack, prompt, preset_list, scene_name, pose_image_type))
 
 
 # ── Node: LoraPresetSelect ────────────────────────────────────────────────────
@@ -10291,10 +10378,12 @@ class LoraPresetDefine(io.ComfyNode):
 class LoraPresetSelect(io.ComfyNode):
     """
     Select one preset from a LoraPresetDefine chain by name.
-    Outputs the preset's LoRA stack, prompt, and a formatted summary of all
-    available presets (wire to a Show Text node).
+    Outputs the preset's LoRA stack, prompt, scene images, and a summary of
+    all available presets (wire to a Show Text node).
 
     Falls back to the first preset if the selected name is not found.
+    If the preset has a linked scene, base_image and pose_image are loaded
+    from that scene; otherwise placeholder 64×64 black images are returned.
     """
 
     @classmethod
@@ -10305,7 +10394,7 @@ class LoraPresetSelect(io.ComfyNode):
             category="🧊 frost-byte/lora",
             description=(
                 "Select one preset from a completed LoraPresetDefine chain. "
-                "Outputs the LoRA stack and prompt for the selected preset."
+                "Outputs the LoRA stack, prompt, and optional scene images."
             ),
             inputs=[
                 LoraPresetList.Input(
@@ -10326,6 +10415,10 @@ class LoraPresetSelect(io.ComfyNode):
                 LoraStackData.Output("lora_stack",    display_name="LoRA Stack"),
                 io.String.Output("prompt",            display_name="Prompt"),
                 io.String.Output("available_presets", display_name="Available Presets"),
+                io.Image.Output("base_image",         display_name="Base Image",
+                    tooltip="Base image from the preset's linked scene, or a placeholder if no scene is set."),
+                io.Image.Output("pose_image",         display_name="Pose Image",
+                    tooltip="Pose image from the preset's linked scene, or a placeholder if no scene is set."),
             ],
             is_output_node=True,
         )
@@ -10343,9 +10436,11 @@ class LoraPresetSelect(io.ComfyNode):
         selected_preset: str,
     ) -> io.NodeOutput:
         from .utils.lora_presets import preset_select
-        result = preset_select(preset_list, selected_preset)
+        name, lora_stack, prompt, available = preset_select(preset_list, selected_preset)
         names = [p.get("name", "") for p in preset_list] if preset_list else []
-        return io.NodeOutput(*result, ui={"preset_names": names})
+        selected = next((p for p in preset_list if p.get("name") == name), {}) if preset_list else {}
+        base_image, pose_image, ui_data = _preset_scene_ui_and_images(selected, names)
+        return io.NodeOutput(name, lora_stack, prompt, available, base_image, pose_image, ui=ui_data)
 
 
 # ── Custom type: PRESET_LIST ──────────────────────────────────────────────────
@@ -10357,7 +10452,7 @@ PRESET_LIST_TYPE = "PRESET_LIST"
 class PresetList:
     """
     Carries an ordered list of Wan video generation presets between nodes.
-    Each entry is a dict: { name, lora_h, lora_l, prompt }.
+    Each entry is a dict: { name, lora_h, lora_l, prompt, scene_name, pose_image_type }.
     """
     Type = list  # list[dict]
 
@@ -10378,8 +10473,9 @@ class WanPresetDefine(io.ComfyNode):
     incoming preset list.  Chain multiple WanPresetDefine nodes sequentially
     to build a collection; leave preset_list unconnected on the first node.
 
-    lora_h / lora_l select LoRA filenames for the high-noise and low-noise
-    model stages respectively.
+    lora_h / lora_l carry LoRA stacks for the high-noise and low-noise model
+    stages respectively.  An optional linked scene provides base/pose images
+    that WanPresetSelect outputs when this preset is selected.
     """
 
     @classmethod
@@ -10389,7 +10485,7 @@ class WanPresetDefine(io.ComfyNode):
             display_name="Wan Preset Define",
             category="🧊 frost-byte/lora",
             description=(
-                "Define one Wan video preset (name, high/low LoRA, prompt) "
+                "Define one Wan video preset (name, high/low LoRA, prompt, optional scene) "
                 "and append it to an optional incoming preset list. "
                 "Chain multiple nodes to build a preset collection."
             ),
@@ -10419,6 +10515,23 @@ class WanPresetDefine(io.ComfyNode):
                     multiline=True,
                     tooltip="Positive prompt text for this preset.",
                 ),
+                io.Combo.Input(
+                    "scene_name",
+                    display_name="Scene",
+                    options=["none"],
+                    default="none",
+                    tooltip=(
+                        "Optional scene to associate with this preset. "
+                        "When selected, WanPresetSelect outputs the scene's base and pose images."
+                    ),
+                ),
+                io.Combo.Input(
+                    "pose_image_type",
+                    display_name="Pose Image Type",
+                    options=list(default_pose_options.keys()),
+                    default="open",
+                    tooltip="Which pose image variant to load from the scene.",
+                ),
                 PresetList.Input(
                     "preset_list",
                     display_name="Preset List",
@@ -10432,27 +10545,34 @@ class WanPresetDefine(io.ComfyNode):
         )
 
     @classmethod
+    def validate_inputs(cls, scene_name: str = "none", **kwargs) -> bool | str:
+        # scene_name is populated dynamically by the frontend; bypass static validation.
+        return True
+
+    @classmethod
     def execute(
         cls,
         name: str,
-        lora_h: str,
-        lora_l: str,
-        prompt: str,
+        lora_h: Optional[list] = None,
+        lora_l: Optional[list] = None,
+        prompt: str = "",
+        scene_name: str = "none",
+        pose_image_type: str = "open",
         preset_list: Optional[list] = None,
     ) -> io.NodeOutput:
         from .utils.wan_presets import preset_define
-        return io.NodeOutput(preset_define(name, lora_h, lora_l, prompt, preset_list))
+        return io.NodeOutput(preset_define(name, lora_h, lora_l, prompt, preset_list, scene_name, pose_image_type))
 
 
 # ── Node: WanPresetSelect ─────────────────────────────────────────────────────
 
 class WanPresetSelect(io.ComfyNode):
     """
-    Select one preset from a WanPresetDefine chain by zero-based index.
-    Outputs individual fields for downstream consumption and a formatted
-    summary of all available presets (wire to a Show Text node).
+    Select one preset from a WanPresetDefine chain by name.
+    Outputs individual fields for downstream consumption, a formatted summary
+    of all available presets, and scene images if the preset has a linked scene.
 
-    Index is clamped to the last valid entry if out of range.
+    Falls back to the first preset if the selected name is not found.
     """
 
     @classmethod
@@ -10462,9 +10582,8 @@ class WanPresetSelect(io.ComfyNode):
             display_name="Wan Preset Select",
             category="🧊 frost-byte/lora",
             description=(
-                "Select one preset from a completed WanPresetDefine chain "
-                "by index. Outputs individual fields and an available-presets "
-                "summary string."
+                "Select one preset from a completed WanPresetDefine chain. "
+                "Outputs individual fields, scene images, and an available-presets summary."
             ),
             inputs=[
                 PresetList.Input(
@@ -10486,6 +10605,10 @@ class WanPresetSelect(io.ComfyNode):
                 io.Custom("LORA_STACK").Output("lora_l", display_name="LoRA Stack (Low Noise)"),
                 io.String.Output("prompt",            display_name="Prompt"),
                 io.String.Output("available_presets", display_name="Available Presets"),
+                io.Image.Output("base_image",         display_name="Base Image",
+                    tooltip="Base image from the preset's linked scene, or a placeholder if no scene is set."),
+                io.Image.Output("pose_image",         display_name="Pose Image",
+                    tooltip="Pose image from the preset's linked scene, or a placeholder if no scene is set."),
             ],
             is_output_node=True,
         )
@@ -10503,9 +10626,11 @@ class WanPresetSelect(io.ComfyNode):
         selected_preset: str,
     ) -> io.NodeOutput:
         from .utils.wan_presets import preset_select
-        result = preset_select(preset_list, selected_preset)
+        name, lora_h, lora_l, prompt, available = preset_select(preset_list, selected_preset)
         names = [p.get("name", "") for p in preset_list] if preset_list else []
-        return io.NodeOutput(*result, ui={"preset_names": names})
+        selected = next((p for p in preset_list if p.get("name") == name), {}) if preset_list else {}
+        base_image, pose_image, ui_data = _preset_scene_ui_and_images(selected, names)
+        return io.NodeOutput(name, lora_h, lora_l, prompt, available, base_image, pose_image, ui=ui_data)
 
 
 class FBToolsExtension(ComfyExtension):

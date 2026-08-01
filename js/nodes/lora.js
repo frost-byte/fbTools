@@ -6,6 +6,7 @@
  */
 
 import { loraAPI } from "../api/lora.js";
+import { sceneAPI } from "../api/scene.js";
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
 
@@ -129,6 +130,45 @@ export function setupLoraPresetSelect(nodeType, nodeData, app) {
 
 export function setupWanPresetSelect(nodeType, nodeData, app) {
     setupDynamicPresetCombo(nodeType);
+}
+
+// ── Node handler: LoraPresetDefine / WanPresetDefine ──────────────────────────
+
+async function populateSceneCombo(node) {
+    try {
+        const data = await sceneAPI.list();
+        const scenes = data?.scenes ?? [];
+        const widget = node.widgets?.find(w => w.name === "scene_name");
+        if (!widget) return;
+        const options = ["none", ...scenes];
+        widget.options.values = options;
+        if (!options.includes(widget.value)) widget.value = "none";
+    } catch (e) {
+        console.warn("[fbTools] PresetDefine: could not load scene list", e);
+    }
+}
+
+function setupPresetDefineSceneCombo(nodeType) {
+    const onNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+        if (onNodeCreated) onNodeCreated.apply(this, arguments);
+        populateSceneCombo(this);
+    };
+
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (data) {
+        if (onConfigure) onConfigure.apply(this, arguments);
+        // Re-populate after load so the saved scene name is a valid option
+        populateSceneCombo(this);
+    };
+}
+
+export function setupLoraPresetDefine(nodeType, nodeData, app) {
+    setupPresetDefineSceneCombo(nodeType);
+}
+
+export function setupWanPresetDefine(nodeType, nodeData, app) {
+    setupPresetDefineSceneCombo(nodeType);
 }
 
 // ── Node handler: LoraEntryDefine ─────────────────────────────────────────────

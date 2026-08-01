@@ -48,6 +48,14 @@ export class SceneAPI extends BaseAPI {
     }
 
     /**
+     * List all available scenes from the default scenes directory.
+     * @returns {Promise<{scenes: string[]}>}
+     */
+    async list() {
+        return await this.get("/list");
+    }
+
+    /**
      * List available scenes in a story directory
      * @param {string} storyDir - Story directory path
      * @returns {Promise<{scenes: string[]}>}
