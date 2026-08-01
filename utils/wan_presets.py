@@ -13,10 +13,19 @@ def preset_define(
     lora_l: LoraStack | None,
     prompt: str,
     preset_list: list | None = None,
+    scene_name: str = "none",
+    pose_image_type: str = "open",
 ) -> list:
     """Append one preset entry to a copy of preset_list (or start a new list)."""
     result = list(preset_list) if preset_list else []
-    result.append({"name": name, "lora_h": lora_h, "lora_l": lora_l, "prompt": prompt})
+    result.append({
+        "name": name,
+        "lora_h": lora_h,
+        "lora_l": lora_l,
+        "prompt": prompt,
+        "scene_name": scene_name,
+        "pose_image_type": pose_image_type,
+    })
     return result
 
 

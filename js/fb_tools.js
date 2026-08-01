@@ -462,7 +462,7 @@ import { setupStoryEdit, setupStoryView, setupStorySceneBatch } from "./nodes/st
 import { setupLibberManager, setupLibberApply } from "./nodes/libber.js";
 import { setupDatasetCaptionViewer } from "./nodes/dataset_caption_viewer.js";
 import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
-import { setupLoraEntryDefine, setupLoraPresetSelect, setupWanPresetSelect } from "./nodes/lora.js";
+import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect } from "./nodes/lora.js";
 
 // Add context menu entry for extracting a node as json
 app.registerExtension({
@@ -582,8 +582,14 @@ app.registerExtension({
         else if (isNode("LoraEntryDefine")) {
             setupLoraEntryDefine(nodeType, nodeData, app);
         }
+        else if (isNode("LoraPresetDefine")) {
+            setupLoraPresetDefine(nodeType, nodeData, app);
+        }
         else if (isNode("LoraPresetSelect")) {
             setupLoraPresetSelect(nodeType, nodeData, app);
+        }
+        else if (isNode("WanPresetDefine")) {
+            setupWanPresetDefine(nodeType, nodeData, app);
         }
         else if (isNode("WanPresetSelect")) {
             setupWanPresetSelect(nodeType, nodeData, app);
