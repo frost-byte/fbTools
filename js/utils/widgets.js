@@ -3,6 +3,28 @@
  */
 
 /**
+ * Show or hide a widget by toggling its type to/from "hidden".
+ * Remembers the original type so it can be restored later.
+ * @param {object|null} widget
+ * @param {boolean} visible
+ */
+export function setWidgetVisible(widget, visible) {
+    if (!widget) return;
+    if (visible) {
+        if (widget._savedType !== undefined) {
+            widget.type = widget._savedType;
+            delete widget.computeSize;
+        }
+    } else {
+        if (widget.type !== "hidden") {
+            widget._savedType = widget.type;
+        }
+        widget.type = "hidden";
+        widget.computeSize = () => [0, -4];
+    }
+}
+
+/**
  * Update a widget's value from message.text array
  * @param {object} node - The node instance
  * @param {Array} textArray - The message.text array

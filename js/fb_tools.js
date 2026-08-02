@@ -463,6 +463,7 @@ import { setupLibberManager, setupLibberApply } from "./nodes/libber.js";
 import { setupDatasetCaptionViewer } from "./nodes/dataset_caption_viewer.js";
 import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
 import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect } from "./nodes/lora.js";
+import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
 
 // Add context menu entry for extracting a node as json
 app.registerExtension({
@@ -594,7 +595,15 @@ app.registerExtension({
         else if (isNode("WanPresetSelect")) {
             setupWanPresetSelect(nodeType, nodeData, app);
         }
-        
+
+        // Concept Registry nodes
+        else if (isNode("ConceptRegistryLoad")) {
+            setupConceptRegistryLoad(nodeType, nodeData, app);
+        }
+        else if (isNode("ConceptDefine")) {
+            setupConceptDefine(nodeType, nodeData, app);
+        }
+
         // Add context menu for frost-byte nodes only.
         if (isFrostCategory) {
             addMenuHandler(nodeType, function (_, options) {
