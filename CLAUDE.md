@@ -128,8 +128,9 @@ Key files:
 | `utils/logging_utils.py` | `get_logger()` — configures level from `FBTOOLS_LOG_LEVEL` env var |
 | `utils/scene_image_save.py` | Scene image save config/helpers |
 | `utils/story_video.py` | Story video generation helpers |
+| `utils/concept_registry.py` | Pure concept registry logic (no ComfyUI deps) — models, resolve, persist |
 
-**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, LoraEntryDefine, LoraStackCollect, LoraStackApply, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
+**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, LoraEntryDefine, LoraStackCollect, LoraStackApply, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
 
 **Node categories** — use one of these existing values when adding a new node:
 
@@ -143,6 +144,8 @@ Full form: `"🧊 frost-byte/<category>"` (e.g., `"🧊 frost-byte/Scene"`).
 - `/fbtools/scene/*` — Scene prompt processing, list, thumbnail
 - `/fbtools/story/*` — Story load/save/list/thumbnails
 - `/fbtools/dataset_caption/*` — Caption list/edit/save/recaption
+- `/fbtools/concepts/reload` (POST) — increment reload counter so ConceptRegistryLoad re-executes
+- `/fbtools/concepts/registry` (GET) — return default registry as JSON
 
 **State managers** (`PromptCollectionManager`, `LibberManager` at module level in `extension.py`) hold server-side session state with TTL.
 
@@ -160,7 +163,7 @@ The `WEB_DIRECTORY = "./js"` tells ComfyUI to serve everything in `js/` as stati
 | `js/nodes/*.js` | Node-specific UI handlers imported by `fb_tools.js` |
 | `js/utils/api_base.js` | `BaseAPI` class with fetch + error handling |
 | `js/utils/debug_config.js` | Bitwise debug flag system (`debugLog`, `DEBUG_FLAGS`) |
-| `js/utils/widgets.js` | Widget update helpers (`updateWidgetFromText`, `scheduleNodeRefresh`) |
+| `js/utils/widgets.js` | Widget update helpers (`updateWidgetFromText`, `scheduleNodeRefresh`, `setWidgetVisible`) |
 | `js/utils/feedback.js` | Toast notification helpers |
 
 JavaScript tests live in `js-tests/` (not `js/tests/`). `package.json` and `node_modules` are at the repo root, not inside `js/`.
@@ -194,6 +197,42 @@ Node wiring uses custom type strings for type safety:
 - `LORA_STACK_DATA` — between `LoraStackCollect` → `LoraStackApply`
 - `LORA_PRESET_LIST` — between `LoraPresetDefine` → `LoraPresetSelect` (carries `{ name, lora_stack, prompt }` dicts)
 - `PRESET_LIST` — between `WanPresetDefine` → `WanPresetSelect` (carries `{ name, lora_h, lora_l, prompt }` dicts)
+- `CONCEPT_REGISTRY` — between `ConceptRegistryLoad` / `ConceptDefine` → `ConceptResolve` / `ConceptList` (carries `ConceptRegistry` instance)
+
+### Persistence
+
+All package-level data is stored under `user_data_dir()` → `ComfyUI/user/default/comfyui-fbTools/`:
+- `concept_registry.json` — concept definitions (with `.bak` auto-backup on save)
+- `scenes/` — scene directories (new installs); legacy `output/scenes/` is still supported if the new dir is empty
+- `libbers/` — libber template JSON files (new installs); legacy `output/libbers/` is still supported
+
+The helper `user_data_dir()` in `extension.py` uses `folder_paths.get_user_directory()` with a fallback chain.
+
+### Concept Registry
+
+The concept system is defined in `utils/concept_registry.py` (no ComfyUI deps) and exposed via four nodes:
+
+| Node | Role |
+|---|---|
+| `ConceptRegistryLoad` | Load `concept_registry.json` from disk; expose available concepts |
+| `ConceptDefine` | Add/update a concept entry for one model type (chainable); auto_save option |
+| `ConceptResolve` | Resolve concept IDs → apply LoRAs to model/clip; assemble prompt with trigger words |
+| `ConceptList` | Display formatted concept list, optionally filtered by model type |
+
+**Model types** (in `MODEL_PROFILES` in `utils/concept_registry.py`):
+
+| ID | Display | Split model? |
+|---|---|---|
+| `wan22` | Wan 2.2 | Yes (high + low) |
+| `bernini` | BerniniR | Yes (high + low) |
+| `ltx23` | LTX 2.3 | No |
+| `flux2` | Flux 2 | No |
+| `krea2` | Krea 2 | No |
+| `qwen` | Qwen Image | No |
+
+For split models, `ConceptResolve` applies the HIGH LoRA to the primary `model` input and the LOW LoRA to the optional `model_low` input. Both apply to `clip`. For single-model types, only `model` is used.
+
+Same `concept_id` + different `model_type` → entries accumulate (one per model type). Same `concept_id` + same `model_type` → the entry is overwritten. A `.bak` backup is created on every save.
 
 ### Optional Dependencies
 

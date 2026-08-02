@@ -7,6 +7,7 @@
 
 import { loraAPI } from "../api/lora.js";
 import { sceneAPI } from "../api/scene.js";
+import { setWidgetVisible } from "../utils/widgets.js";
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
 
@@ -174,23 +175,6 @@ export function setupWanPresetDefine(nodeType, nodeData, app) {
 // ── Node handler: LoraEntryDefine ─────────────────────────────────────────────
 
 const LTX_WIDGET_NAMES = ["video", "video_to_audio", "audio", "audio_to_video", "other"];
-
-function setWidgetVisible(widget, visible) {
-    if (!widget) return;
-    if (visible) {
-        if (widget._savedType !== undefined) {
-            widget.type = widget._savedType;
-            delete widget.computeSize;
-        }
-    } else {
-        // Only snapshot type when not already hidden
-        if (widget.type !== "hidden") {
-            widget._savedType = widget.type;
-        }
-        widget.type = "hidden";
-        widget.computeSize = () => [0, -4];
-    }
-}
 
 function applyLoraEntryTarget(node, target) {
     const isLtx = target === "LTX2.3";
