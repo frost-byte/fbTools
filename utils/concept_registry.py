@@ -21,6 +21,7 @@ MODEL_PROFILES: dict[str, dict] = {
     "flux2":   {"split": False, "display": "Flux 2"},
     "krea2":   {"split": False, "display": "Krea 2"},
     "qwen":    {"split": False, "display": "Qwen Image"},
+    "minimax_h3": {"split": False, "display": "MiniMax H3"},
 }
 
 MODEL_TYPE_IDS: list[str] = list(MODEL_PROFILES.keys())
