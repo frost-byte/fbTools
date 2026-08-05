@@ -1,6 +1,75 @@
 # CHANGELOG
 
 
+## v1.2.0 (2026-08-05)
+
+### Features
+
+- **lora**: Add Concept Registry system with ConceptRegistryLoad, ConceptDefine, ConceptResolve,
+  ConceptList nodes
+  ([`cc05197`](https://github.com/frost-byte/fbTools/commit/cc05197c2d6c748d3f947bb967980c219ab123b0))
+
+- Add utils/concept_registry.py: pure-logic module (no ComfyUI deps) with ConceptRegistry class,
+  MODEL_PROFILES for 6 model types (wan22/bernini split, ltx23/flux2/krea2/qwen single), load/save
+  with .bak backup, resolve_concepts, assemble_prompt, build_model_entry helpers - Add 4 ComfyUI
+  nodes: ConceptRegistryLoad (fingerprint-based reload via REST), ConceptDefine (chainable,
+  accumulate-not-overwrite for different model_types, auto_save option), ConceptResolve (applies
+  LoRAs via comfy.sd, assembles prompt with trigger words), ConceptList (filter by model type) - Add
+  CONCEPT_REGISTRY custom wire type - Add REST endpoints: POST /fbtools/concepts/reload (reload
+  counter), GET /fbtools/concepts/registry - Add user_data_dir() + _user_subdir() helpers; update
+  default_scenes_dir() and default_libber_dir() to prefer ComfyUI/user/default/comfyui-fbTools/ with
+  graceful fallback to legacy output/ directories - Extract setWidgetVisible to js/utils/widgets.js
+  (shared); update lora.js to import it; add js/api/concepts.js, js/nodes/concepts.js
+  (lora_low/weight_low hidden for single-model types; Reload Registry button on ConceptRegistryLoad)
+  - Add 32 tests in tests/test_concept_registry.py; all 330 Python + 83 JS tests pass
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **lora**: Add minimax_h3 to ConceptRegistry MODEL_PROFILES
+  ([`fb23e5a`](https://github.com/frost-byte/fbTools/commit/fb23e5ab21ed5f66a3ba36646fa001d5bf163077))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **lora**: Add native LORA_STACK support to LoraPresetDefine/Select and add MiniMaxH3 target
+  ([`b9468d8`](https://github.com/frost-byte/fbTools/commit/b9468d8f2efa894768e9637f80a64510976ef862))
+
+LoraPresetDefine now accepts both LORA_STACK_DATA (from LoraStackCollect's Stack Data output) and a
+  native LORA_STACK (easy-use tuple format) as optional inputs, so any LoRA source in the ecosystem
+  can be stored in a preset. When LORA_STACK_DATA is provided, the native representation is
+  auto-generated so both output types are always populated.
+
+LoraPresetSelect gains a new "LoRA Stack (Native)" output (io.Custom LORA_STACK) appended after the
+  existing outputs, preserving backward compatibility for already-wired workflows. The
+  LORA_STACK_DATA output is unchanged.
+
+Also adds MiniMaxH3 to LORA_MODEL_TARGETS for use in LoraStackApply (standard
+  strength_model/strength_clip path); weight variants can be added later once the LoRA structure is
+  known.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **lora**: Add scene/pose image support to preset nodes
+  ([`0103882`](https://github.com/frost-byte/fbTools/commit/01038824c1d8f4ce5fda90a3f4ae57517588dc91))
+
+LoraPresetDefine and WanPresetDefine each gain an optional Scene combo (populated at runtime via
+  /fbtools/scene/list) and a Pose Image Type combo. The selected scene and pose type are stored in
+  the preset dict.
+
+LoraPresetSelect and WanPresetSelect each gain base_image and pose_image outputs. When the active
+  preset has a linked scene, those images are loaded from the scene directory and shown as a node
+  preview on execution. Placeholder 64x64 images are returned when no scene is set.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.1.0 (2026-07-27)
 
 ### Features
