@@ -1,7 +1,7 @@
 """Tests for LoraPresetDefine and LoraPresetSelect logic."""
 
-import pytest
 from conftest import import_test_module
+import pytest
 
 lp = import_test_module("utils/lora_presets.py")
 preset_define = lp.preset_define
@@ -62,39 +62,84 @@ def _build_list(n: int) -> list:
 
 
 def test_select_by_name_first():
-    name, lora_stack, prompt, _ = preset_select(_build_list(3), "Style 0")
+    name, lora_stack, lora_stack_native, prompt, _ = preset_select(_build_list(3), "Style 0")
     assert name == "Style 0"
     assert lora_stack == [{"lora": "lora_0.safetensors", "strength_model": 1.0, "strength_clip": 1.0, "model_target": "all", "enabled": True}]
     assert prompt == "prompt 0"
+    # Native stack should be auto-generated from LORA_STACK_DATA
+    assert lora_stack_native is not None
+    assert lora_stack_native[0][0] == "lora_0.safetensors"
 
 
 def test_select_by_name_last():
-    name, lora_stack, _, _ = preset_select(_build_list(3), "Style 2")
+    name, lora_stack, _, _, _ = preset_select(_build_list(3), "Style 2")
     assert name == "Style 2"
     assert lora_stack[0]["lora"] == "lora_2.safetensors"
 
 
 def test_select_unknown_name_falls_back_to_first():
-    name, _, _, _ = preset_select(_build_list(3), "Nonexistent")
+    name, _, _, _, _ = preset_select(_build_list(3), "Nonexistent")
     assert name == "Style 0"
 
 
 def test_select_none_default_falls_back_to_first():
     # "none" is the default combo value before the user runs the node
-    name, _, _, _ = preset_select(_build_list(3), "none")
+    name, _, _, _, _ = preset_select(_build_list(3), "none")
     assert name == "Style 0"
 
 
 def test_select_available_presets_format():
-    _, _, _, available = preset_select(_build_list(3), "Style 0")
+    _, _, _, _, available = preset_select(_build_list(3), "Style 0")
     assert "[0] Style 0" in available
     assert "[1] Style 1" in available
     assert "[2] Style 2" in available
 
 
 def test_select_empty_list():
-    name, lora_stack, prompt, available = preset_select([], "anything")
+    name, lora_stack, lora_stack_native, prompt, available = preset_select([], "anything")
     assert name == ""
     assert lora_stack is None
+    assert lora_stack_native is None
     assert prompt == ""
     assert "No presets available" in available
+
+
+# ── native LORA_STACK auto-generation ─────────────────────────────────────────
+
+def test_native_auto_generated_from_stack_data():
+    result = preset_define("Portrait", STACK_A, "prompt")
+    native = result[0]["lora_stack_native"]
+    assert native is not None
+    assert len(native) == 1
+    assert native[0][0] == "lora_a.safetensors"
+    assert native[0][1] == pytest.approx(1.0)
+    assert native[0][2] == pytest.approx(1.0)
+
+
+def test_native_not_generated_when_stack_is_none():
+    result = preset_define("Empty", None, "prompt")
+    assert result[0]["lora_stack_native"] is None
+
+
+def test_explicit_native_not_overwritten_by_auto_gen():
+    custom_native = [("custom.safetensors", 0.5, 0.7)]
+    result = preset_define("Custom", STACK_A, "prompt", lora_stack_native=custom_native)
+    assert result[0]["lora_stack_native"] == custom_native
+
+
+def test_native_only_no_stack_data():
+    native_input = [("lora_n.safetensors", 0.8, 0.9)]
+    result = preset_define("NativeOnly", None, "prompt", lora_stack_native=native_input)
+    assert result[0]["lora_stack"] is None
+    assert result[0]["lora_stack_native"] == native_input
+
+
+def test_native_excludes_disabled_entries():
+    stack_with_disabled = [
+        {"lora": "a.safetensors", "strength_model": 1.0, "strength_clip": 1.0, "model_target": "all", "enabled": True},
+        {"lora": "b.safetensors", "strength_model": 0.5, "strength_clip": 0.5, "model_target": "all", "enabled": False},
+    ]
+    result = preset_define("Mixed", stack_with_disabled, "prompt")
+    native = result[0]["lora_stack_native"]
+    assert len(native) == 1
+    assert native[0][0] == "a.safetensors"

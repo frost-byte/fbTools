@@ -9445,6 +9445,7 @@ LORA_MODEL_TARGETS = [
     "Wan2.2-Wrapper-Low",   # second-pass (detail) model  — outputs WANVIDLORA for WanVideoWrapper
     "Flux2/Klein",
     "Qwen",
+    "MiniMaxH3",
     "Z-Image",
 ]
 
@@ -10374,9 +10375,15 @@ class LoraPresetDefine(io.ComfyNode):
                 ),
                 LoraStackData.Input(
                     "lora_stack",
-                    display_name="LoRA Stack",
+                    display_name="LoRA Stack (LORA_STACK_DATA)",
                     optional=True,
-                    tooltip="LoRA stack for this preset. Connect from LoraStackCollect's Stack Data output.",
+                    tooltip="Rich per-target stack from LoraStackCollect's 'Stack Data' output. Auto-generates the native LORA_STACK output.",
+                ),
+                io.Custom("LORA_STACK").Input(
+                    "lora_stack_native",
+                    display_name="LoRA Stack (Native)",
+                    optional=True,
+                    tooltip="Native (name, model_str, clip_str) stack from any easy-use compatible source. Use instead of or alongside the LORA_STACK_DATA input.",
                 ),
                 io.String.Input(
                     "prompt",
@@ -10424,13 +10431,16 @@ class LoraPresetDefine(io.ComfyNode):
         cls,
         name: str,
         lora_stack: Optional[list] = None,
+        lora_stack_native: Optional[list] = None,
         prompt: str = "",
         scene_name: str = "none",
         pose_image_type: str = "open",
         preset_list: Optional[list] = None,
     ) -> io.NodeOutput:
         from .utils.lora_presets import preset_define
-        return io.NodeOutput(preset_define(name, lora_stack, prompt, preset_list, scene_name, pose_image_type))
+        return io.NodeOutput(
+            preset_define(name, lora_stack, prompt, preset_list, scene_name, pose_image_type, lora_stack_native)
+        )
 
 
 # ── Node: LoraPresetSelect ────────────────────────────────────────────────────
@@ -10472,13 +10482,16 @@ class LoraPresetSelect(io.ComfyNode):
             ],
             outputs=[
                 io.String.Output("name",              display_name="Name"),
-                LoraStackData.Output("lora_stack",    display_name="LoRA Stack"),
+                LoraStackData.Output("lora_stack",    display_name="LoRA Stack (LORA_STACK_DATA)",
+                    tooltip="Rich per-target stack. Connect to LoraStackApply."),
                 io.String.Output("prompt",            display_name="Prompt"),
                 io.String.Output("available_presets", display_name="Available Presets"),
                 io.Image.Output("base_image",         display_name="Base Image",
                     tooltip="Base image from the preset's linked scene, or a placeholder if no scene is set."),
                 io.Image.Output("pose_image",         display_name="Pose Image",
                     tooltip="Pose image from the preset's linked scene, or a placeholder if no scene is set."),
+                io.Custom("LORA_STACK").Output("lora_stack_native", display_name="LoRA Stack (Native)",
+                    tooltip="Native (name, model_str, clip_str) stack. Connect to EasyLoraStack, PowerLoraLoader, or any easy-use compatible node."),
             ],
             is_output_node=True,
         )
@@ -10496,11 +10509,11 @@ class LoraPresetSelect(io.ComfyNode):
         selected_preset: str,
     ) -> io.NodeOutput:
         from .utils.lora_presets import preset_select
-        name, lora_stack, prompt, available = preset_select(preset_list, selected_preset)
+        name, lora_stack, lora_stack_native, prompt, available = preset_select(preset_list, selected_preset)
         names = [p.get("name", "") for p in preset_list] if preset_list else []
         selected = next((p for p in preset_list if p.get("name") == name), {}) if preset_list else {}
         base_image, pose_image, ui_data = _preset_scene_ui_and_images(selected, names)
-        return io.NodeOutput(name, lora_stack, prompt, available, base_image, pose_image, ui=ui_data)
+        return io.NodeOutput(name, lora_stack, prompt, available, base_image, pose_image, lora_stack_native, ui=ui_data)
 
 
 # ── Custom type: PRESET_LIST ──────────────────────────────────────────────────
