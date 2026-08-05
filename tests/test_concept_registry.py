@@ -28,6 +28,7 @@ def test_model_profiles_split_flags():
     assert MODEL_PROFILES["flux2"]["split"] is False
     assert MODEL_PROFILES["krea2"]["split"] is False
     assert MODEL_PROFILES["qwen"]["split"] is False
+    assert MODEL_PROFILES["minimax_h3"]["split"] is False
 
 
 def test_model_type_ids_covers_all_profiles():
