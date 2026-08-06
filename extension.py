@@ -87,6 +87,11 @@ from .utils.scene_templates import (
     format_template_list as _format_template_list,
     dir_fingerprint as _templates_dir_fingerprint,
 )
+from .utils.scene_compose import (
+    compose_scene as _compose_scene,
+    validate_scene as _validate_scene,
+    format_scene_summary as _format_scene_summary,
+)
 
 from .utils.subject_compositor import (
     tensor_to_pil,
@@ -11574,11 +11579,15 @@ class SubjectProfileLoad(io.ComfyNode):
         images = _load_subject_images(sheet_files)
         audio = _load_subject_audio(audio_file)
 
+        # Inject subject_id so downstream nodes (SceneCompose) can reference it
+        subject_with_id = dict(subject)
+        subject_with_id["subject_id"] = subject_id
+
         send_status_update(
             cls.node_id,
             f"Loaded: {name} | {len(sheet_files)} sheet images | audio: {'yes' if audio else 'no'}",
         )
-        return io.NodeOutput(subject, name, appearance_summary, images, audio, concept_id)
+        return io.NodeOutput(subject_with_id, name, appearance_summary, images, audio, concept_id)
 
 
 # ── Node: SubjectProfileDefine ────────────────────────────────────────────────
@@ -11708,7 +11717,10 @@ class SubjectProfileDefine(io.ComfyNode):
             logger.info("SubjectProfileDefine: saved %r to %s", subject_id, path)
             send_status_update(cls.node_id, f"Saved subject: {subject_id}")
 
-        return io.NodeOutput(registry.get_subject(subject_id.strip()))
+        sid = subject_id.strip()
+        result = dict(registry.get_subject(sid))
+        result["subject_id"] = sid
+        return io.NodeOutput(result)
 
 
 # ── Node: SubjectProfileList ──────────────────────────────────────────────────
@@ -11953,6 +11965,197 @@ async def _scene_templates_list(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+# ── Custom type: SCENE_INSTANCE ──────────────────────────────────────────────
+
+SCENE_INSTANCE_TYPE = "SCENE_INSTANCE"
+
+
+@io.comfytype(io_type=SCENE_INSTANCE_TYPE)
+class SceneInstanceIOType:
+    """Carries a composed scene dict between SceneCompose → PromptAssemble nodes."""
+    Type = object  # dict with template, slot_assignments, dialogue, outfit_overrides
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "scene_instance", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+# ── Node: SceneCompose ────────────────────────────────────────────────────────
+
+class SceneCompose(io.ComfyNode):
+    """Assign subjects to template slots and fill in dialogue.
+
+    Connects subject profiles to a scene template's placeholder slots, maps
+    positional dialogue inputs to shots in order, and optionally overrides
+    outfit descriptions per slot.  Outputs a SCENE_INSTANCE ready for
+    PromptAssemble in Phase 4.
+    """
+    node_id = prefixed_node_id("SceneCompose")
+    display_name = "Scene Compose"
+    category = "🧊 frost-byte/Scene"
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            inputs=[
+                SceneTemplateIOType.Input(
+                    "template",
+                    display_name="Scene Template",
+                    tooltip="Template from SceneTemplateLoad.",
+                ),
+                SubjectProfileIOType.Input(
+                    "slot_A",
+                    display_name="Slot A",
+                    tooltip="Subject assigned to slot A (typically the primary speaker).",
+                    optional=True,
+                ),
+                SubjectProfileIOType.Input(
+                    "slot_B",
+                    display_name="Slot B",
+                    tooltip="Subject assigned to slot B (optional).",
+                    optional=True,
+                ),
+                SubjectProfileIOType.Input(
+                    "slot_C",
+                    display_name="Slot C",
+                    tooltip="Subject assigned to slot C (optional).",
+                    optional=True,
+                ),
+                SubjectProfileIOType.Input(
+                    "slot_D",
+                    display_name="Slot D",
+                    tooltip="Subject assigned to slot D (optional).",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "dialogue_1",
+                    display_name="Dialogue 1",
+                    default="",
+                    multiline=True,
+                    tooltip="Fills the first placeholder dialogue slot in shot order.",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "dialogue_2",
+                    display_name="Dialogue 2",
+                    default="",
+                    multiline=True,
+                    tooltip="Fills the second placeholder dialogue slot in shot order.",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "dialogue_3",
+                    display_name="Dialogue 3",
+                    default="",
+                    multiline=True,
+                    tooltip="Fills the third placeholder dialogue slot in shot order.",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "dialogue_4",
+                    display_name="Dialogue 4",
+                    default="",
+                    multiline=True,
+                    tooltip="Fills the fourth placeholder dialogue slot in shot order.",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "outfit_override_A",
+                    display_name="Outfit Override A",
+                    default="",
+                    multiline=False,
+                    tooltip="Replaces slot A subject's default outfit for this scene only.",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "outfit_override_B",
+                    display_name="Outfit Override B",
+                    default="",
+                    multiline=False,
+                    tooltip="Replaces slot B subject's default outfit for this scene only.",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "outfit_override_C",
+                    display_name="Outfit Override C",
+                    default="",
+                    multiline=False,
+                    tooltip="Replaces slot C subject's default outfit for this scene only.",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "outfit_override_D",
+                    display_name="Outfit Override D",
+                    default="",
+                    multiline=False,
+                    tooltip="Replaces slot D subject's default outfit for this scene only.",
+                    optional=True,
+                ),
+            ],
+            outputs=[
+                SceneInstanceIOType.Output(
+                    "scene_instance",
+                    display_name="Scene Instance",
+                    tooltip="Composed scene ready for PromptAssemble.",
+                ),
+                io.String.Output(
+                    "scene_summary",
+                    display_name="Scene Summary",
+                    tooltip="Human-readable summary of the composed scene.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        template=None,
+        slot_A=None,
+        slot_B=None,
+        slot_C=None,
+        slot_D=None,
+        dialogue_1: str = "",
+        dialogue_2: str = "",
+        dialogue_3: str = "",
+        dialogue_4: str = "",
+        outfit_override_A: str = "",
+        outfit_override_B: str = "",
+        outfit_override_C: str = "",
+        outfit_override_D: str = "",
+    ) -> io.NodeOutput:
+        if template is None:
+            return io.NodeOutput(None, "No template connected.")
+
+        template_dict = template.to_dict() if isinstance(template, SceneTemplate) else template
+
+        slot_assignments = {"A": slot_A, "B": slot_B, "C": slot_C, "D": slot_D}
+        dialogue = [dialogue_1, dialogue_2, dialogue_3, dialogue_4]
+        outfit_overrides = {
+            "A": outfit_override_A,
+            "B": outfit_override_B,
+            "C": outfit_override_C,
+            "D": outfit_override_D,
+        }
+
+        warnings = _validate_scene(template_dict, slot_assignments)
+        instance = _compose_scene(template_dict, slot_assignments, dialogue, outfit_overrides)
+        summary = _format_scene_summary(instance, validation_warnings=warnings)
+
+        if warnings:
+            send_status_update(cls.node_id, f"Composed with {len(warnings)} warning(s)", level="warn")
+        else:
+            send_status_update(cls.node_id, f"Composed: {instance['template_name']}")
+
+        return io.NodeOutput(instance, summary, ui={"scene_summary": summary})
+
+
 # ── Concept REST API endpoints ─────────────────────────────────────────────────
 
 @routes.post("/fbtools/concepts/reload")
@@ -12048,4 +12251,6 @@ class FBToolsExtension(ComfyExtension):
             # Scene Template nodes
             SceneTemplateLoad,
             SceneTemplateList,
+            # Scene Composition nodes
+            SceneCompose,
         ]
