@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## v1.3.0 (2026-08-06)
+
+### Features
+
+- **audio**: Add AudioFixShape node to restore batch dimension on audio waveforms
+  ([`1e1083d`](https://github.com/frost-byte/fbTools/commit/1e1083d188c83b12f674faa50661df8e075bdee4))
+
+Handles 1-D (samples,) and 2-D (channels, samples) tensors by unsqueezing to the expected (batch,
+  channels, samples) layout. Placed under the new 🧊 frost-byte/Audio category.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.2.0 (2026-08-05)
 
 ### Features
