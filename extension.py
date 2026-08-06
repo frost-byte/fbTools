@@ -92,6 +92,10 @@ from .utils.scene_compose import (
     validate_scene as _validate_scene,
     format_scene_summary as _format_scene_summary,
 )
+from .utils.prompt_assembler import (
+    assemble_prompt as _assemble_prompt,
+    MODEL_TYPES as _PROMPT_MODEL_TYPES,
+)
 
 from .utils.subject_compositor import (
     tensor_to_pil,
@@ -12156,6 +12160,132 @@ class SceneCompose(io.ComfyNode):
         return io.NodeOutput(instance, summary, ui={"scene_summary": summary})
 
 
+# ── Node: PromptAssemble ──────────────────────────────────────────────────────
+
+class PromptAssemble(io.ComfyNode):
+    """Assemble a model-specific prompt from a composed scene instance.
+
+    Takes a SCENE_INSTANCE from SceneCompose and generates the complete
+    prompt in the format required by the chosen model type.  Also outputs
+    reference images and audio in the order expected by the model's
+    conditioning nodes, and the concept IDs for downstream LoRA resolution
+    via ConceptResolve.
+    """
+    node_id = prefixed_node_id("PromptAssemble")
+    display_name = "Prompt Assemble"
+    category = "🧊 frost-byte/Scene"
+    is_output_node = True
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            is_output_node=cls.is_output_node,
+            inputs=[
+                SceneInstanceIOType.Input(
+                    "scene_instance",
+                    display_name="Scene Instance",
+                    tooltip="Composed scene from SceneCompose.",
+                ),
+                io.Combo.Input(
+                    "model_type",
+                    options=_PROMPT_MODEL_TYPES,
+                    default="h3_ref2va",
+                    display_name="Model Type",
+                    tooltip="Target model prompt format.",
+                ),
+                ConceptRegistryIOType.Input(
+                    "concept_registry",
+                    display_name="Concept Registry",
+                    tooltip="Optional registry for trigger word lookup (future use).",
+                    optional=True,
+                ),
+            ],
+            outputs=[
+                io.String.Output(
+                    "prompt",
+                    display_name="Prompt",
+                    tooltip="Assembled model-specific prompt text.",
+                ),
+                io.Image.Output(
+                    "reference_images",
+                    display_name="Reference Images",
+                    tooltip="Character sheet images stacked in slot order (Picture 1, 2, …).",
+                ),
+                io.Audio.Output(
+                    "reference_audio",
+                    display_name="Reference Audio",
+                    tooltip="First subject's voice reference audio (slot A), or None.",
+                ),
+                io.Audio.Output(
+                    "additional_audio",
+                    display_name="Additional Audio",
+                    tooltip="Second subject's voice reference audio (slot B), or None.",
+                ),
+                io.String.Output(
+                    "concept_ids",
+                    display_name="Concept IDs",
+                    tooltip="Comma-separated concept IDs for wiring into ConceptResolve.",
+                ),
+                io.String.Output(
+                    "assembly_report",
+                    display_name="Assembly Report",
+                    tooltip="Human-readable summary of what was assembled.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        scene_instance=None,
+        model_type: str = "h3_ref2va",
+        concept_registry=None,
+    ) -> io.NodeOutput:
+        if scene_instance is None:
+            return io.NodeOutput("", None, None, None, "", "No scene instance connected.")
+
+        result = _assemble_prompt(scene_instance, model_type)
+
+        # Load reference images in declared order
+        image_order = result["reference_image_order"]
+        images = _load_subject_images([fname for _, fname in image_order]) if image_order else None
+
+        # Load audio for first two slots with audio
+        audio_slots = result["audio_slots"]
+        assignments = scene_instance.get("slot_assignments", {})
+
+        def _get_audio(slot_id: str) -> "dict | None":
+            subject = assignments.get(slot_id)
+            if subject is None:
+                return None
+            audio_file = subject.get("voice", {}).get("audio_reference_file", "")
+            return _load_subject_audio(audio_file)
+
+        reference_audio = _get_audio(audio_slots[0]) if len(audio_slots) > 0 else None
+        additional_audio = _get_audio(audio_slots[1]) if len(audio_slots) > 1 else None
+
+        concept_ids_str = ", ".join(result["concept_ids"])
+        report = result["assembly_report"]
+        prompt = result["prompt"]
+
+        n_images = len(image_order)
+        n_audio = len(audio_slots)
+        send_status_update(
+            cls.node_id,
+            f"Assembled {model_type}: {n_images} image{'s' if n_images != 1 else ''}, "
+            f"{n_audio} audio",
+        )
+
+        return io.NodeOutput(
+            prompt, images, reference_audio, additional_audio,
+            concept_ids_str, report,
+            ui={"assembly_report": report},
+        )
+
+
 # ── Concept REST API endpoints ─────────────────────────────────────────────────
 
 @routes.post("/fbtools/concepts/reload")
@@ -12253,4 +12383,5 @@ class FBToolsExtension(ComfyExtension):
             SceneTemplateList,
             # Scene Composition nodes
             SceneCompose,
+            PromptAssemble,
         ]

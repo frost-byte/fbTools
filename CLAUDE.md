@@ -132,9 +132,10 @@ Key files:
 | `utils/subject_profiles.py` | Pure subject profile logic (no ComfyUI deps) — `SubjectRegistry`, load/save/define |
 | `utils/scene_templates.py` | Pure scene template logic (no ComfyUI deps) — `SceneTemplate`, scan/load/format |
 | `utils/scene_compose.py` | Pure composition logic (no ComfyUI deps) — `compose_scene`, `validate_scene`, `format_scene_summary` |
+| `utils/prompt_assembler.py` | Pure prompt assembly logic (no ComfyUI deps) — `assemble_prompt`, per-model-type formatters |
 | `scene_templates/` | Bundled example templates (seeded into user_data_dir on first use) |
 
-**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList, **SubjectProfileLoad**, **SubjectProfileDefine**, **SubjectProfileList**, **SceneTemplateLoad**, **SceneTemplateList**, **SceneCompose**. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
+**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList, **SubjectProfileLoad**, **SubjectProfileDefine**, **SubjectProfileList**, **SceneTemplateLoad**, **SceneTemplateList**, **SceneCompose**, **PromptAssemble**. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
 
 **Node categories** — use one of these existing values when adding a new node:
 
@@ -315,6 +316,51 @@ The composition layer is defined in `utils/scene_compose.py` (no ComfyUI deps) a
     "dialogue": {"shot_1": "line text", "shot_2": "line text", ...},
     "outfit_overrides": {"A": "override text", ...},
 }
+```
+
+### Prompt Assembly (Scene Composition Engine — Phase 4)
+
+The prompt assembly layer is defined in `utils/prompt_assembler.py` (no ComfyUI deps) and exposed via one node.
+
+| Node | Role |
+|---|---|
+| `PromptAssemble` | Takes a SCENE_INSTANCE and generates the model-specific prompt, reference image batch, audio outputs, concept IDs, and assembly report |
+
+**Inputs**: `scene_instance` (SCENE_INSTANCE), `model_type` (COMBO), `concept_registry` (CONCEPT_REGISTRY, optional — accepted for future trigger word injection but not yet used).
+
+**Outputs**:
+- `prompt` — fully assembled prompt string in the format required by `model_type`
+- `reference_images` — IMAGE batch of all character sheets (slot order: slot A's sheets first, then B, …), or None if no sheets
+- `reference_audio` — AUDIO dict for first subject's voice reference (slot A), or None
+- `additional_audio` — AUDIO dict for second subject's voice reference (slot B), or None
+- `concept_ids` — comma-separated concept IDs from all assigned subjects (wire into ConceptResolve)
+- `assembly_report` — human-readable summary of what was assembled
+
+**Model types** (prompt formats):
+
+| ID | Format |
+|---|---|
+| `h3_ref2va` | MiniMax H3 6-section structured brief: `subject_definitions`, `summary`, `retention_analysis`, `detailed_description`, `overall_soundscape`, `non_diegetic_music` |
+| `h3_fl2va` | MiniMax H3 free-language: shots with `[Shot N]` headers and `<d>[lang] text</d>` dialogue tags, no reference labels |
+| `wan22` | Wan 2.2 production-direction block |
+| `bernini` | BerniniR production-direction block (same format as wan22) |
+| `ltx23` | LTX 2.3 simple descriptive |
+| `flux2` | Flux 2 simple descriptive |
+| `krea2` | Krea 2 simple descriptive |
+| `qwen` | Qwen Image simple descriptive |
+
+**H3 Ref2VA reference numbering** (independent per type, assigned in slot order):
+- `<Subject N>` — one per assigned slot (A=S1/Subject 1, B=S2/Subject 2, …)
+- `<Picture N>` — continuous global numbering across all subjects (slot A's sheets first)
+- `<Audio N>` — continuous numbering for slots that have audio files
+
+**Placeholder replacement**: `{A}`, `{B}`, `{C}`, `{D}` in template `action` and `camera` fields are replaced with `<Subject N> (Name — appearance_summary)` on first appearance, and `<Subject N> (Name)` on subsequent appearances for H3 formats; with plain subject names for other formats.
+
+**Integration with ConceptResolve**:
+```
+[PromptAssemble] → concept_ids → [ConceptResolve] applies LoRAs without modifying prompt
+[PromptAssemble] → prompt ─────→ [text conditioning node]
+[PromptAssemble] → reference_images → [model conditioning]
 ```
 
 ### Optional Dependencies
