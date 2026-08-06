@@ -1,6 +1,37 @@
 # CHANGELOG
 
 
+## v1.5.0 (2026-08-06)
+
+### Features
+
+- **scene**: Add SceneTemplate nodes — Phase 2 of Scene Composition Engine
+  ([`804bc45`](https://github.com/frost-byte/fbTools/commit/804bc4546306eeeb37ff129852b2c09f67b8a853))
+
+Adds the scene template layer: JSON blueprints for shot structure, environment, camera, and slot
+  placeholders, independent of model format and subject assignment.
+
+New files: - utils/scene_templates.py — pure SceneTemplate logic, no ComfyUI deps -
+  tests/test_scene_templates.py — 40 tests covering load, scan, format, fingerprint -
+  scene_templates/monologue_indoor.json — 1-slot bundled example -
+  scene_templates/cafe_conversation_2p.json — 2-slot bundled example -
+  scene_templates/meeting_room_3p.json — 3-slot bundled example
+
+New nodes (🧊 frost-byte/Scene): - SceneTemplateLoad — loads template from scene_templates/ dir;
+  outputs SCENE_TEMPLATE + slot_info - SceneTemplateList — scans directory and returns formatted
+  template listing
+
+New REST endpoints: - POST /fbtools/scene_templates/reload — force re-execute fingerprint-cached
+  nodes - GET /fbtools/scene_templates/list — return template metadata list as JSON
+
+Bundled examples are seeded into user_data_dir/scene_templates/ on first use when the directory is
+  empty; user templates live there permanently.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.4.0 (2026-08-06)
 
 ### Bug Fixes
