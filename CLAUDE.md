@@ -129,8 +129,9 @@ Key files:
 | `utils/scene_image_save.py` | Scene image save config/helpers |
 | `utils/story_video.py` | Story video generation helpers |
 | `utils/concept_registry.py` | Pure concept registry logic (no ComfyUI deps) — models, resolve, persist |
+| `utils/subject_profiles.py` | Pure subject profile logic (no ComfyUI deps) — `SubjectRegistry`, load/save/define |
 
-**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
+**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList, **SubjectProfileLoad**, **SubjectProfileDefine**, **SubjectProfileList**. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
 
 **Node categories** — use one of these existing values when adding a new node:
 
@@ -198,11 +199,13 @@ Node wiring uses custom type strings for type safety:
 - `LORA_PRESET_LIST` — between `LoraPresetDefine` → `LoraPresetSelect` (carries `{ name, lora_stack, prompt }` dicts)
 - `PRESET_LIST` — between `WanPresetDefine` → `WanPresetSelect` (carries `{ name, lora_h, lora_l, prompt }` dicts)
 - `CONCEPT_REGISTRY` — between `ConceptRegistryLoad` / `ConceptDefine` → `ConceptResolve` / `ConceptList` (carries `ConceptRegistry` instance)
+- `SUBJECT_PROFILE` — between `SubjectProfileLoad` / `SubjectProfileDefine` → `SceneCompose` (carries subject dict with name, appearance, voice, character_sheet_images, concept_id)
 
 ### Persistence
 
 All package-level data is stored under `user_data_dir()` → `ComfyUI/user/default/comfyui-fbTools/`:
 - `concept_registry.json` — concept definitions (with `.bak` auto-backup on save)
+- `subject_profiles.json` — subject profile definitions (with `.bak` auto-backup on save)
 - `scenes/` — scene directories (new installs); legacy `output/scenes/` is still supported if the new dir is empty
 - `libbers/` — libber template JSON files (new installs); legacy `output/libbers/` is still supported
 
@@ -235,6 +238,28 @@ For split models, `ConceptResolve` applies the HIGH LoRA to the primary `model` 
 
 Same `concept_id` + different `model_type` → entries accumulate (one per model type). Same `concept_id` + same `model_type` → the entry is overwritten. A `.bak` backup is created on every save.
 
+### Subject Profiles (Scene Composition Engine — Phase 1)
+
+The subject profile system is defined in `utils/subject_profiles.py` (no ComfyUI deps) and exposed via three nodes. It is the first layer of the Scene Composition Engine (`docs/scene_composition_action_plan.md`).
+
+| Node | Role |
+|---|---|
+| `SubjectProfileLoad` | Load a subject from `subject_profiles.json`; outputs IMAGE batch + AUDIO |
+| `SubjectProfileDefine` | Create/update a subject profile entry; auto_save option |
+| `SubjectProfileList` | Display all defined subjects as formatted text |
+
+**Storage**: `user_data_dir() + "/subject_profiles.json"` with `.bak` backup on save.
+
+**Character sheet images** are loaded from the ComfyUI input directory by filename. Stacked into a single IMAGE batch (N × H × W × 3). Images with different sizes are resized to match the first.
+
+**Audio reference** loaded from the ComfyUI input directory via `torchaudio`. Returns None if file is absent or `torchaudio` unavailable.
+
+**Reload mechanism**: `POST /fbtools/subjects/reload` increments `_subject_reload_counter`, causing `SubjectProfileLoad` and `SubjectProfileList` nodes to re-execute via `fingerprint_inputs`. The `subject_id` combo on `SubjectProfileLoad` is populated at schema load time — a page refresh is needed to see newly-added subject IDs in the dropdown.
+
+**REST endpoints**:
+- `POST /fbtools/subjects/reload` — force reload counter increment
+- `GET /fbtools/subjects/profiles` — return full subject_profiles.json as JSON
+
 ### Optional Dependencies
 
 Gracefully absent:
@@ -242,6 +267,7 @@ Gracefully absent:
 - `ComfyUI-SCAIL-Pose` / `taichi` — NLF 3D pose in SceneUpdate
 - `ComfyUI-WanVideoWrapper` — WANVIDLORA output in LoraStackApply
 - `transformers`, `bitsandbytes`, `google-generativeai` — captioning backends
+- `torchaudio` — audio reference loading in SubjectProfileLoad (audio output returns None if absent)
 
 All optional imports are guarded with `try/except` and degrade gracefully.
 
