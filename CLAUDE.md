@@ -130,7 +130,7 @@ Key files:
 | `utils/story_video.py` | Story video generation helpers |
 | `utils/concept_registry.py` | Pure concept registry logic (no ComfyUI deps) — models, resolve, persist |
 
-**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, LoraEntryDefine, LoraStackCollect, LoraStackApply, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
+**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
 
 **Node categories** — use one of these existing values when adding a new node:
 
@@ -193,8 +193,8 @@ Keep node classes as thin orchestration wrappers. Put testable logic in `utils/`
 
 Node wiring uses custom type strings for type safety:
 - `SUBJECT_LAYER` — between `SubjectLayerDefine` → `SubjectCompositor`
-- `LORA_ENTRY` — between `LoraEntryDefine` → `LoraStackCollect`
-- `LORA_STACK_DATA` — between `LoraStackCollect` → `LoraStackApply`
+- `LORA_ENTRY` — between `LoraEntryDefine` → `LoraStackCollect` / `LoraStackBuilder` (legacy autogrow path)
+- `LORA_STACK_DATA` — between `LoraStackBuilder` / `LoraStackCollect` → `LoraStackApply`
 - `LORA_PRESET_LIST` — between `LoraPresetDefine` → `LoraPresetSelect` (carries `{ name, lora_stack, prompt }` dicts)
 - `PRESET_LIST` — between `WanPresetDefine` → `WanPresetSelect` (carries `{ name, lora_h, lora_l, prompt }` dicts)
 - `CONCEPT_REGISTRY` — between `ConceptRegistryLoad` / `ConceptDefine` → `ConceptResolve` / `ConceptList` (carries `ConceptRegistry` instance)
@@ -229,6 +229,7 @@ The concept system is defined in `utils/concept_registry.py` (no ComfyUI deps) a
 | `flux2` | Flux 2 | No |
 | `krea2` | Krea 2 | No |
 | `qwen` | Qwen Image | No |
+| `minimax_h3` | MiniMax H3 | No |
 
 For split models, `ConceptResolve` applies the HIGH LoRA to the primary `model` input and the LOW LoRA to the optional `model_low` input. Both apply to `clip`. For single-model types, only `model` is used.
 

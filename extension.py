@@ -9507,13 +9507,26 @@ def _lora_get_list() -> list[str]:
     return ["None"] + folder_paths.get_filename_list("loras")
 
 
+# mtime-keyed in-memory cache: {full_path: (mtime, weights_dict)}
+_lora_weight_cache: dict[str, tuple[float, dict]] = {}
+
+
 def _lora_load_weights(lora_name: str) -> dict:
-    """Load raw LoRA weights from disk."""
+    """Load raw LoRA weights from disk, returning a cached copy when the file is unchanged."""
     path = folder_paths.get_full_path("loras", lora_name)
     if not path:
         raise FileNotFoundError(f"LoRA not found: {lora_name}")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0.0
+    cached = _lora_weight_cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
     import comfy.utils as _comfy_utils
-    return _comfy_utils.load_torch_file(path, safe_load=True)
+    weights = _comfy_utils.load_torch_file(path, safe_load=True)
+    _lora_weight_cache[path] = (mtime, weights)
+    return weights
 
 
 def _lora_entries_for_target(entries: list[dict], model_target: str) -> list[dict]:
@@ -9606,34 +9619,16 @@ class LoraEntryDefine(io.ComfyNode):
                     tooltip="Disable to skip this LoRA without removing it from the stack.",
                 ),
                 io.Float.Input(
-                    "video",
-                    display_name="Video",
+                    "video_strength",
+                    display_name="Video Strength",
                     default=1.0, min=0.0, max=1.0, step=0.01,
-                    tooltip="LTX2.3: strength multiplier for video attention/feedforward layers.",
+                    tooltip="LTX2.3: multiplier for all video layers (attn, feedforward, video→audio cross-attn). Set to 0 to skip video weights entirely.",
                 ),
                 io.Float.Input(
-                    "video_to_audio",
-                    display_name="Video→Audio",
+                    "audio_strength",
+                    display_name="Audio Strength",
                     default=1.0, min=0.0, max=1.0, step=0.01,
-                    tooltip="LTX2.3: strength multiplier for video-to-audio cross-attention layers.",
-                ),
-                io.Float.Input(
-                    "audio",
-                    display_name="Audio",
-                    default=1.0, min=0.0, max=1.0, step=0.01,
-                    tooltip="LTX2.3: strength multiplier for audio attention/feedforward layers. Set to 0 to fully mute audio.",
-                ),
-                io.Float.Input(
-                    "audio_to_video",
-                    display_name="Audio→Video",
-                    default=1.0, min=0.0, max=1.0, step=0.01,
-                    tooltip="LTX2.3: strength multiplier for audio-to-video cross-attention layers. Set to 0 to fully mute audio→video.",
-                ),
-                io.Float.Input(
-                    "other",
-                    display_name="Other",
-                    default=1.0, min=0.0, max=1.0, step=0.01,
-                    tooltip="LTX2.3: strength multiplier for any layers not matched by the above filters.",
+                    tooltip="LTX2.3: multiplier for all audio layers (attn, feedforward, audio→video cross-attn). Set to 0 to fully mute audio weights.",
                 ),
             ],
             outputs=[
@@ -9649,11 +9644,8 @@ class LoraEntryDefine(io.ComfyNode):
         strength_model: float,
         strength_clip: float,
         enabled: bool,
-        video: float = 1.0,
-        video_to_audio: float = 1.0,
-        audio: float = 1.0,
-        audio_to_video: float = 1.0,
-        other: float = 1.0,
+        video_strength: float = 1.0,
+        audio_strength: float = 1.0,
     ) -> io.NodeOutput:
         entry = {
             "lora":           lora,
@@ -9661,11 +9653,8 @@ class LoraEntryDefine(io.ComfyNode):
             "strength_model": strength_model,
             "strength_clip":  strength_clip,
             "enabled":        enabled,
-            "video":          video,
-            "video_to_audio": video_to_audio,
-            "audio":          audio,
-            "audio_to_video": audio_to_video,
-            "other":          other,
+            "video_strength": video_strength,
+            "audio_strength": audio_strength,
         }
         return io.NodeOutput(entry)
 
@@ -10008,12 +9997,14 @@ class LoraStackApply(io.ComfyNode):
 def _lora_apply_ltx23(model, clip, entries: list[dict]) -> tuple:
     """LTX2.3 apply: per-key strength scaling for audio/video/cross-attn layers.
 
-    Mirrors the per-layer filter logic of LTX2LoraLoaderAdvanced (kjnodes).
-    Backward compat: if an old entry has audio_enabled=False and no explicit
-    audio/audio_to_video keys, those layers are treated as strength 0.
+    New format (video_strength / audio_strength): video_strength scales all video
+    and video-side cross-attn keys; audio_strength scales all audio and audio-side
+    cross-attn keys.
+
+    Legacy format (video / video_to_audio / audio / audio_to_video / other) and
+    the old audio_enabled=False boolean are still accepted for backward compat.
     """
     import comfy.lora as _comfy_lora
-    import comfy.utils as _comfy_utils
     m, c = model, clip
     count = 0
     for entry in entries:
@@ -10021,17 +10012,25 @@ def _lora_apply_ltx23(model, clip, entries: list[dict]) -> tuple:
         if not lora_name or lora_name == "None":
             continue
 
-        # Per-layer strengths — backward-compat with old audio_enabled boolean
-        _old_audio = entry.get("audio_enabled", None)
-        if _old_audio is False and "audio" not in entry:
-            audio_s    = 0.0
-            audio_to_v = 0.0
+        if "video_strength" in entry or "audio_strength" in entry:
+            # New 2-param format
+            video_s    = float(entry.get("video_strength", 1.0))
+            audio_s    = float(entry.get("audio_strength", 1.0))
+            video_to_a = video_s   # video drives video→audio cross-attn
+            audio_to_v = audio_s   # audio drives audio→video cross-attn
+            other_s    = video_s
         else:
-            audio_s    = float(entry.get("audio",          1.0))
-            audio_to_v = float(entry.get("audio_to_video", 1.0))
-        video_s    = float(entry.get("video",          1.0))
-        video_to_a = float(entry.get("video_to_audio", 1.0))
-        other_s    = float(entry.get("other",          1.0))
+            # Legacy 5-param format (+ audio_enabled boolean compat)
+            _old_audio = entry.get("audio_enabled", None)
+            if _old_audio is False and "audio" not in entry:
+                audio_s    = 0.0
+                audio_to_v = 0.0
+            else:
+                audio_s    = float(entry.get("audio",          1.0))
+                audio_to_v = float(entry.get("audio_to_video", 1.0))
+            video_s    = float(entry.get("video",          1.0))
+            video_to_a = float(entry.get("video_to_audio", 1.0))
+            other_s    = float(entry.get("other",          1.0))
 
         strength_model = entry.get("strength_model", 1.0)
         strength_clip  = entry.get("strength_clip",  1.0)
@@ -10039,7 +10038,6 @@ def _lora_apply_ltx23(model, clip, entries: list[dict]) -> tuple:
         try:
             raw = _lora_load_weights(lora_name)
 
-            # Build combined key map (model + clip)
             key_map = {}
             if m is not None:
                 key_map = _comfy_lora.model_lora_keys_unet(m.model, key_map)
@@ -10048,19 +10046,16 @@ def _lora_apply_ltx23(model, clip, entries: list[dict]) -> tuple:
 
             loaded = _comfy_lora.load_lora(raw, key_map)
 
-            # Per-key scaling — fast path if all strengths are 1.0
             if not (video_s == 1.0 and video_to_a == 1.0
                     and audio_s == 1.0 and audio_to_v == 1.0 and other_s == 1.0):
                 keys_to_delete = []
                 for key, value in loaded.items():
                     ks = key if isinstance(key, str) else (key[0] if isinstance(key, tuple) else str(key))
-                    # Most-specific patterns first (mirrors LTX2LoraLoaderAdvanced)
                     if   "video_to_audio_attn" in ks: mult = video_to_a
                     elif "audio_to_video_attn" in ks: mult = audio_to_v
                     elif "audio_attn" in ks or "audio_ff.net" in ks: mult = audio_s
                     elif "attn" in ks or "ff.net" in ks: mult = video_s
                     else: mult = other_s
-
                     if mult == 0.0:
                         keys_to_delete.append(key)
                     elif mult != 1.0 and hasattr(value, "weights"):
@@ -10085,9 +10080,8 @@ def _lora_apply_ltx23(model, clip, entries: list[dict]) -> tuple:
 
 
 def _lora_apply_standard(model, clip, entries: list[dict]) -> tuple:
-    """Standard apply via load_lora_for_models (Flux2/Klein, Qwen, Z-Image)."""
+    """Standard apply via load_lora_for_models (Flux2/Klein, Qwen, MiniMaxH3, Z-Image)."""
     import comfy.sd as _comfy_sd
-    import comfy.utils as _comfy_utils
     m, c = model, clip
     count = 0
     for entry in entries:
@@ -10095,11 +10089,7 @@ def _lora_apply_standard(model, clip, entries: list[dict]) -> tuple:
         if not lora_name or lora_name == "None":
             continue
         try:
-            path = folder_paths.get_full_path("loras", lora_name)
-            if not path:
-                print(f"[LoraStackApply] LoRA not found: {lora_name}")
-                continue
-            weights = _comfy_utils.load_torch_file(path, safe_load=True)
+            weights = _lora_load_weights(lora_name)
             m, c = _comfy_sd.load_lora_for_models(
                 m, c, weights,
                 entry.get("strength_model", 1.0),
@@ -10255,6 +10245,167 @@ class WanVidLoraStack(io.ComfyNode):
         enabled = [e for e in all_entries if e.get("enabled", True)]
         wanvid_lora, count = _lora_build_wanvid(enabled, prev_wanvid_lora, low_mem_load, merge_loras)
         return io.NodeOutput(wanvid_lora, count)
+
+
+# ── Node: LoraStackBuilder ───────────────────────────────────────────────────
+
+_LORA_BUILDER_ROWS = 8
+
+
+def _lora_builder_inline_inputs(num_rows: int = _LORA_BUILDER_ROWS) -> list:
+    """Generate the flat per-row LoRA widget inputs for LoraStackBuilder."""
+    lora_list = _lora_get_list()
+    inputs = []
+    for i in range(num_rows):
+        inputs.extend([
+            io.Combo.Input(
+                f"lora_{i}",
+                display_name=f"LoRA {i}",
+                options=lora_list,
+                default="None",
+                optional=True,
+                tooltip=f"LoRA file for slot {i}. Leave as None to skip.",
+            ),
+            io.Float.Input(
+                f"strength_model_{i}",
+                display_name=f"Strength (Model)",
+                default=1.0, min=-10.0, max=10.0, step=0.0001,
+                optional=True,
+                tooltip=f"Model weight strength for slot {i}.",
+            ),
+            io.Float.Input(
+                f"strength_clip_{i}",
+                display_name=f"Strength (CLIP)",
+                default=1.0, min=-10.0, max=10.0, step=0.0001,
+                optional=True,
+                tooltip=f"CLIP weight strength for slot {i}. Ignored for model targets without a CLIP encoder.",
+            ),
+            io.Boolean.Input(
+                f"enabled_{i}",
+                display_name=f"Enabled",
+                default=True,
+                optional=True,
+                tooltip=f"Uncheck to skip slot {i} without removing it.",
+            ),
+            io.Float.Input(
+                f"video_{i}",
+                display_name=f"Video Strength",
+                default=1.0, min=0.0, max=1.0, step=0.01,
+                optional=True,
+                tooltip=f"LTX2.3 only: multiplier for video and video-side cross-attn layers in slot {i}.",
+            ),
+            io.Float.Input(
+                f"audio_{i}",
+                display_name=f"Audio Strength",
+                default=1.0, min=0.0, max=1.0, step=0.01,
+                optional=True,
+                tooltip=f"LTX2.3 only: multiplier for audio and audio-side cross-attn layers in slot {i}.",
+            ),
+        ])
+    return inputs
+
+
+class LoraStackBuilder(io.ComfyNode):
+    """
+    Build a LORA_STACK_DATA from up to 8 inline LoRA rows — no separate
+    LoraEntryDefine / LoraStackCollect nodes required.
+
+    Select model_target once at the top; JS hides the video/audio sliders for
+    any target that isn't LTX2.3.  An optional autogrow input accepts LORA_ENTRY
+    connections from LoraEntryDefine nodes for power-user workflows.
+    A prev_stack input lets you merge onto an existing stack (e.g. from a scene).
+
+    Dedup rule: last-write-wins on (lora, model_target) key.
+    Priority (lowest → highest): prev_stack → inline rows → autogrow connections.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            input=LoraEntry.Input("entry", optional=True),
+            prefix="entry",
+            min=0,
+            max=20,
+        )
+        return io.Schema(
+            node_id=prefixed_node_id("LoraStackBuilder"),
+            display_name="LoRA Stack Builder",
+            category="🧊 frost-byte/lora",
+            description=(
+                "Build a LORA_STACK_DATA from inline LoRA rows. "
+                "Select model_target to auto-show LTX2.3 video/audio sliders. "
+                "Connect prev_stack to merge onto an existing stack."
+            ),
+            inputs=[
+                io.Combo.Input(
+                    "model_target",
+                    display_name="Model Target",
+                    options=LORA_MODEL_TARGETS,
+                    default="LTX2.3",
+                    tooltip="Which model pipeline these LoRAs apply to.",
+                ),
+                LoraStackData.Input(
+                    "prev_stack",
+                    display_name="Prev Stack",
+                    optional=True,
+                    tooltip="Existing LORA_STACK_DATA to merge into (lowest priority).",
+                ),
+                io.Autogrow.Input(
+                    "entries",
+                    template=autogrow_template,
+                    optional=True,
+                    tooltip="Optional LORA_ENTRY connections from LoraEntryDefine nodes (highest priority).",
+                ),
+                *_lora_builder_inline_inputs(_LORA_BUILDER_ROWS),
+            ],
+            outputs=[
+                LoraStackData.Output("lora_stack_data", display_name="Stack Data"),
+                io.String.Output("stack_json",          display_name="Stack JSON"),
+                io.Int.Output("entry_count",            display_name="Entry Count"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model_target: str,
+        entries: io.Autogrow.Type,
+        prev_stack: Optional[list] = None,
+        **kwargs,
+    ) -> io.NodeOutput:
+        is_ltx = model_target == "LTX2.3"
+
+        # Build inline entries from flat kwargs (rows 0 .. _LORA_BUILDER_ROWS-1)
+        inline: list[dict] = []
+        for i in range(_LORA_BUILDER_ROWS):
+            lora = kwargs.get(f"lora_{i}") or "None"
+            if lora == "None":
+                continue
+            entry: dict = {
+                "lora":           lora,
+                "model_target":   model_target,
+                "strength_model": kwargs.get(f"strength_model_{i}", 1.0),
+                "strength_clip":  kwargs.get(f"strength_clip_{i}",  1.0),
+                "enabled":        kwargs.get(f"enabled_{i}",        True),
+            }
+            if is_ltx:
+                entry["video_strength"] = kwargs.get(f"video_{i}", 1.0)
+                entry["audio_strength"] = kwargs.get(f"audio_{i}", 1.0)
+            inline.append(entry)
+
+        # Collect autogrow LORA_ENTRY connections (highest priority)
+        connected: list[dict] = [v for v in entries.values() if v is not None]
+
+        # Merge: prev_stack → inline → connected; last-write-wins on (lora, model_target)
+        base = list(prev_stack) if prev_stack else []
+        seen: dict[tuple, dict] = {}
+        for e in base + inline + connected:
+            key = (e.get("lora", ""), e.get("model_target", ""))
+            seen[key] = e
+        merged = list(seen.values())
+
+        stack_json = _lora_stack_to_json(merged)
+        return io.NodeOutput(merged, stack_json, len(merged))
 
 
 # ── Preset scene-image loader ─────────────────────────────────────────────────
@@ -11272,9 +11423,10 @@ class FBToolsExtension(ComfyExtension):
             ScenePromptManager,
             PromptComposer,
             # LoRA scene nodes
+            LoraStackBuilder,
+            LoraStackApply,
             LoraEntryDefine,
             LoraStackCollect,
-            LoraStackApply,
             WanVidLoraStack,
             # Wan preset nodes
             LoraPresetDefine,
