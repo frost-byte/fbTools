@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "meeting_room_3p",
+  "name": "Meeting Room (3 speakers)",
+  "description": "Three characters in a meeting room — one presenter, two participants",
+  "slots": {
+    "A": {
+      "role": "presenter",
+      "needs_voice": true,
+      "needs_character_sheet": true
+    },
+    "B": {
+      "role": "participant 1",
+      "needs_voice": true,
+      "needs_character_sheet": true
+    },
+    "C": {
+      "role": "participant 2",
+      "needs_voice": true,
+      "needs_character_sheet": true
+    }
+  },
+  "environment": {
+    "summary": "a modern meeting room with a glass conference table, whiteboard, and large windows overlooking a city",
+    "lighting": "even overhead light with cooler natural daylight from the windows"
+  },
+  "style": "professional and clean, shallow depth of field on close-ups",
+  "shots": [
+    {
+      "id": "shot_1",
+      "timestamp": null,
+      "camera": "Wide establishing shot — all three subjects visible around the table",
+      "action": "{A} stands at the head of the table. {B} and {C} are seated across from each other.",
+      "dialogue": null,
+      "sound_events": "papers shuffling, chairs adjusting"
+    },
+    {
+      "id": "shot_2",
+      "timestamp": "00:04.000",
+      "camera": "Medium shot of {A} at the whiteboard",
+      "action": "{A} gestures toward the whiteboard and begins presenting their point.",
+      "dialogue": {
+        "speaker_slot": "A",
+        "placeholder": true,
+        "default_text": null
+      },
+      "sound_events": null
+    },
+    {
+      "id": "shot_3",
+      "timestamp": "00:09.000",
+      "camera": "Two-shot of {B} and {C}, medium",
+      "action": "{B} nods and makes notes. {C} listens attentively, arms crossed.",
+      "dialogue": null,
+      "sound_events": "pen on paper"
+    },
+    {
+      "id": "shot_4",
+      "timestamp": "00:13.000",
+      "camera": "Close-up of {B}",
+      "action": "{B} raises a point in response to {A}'s presentation.",
+      "dialogue": {
+        "speaker_slot": "B",
+        "placeholder": true,
+        "default_text": null
+      },
+      "sound_events": null
+    },
+    {
+      "id": "shot_5",
+      "timestamp": "00:18.000",
+      "camera": "Medium shot of {C}",
+      "action": "{C} adds their perspective, addressing both {A} and {B}.",
+      "dialogue": {
+        "speaker_slot": "C",
+        "placeholder": true,
+        "default_text": null
+      },
+      "sound_events": null
+    }
+  ],
+  "overall_soundscape": "Quiet office ambience with distant keyboard clicks and HVAC hum.",
+  "non_diegetic_music": "N/A"
+}

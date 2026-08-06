@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "id": "monologue_indoor",
+  "name": "Indoor Monologue",
+  "description": "Single speaker addressing the camera in a warmly lit interior",
+  "slots": {
+    "A": {
+      "role": "speaker",
+      "needs_voice": true,
+      "needs_character_sheet": true
+    }
+  },
+  "environment": {
+    "summary": "a warmly lit interior with soft ambient light and a neutral background",
+    "lighting": "soft key light from the left, gentle fill from the right, no hard shadows"
+  },
+  "style": "intimate and grounded, slight warmth in the color grade",
+  "shots": [
+    {
+      "id": "shot_1",
+      "timestamp": null,
+      "camera": "Medium close-up of {A}, chest to crown, facing the camera",
+      "action": "{A} is composed and present, a brief beat before speaking.",
+      "dialogue": {
+        "speaker_slot": "A",
+        "placeholder": true,
+        "default_text": null
+      },
+      "sound_events": null
+    },
+    {
+      "id": "shot_2",
+      "timestamp": "00:05.000",
+      "camera": "Close-up of {A}, face filling most of the frame",
+      "action": "{A} leans slightly forward, making a key point with quiet intensity.",
+      "dialogue": {
+        "speaker_slot": "A",
+        "placeholder": true,
+        "default_text": null
+      },
+      "sound_events": null
+    },
+    {
+      "id": "shot_3",
+      "timestamp": "00:10.000",
+      "camera": "Pull back to medium shot of {A}",
+      "action": "{A} settles back, allowing the thought to land before concluding.",
+      "dialogue": {
+        "speaker_slot": "A",
+        "placeholder": true,
+        "default_text": null
+      },
+      "sound_events": null
+    }
+  ],
+  "overall_soundscape": "Quiet interior room tone, minimal ambient sound.",
+  "non_diegetic_music": "N/A"
+}

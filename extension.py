@@ -79,6 +79,14 @@ from .utils.subject_profiles import (
     save_registry as _save_subject_registry,
     SUPPORTED_LANGUAGES as _SUBJECT_LANGUAGES,
 )
+from .utils.scene_templates import (
+    SceneTemplate,
+    load_template as _load_scene_template,
+    scan_templates as _scan_scene_templates,
+    template_ids as _scene_template_ids,
+    format_template_list as _format_template_list,
+    dir_fingerprint as _templates_dir_fingerprint,
+)
 
 from .utils.subject_compositor import (
     tensor_to_pil,
@@ -129,6 +137,8 @@ EXTENSION_PREFIX = "fbt"
 _concept_reload_counter: int = 0
 # Incremented by POST /fbtools/subjects/reload so SubjectProfileLoad re-executes
 _subject_reload_counter: int = 0
+# Incremented by POST /fbtools/scene_templates/reload so SceneTemplate nodes re-execute
+_scene_template_reload_counter: int = 0
 
 def prefixed_node_id(display_name: str) -> str:
     """Construct a globally-unique node_id using the shared extension prefix."""
@@ -1449,6 +1459,31 @@ def default_registry_path() -> str:
 def default_subject_profiles_path() -> str:
     """Default path for the subject profiles JSON file."""
     return os.path.join(user_data_dir(), "subject_profiles.json")
+
+
+def default_scene_templates_dir() -> str:
+    """Return (and create) the user scene_templates directory.
+
+    Seeds bundled example templates on first use when the directory is empty.
+    """
+    path = _user_subdir("scene_templates")
+    if not any(f.endswith(".json") for f in os.listdir(path)):
+        _seed_bundled_templates(path)
+    return path
+
+
+def _seed_bundled_templates(dest_dir: str) -> None:
+    """Copy bundled example templates into dest_dir (one-time initialisation)."""
+    import shutil as _shutil
+    src_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "scene_templates")
+    if not os.path.isdir(src_dir):
+        return
+    for fname in os.listdir(src_dir):
+        if fname.endswith(".json"):
+            dst = os.path.join(dest_dir, fname)
+            if not os.path.exists(dst):
+                _shutil.copy2(os.path.join(src_dir, fname), dst)
+    logger.info("Seeded %s with bundled scene templates from %s", dest_dir, src_dir)
 
 
 def default_libber_dir():
@@ -11745,6 +11780,179 @@ async def _subjects_get_profiles(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+# ── Custom type: SCENE_TEMPLATE ──────────────────────────────────────────────
+
+SCENE_TEMPLATE_TYPE = "SCENE_TEMPLATE"
+
+
+@io.comfytype(io_type=SCENE_TEMPLATE_TYPE)
+class SceneTemplateIOType:
+    """Carries a SceneTemplate instance between Load → SceneCompose nodes."""
+    Type = object  # SceneTemplate
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "template", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+# ── Scene Template helpers ─────────────────────────────────────────────────────
+
+def _template_get_ids() -> list[str]:
+    """Return available template IDs for combo population at schema time."""
+    try:
+        ids = _scene_template_ids(default_scene_templates_dir())
+        return ids if ids else ["(none)"]
+    except Exception:
+        return ["(none)"]
+
+
+# ── Node: SceneTemplateLoad ───────────────────────────────────────────────────
+
+class SceneTemplateLoad(io.ComfyNode):
+    """Load a scene template from the scene_templates directory.
+
+    The combo is populated at extension load time from the user's
+    scene_templates/ directory (seeded with bundled examples on first use).
+    Refresh the page after adding new templates to see them in the dropdown.
+    """
+    node_id = prefixed_node_id("SceneTemplateLoad")
+    display_name = "Scene Template Load"
+    category = "🧊 frost-byte/Scene"
+    is_output_node = True
+
+    @classmethod
+    def define_schema(cls):
+        template_id_options = _template_get_ids()
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            is_output_node=cls.is_output_node,
+            inputs=[
+                io.Combo.Input(
+                    "template_id",
+                    options=template_id_options,
+                    display_name="Template ID",
+                    tooltip="Scene template to load.  Refresh the page after adding new templates.",
+                ),
+            ],
+            outputs=[
+                SceneTemplateIOType.Output(
+                    "template",
+                    display_name="Scene Template",
+                    tooltip="Template object for wiring into SceneCompose.",
+                ),
+                io.String.Output(
+                    "slot_info",
+                    display_name="Slot Info",
+                    tooltip="Formatted summary of slot requirements.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, template_id: str = "", **_):
+        templates_dir = default_scene_templates_dir()
+        path = os.path.join(templates_dir, f"{template_id}.json")
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0
+        return (path, mtime, _scene_template_reload_counter)
+
+    @classmethod
+    def execute(cls, template_id: str = "") -> io.NodeOutput:
+        templates_dir = default_scene_templates_dir()
+        if not template_id or template_id == "(none)":
+            logger.warning("SceneTemplateLoad: no template_id selected")
+            return io.NodeOutput(None, "")
+        path = os.path.join(templates_dir, f"{template_id}.json")
+        if not os.path.exists(path):
+            logger.warning("SceneTemplateLoad: template not found: %s", path)
+            return io.NodeOutput(None, f"Template not found: {template_id}")
+        template = _load_scene_template(path)
+        slot_info = template.format_slot_info()
+        send_status_update(
+            cls.node_id,
+            f"Loaded: {template.name} | {template.slot_count} slot(s) | {len(template.shots)} shots",
+        )
+        return io.NodeOutput(
+            template,
+            slot_info,
+            ui={"slot_info": slot_info},
+        )
+
+
+# ── Node: SceneTemplateList ───────────────────────────────────────────────────
+
+class SceneTemplateList(io.ComfyNode):
+    """List all available scene templates.
+
+    Scans the scene_templates/ directory and returns a formatted summary.
+    Useful for quickly reviewing available templates.
+    """
+    node_id = prefixed_node_id("SceneTemplateList")
+    display_name = "Scene Template List"
+    category = "🧊 frost-byte/Scene"
+    is_output_node = True
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            is_output_node=cls.is_output_node,
+            inputs=[],
+            outputs=[
+                io.String.Output(
+                    "template_list",
+                    display_name="Template List",
+                    tooltip="Formatted list of all available templates.",
+                ),
+                io.Int.Output("template_count", display_name="Template Count"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, **_):
+        templates_dir = default_scene_templates_dir()
+        return (_templates_dir_fingerprint(templates_dir), _scene_template_reload_counter)
+
+    @classmethod
+    def execute(cls) -> io.NodeOutput:
+        templates_dir = default_scene_templates_dir()
+        listing = _format_template_list(templates_dir)
+        count = len(_scan_scene_templates(templates_dir))
+        return io.NodeOutput(listing, count, ui={"template_list": listing, "template_count": count})
+
+
+# ── Scene Template REST API endpoints ─────────────────────────────────────────
+
+@routes.post("/fbtools/scene_templates/reload")
+async def _scene_templates_reload(request):
+    """Increment reload counter so SceneTemplate nodes re-execute."""
+    global _scene_template_reload_counter
+    _scene_template_reload_counter += 1
+    logger.info("Scene templates reload requested (counter=%d)", _scene_template_reload_counter)
+    return web.json_response({"success": True, "counter": _scene_template_reload_counter})
+
+
+@routes.get("/fbtools/scene_templates/list")
+async def _scene_templates_list(request):
+    """Return the list of available template metadata as JSON."""
+    try:
+        templates_dir = default_scene_templates_dir()
+        templates = _scan_scene_templates(templates_dir)
+        return web.json_response({"templates": templates})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 # ── Concept REST API endpoints ─────────────────────────────────────────────────
 
 @routes.post("/fbtools/concepts/reload")
@@ -11837,4 +12045,7 @@ class FBToolsExtension(ComfyExtension):
             SubjectProfileLoad,
             SubjectProfileDefine,
             SubjectProfileList,
+            # Scene Template nodes
+            SceneTemplateLoad,
+            SceneTemplateList,
         ]

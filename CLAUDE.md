@@ -130,8 +130,10 @@ Key files:
 | `utils/story_video.py` | Story video generation helpers |
 | `utils/concept_registry.py` | Pure concept registry logic (no ComfyUI deps) — models, resolve, persist |
 | `utils/subject_profiles.py` | Pure subject profile logic (no ComfyUI deps) — `SubjectRegistry`, load/save/define |
+| `utils/scene_templates.py` | Pure scene template logic (no ComfyUI deps) — `SceneTemplate`, scan/load/format |
+| `scene_templates/` | Bundled example templates (seeded into user_data_dir on first use) |
 
-**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList, **SubjectProfileLoad**, **SubjectProfileDefine**, **SubjectProfileList**. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
+**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList, **SubjectProfileLoad**, **SubjectProfileDefine**, **SubjectProfileList**, **SceneTemplateLoad**, **SceneTemplateList**. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
 
 **Node categories** — use one of these existing values when adding a new node:
 
@@ -200,12 +202,14 @@ Node wiring uses custom type strings for type safety:
 - `PRESET_LIST` — between `WanPresetDefine` → `WanPresetSelect` (carries `{ name, lora_h, lora_l, prompt }` dicts)
 - `CONCEPT_REGISTRY` — between `ConceptRegistryLoad` / `ConceptDefine` → `ConceptResolve` / `ConceptList` (carries `ConceptRegistry` instance)
 - `SUBJECT_PROFILE` — between `SubjectProfileLoad` / `SubjectProfileDefine` → `SceneCompose` (carries subject dict with name, appearance, voice, character_sheet_images, concept_id)
+- `SCENE_TEMPLATE` — between `SceneTemplateLoad` → `SceneCompose` (carries `SceneTemplate` instance with slots, shots, environment, style)
 
 ### Persistence
 
 All package-level data is stored under `user_data_dir()` → `ComfyUI/user/default/comfyui-fbTools/`:
 - `concept_registry.json` — concept definitions (with `.bak` auto-backup on save)
 - `subject_profiles.json` — subject profile definitions (with `.bak` auto-backup on save)
+- `scene_templates/` — user scene template JSON files (seeded from bundled `scene_templates/` on first use)
 - `scenes/` — scene directories (new installs); legacy `output/scenes/` is still supported if the new dir is empty
 - `libbers/` — libber template JSON files (new installs); legacy `output/libbers/` is still supported
 
@@ -259,6 +263,29 @@ The subject profile system is defined in `utils/subject_profiles.py` (no ComfyUI
 **REST endpoints**:
 - `POST /fbtools/subjects/reload` — force reload counter increment
 - `GET /fbtools/subjects/profiles` — return full subject_profiles.json as JSON
+
+### Scene Templates (Scene Composition Engine — Phase 2)
+
+The scene template system is defined in `utils/scene_templates.py` (no ComfyUI deps) and exposed via two nodes. It is the second layer of the Scene Composition Engine.
+
+| Node | Role |
+|---|---|
+| `SceneTemplateLoad` | Load a template from `scene_templates/`; outputs SCENE_TEMPLATE + slot_info STRING |
+| `SceneTemplateList` | Scan the templates directory and list all available templates |
+
+**Storage**: `user_data_dir() + "/scene_templates/"` — one JSON file per template. Seeded with 3 bundled examples (`monologue_indoor`, `cafe_conversation_2p`, `meeting_room_3p`) on first use.
+
+**Bundled examples** ship in the package's own `scene_templates/` directory and are copied once into the user data dir when that directory is empty.
+
+**Template schema fields**: `id`, `name`, `description`, `slots` (dict of slot_id → `{role, needs_voice, needs_character_sheet}`), `environment` (`{summary, lighting}`), `style`, `shots` (list of `{id, timestamp, camera, action, dialogue, sound_events}`), `overall_soundscape`, `non_diegetic_music`.
+
+**Placeholder convention**: `{A}`, `{B}`, `{C}` in `action` and `camera` fields are replaced at assembly time with subject appearance descriptions.
+
+**Reload mechanism**: `POST /fbtools/scene_templates/reload` increments `_scene_template_reload_counter`. The `template_id` combo on `SceneTemplateLoad` is populated at schema load time — a page refresh is needed to see newly-added templates.
+
+**REST endpoints**:
+- `POST /fbtools/scene_templates/reload` — force reload counter increment
+- `GET /fbtools/scene_templates/list` — return list of template metadata as JSON
 
 ### Optional Dependencies
 
