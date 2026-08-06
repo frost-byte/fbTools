@@ -131,9 +131,10 @@ Key files:
 | `utils/concept_registry.py` | Pure concept registry logic (no ComfyUI deps) — models, resolve, persist |
 | `utils/subject_profiles.py` | Pure subject profile logic (no ComfyUI deps) — `SubjectRegistry`, load/save/define |
 | `utils/scene_templates.py` | Pure scene template logic (no ComfyUI deps) — `SceneTemplate`, scan/load/format |
+| `utils/scene_compose.py` | Pure composition logic (no ComfyUI deps) — `compose_scene`, `validate_scene`, `format_scene_summary` |
 | `scene_templates/` | Bundled example templates (seeded into user_data_dir on first use) |
 
-**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList, **SubjectProfileLoad**, **SubjectProfileDefine**, **SubjectProfileList**, **SceneTemplateLoad**, **SceneTemplateList**. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
+**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList, **SubjectProfileLoad**, **SubjectProfileDefine**, **SubjectProfileList**, **SceneTemplateLoad**, **SceneTemplateList**, **SceneCompose**. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
 
 **Node categories** — use one of these existing values when adding a new node:
 
@@ -203,6 +204,7 @@ Node wiring uses custom type strings for type safety:
 - `CONCEPT_REGISTRY` — between `ConceptRegistryLoad` / `ConceptDefine` → `ConceptResolve` / `ConceptList` (carries `ConceptRegistry` instance)
 - `SUBJECT_PROFILE` — between `SubjectProfileLoad` / `SubjectProfileDefine` → `SceneCompose` (carries subject dict with name, appearance, voice, character_sheet_images, concept_id)
 - `SCENE_TEMPLATE` — between `SceneTemplateLoad` → `SceneCompose` (carries `SceneTemplate` instance with slots, shots, environment, style)
+- `SCENE_INSTANCE` — between `SceneCompose` → `PromptAssemble` (carries composed scene dict: template, slot_assignments, dialogue, outfit_overrides)
 
 ### Persistence
 
@@ -286,6 +288,34 @@ The scene template system is defined in `utils/scene_templates.py` (no ComfyUI d
 **REST endpoints**:
 - `POST /fbtools/scene_templates/reload` — force reload counter increment
 - `GET /fbtools/scene_templates/list` — return list of template metadata as JSON
+
+### Scene Composition (Scene Composition Engine — Phase 3)
+
+The composition layer is defined in `utils/scene_compose.py` (no ComfyUI deps) and exposed via one node.
+
+| Node | Role |
+|---|---|
+| `SceneCompose` | Assign subjects to template slots, fill dialogue, apply outfit overrides; outputs SCENE_INSTANCE |
+
+**Inputs**: `template` (SCENE_TEMPLATE), `slot_A`–`slot_D` (SUBJECT_PROFILE, optional B–D), `dialogue_1`–`dialogue_4` (STRING, positional — fills placeholder shots in shot order), `outfit_override_A`–`outfit_override_D` (STRING, optional).
+
+**Dialogue mapping**: positional — `dialogue_1` fills the first shot with `placeholder: true` dialogue, `dialogue_2` fills the second, etc. Order follows shot order in the template.
+
+**Validation**: warns (via `scene_summary` output and status update) if required slots are unfilled or if voice/character-sheet requirements aren't met. Does not hard-fail — `scene_instance` is still returned so the graph can be inspected.
+
+**`subject_id` injection**: `SubjectProfileLoad` and `SubjectProfileDefine` inject a `subject_id` key into the subject dict they output, so `SceneCompose` and downstream nodes can reference which profile was loaded without needing a separate STRING output.
+
+**SCENE_INSTANCE dict schema**:
+```python
+{
+    "template_id": str,
+    "template_name": str,
+    "template": {full template dict},
+    "slot_assignments": {"A": subject_dict, "B": subject_dict, ...},
+    "dialogue": {"shot_1": "line text", "shot_2": "line text", ...},
+    "outfit_overrides": {"A": "override text", ...},
+}
+```
 
 ### Optional Dependencies
 
