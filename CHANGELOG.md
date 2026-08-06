@@ -1,6 +1,66 @@
 # CHANGELOG
 
 
+## v1.4.0 (2026-08-06)
+
+### Bug Fixes
+
+- **lora**: Pass lora_metadata and add lora_convert to apply paths
+  ([`84f3dbc`](https://github.com/frost-byte/fbTools/commit/84f3dbc327e32f88215a5c95cf585c9387f1e18e))
+
+- _lora_load_weights now loads with return_metadata=True and caches (mtime, weights, metadata) —
+  returns (weights, metadata) tuple - _lora_apply_standard: passes safetensors metadata to
+  load_lora_for_models(lora_metadata=...) so downstream nodes can inspect which LoRAs are applied to
+  a model patcher - _lora_apply_ltx23: adds missing comfy.lora_convert.convert_lora() call before
+  load_lora() to handle BFL/Wan-Fun format variants that the standard path converts automatically
+  via load_lora_for_models
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Features
+
+- **lora**: Add LoraStackBuilder node and refine LTX2.3 params
+  ([`94ebcad`](https://github.com/frost-byte/fbTools/commit/94ebcad22c0af3b847c74c1ad53b88efeea036ea))
+
+- New LoraStackBuilder node: 8 inline LoRA rows (combo + sliders) with model_target selector; JS
+  hides video/audio strength widgets for non-LTX2.3 targets; optional autogrow LORA_ENTRY input and
+  prev_stack merge; outputs LORA_STACK_DATA without requiring LoraEntryDefine/Collect -
+  LoraEntryDefine: replace 5 LTX2.3 per-layer params (video, video_to_audio, audio, audio_to_video,
+  other) with 2 (video_strength, audio_strength); backward compat preserved in _lora_apply_ltx23 for
+  old entries - _lora_apply_ltx23: handle new 2-param format; video_strength scales all
+  video/video-side-cross-attn keys, audio_strength scales all audio keys - _lora_load_weights: add
+  mtime-keyed in-memory cache; _lora_apply_standard now uses cached loader instead of direct
+  load_torch_file calls - get_node_list: LoraStackBuilder listed first; LoraEntryDefine/Collect
+  remain registered for backward compatibility
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene**: Add SubjectProfile nodes — Phase 1 of Scene Composition Engine
+  ([`4a2daaa`](https://github.com/frost-byte/fbTools/commit/4a2daaa40523c5780c3bff9ae7903a452ba19641))
+
+Introduces the subject profile layer: persistent JSON storage for character appearance, voice, and
+  character sheet references, linked to the concept registry via concept_id for LoRA resolution.
+
+New files: - utils/subject_profiles.py — pure SubjectRegistry logic, no ComfyUI deps -
+  tests/test_subject_profiles.py — 24 tests covering define, persist, list -
+  docs/scene_composition_action_plan.md — full 4-phase system spec
+
+New nodes (🧊 frost-byte/Scene): - SubjectProfileLoad — loads subject dict, IMAGE batch, AUDIO from
+  disk - SubjectProfileDefine — creates/updates subjects with auto_save - SubjectProfileList — lists
+  all defined subjects
+
+New REST endpoints: - POST /fbtools/subjects/reload — force re-execute fingerprint-cached nodes -
+  GET /fbtools/subjects/profiles — return subject_profiles.json as JSON
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.3.0 (2026-08-06)
 
 ### Features
