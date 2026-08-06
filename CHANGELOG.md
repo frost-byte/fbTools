@@ -1,6 +1,29 @@
 # CHANGELOG
 
 
+## v1.7.0 (2026-08-06)
+
+### Features
+
+- **scene**: Add PromptAssemble node — Phase 4 of Scene Composition Engine
+  ([`6187b54`](https://github.com/frost-byte/fbTools/commit/6187b54053d7fed94d200e15caf1ab12532e1bf8))
+
+Implements model-specific prompt generation from a SCENE_INSTANCE: - utils/prompt_assembler.py: pure
+  assembly logic for 8 model types - h3_ref2va: full 6-section H3 brief with Subject/Picture/Audio
+  reference labels, first-appearance tracking, <d>[lang] text</d> dialogue tags - h3_fl2va:
+  shot-structured format with dialogue, no reference labels - wan22/bernini: production-direction
+  block with task classification - ltx23/flux2/krea2/qwen: simple descriptive format -
+  PromptAssemble node: takes SCENE_INSTANCE + model_type, outputs prompt (STRING), reference_images
+  (IMAGE batch), reference_audio (AUDIO), additional_audio (AUDIO), concept_ids (STRING),
+  assembly_report (STRING) - 63 new tests covering all model types, reference numbering, placeholder
+  replacement, dialogue tags, outfit overrides, image/audio ordering, concept ID extraction, and
+  edge cases
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.6.0 (2026-08-06)
 
 ### Features
