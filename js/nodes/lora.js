@@ -174,7 +174,8 @@ export function setupWanPresetDefine(nodeType, nodeData, app) {
 
 // ── Node handler: LoraEntryDefine ─────────────────────────────────────────────
 
-const LTX_WIDGET_NAMES = ["video", "video_to_audio", "audio", "audio_to_video", "other"];
+const LTX_WIDGET_NAMES = ["video_strength", "audio_strength"];
+const LORA_BUILDER_ROWS = 8;
 
 function applyLoraEntryTarget(node, target) {
     const isLtx = target === "LTX2.3";
@@ -208,7 +209,7 @@ export function setupLoraEntryDefine(nodeType, nodeData, app) {
         });
         self._ltxToggleBtn = toggleBtn;
 
-        // Move toggle button to sit between "enabled" and "video"
+        // Move toggle button to sit between "enabled" and "video_strength"
         const enabledIdx = this.widgets.findIndex(w => w.name === "enabled");
         const btnIdx = this.widgets.indexOf(toggleBtn);
         if (enabledIdx >= 0 && btnIdx > enabledIdx + 1) {
@@ -272,5 +273,43 @@ export function setupLoraEntryDefine(nodeType, nodeData, app) {
         if (onConfigure) onConfigure.apply(this, arguments);
         const modelTargetWidget = this.widgets?.find(w => w.name === "model_target");
         if (modelTargetWidget) applyLoraEntryTarget(this, modelTargetWidget.value);
+    };
+}
+
+// ── Node handler: LoraStackBuilder ────────────────────────────────────────────
+
+function applyLoraBuilderTarget(node, target) {
+    const isLtx = target === "LTX2.3";
+    for (let i = 0; i < LORA_BUILDER_ROWS; i++) {
+        const videoW = node.widgets?.find(w => w.name === `video_${i}`);
+        const audioW = node.widgets?.find(w => w.name === `audio_${i}`);
+        setWidgetVisible(videoW, isLtx);
+        setWidgetVisible(audioW, isLtx);
+    }
+    node.setSize(node.computeSize());
+    node.setDirtyCanvas(true, true);
+}
+
+export function setupLoraStackBuilder(nodeType, nodeData, app) {
+    const onNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+        if (onNodeCreated) onNodeCreated.apply(this, arguments);
+        const self = this;
+        const modelTargetWidget = this.widgets?.find(w => w.name === "model_target");
+        if (modelTargetWidget) {
+            const origCallback = modelTargetWidget.callback;
+            modelTargetWidget.callback = function (value) {
+                if (origCallback) origCallback.apply(this, arguments);
+                applyLoraBuilderTarget(self, value);
+            };
+            applyLoraBuilderTarget(self, modelTargetWidget.value);
+        }
+    };
+
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (data) {
+        if (onConfigure) onConfigure.apply(this, arguments);
+        const modelTargetWidget = this.widgets?.find(w => w.name === "model_target");
+        if (modelTargetWidget) applyLoraBuilderTarget(this, modelTargetWidget.value);
     };
 }

@@ -462,7 +462,7 @@ import { setupStoryEdit, setupStoryView, setupStorySceneBatch } from "./nodes/st
 import { setupLibberManager, setupLibberApply } from "./nodes/libber.js";
 import { setupDatasetCaptionViewer } from "./nodes/dataset_caption_viewer.js";
 import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
-import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect } from "./nodes/lora.js";
+import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect, setupLoraStackBuilder } from "./nodes/lora.js";
 import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
 
 // Add context menu entry for extracting a node as json
@@ -580,6 +580,9 @@ app.registerExtension({
         }
 
         // LoRA nodes
+        else if (isNode("LoraStackBuilder")) {
+            setupLoraStackBuilder(nodeType, nodeData, app);
+        }
         else if (isNode("LoraEntryDefine")) {
             setupLoraEntryDefine(nodeType, nodeData, app);
         }
