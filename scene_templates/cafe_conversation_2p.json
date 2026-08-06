@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "id": "cafe_conversation_2p",
+  "name": "Café Conversation (2 speakers)",
+  "description": "Two characters having a conversation in a café setting",
+  "slots": {
+    "A": {
+      "role": "primary speaker",
+      "needs_voice": true,
+      "needs_character_sheet": true
+    },
+    "B": {
+      "role": "secondary speaker",
+      "needs_voice": true,
+      "needs_character_sheet": true
+    }
+  },
+  "environment": {
+    "summary": "a warm, sunlit café with exposed brick walls, wooden tables, and ambient chatter",
+    "lighting": "warm natural window light from the left, soft shadows"
+  },
+  "style": "cinematic with shallow depth of field and warm color grading",
+  "shots": [
+    {
+      "id": "shot_1",
+      "timestamp": null,
+      "camera": "Medium two-shot from across the table",
+      "action": "{A} sits across from {B}, holding a coffee cup. {A} leans forward and speaks.",
+      "dialogue": {
+        "speaker_slot": "A",
+        "placeholder": true,
+        "default_text": null
+      },
+      "sound_events": null
+    },
+    {
+      "id": "shot_2",
+      "timestamp": "00:04.000",
+      "camera": "Close-up of {B}, shallow depth of field",
+      "action": "{B} listens with interest, then responds with a slight smile.",
+      "dialogue": {
+        "speaker_slot": "B",
+        "placeholder": true,
+        "default_text": null
+      },
+      "sound_events": null
+    },
+    {
+      "id": "shot_3",
+      "timestamp": "00:08.000",
+      "camera": "Medium shot favoring {A}, {B} slightly out of focus",
+      "action": "{A} reacts to {B}'s response, laughs warmly, and picks up the coffee cup.",
+      "dialogue": null,
+      "sound_events": "quiet laughter, coffee cup clink"
+    }
+  ],
+  "overall_soundscape": "Soft café ambience with quiet background chatter, espresso machine hiss, and the occasional clink of cups.",
+  "non_diegetic_music": "N/A"
+}
