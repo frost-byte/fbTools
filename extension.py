@@ -9507,12 +9507,17 @@ def _lora_get_list() -> list[str]:
     return ["None"] + folder_paths.get_filename_list("loras")
 
 
-# mtime-keyed in-memory cache: {full_path: (mtime, weights_dict)}
-_lora_weight_cache: dict[str, tuple[float, dict]] = {}
+# mtime-keyed in-memory cache: {full_path: (mtime, weights_dict, metadata_dict)}
+_lora_weight_cache: dict[str, tuple[float, dict, dict]] = {}
 
 
-def _lora_load_weights(lora_name: str) -> dict:
-    """Load raw LoRA weights from disk, returning a cached copy when the file is unchanged."""
+def _lora_load_weights(lora_name: str) -> tuple[dict, dict]:
+    """Load raw LoRA weights + safetensors metadata from disk (cached by mtime).
+
+    Returns (weights, metadata).  metadata is the safetensors header dict
+    (may be empty {}) — pass it to comfy.sd.load_lora_for_models as
+    lora_metadata so downstream nodes can inspect which LoRAs are applied.
+    """
     path = folder_paths.get_full_path("loras", lora_name)
     if not path:
         raise FileNotFoundError(f"LoRA not found: {lora_name}")
@@ -9522,11 +9527,12 @@ def _lora_load_weights(lora_name: str) -> dict:
         mtime = 0.0
     cached = _lora_weight_cache.get(path)
     if cached is not None and cached[0] == mtime:
-        return cached[1]
+        return cached[1], cached[2]
     import comfy.utils as _comfy_utils
-    weights = _comfy_utils.load_torch_file(path, safe_load=True)
-    _lora_weight_cache[path] = (mtime, weights)
-    return weights
+    weights, metadata = _comfy_utils.load_torch_file(path, safe_load=True, return_metadata=True)
+    metadata = metadata or {}
+    _lora_weight_cache[path] = (mtime, weights, metadata)
+    return weights, metadata
 
 
 def _lora_entries_for_target(entries: list[dict], model_target: str) -> list[dict]:
@@ -10036,7 +10042,9 @@ def _lora_apply_ltx23(model, clip, entries: list[dict]) -> tuple:
         strength_clip  = entry.get("strength_clip",  1.0)
 
         try:
-            raw = _lora_load_weights(lora_name)
+            import comfy.lora_convert as _comfy_lora_convert
+            raw, _meta = _lora_load_weights(lora_name)
+            raw = _comfy_lora_convert.convert_lora(raw)
 
             key_map = {}
             if m is not None:
@@ -10089,11 +10097,12 @@ def _lora_apply_standard(model, clip, entries: list[dict]) -> tuple:
         if not lora_name or lora_name == "None":
             continue
         try:
-            weights = _lora_load_weights(lora_name)
+            weights, metadata = _lora_load_weights(lora_name)
             m, c = _comfy_sd.load_lora_for_models(
                 m, c, weights,
                 entry.get("strength_model", 1.0),
                 entry.get("strength_clip",  1.0),
+                lora_metadata=metadata or None,
             )
             count += 1
         except Exception as e:
