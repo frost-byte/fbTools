@@ -1,6 +1,35 @@
 # CHANGELOG
 
 
+## v1.6.0 (2026-08-06)
+
+### Features
+
+- **scene**: Add SceneCompose node — Phase 3 of Scene Composition Engine
+  ([`8ca5c34`](https://github.com/frost-byte/fbTools/commit/8ca5c34fa2f8e1921c2021aaf9ef3167796a51da))
+
+Adds the scene composition layer: assigns subjects to template slots, maps positional dialogue to
+  placeholder shots, applies outfit overrides, and validates slot requirements.
+
+New files: - utils/scene_compose.py — pure composition logic, no ComfyUI deps -
+  tests/test_scene_compose.py — 25 tests covering compose, validate, summary
+
+New node (🧊 frost-byte/Scene): - SceneCompose — takes SCENE_TEMPLATE + up to 4 SUBJECT_PROFILEs, up
+  to 4 dialogue strings, and per-slot outfit overrides; outputs SCENE_INSTANCE + human-readable
+  scene_summary with validation warnings
+
+New custom type: SCENE_INSTANCE (dict with template, slot_assignments, dialogue map,
+  outfit_overrides)
+
+Also: SubjectProfileLoad and SubjectProfileDefine now inject subject_id into the SUBJECT_PROFILE
+  dict they output, so downstream nodes can reference the profile key without a separate STRING
+  output.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.5.0 (2026-08-06)
 
 ### Features
