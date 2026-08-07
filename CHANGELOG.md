@@ -1,6 +1,33 @@
 # CHANGELOG
 
 
+## v1.8.0 (2026-08-07)
+
+### Features
+
+- **ui**: Compact canvas rows for LoraStackBuilder and ConceptDefine
+  ([`2b787a8`](https://github.com/frost-byte/fbTools/commit/2b787a8b4fd51f746694967878764a0850f87602))
+
+LoraStackBuilder: - Each slot now fits on a single canvas row: toggle, LoRA name, strength spinners
+  (Model+CLIP, or Model+Vid+Aud for LTX2.3), ⓘ icon - Row count is dynamic — starts at 1 (or last
+  filled slot) and grows via an "+ Add LoRA" button; count persists in node.properties - Backend
+  slot widgets hidden with type="converted-widget" so V3 rendering pipeline skips them - ⓘ opens
+  Civitai modal (image gallery with hover-prompt overlay, up to 6 example images) - showCivitaiModal
+  exported so ConceptDefine can share it
+
+ConceptDefine: - New compact _CdLoraRow canvas widget: LoRA name + weight spinner on one line,
+  optional H/L badge for split models - Split models (wan22, bernini): H row + L row; non-split:
+  single row - Switching model_type live rebuilds rows immediately - Widget hiding uses
+  type="converted-widget" (V3 requirement; "hidden" is ignored by the V3 onDrawForeground pipeline)
+  - Both onNodeCreated and onConfigure rebuild via queueMicrotask so onConfigure.apply can assign
+  saved widget values before native widgets are converted, preventing misalignment - Weight
+  sanitize: coerces false/non-numeric values to 1.0 on load
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.7.0 (2026-08-06)
 
 ### Features
