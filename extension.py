@@ -10319,7 +10319,10 @@ _LORA_BUILDER_ROWS = 8
 
 
 def _lora_builder_inline_inputs(num_rows: int = _LORA_BUILDER_ROWS) -> list:
-    """Generate the flat per-row LoRA widget inputs for LoraStackBuilder."""
+    """Generate the flat per-row LoRA widget inputs for LoraStackBuilder.
+
+    Order: all 6 per-slot fields for rows 0..N-1 in definition order.
+    """
     lora_list = _lora_get_list()
     inputs = []
     for i in range(num_rows):
@@ -10344,7 +10347,7 @@ def _lora_builder_inline_inputs(num_rows: int = _LORA_BUILDER_ROWS) -> list:
                 display_name=f"Strength (CLIP)",
                 default=1.0, min=-10.0, max=10.0, step=0.0001,
                 optional=True,
-                tooltip=f"CLIP weight strength for slot {i}. Ignored for model targets without a CLIP encoder.",
+                tooltip=f"CLIP weight strength for slot {i}.",
             ),
             io.Boolean.Input(
                 f"enabled_{i}",
@@ -10358,14 +10361,14 @@ def _lora_builder_inline_inputs(num_rows: int = _LORA_BUILDER_ROWS) -> list:
                 display_name=f"Video Strength",
                 default=1.0, min=0.0, max=1.0, step=0.01,
                 optional=True,
-                tooltip=f"LTX2.3 only: multiplier for video and video-side cross-attn layers in slot {i}.",
+                tooltip=f"LTX2.3 only: video-layer multiplier for slot {i}.",
             ),
             io.Float.Input(
                 f"audio_{i}",
                 display_name=f"Audio Strength",
                 default=1.0, min=0.0, max=1.0, step=0.01,
                 optional=True,
-                tooltip=f"LTX2.3 only: multiplier for audio and audio-side cross-attn layers in slot {i}.",
+                tooltip=f"LTX2.3 only: audio-layer multiplier for slot {i}.",
             ),
         ])
     return inputs
@@ -11665,7 +11668,7 @@ class SubjectProfileDefine(io.ComfyNode):
                     multiline=False,
                     tooltip="Links to the concept registry entry for LoRA resolution.",
                 ),
-                io.Bool.Input(
+                io.Boolean.Input(
                     "auto_save",
                     display_name="Auto Save",
                     default=True,
