@@ -49,6 +49,9 @@ const _dom = {};
 // Slot-reference completion popup element (singleton)
 let _completionEl = null;
 
+// Index of the shot card most recently focused — used to target preset insertions
+let _focusedShotIdx = -1;
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function _mk(tag, props = {}, children = []) {
@@ -466,7 +469,7 @@ function _showNewBgForm() {
     nameEl.focus();
 }
 
-function _populatePresetList(list, presets, field) {
+function _populatePresetList(list, presets, insertFn) {
     if (!list) return;
     list.innerHTML = "";
     if (!presets.length) {
@@ -476,10 +479,14 @@ function _populatePresetList(list, presets, field) {
     presets.forEach(p => {
         const item = _mk("div", {
             cls: "fbt-ce-sb-item fbt-ce-clickable",
-            title: `Click to copy: ${p.description || ""}`,
+            title: p.description || "",
             onclick: () => {
-                navigator.clipboard?.writeText(p.description || "").catch(() => {});
-                _toast(`Copied: ${p.name}`, "success");
+                if (insertFn) {
+                    insertFn(p.description || "");
+                } else {
+                    navigator.clipboard?.writeText(p.description || "").catch(() => {});
+                    _toast(`Copied: ${p.name}`, "success");
+                }
             },
         });
         item.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: p.name || p.id }));
@@ -491,8 +498,8 @@ function _refreshSidebar() {
     _populateSavedList();
     _populateSubjectList();
     _populateBgList();
-    _populatePresetList(_dom.camList, _S.cameraPresets, "description");
-    _populatePresetList(_dom.sndList, _S.soundPresets, "description");
+    _populatePresetList(_dom.camList, _S.cameraPresets, _insertCameraPreset);
+    _populatePresetList(_dom.sndList, _S.soundPresets, _insertSoundPreset);
 }
 
 function _buildSidebar(parent) {
@@ -507,8 +514,8 @@ function _buildSidebar(parent) {
     sidebar.appendChild(_buildSidebarSection("Saved Compositions", _dom.savedList));
     sidebar.appendChild(_buildSidebarSection("Subjects (click to assign)", _dom.subjectList));
     sidebar.appendChild(_buildSidebarSection("Backgrounds (click to assign)", _dom.bgList));
-    sidebar.appendChild(_buildSidebarSection("Camera Presets (click to copy)", _dom.camList));
-    sidebar.appendChild(_buildSidebarSection("Sound Presets (click to copy)", _dom.sndList));
+    sidebar.appendChild(_buildSidebarSection("Camera Presets (click to apply to shot)", _dom.camList));
+    sidebar.appendChild(_buildSidebarSection("Sound Presets (click to apply to shot)", _dom.sndList));
 
     parent.appendChild(sidebar);
 }
@@ -649,11 +656,8 @@ function _buildShotsSection(parent) {
     const addBtn = _mk("button", {
         cls: "fbt-ce-add-btn",
         textContent: "+ Add Shot",
-        onclick: () => {
-            _S.composition.shots.push(_newShot());
-            _rebuildShots();
-            _markDirty();
-        },
+        title: "Add a new shot (Ctrl+Shift+N)",
+        onclick: () => _addNewShot(),
     });
     parent.appendChild(_dom.shotsContainer);
     parent.appendChild(addBtn);
@@ -663,19 +667,44 @@ function _buildShotsSection(parent) {
 function _buildShotCard(shot, index) {
     const card = _mk("div", { cls: "fbt-ce-shot-card" });
 
+    // Track focused shot index so sidebar presets know where to insert
+    card.addEventListener("focusin", () => {
+        _focusedShotIdx = index;
+        _updateShotActive();
+    });
+
     // Header
     const hdr = _mk("div", { cls: "fbt-ce-shot-header" });
     hdr.appendChild(_mk("span", { cls: "fbt-ce-shot-num", textContent: `Shot ${index + 1}` }));
-    hdr.appendChild(_mk("button", {
-        cls: "fbt-ce-icon-btn fbt-ce-danger",
-        title: "Remove shot",
-        textContent: "✕",
+
+    const hdrBtns = _mk("span", { cls: "fbt-ce-shot-hdr-btns" });
+    if (index > 0) {
+        hdrBtns.appendChild(_mk("button", {
+            cls: "fbt-ce-icon-btn", title: "Move up", textContent: "↑",
+            onclick: () => _moveShot(index, -1),
+        }));
+    }
+    if (index < _S.composition.shots.length - 1) {
+        hdrBtns.appendChild(_mk("button", {
+            cls: "fbt-ce-icon-btn", title: "Move down", textContent: "↓",
+            onclick: () => _moveShot(index, +1),
+        }));
+    }
+    hdrBtns.appendChild(_mk("button", {
+        cls: "fbt-ce-icon-btn", title: "Duplicate shot", textContent: "⧉",
+        onclick: () => _duplicateShot(index),
+    }));
+    hdrBtns.appendChild(_mk("button", {
+        cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Remove shot", textContent: "✕",
         onclick: () => {
             _S.composition.shots.splice(index, 1);
+            _focusedShotIdx = Math.min(_focusedShotIdx, _S.composition.shots.length - 1);
             _rebuildShots();
+            _updateShotActive();
             _markDirty();
         },
     }));
+    hdr.appendChild(hdrBtns);
     card.appendChild(hdr);
 
     // Timestamp
@@ -788,6 +817,10 @@ function _buildShotCard(shot, index) {
     snd.addEventListener("input", () => { shot.sound_events = snd.value.trim() || null; _markDirty(); });
     card.appendChild(_labeledRow("Sound", snd));
 
+    // Store refs so sidebar preset click handlers can insert into the right fields
+    card._camInput = cam;
+    card._sndInput = snd;
+
     return card;
 }
 
@@ -806,6 +839,68 @@ function _rebuildShots() {
 function _refreshShotDialogueSpeakers() {
     // Rebuild all shot cards so speaker dropdowns reflect current slots
     _rebuildShots();
+}
+
+// ── Shot management helpers ────────────────────────────────────────────────────
+
+function _updateShotActive() {
+    const cards = _dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card");
+    if (!cards) return;
+    Array.from(cards).forEach((c, i) => c.classList.toggle("fbt-ce-shot-active", i === _focusedShotIdx));
+}
+
+function _addNewShot() {
+    _S.composition.shots.push(_newShot());
+    const newIdx = _S.composition.shots.length - 1;
+    _focusedShotIdx = newIdx;
+    _rebuildShots();
+    _updateShotActive();
+    _markDirty();
+    const cards = _dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card");
+    cards?.[newIdx]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function _moveShot(fromIdx, direction) {
+    const shots = _S.composition.shots;
+    const toIdx = fromIdx + direction;
+    if (toIdx < 0 || toIdx >= shots.length) return;
+    [shots[fromIdx], shots[toIdx]] = [shots[toIdx], shots[fromIdx]];
+    _focusedShotIdx = toIdx;
+    _rebuildShots();
+    _updateShotActive();
+    _markDirty();
+}
+
+function _duplicateShot(idx) {
+    const dupe = JSON.parse(JSON.stringify(_S.composition.shots[idx]));
+    dupe.id = `shot_${++_S.shotSeq}`;
+    _S.composition.shots.splice(idx + 1, 0, dupe);
+    _focusedShotIdx = idx + 1;
+    _rebuildShots();
+    _updateShotActive();
+    _markDirty();
+    const cards = _dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card");
+    cards?.[_focusedShotIdx]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function _insertCameraPreset(text) {
+    if (_focusedShotIdx < 0) { _toast("Click inside a shot first", "warn"); return; }
+    const cards = Array.from(_dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card") || []);
+    const card = cards[_focusedShotIdx];
+    if (!card?._camInput) { _toast("Click inside a shot first", "warn"); return; }
+    card._camInput.value = text;
+    card._camInput.dispatchEvent(new Event("input", { bubbles: true }));
+    _toast("Camera preset applied", "success");
+}
+
+function _insertSoundPreset(text) {
+    if (_focusedShotIdx < 0) { _toast("Click inside a shot first", "warn"); return; }
+    const cards = Array.from(_dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card") || []);
+    const card = cards[_focusedShotIdx];
+    if (!card?._sndInput) { _toast("Click inside a shot first", "warn"); return; }
+    card._sndInput.value = text;
+    card._sndInput.dispatchEvent(new Event("input", { bubbles: true }));
+    _toast("Sound preset applied", "success");
 }
 
 // ── Main editor area ───────────────────────────────────────────────────────────
@@ -941,13 +1036,13 @@ function _buildEditor(parent) {
     actionBar.appendChild(_mk("button", {
         cls: "fbt-ce-btn",
         textContent: "Preview Raw",
-        title: "Assemble and preview the prompt for the selected model type",
+        title: "Assemble and preview the prompt for the selected model type (Ctrl+Shift+P)",
         onclick: _onPreview,
     }));
     actionBar.appendChild(_mk("button", {
         cls: "fbt-ce-btn",
         textContent: "Copy",
-        title: "Assemble and copy prompt to clipboard",
+        title: "Assemble and copy prompt to clipboard (Ctrl+Shift+C)",
         onclick: _onCopy,
     }));
     actionBar.appendChild(_mk("button", {
@@ -1202,9 +1297,12 @@ function _buildPanel(el) {
     _buildEditor(body);
     _dom.panel.appendChild(body);
 
-    // Ctrl+S to save — stopPropagation prevents ComfyUI's document-level handler from also firing
+    // Keyboard shortcuts — stopPropagation prevents ComfyUI's document-level handlers from also firing
     el.addEventListener("keydown", e => {
-        if (e.ctrlKey && e.key === "s") { e.preventDefault(); e.stopPropagation(); _onSave(); }
+        if (e.ctrlKey && !e.shiftKey && e.key === "s") { e.preventDefault(); e.stopPropagation(); _onSave(); }
+        if (e.ctrlKey && e.shiftKey && e.key === "N") { e.preventDefault(); e.stopPropagation(); _addNewShot(); }
+        if (e.ctrlKey && e.shiftKey && e.key === "P") { e.preventDefault(); e.stopPropagation(); _onPreview(); }
+        if (e.ctrlKey && e.shiftKey && e.key === "C") { e.preventDefault(); e.stopPropagation(); _onCopy(); }
     });
 }
 

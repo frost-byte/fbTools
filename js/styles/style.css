@@ -284,6 +284,12 @@ textarea.prompt-value-input {
     flex-direction: column;
     gap: 5px;
     background: var(--comfy-input-bg, #222);
+    transition: border-color 0.1s, box-shadow 0.1s;
+}
+
+.fbt-ce-shot-card.fbt-ce-shot-active {
+    border-color: var(--p-blue-500, #3b82f6);
+    box-shadow: 0 0 0 1px var(--p-blue-500, #3b82f6);
 }
 
 .fbt-ce-shot-header {
@@ -297,6 +303,11 @@ textarea.prompt-value-input {
     font-size: 12px;
     font-weight: 600;
     color: var(--p-blue-400, #60a5fa);
+}
+
+.fbt-ce-shot-hdr-btns {
+    display: flex;
+    gap: 2px;
 }
 
 .fbt-ce-ts {
