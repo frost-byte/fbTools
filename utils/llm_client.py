@@ -16,14 +16,13 @@ due to the server's sequential request dispatch.
 from __future__ import annotations
 
 import gc
+import logging
 import os
 import traceback
 from pathlib import Path
 from typing import Any
 
-from utils.logging_utils import get_logger
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 # ── Backend availability ───────────────────────────────────────────────────────
