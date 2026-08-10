@@ -22,7 +22,7 @@ Creates or updates a subject profile entry in `subject_profiles.json`.
 | Body | STRING | Height, build, and other physical characteristics. |
 | Default Outfit | STRING | Clothing used when no outfit override is specified in Scene Compose. |
 | Voice Description | STRING | Textual description of vocal quality for audio-aware prompts. |
-| Audio Reference File | STRING | Filename of a voice clip in the ComfyUI `input/` directory. |
+| Audio Reference File | COMBO | Voice clip selected from the ComfyUI `input/` directory. Press R to refresh the list after adding new audio files. |
 | Language | COMBO | BCP-47 language tag for dialogue tags in H3 prompts (e.g. `en-us`, `ja-jp`). |
 | Concept ID | STRING | Links to a concept registry entry for automatic LoRA resolution. |
 | Auto Save | BOOLEAN | Write `subject_profiles.json` immediately after defining. Default: on. |
@@ -41,7 +41,7 @@ Loads a subject from `subject_profiles.json` by ID and exposes its data as outpu
 
 | Input | Type | Notes |
 |---|---|---|
-| Subject ID | COMBO | Subject to load. Populated at ComfyUI startup — refresh the page after adding new subjects. |
+| Subject ID | COMBO | Subject to load. Press R to refresh the list after adding new subjects. |
 
 | Output | Type | Notes |
 |---|---|---|

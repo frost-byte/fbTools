@@ -55,7 +55,7 @@ Loads a saved composition from the Prompt Compositions editor and assembles it i
 
 | Input | Type | Notes |
 |---|---|---|
-| Composition | COMBO | Select a saved composition by name. Populated at startup; refresh the page after saving brand-new ones. |
+| Composition | COMBO | Select a saved composition by name. Press R to refresh the list after saving new ones. |
 | Model Type | COMBO | `composition default` uses the model type stored inside the composition; otherwise overrides it. |
 
 | Output | Type | Notes |
