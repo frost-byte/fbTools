@@ -464,6 +464,21 @@ import { setupDatasetCaptionViewer } from "./nodes/dataset_caption_viewer.js";
 import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
 import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect, setupLoraStackBuilder } from "./nodes/lora.js";
 import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
+import { renderCompositionEditor } from "./ui/composition_editor.js";
+
+// Register the Prompt Composition Editor as a sidebar tab
+app.extensionManager.registerSidebarTab({
+    id: "fbt.composition-editor",
+    icon: "pi pi-file-edit",
+    title: "Prompt Compositions",
+    tooltip: "Structured prompt editor for video generation",
+    type: "custom",
+    render: (el) => {
+        // Store app ref so the editor can fire toasts
+        window._fbtApp = app;
+        renderCompositionEditor(el);
+    },
+});
 
 // Add context menu entry for extracting a node as json
 app.registerExtension({

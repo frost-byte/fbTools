@@ -12310,6 +12310,311 @@ async def _concepts_get_registry(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+# ── Subject CRUD routes (editor-facing) ───────────────────────────────────────
+
+@routes.get("/fbtools/subjects/list")
+async def _subjects_list(request):
+    """Return [{id, name, appearance_summary, concept_id}] sorted by name."""
+    try:
+        registry = _load_subject_registry(default_subject_profiles_path())
+        items = []
+        for sid, s in registry.subjects.items():
+            items.append({
+                "id":                 sid,
+                "name":               s.get("name", sid),
+                "appearance_summary": s.get("appearance", {}).get("summary", ""),
+                "concept_id":         s.get("concept_id", ""),
+            })
+        items.sort(key=lambda x: x["name"].lower())
+        return web.json_response({"subjects": items})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/subjects/get")
+async def _subjects_get_one(request):
+    """Return a single subject profile by ?id=<subject_id>."""
+    sid = request.rel_url.query.get("id", "")
+    if not sid:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        registry = _load_subject_registry(default_subject_profiles_path())
+        subject = registry.get_subject(sid)
+        if subject is None:
+            return web.json_response({"error": f"Subject '{sid}' not found"}, status=404)
+        return web.json_response({"id": sid, **subject})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/subjects/save")
+async def _subjects_save(request):
+    """Create or update a subject profile.  Body: full subject dict with 'id'."""
+    try:
+        data = await request.json()
+        sid = data.get("id", "").strip()
+        if not sid:
+            return web.json_response({"error": "Subject 'id' is required"}, status=400)
+        path = default_subject_profiles_path()
+        registry = _load_subject_registry(path)
+        # Merge into registry — preserve character_sheet_images if not provided
+        existing = registry.subjects.get(sid, {})
+        merged = {**existing, **data}
+        merged["id"] = sid  # keep id consistent
+        registry.subjects[sid] = {k: v for k, v in merged.items() if k != "id"}
+        _save_subject_registry(registry, path)
+        global _subject_reload_counter
+        _subject_reload_counter += 1
+        return web.json_response({"success": True, "id": sid})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/subjects/delete")
+async def _subjects_delete(request):
+    """Delete a subject by ?id=<subject_id>."""
+    sid = request.rel_url.query.get("id", "")
+    if not sid:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        path = default_subject_profiles_path()
+        registry = _load_subject_registry(path)
+        if sid not in registry.subjects:
+            return web.json_response({"error": f"Subject '{sid}' not found"}, status=404)
+        del registry.subjects[sid]
+        _save_subject_registry(registry, path)
+        global _subject_reload_counter
+        _subject_reload_counter += 1
+        return web.json_response({"success": True})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── Prompt Composition routes ─────────────────────────────────────────────────
+
+from utils.prompt_compositions import (
+    list_compositions as _list_compositions,
+    load_composition as _load_composition,
+    save_composition as _save_composition,
+    delete_composition as _delete_composition,
+    resolve_subjects as _resolve_composition_subjects,
+    resolve_background as _resolve_composition_background,
+    validate_composition as _validate_composition,
+)
+from utils.composition_resources import (
+    list_backgrounds as _list_backgrounds,
+    get_background as _get_background,
+    save_background as _save_background,
+    delete_background as _delete_background,
+    list_camera_presets as _list_camera_presets,
+    save_camera_preset as _save_camera_preset,
+    delete_camera_preset as _delete_camera_preset,
+    list_sound_presets as _list_sound_presets,
+    save_sound_preset as _save_sound_preset,
+    delete_sound_preset as _delete_sound_preset,
+    load_backgrounds as _load_backgrounds_dict,
+)
+from utils.prompt_assembler import assemble_composition as _assemble_composition
+
+
+@routes.get("/fbtools/compositions/list")
+async def _compositions_list(request):
+    try:
+        items = _list_compositions(user_data_dir())
+        return web.json_response({"compositions": items})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/compositions/get")
+async def _compositions_get(request):
+    cid = request.rel_url.query.get("id", "")
+    if not cid:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        composition = _load_composition(user_data_dir(), cid)
+        return web.json_response(composition)
+    except FileNotFoundError:
+        return web.json_response({"error": f"Composition '{cid}' not found"}, status=404)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/compositions/save")
+async def _compositions_save(request):
+    try:
+        composition = await request.json()
+        registry = _load_subject_registry(default_subject_profiles_path())
+        backgrounds = _load_backgrounds_dict(user_data_dir())
+        saved = _save_composition(user_data_dir(), composition, registry, backgrounds)
+        return web.json_response({"success": True, "id": saved["id"]})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/compositions/delete")
+async def _compositions_delete(request):
+    cid = request.rel_url.query.get("id", "")
+    if not cid:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        _delete_composition(user_data_dir(), cid)
+        return web.json_response({"success": True})
+    except FileNotFoundError:
+        return web.json_response({"error": f"Composition '{cid}' not found"}, status=404)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/compositions/assemble")
+async def _compositions_assemble(request):
+    """Assemble a prompt from a composition.
+
+    Body: {"scene_id": "...", "model_type": "..."} or
+          {"composition": {...}, "model_type": "..."}  (inline, unsaved)
+    """
+    try:
+        body = await request.json()
+        model_type = body.get("model_type", "h3_ref2va")
+
+        if "scene_id" in body:
+            composition = _load_composition(user_data_dir(), body["scene_id"])
+        elif "composition" in body:
+            composition = body["composition"]
+        else:
+            return web.json_response({"error": "scene_id or composition required"}, status=400)
+
+        registry = _load_subject_registry(default_subject_profiles_path())
+        backgrounds = _load_backgrounds_dict(user_data_dir())
+
+        resolved_subjects = _resolve_composition_subjects(composition, registry)
+        resolved_background = _resolve_composition_background(composition, backgrounds)
+
+        warnings = _validate_composition(composition)
+        result = _assemble_composition(composition, resolved_subjects, resolved_background, model_type)
+        result["warnings"] = warnings
+        return web.json_response(result)
+    except FileNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except Exception as exc:
+        logger.exception("Composition assembly failed")
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── Background routes ─────────────────────────────────────────────────────────
+
+@routes.get("/fbtools/backgrounds/list")
+async def _backgrounds_list(request):
+    try:
+        return web.json_response({"backgrounds": _list_backgrounds(user_data_dir())})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/backgrounds/get")
+async def _backgrounds_get(request):
+    bg_id = request.rel_url.query.get("id", "")
+    if not bg_id:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        bg = _get_background(user_data_dir(), bg_id)
+        if bg is None:
+            return web.json_response({"error": f"Background '{bg_id}' not found"}, status=404)
+        return web.json_response(bg)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/backgrounds/save")
+async def _backgrounds_save(request):
+    try:
+        bg = await request.json()
+        saved = _save_background(user_data_dir(), bg)
+        return web.json_response({"success": True, "id": saved["id"]})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/backgrounds/delete")
+async def _backgrounds_delete(request):
+    bg_id = request.rel_url.query.get("id", "")
+    if not bg_id:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        _delete_background(user_data_dir(), bg_id)
+        return web.json_response({"success": True})
+    except KeyError:
+        return web.json_response({"error": f"Background '{bg_id}' not found"}, status=404)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── Preset routes ─────────────────────────────────────────────────────────────
+
+@routes.get("/fbtools/presets/cameras")
+async def _presets_cameras_list(request):
+    try:
+        return web.json_response({"camera_presets": _list_camera_presets(user_data_dir())})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/presets/cameras/save")
+async def _presets_cameras_save(request):
+    try:
+        preset = await request.json()
+        saved = _save_camera_preset(user_data_dir(), preset)
+        return web.json_response({"success": True, "id": saved["id"]})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/presets/cameras/delete")
+async def _presets_cameras_delete(request):
+    pid = request.rel_url.query.get("id", "")
+    if not pid:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        _delete_camera_preset(user_data_dir(), pid)
+        return web.json_response({"success": True})
+    except KeyError:
+        return web.json_response({"error": f"Camera preset '{pid}' not found"}, status=404)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/presets/sounds")
+async def _presets_sounds_list(request):
+    try:
+        return web.json_response({"sound_presets": _list_sound_presets(user_data_dir())})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/presets/sounds/save")
+async def _presets_sounds_save(request):
+    try:
+        preset = await request.json()
+        saved = _save_sound_preset(user_data_dir(), preset)
+        return web.json_response({"success": True, "id": saved["id"]})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/presets/sounds/delete")
+async def _presets_sounds_delete(request):
+    pid = request.rel_url.query.get("id", "")
+    if not pid:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        _delete_sound_preset(user_data_dir(), pid)
+        return web.json_response({"success": True})
+    except KeyError:
+        return web.json_response({"error": f"Sound preset '{pid}' not found"}, status=404)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 # =============================================================================
 
 
