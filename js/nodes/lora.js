@@ -920,16 +920,11 @@ function _lsbDrawIcon(ctx, x, y, active) {
         colorStroke: LiteGraph.WIDGET_OUTLINE_COLOR,
     });
     if (!lowQ) {
-        ctx.strokeStyle = active ? LiteGraph.WIDGET_TEXT_COLOR : "rgba(215,220,224,0.55)";
-        ctx.fillStyle = ctx.strokeStyle;
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.arc(x + LSB_ICON_SIZE * 0.5, y + LSB_ICON_SIZE * 0.5, 5.2, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.font = "700 9px sans-serif";
+        ctx.fillStyle = active ? LiteGraph.WIDGET_TEXT_COLOR : "rgba(215,220,224,0.55)";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText("i", x + LSB_ICON_SIZE * 0.5, y + LSB_ICON_SIZE * 0.5 + 0.4);
+        ctx.font = `bold ${Math.round(LSB_ICON_SIZE * 0.55)}px sans-serif`;
+        ctx.fillText("i", x + LSB_ICON_SIZE * 0.5, y + LSB_ICON_SIZE * 0.5 + 0.5);
     }
     ctx.restore();
     return [x, y, LSB_ICON_SIZE, LSB_ICON_SIZE];
