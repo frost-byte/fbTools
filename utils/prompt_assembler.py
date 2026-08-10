@@ -639,15 +639,13 @@ def assemble_composition(
         if letter and override:
             outfit_overrides[letter] = override
 
-    # Build dialogue map: first shot with dialogue text → shot_1, etc.
-    # Only shots that have dialogue contribute; positional like SceneCompose.
+    # Build dialogue map keyed by the shot's own ID so the lookup in
+    # assemble_prompt (which uses the template shot's id) finds the right text.
     dialogue: dict[str, str] = {}
-    placeholder_idx = 1
     for shot in composition.get("shots", []):
         d = shot.get("dialogue")
         if d and d.get("text"):
-            dialogue[f"shot_{placeholder_idx}"] = d["text"]
-            placeholder_idx += 1
+            dialogue[shot["id"]] = d["text"]
 
     # Build a virtual template from the composition's shots and background
     background = resolved_background or {}
@@ -689,23 +687,29 @@ def assemble_composition(
 def _composition_shots_to_template(shots: list[dict], slot_map: dict[str, str]) -> list[dict]:
     """Convert composition shot dicts to the template shot format."""
     result = []
-    placeholder_idx = 1
     for i, shot in enumerate(shots, 1):
-        has_dialogue = bool(shot.get("dialogue", {}) and shot.get("dialogue", {}).get("text"))
-        # Replace S1/S2 placeholders in action/camera with A/B slot letters
+        dlg = shot.get("dialogue") or {}
+        has_dialogue = bool(dlg.get("text"))
+        # Replace {S1}/{S2} placeholders in action/camera with {A}/{B} slot letters
         action = shot.get("action", "")
         camera = shot.get("camera", "")
         for sk, letter in slot_map.items():
             action = action.replace(f"{{{sk}}}", f"{{{letter}}}")
             camera = camera.replace(f"{{{sk}}}", f"{{{letter}}}")
+        # Map the speaker slot key (S1 → A) so the h3 assembler can look up language
+        template_dlg = None
+        if has_dialogue:
+            speaker_sk = dlg.get("speaker", "")
+            template_dlg = {
+                "placeholder": True,
+                "speaker_slot": slot_map.get(speaker_sk, ""),
+            }
         result.append({
-            "id":          shot.get("id", f"shot_{i}"),
-            "timestamp":   shot.get("timestamp"),
-            "camera":      camera,
-            "action":      action,
-            "dialogue":    {"placeholder": True} if has_dialogue else None,
+            "id":           shot.get("id", f"shot_{i}"),
+            "timestamp":    shot.get("timestamp"),
+            "camera":       camera,
+            "action":       action,
+            "dialogue":     template_dlg,
             "sound_events": shot.get("sound_events"),
         })
-        if has_dialogue:
-            placeholder_idx += 1
     return result
