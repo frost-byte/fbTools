@@ -11,6 +11,7 @@ export { LibberAPI, libberAPI } from "./api/libber.js";
 export { StoryAPI, storyAPI } from "./api/story.js";
 export { DatasetCaptionAPI, datasetCaptionAPI } from "./api/dataset_caption.js";
 export { LoraAPI, loraAPI } from "./api/lora.js";
+export { CompositionsAPI, compositionsApi } from "./api/compositions.js";
 
 // Utilities
 export { BaseAPI, APIError } from "./utils/api_base.js";
@@ -20,4 +21,5 @@ export {
     scheduleNodeRefresh,
 } from "./utils/widgets.js";
 
-// Future: UI components will be exported here
+// UI Components
+export { renderCompositionEditor } from "./ui/composition_editor.js";

@@ -599,3 +599,113 @@ def assemble_prompt(scene_instance: dict, model_type: str) -> dict:
         "audio_slots": audio_slots,
         "assembly_report": report,
     }
+
+
+# ── Prompt Composition adapter ─────────────────────────────────────────────────
+
+def assemble_composition(
+    composition: dict,
+    resolved_subjects: dict[str, dict],
+    resolved_background: dict | None,
+    model_type: str,
+) -> dict:
+    """Assemble a prompt from a PromptComposition dict.
+
+    Converts composition format (S1/S2 slot keys, shots list, background dict)
+    into the scene_instance format expected by assemble_prompt(), then delegates.
+
+    Args:
+        composition:        composition dict (from prompt_compositions.py)
+        resolved_subjects:  {slot_key: subject_dict} already resolved by
+                            prompt_compositions.resolve_subjects()
+        resolved_background: background dict or None
+        model_type:         one of MODEL_TYPES
+
+    Returns same dict as assemble_prompt().
+    """
+    # Map S1→A, S2→B, … in stable order
+    slot_keys = list(composition.get("subjects", {}).keys())
+    slot_map = {sk: chr(ord("A") + i) for i, sk in enumerate(slot_keys)}
+
+    slot_assignments = {}
+    for sk, subject in resolved_subjects.items():
+        letter = slot_map.get(sk)
+        if letter:
+            slot_assignments[letter] = subject
+
+    outfit_overrides = {}
+    for sk, override in composition.get("outfit_overrides", {}).items():
+        letter = slot_map.get(sk)
+        if letter and override:
+            outfit_overrides[letter] = override
+
+    # Build dialogue map: first shot with dialogue text → shot_1, etc.
+    # Only shots that have dialogue contribute; positional like SceneCompose.
+    dialogue: dict[str, str] = {}
+    placeholder_idx = 1
+    for shot in composition.get("shots", []):
+        d = shot.get("dialogue")
+        if d and d.get("text"):
+            dialogue[f"shot_{placeholder_idx}"] = d["text"]
+            placeholder_idx += 1
+
+    # Build a virtual template from the composition's shots and background
+    background = resolved_background or {}
+    style = composition.get("style", "")
+
+    virtual_template = {
+        "id":          composition.get("id", ""),
+        "name":        composition.get("name", ""),
+        "description": "",
+        "slots": {
+            slot_map[sk]: {"role": sk, "needs_voice": True, "needs_character_sheet": True}
+            for sk in slot_keys if sk in slot_map
+        },
+        "environment": {
+            "summary":  background.get("description", ""),
+            "lighting": background.get("lighting", ""),
+        },
+        "style": style,
+        "shots": _composition_shots_to_template(composition.get("shots", []), slot_map),
+        "overall_soundscape": (
+            composition.get("overall_soundscape")
+            or background.get("soundscape", "")
+        ),
+        "non_diegetic_music": composition.get("non_diegetic_music", "N/A"),
+    }
+
+    scene_instance = {
+        "template_id":      composition.get("id", ""),
+        "template_name":    composition.get("name", ""),
+        "template":         virtual_template,
+        "slot_assignments": slot_assignments,
+        "dialogue":         dialogue,
+        "outfit_overrides": outfit_overrides,
+    }
+
+    return assemble_prompt(scene_instance, model_type)
+
+
+def _composition_shots_to_template(shots: list[dict], slot_map: dict[str, str]) -> list[dict]:
+    """Convert composition shot dicts to the template shot format."""
+    result = []
+    placeholder_idx = 1
+    for i, shot in enumerate(shots, 1):
+        has_dialogue = bool(shot.get("dialogue", {}) and shot.get("dialogue", {}).get("text"))
+        # Replace S1/S2 placeholders in action/camera with A/B slot letters
+        action = shot.get("action", "")
+        camera = shot.get("camera", "")
+        for sk, letter in slot_map.items():
+            action = action.replace(f"{{{sk}}}", f"{{{letter}}}")
+            camera = camera.replace(f"{{{sk}}}", f"{{{letter}}}")
+        result.append({
+            "id":          shot.get("id", f"shot_{i}"),
+            "timestamp":   shot.get("timestamp"),
+            "camera":      camera,
+            "action":      action,
+            "dialogue":    {"placeholder": True} if has_dialogue else None,
+            "sound_events": shot.get("sound_events"),
+        })
+        if has_dialogue:
+            placeholder_idx += 1
+    return result
