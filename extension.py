@@ -12394,7 +12394,7 @@ async def _subjects_delete(request):
 
 # ── Prompt Composition routes ─────────────────────────────────────────────────
 
-from utils.prompt_compositions import (
+from .utils.prompt_compositions import (
     list_compositions as _list_compositions,
     load_composition as _load_composition,
     save_composition as _save_composition,
@@ -12403,7 +12403,7 @@ from utils.prompt_compositions import (
     resolve_background as _resolve_composition_background,
     validate_composition as _validate_composition,
 )
-from utils.composition_resources import (
+from .utils.composition_resources import (
     list_backgrounds as _list_backgrounds,
     get_background as _get_background,
     save_background as _save_background,
@@ -12416,7 +12416,7 @@ from utils.composition_resources import (
     delete_sound_preset as _delete_sound_preset,
     load_backgrounds as _load_backgrounds_dict,
 )
-from utils.prompt_assembler import assemble_composition as _assemble_composition
+from .utils.prompt_assembler import assemble_composition as _assemble_composition
 
 
 @routes.get("/fbtools/compositions/list")
@@ -12514,8 +12514,8 @@ async def _compositions_reload(request):
 
 # ── LLM assistant routes ──────────────────────────────────────────────────────
 
-from utils.llm_scanner import scan_llm_dirs as _llm_scan_dirs, DEFAULT_MODEL as _LLM_DEFAULT_MODEL
-import utils.llm_client as _llm_client
+from .utils.llm_scanner import scan_llm_dirs as _llm_scan_dirs, DEFAULT_MODEL as _LLM_DEFAULT_MODEL
+from .utils import llm_client as _llm_client
 import asyncio
 
 
