@@ -1674,8 +1674,8 @@ export async function renderCompositionEditor(el) {
         overflow: "hidden",
     });
 
-    _buildPanel(el);
     _S.composition = _newComp();
+    _buildPanel(el);
     await _loadResources();
     _refreshSidebar();
     _populateEditor();
