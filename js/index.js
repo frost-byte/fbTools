@@ -12,6 +12,7 @@ export { StoryAPI, storyAPI } from "./api/story.js";
 export { DatasetCaptionAPI, datasetCaptionAPI } from "./api/dataset_caption.js";
 export { LoraAPI, loraAPI } from "./api/lora.js";
 export { CompositionsAPI, compositionsApi } from "./api/compositions.js";
+export { LlmAPI, llmApi } from "./api/llm.js";
 
 // Utilities
 export { BaseAPI, APIError } from "./utils/api_base.js";

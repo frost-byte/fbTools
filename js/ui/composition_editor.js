@@ -14,6 +14,7 @@
  */
 
 import { compositionsApi } from "../api/compositions.js";
+import { llmApi } from "../api/llm.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,12 @@ const _S = {
     savedComps:     [],
     dirty:          false,
     shotSeq:        0,
+    // LLM assistant state
+    llmModels:      [],    // descriptors from /fbtools/llm/models
+    llmDefault:     null,  // recommended default model info
+    llmLoaded:      null,  // currently loaded model name (string) or null
+    llmVision:      false, // does loaded model support vision?
+    llmBusy:        false, // in-flight load or generate
 };
 
 // Key DOM refs rebuilt on each panel render
@@ -247,21 +254,30 @@ function _attachCompletion(el) {
 
 async function _loadResources() {
     try {
-        const [subj, bg, cam, snd, comps] = await Promise.allSettled([
+        const [subj, bg, cam, snd, comps, llmData, llmStatus] = await Promise.allSettled([
             compositionsApi.listSubjects(),
             compositionsApi.listBackgrounds(),
             compositionsApi.listCameraPresets(),
             compositionsApi.listSoundPresets(),
             compositionsApi.listCompositions(),
+            llmApi.listModels(),
+            llmApi.status(),
         ]);
         _S.subjects      = subj.value?.subjects      ?? [];
         _S.backgrounds   = bg.value?.backgrounds     ?? [];
         _S.cameraPresets = cam.value?.camera_presets ?? [];
         _S.soundPresets  = snd.value?.sound_presets  ?? [];
         _S.savedComps    = comps.value?.compositions ?? [];
+        _S.llmModels     = llmData.value?.models     ?? [];
+        _S.llmDefault    = llmData.value?.default_model ?? null;
+        const st = llmStatus.value;
+        _S.llmLoaded     = st?.loaded_model  ?? null;
+        _S.llmVision     = st?.supports_vision ?? false;
     } catch (e) {
         console.error("fbt CompositionEditor: resource load error", e);
     }
+    _populateLlmModelSel();
+    _llmUpdateStatus();
 }
 
 // ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -502,6 +518,337 @@ function _refreshSidebar() {
     _populatePresetList(_dom.sndList, _S.soundPresets, _insertSoundPreset);
 }
 
+// ── LLM assistant sidebar section ─────────────────────────────────────────────
+
+function _llmGetFocusedCard() {
+    const cards = _dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card");
+    return (_focusedShotIdx >= 0 && cards?.[_focusedShotIdx]) ? cards[_focusedShotIdx] : null;
+}
+
+function _llmSetBusy(busy) {
+    _S.llmBusy = busy;
+    if (_dom.llmGenSection) {
+        _dom.llmGenSection.querySelectorAll("button").forEach(b => { b.disabled = busy; });
+    }
+    if (_dom.llmLoadBtn) _dom.llmLoadBtn.disabled = busy;
+    if (_dom.llmUnloadBtn) _dom.llmUnloadBtn.disabled = busy;
+}
+
+function _llmUpdateStatus() {
+    if (!_dom.llmStatusEl) return;
+    if (_S.llmLoaded) {
+        _dom.llmStatusEl.textContent = `Loaded: ${_S.llmLoaded}`;
+        _dom.llmStatusEl.className = "fbt-ce-llm-status fbt-ce-llm-ok";
+        if (_dom.llmUnloadBtn) _dom.llmUnloadBtn.style.display = "";
+        if (_dom.llmLoadBtn)   _dom.llmLoadBtn.textContent = "Reload";
+        if (_dom.llmGenSection) _dom.llmGenSection.style.display = "";
+    } else {
+        _dom.llmStatusEl.textContent = "No model loaded.";
+        _dom.llmStatusEl.className = "fbt-ce-llm-status";
+        if (_dom.llmUnloadBtn) _dom.llmUnloadBtn.style.display = "none";
+        if (_dom.llmLoadBtn)   _dom.llmLoadBtn.textContent = "Load";
+        if (_dom.llmGenSection) _dom.llmGenSection.style.display = "none";
+    }
+}
+
+async function _llmLoadSelected() {
+    const sel = _dom.llmModelSel;
+    if (!sel) return;
+    const modelInfo = _S.llmModels.find(m => m.id === sel.value);
+    if (!modelInfo) { _toast("Select a model first", "warn"); return; }
+    _llmSetBusy(true);
+    _dom.llmStatusEl.textContent = `Loading ${modelInfo.name}…`;
+    try {
+        const r = await llmApi.loadModel(modelInfo);
+        if (r.success) {
+            _S.llmLoaded = modelInfo.name;
+            _S.llmVision = modelInfo.supports_vision;
+            _toast(`Loaded: ${modelInfo.name}`, "ok");
+        } else {
+            _toast(r.message || "Load failed", "error");
+            _S.llmLoaded = null;
+        }
+    } catch (e) {
+        _toast("Load error: " + e.message, "error");
+        _S.llmLoaded = null;
+    }
+    _llmSetBusy(false);
+    _llmUpdateStatus();
+}
+
+async function _llmUnload() {
+    _llmSetBusy(true);
+    try {
+        await llmApi.unloadModel();
+        _S.llmLoaded = null;
+        _S.llmVision = false;
+        _toast("Model unloaded", "ok");
+    } catch (e) {
+        _toast("Unload error: " + e.message, "error");
+    }
+    _llmSetBusy(false);
+    _llmUpdateStatus();
+}
+
+async function _llmGenAction() {
+    const card = _llmGetFocusedCard();
+    if (!card) { _toast("Click inside a shot first", "warn"); return; }
+    const shot = _S.composition.shots[_focusedShotIdx];
+    if (!shot) return;
+
+    const subjects = Object.entries(_S.composition.subjects || {})
+        .map(([k]) => {
+            const subj = _S.subjects.find(s => s.id === _S.composition.subjects[k]);
+            return subj?.name || k;
+        });
+    const bg = _S.backgrounds.find(b => b.id === _S.composition.background);
+    const environment = bg?.description || "";
+
+    _llmSetBusy(true);
+    _dom.llmStatusEl.textContent = "Generating action…";
+    try {
+        const r = await llmApi.generateShotAction({
+            shotNumber:  _focusedShotIdx + 1,
+            subjects,
+            environment,
+            style:    _S.composition.style || "cinematic",
+            existing: shot.action || "",
+        });
+        if (r.success && r.text) {
+            card._actInput.value = r.text;
+            card._actInput.dispatchEvent(new Event("input", { bubbles: true }));
+        } else {
+            _toast(r.message || "Generation failed", "error");
+        }
+    } catch (e) {
+        _toast("Error: " + e.message, "error");
+    }
+    _llmSetBusy(false);
+    _llmUpdateStatus();
+}
+
+async function _llmGenDialogue() {
+    const card = _llmGetFocusedCard();
+    if (!card) { _toast("Click inside a shot first", "warn"); return; }
+    const shot = _S.composition.shots[_focusedShotIdx];
+    if (!shot) return;
+
+    const speakerKey = shot.dialogue?.speaker || Object.keys(_S.composition.subjects || {})[0] || "S1";
+    const subjectId  = _S.composition.subjects?.[speakerKey];
+    const subject    = _S.subjects.find(s => s.id === subjectId);
+    const speaker    = subject?.name || speakerKey;
+    const lang       = shot.dialogue?.language || "English";
+    const bg         = _S.backgrounds.find(b => b.id === _S.composition.background);
+    const context    = (shot.action || "") + (bg?.description ? ` Setting: ${bg.description}` : "");
+
+    // Ensure dialogue is toggled on
+    if (!shot.dialogue) {
+        shot.dialogue = { speaker: speakerKey, language: lang, text: "" };
+        _rebuildShots();
+    }
+
+    _llmSetBusy(true);
+    _dom.llmStatusEl.textContent = "Generating dialogue…";
+    try {
+        const r = await llmApi.generateDialogue({ speaker, context, language: lang });
+        if (r.success && r.text) {
+            // Find the dialogue text textarea in the rebuilt card and set it
+            const newCard = _dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card")[_focusedShotIdx];
+            const dlgTextarea = newCard?.querySelector(".fbt-ce-dlg-fields textarea");
+            if (dlgTextarea) {
+                dlgTextarea.value = r.text;
+                dlgTextarea.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+            if (shot.dialogue) shot.dialogue.text = r.text;
+            _markDirty();
+        } else {
+            _toast(r.message || "Generation failed", "error");
+        }
+    } catch (e) {
+        _toast("Error: " + e.message, "error");
+    }
+    _llmSetBusy(false);
+    _llmUpdateStatus();
+}
+
+async function _llmPolishAction() {
+    const card = _llmGetFocusedCard();
+    if (!card?._actInput) { _toast("Click inside a shot first", "warn"); return; }
+    const text = card._actInput.value.trim();
+    if (!text) { _toast("Nothing to polish", "warn"); return; }
+    _llmSetBusy(true);
+    _dom.llmStatusEl.textContent = "Polishing…";
+    try {
+        const r = await llmApi.polish({ text, context: `Scene style: ${_S.composition.style || "cinematic"}` });
+        if (r.success && r.text) {
+            card._actInput.value = r.text;
+            card._actInput.dispatchEvent(new Event("input", { bubbles: true }));
+        } else {
+            _toast(r.message || "Polish failed", "error");
+        }
+    } catch (e) {
+        _toast("Error: " + e.message, "error");
+    }
+    _llmSetBusy(false);
+    _llmUpdateStatus();
+}
+
+async function _llmDownloadDefault() {
+    if (!_dom.llmDownloadBtn) return;
+    _dom.llmDownloadBtn.disabled = true;
+    _dom.llmDownloadBtn.textContent = "Downloading…";
+    try {
+        const r = await llmApi.downloadDefault();
+        if (r.success) {
+            _toast(`Downloaded to: ${r.model_dir}`, "ok");
+            // Refresh model list
+            _dom.llmDownloadBtn.textContent = "Done — refresh models";
+            _dom.llmDownloadBtn.onclick = () => _llmRefreshModels();
+        } else {
+            _toast(r.error || "Download failed", "error");
+            _dom.llmDownloadBtn.disabled = false;
+            _dom.llmDownloadBtn.textContent = "Download";
+        }
+    } catch (e) {
+        _toast("Download error: " + e.message, "error");
+        _dom.llmDownloadBtn.disabled = false;
+        _dom.llmDownloadBtn.textContent = "Download";
+    }
+}
+
+async function _llmRefreshModels() {
+    try {
+        const data = await llmApi.listModels();
+        _S.llmModels = data.models || [];
+        _S.llmDefault = data.default_model || null;
+        _populateLlmModelSel();
+    } catch (_) { /* silent */ }
+}
+
+function _populateLlmModelSel() {
+    const sel = _dom.llmModelSel;
+    if (!sel) return;
+    sel.innerHTML = "";
+    const noModels = _S.llmModels.length === 0;
+    if (noModels) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = "— no models found —";
+        sel.appendChild(o);
+    } else {
+        _S.llmModels.forEach(m => {
+            const o = document.createElement("option");
+            o.value = m.id;
+            const tags = (m.capability_tags || []).join(" ");
+            o.textContent = `${m.name}  ${tags}`;
+            o.title = m.capability_note || "";
+            sel.appendChild(o);
+        });
+    }
+    if (_dom.llmLoadBtn)     _dom.llmLoadBtn.disabled = noModels;
+    if (_dom.llmDownloadRow) _dom.llmDownloadRow.style.display = noModels ? "" : "none";
+}
+
+function _buildLlmSection(parent) {
+    const body = _mk("div", { cls: "fbt-ce-sb-list fbt-ce-llm-body" });
+
+    // Model selector row
+    _dom.llmModelSel = _mk("select", { cls: "fbt-ce-select fbt-ce-llm-sel" });
+    const selRow = _mk("div", { cls: "fbt-ce-llm-row" }, [_dom.llmModelSel]);
+
+    // Refresh button
+    const refreshBtn = _mk("button", {
+        cls: "fbt-ce-icon-btn", title: "Re-scan model directories", textContent: "↻",
+        onclick: _llmRefreshModels,
+    });
+    selRow.appendChild(refreshBtn);
+    body.appendChild(selRow);
+
+    // Status line
+    _dom.llmStatusEl = _mk("div", { cls: "fbt-ce-llm-status", textContent: "No model loaded." });
+    body.appendChild(_dom.llmStatusEl);
+
+    // Capability note (updates when selection changes)
+    const capNote = _mk("div", { cls: "fbt-ce-llm-cap-note" });
+    body.appendChild(capNote);
+    _dom.llmModelSel.addEventListener("change", () => {
+        const m = _S.llmModels.find(x => x.id === _dom.llmModelSel.value);
+        capNote.textContent = m?.capability_note || "";
+    });
+
+    // Load / Unload buttons
+    const btnRow = _mk("div", { cls: "fbt-ce-llm-row" });
+    _dom.llmLoadBtn = _mk("button", {
+        cls: "fbt-ce-btn", textContent: "Load",
+        onclick: _llmLoadSelected,
+    });
+    _dom.llmUnloadBtn = _mk("button", {
+        cls: "fbt-ce-btn fbt-ce-btn-secondary", textContent: "Unload",
+        style: { display: "none" },
+        onclick: _llmUnload,
+    });
+    btnRow.appendChild(_dom.llmLoadBtn);
+    btnRow.appendChild(_dom.llmUnloadBtn);
+    body.appendChild(btnRow);
+
+    // Generate buttons (hidden when no model loaded)
+    _dom.llmGenSection = _mk("div", {
+        cls: "fbt-ce-llm-gen",
+        style: { display: "none" },
+    });
+    const genLabel = _mk("div", { cls: "fbt-ce-llm-gen-label", textContent: "Generate for focused shot:" });
+    _dom.llmGenSection.appendChild(genLabel);
+
+    const genBtnRow = _mk("div", { cls: "fbt-ce-llm-row fbt-ce-llm-gen-btns" });
+    genBtnRow.appendChild(_mk("button", {
+        cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "Action",
+        title: "Draft / improve the shot action description",
+        onclick: _llmGenAction,
+    }));
+    genBtnRow.appendChild(_mk("button", {
+        cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "Dialogue",
+        title: "Generate a dialogue line for the focused shot",
+        onclick: _llmGenDialogue,
+    }));
+    genBtnRow.appendChild(_mk("button", {
+        cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "Polish",
+        title: "Polish / improve the existing action text",
+        onclick: _llmPolishAction,
+    }));
+    _dom.llmGenSection.appendChild(genBtnRow);
+    body.appendChild(_dom.llmGenSection);
+
+    // Download prompt (hidden when models exist)
+    _dom.llmDownloadRow = _mk("div", { cls: "fbt-ce-llm-download" });
+    const d = _mk("div", { cls: "fbt-ce-llm-download-info" });
+    d.innerHTML = (
+        "<b>No LLMs found.</b> Place GGUF models in <code>ComfyUI/models/LLMs/&lt;name&gt;/</code>, " +
+        "one subdirectory per model. Vision-capable GGUF models must include an <code>mmproj-*.gguf</code> file " +
+        "alongside the main <code>.gguf</code>.<br><br>" +
+        "Models stored elsewhere (e.g. a shared drive) can be registered by adding an <code>LLMs:</code> " +
+        "entry to your <code>extra_model_paths.yaml</code> — ComfyUI will scan those paths too.<br><br>" +
+        "Or download the recommended starter model:"
+    );
+    _dom.llmDownloadRow.appendChild(d);
+
+    const defInfo = _mk("div", { cls: "fbt-ce-llm-default-info" });
+    defInfo.innerHTML = (
+        "<b>Qwen2.5-VL 3B Instruct</b> — ~2.6 GB total<br>" +
+        "<span class='fbt-ce-llm-cap-note'>Accepts images. Video via frame sampling.</span><br>" +
+        "<i>Requires: llama-cpp-python</i>"
+    );
+    _dom.llmDownloadRow.appendChild(defInfo);
+
+    _dom.llmDownloadBtn = _mk("button", {
+        cls: "fbt-ce-btn", textContent: "Download",
+        onclick: _llmDownloadDefault,
+    });
+    _dom.llmDownloadRow.appendChild(_dom.llmDownloadBtn);
+    body.appendChild(_dom.llmDownloadRow);
+
+    parent.appendChild(_buildSidebarSection("🤖 LLM Assistant", body));
+}
+
 function _buildSidebar(parent) {
     const sidebar = _mk("div", { cls: "fbt-ce-sidebar" });
 
@@ -516,6 +863,7 @@ function _buildSidebar(parent) {
     sidebar.appendChild(_buildSidebarSection("Backgrounds (click to assign)", _dom.bgList));
     sidebar.appendChild(_buildSidebarSection("Camera Presets (click to apply to shot)", _dom.camList));
     sidebar.appendChild(_buildSidebarSection("Sound Presets (click to apply to shot)", _dom.sndList));
+    _buildLlmSection(sidebar);
 
     parent.appendChild(sidebar);
 }
@@ -817,9 +1165,10 @@ function _buildShotCard(shot, index) {
     snd.addEventListener("input", () => { shot.sound_events = snd.value.trim() || null; _markDirty(); });
     card.appendChild(_labeledRow("Sound", snd));
 
-    // Store refs so sidebar preset click handlers can insert into the right fields
+    // Store refs so sidebar preset/LLM handlers can insert into the right fields
     card._camInput = cam;
     card._sndInput = snd;
+    card._actInput = action;
 
     return card;
 }

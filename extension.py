@@ -12512,6 +12512,241 @@ async def _compositions_reload(request):
     return web.json_response({"success": True, "counter": _composition_reload_counter})
 
 
+# ── LLM assistant routes ──────────────────────────────────────────────────────
+
+from utils.llm_scanner import scan_llm_dirs as _llm_scan_dirs, DEFAULT_MODEL as _LLM_DEFAULT_MODEL
+import utils.llm_client as _llm_client
+import asyncio
+
+
+@routes.get("/fbtools/llm/models")
+async def _llm_models(request):
+    """Scan LLM directories and return capability-annotated model list."""
+    try:
+        loop = asyncio.get_event_loop()
+        models = await loop.run_in_executor(None, _llm_scan_dirs)
+        return web.json_response({
+            "models":        models,
+            "default_model": _LLM_DEFAULT_MODEL,
+        })
+    except Exception as exc:
+        logger.error("LLM scan failed: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/llm/status")
+async def _llm_status(request):
+    """Return currently loaded model info and backend availability."""
+    try:
+        return web.json_response(_llm_client.backend_status())
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/load")
+async def _llm_load(request):
+    """Load a model by its descriptor dict (from /fbtools/llm/models)."""
+    try:
+        body = await request.json()
+        model_info = body.get("model_info")
+        if not model_info:
+            return web.json_response({"error": "model_info required"}, status=400)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _llm_client.load_model, model_info)
+        status = 200 if result["success"] else 503
+        return web.json_response(result, status=status)
+    except Exception as exc:
+        logger.error("LLM load error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/unload")
+async def _llm_unload(request):
+    """Unload the current model and free VRAM."""
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _llm_client.unload_model)
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/generate")
+async def _llm_generate(request):
+    """Generate text (optionally with image filenames from ComfyUI input dir).
+
+    Body fields:
+        prompt (str)           — user prompt
+        system_prompt (str)    — optional system prompt
+        images (list[str])     — filenames inside the ComfyUI input directory
+        max_tokens (int)       — default 512
+        temperature (float)    — default 0.7
+    """
+    try:
+        body = await request.json()
+        prompt = body.get("prompt", "")
+        system_prompt = body.get("system_prompt", "")
+        max_tokens = int(body.get("max_tokens", 512))
+        temperature = float(body.get("temperature", 0.7))
+        image_filenames: list[str] = body.get("images", [])
+
+        pil_images = []
+        if image_filenames:
+            try:
+                from PIL import Image
+                import folder_paths
+                input_dir = folder_paths.get_input_directory()
+                for fname in image_filenames:
+                    fpath = os.path.join(input_dir, fname)
+                    if os.path.exists(fpath):
+                        pil_images.append(Image.open(fpath).convert("RGB"))
+                    else:
+                        logger.warning("LLM generate: image not found: %s", fpath)
+            except Exception as img_err:
+                logger.warning("LLM generate: image load error: %s", img_err)
+
+        def _do_generate():
+            return _llm_client.generate(
+                prompt,
+                images=pil_images or None,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _do_generate)
+        status = 200 if result["success"] else 503
+        return web.json_response(result, status=status)
+    except Exception as exc:
+        logger.error("LLM generate error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/generate/shot_action")
+async def _llm_gen_shot_action(request):
+    """Generate a shot action description using template-aware prompt builder."""
+    try:
+        body = await request.json()
+        shot_number = int(body.get("shot_number", 1))
+        subjects = body.get("subjects", [])
+        environment = body.get("environment", "")
+        style = body.get("style", "cinematic")
+        existing = body.get("existing", "")
+        system, user = _llm_client.prompt_for_shot_action(
+            shot_number, subjects, environment, style, existing
+        )
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _llm_client.generate(user, system_prompt=system, max_tokens=256),
+        )
+        return web.json_response(result, status=200 if result["success"] else 503)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/generate/dialogue")
+async def _llm_gen_dialogue(request):
+    """Generate a dialogue line for a named speaker."""
+    try:
+        body = await request.json()
+        speaker = body.get("speaker", "Character")
+        context = body.get("context", "")
+        tone = body.get("tone", "")
+        language = body.get("language", "en-us")
+        system, user = _llm_client.prompt_for_shot_dialogue(speaker, context, tone, language)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _llm_client.generate(user, system_prompt=system, max_tokens=128),
+        )
+        return web.json_response(result, status=200 if result["success"] else 503)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/generate/polish")
+async def _llm_gen_polish(request):
+    """Polish existing text for clarity and vividness."""
+    try:
+        body = await request.json()
+        text = body.get("text", "")
+        context = body.get("context", "")
+        system, user = _llm_client.prompt_for_polish(text, context)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _llm_client.generate(user, system_prompt=system, max_tokens=512),
+        )
+        return web.json_response(result, status=200 if result["success"] else 503)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/download/default")
+async def _llm_download_default(request):
+    """Download the recommended default LLM model using huggingface_hub.
+
+    Creates ComfyUI/models/LLMs/<model_name>/ and downloads the GGUF files.
+    Returns streaming progress via JSON. Raises 503 if huggingface_hub absent.
+    """
+    try:
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            return web.json_response(
+                {"error": "huggingface_hub not installed. pip install huggingface_hub"},
+                status=503,
+            )
+
+        import folder_paths
+
+        # Determine target directory
+        llm_dirs = folder_paths.get_folder_paths("LLMs")
+        if llm_dirs:
+            base_llm_dir = llm_dirs[0]
+        else:
+            base_llm_dir = os.path.join(folder_paths.base_path, "models", "LLMs")
+        os.makedirs(base_llm_dir, exist_ok=True)
+
+        m = _LLM_DEFAULT_MODEL
+        model_dir = os.path.join(base_llm_dir, m["name"])
+        os.makedirs(model_dir, exist_ok=True)
+
+        downloaded: list[str] = []
+
+        def _do_download():
+            files = [m["filename"]]
+            if m.get("mmproj"):
+                files.append(m["mmproj"])
+            for fname in files:
+                dest = os.path.join(model_dir, fname)
+                if os.path.exists(dest):
+                    downloaded.append(f"already present: {fname}")
+                    continue
+                logger.info("Downloading %s / %s → %s", m["repo_id"], fname, dest)
+                hf_hub_download(
+                    repo_id=m["repo_id"],
+                    filename=fname,
+                    local_dir=model_dir,
+                )
+                downloaded.append(f"downloaded: {fname}")
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _do_download)
+
+        return web.json_response({
+            "success":    True,
+            "model_dir":  model_dir,
+            "downloaded": downloaded,
+            "model_name": m["name"],
+        })
+    except Exception as exc:
+        logger.error("LLM download error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 # ── Background routes ─────────────────────────────────────────────────────────
 
 @routes.get("/fbtools/backgrounds/list")
