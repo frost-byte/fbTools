@@ -11009,6 +11009,16 @@ class ConceptRegistryIOType:
             super().__init__(name, **kwargs)
 
 
+def _concept_get_ids() -> list[str]:
+    """Read concept_registry.json and return concept IDs for combo widgets."""
+    try:
+        registry = _load_concept_registry(default_registry_path())
+        ids = sorted(registry.concepts.keys())
+        return ["None"] + ids if ids else ["None"]
+    except Exception:
+        return ["None"]
+
+
 # ── Node: ConceptRegistryLoad ─────────────────────────────────────────────────
 
 class ConceptRegistryLoad(io.ComfyNode):
@@ -11726,12 +11736,12 @@ class SubjectProfileDefine(io.ComfyNode):
                     display_name="Language",
                     tooltip="BCP-47 language tag for dialogue tags in H3 prompts.",
                 ),
-                io.String.Input(
+                io.Combo.Input(
                     "concept_id",
                     display_name="Concept ID",
-                    default="",
-                    multiline=False,
-                    tooltip="Links to the concept registry entry for LoRA resolution.",
+                    options=_concept_get_ids(),
+                    default="None",
+                    tooltip="Links to a concept registry entry for LoRA resolution. Press R to refresh after adding concepts.",
                 ),
                 io.Boolean.Input(
                     "auto_save",
@@ -11769,6 +11779,7 @@ class SubjectProfileDefine(io.ComfyNode):
             raise ValueError("SubjectProfileDefine: subject_id cannot be empty")
 
         audio_reference_file = "" if audio_reference_file == "None" else audio_reference_file
+        concept_id = "" if concept_id == "None" else concept_id
 
         path = default_subject_profiles_path()
         registry = _load_subject_registry(path)
