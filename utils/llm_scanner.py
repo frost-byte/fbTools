@@ -207,11 +207,24 @@ def _hf_size_mb(dirpath: str) -> int:
 # ── Unified directory scanner ─────────────────────────────────────────────────
 
 def _scan_directory(root: str, depth: int = 2) -> list[dict]:
-    """Walk root up to `depth` levels deep, collecting model descriptors."""
+    """Walk root up to `depth` levels deep, collecting model descriptors.
+
+    Iterates children of root rather than root itself — this prevents a
+    stray .gguf file in the root (e.g. a text encoder) from causing the
+    entire directory to be misidentified as a single GGUF model.
+    """
     results: list[dict] = []
     if not os.path.isdir(root):
         return results
-    _walk(root, depth, results)
+    try:
+        for entry in sorted(os.listdir(root)):
+            if entry.startswith("."):
+                continue
+            child = os.path.join(root, entry)
+            if os.path.isdir(child):
+                _walk(child, depth - 1, results)
+    except OSError:
+        pass
     return results
 
 
