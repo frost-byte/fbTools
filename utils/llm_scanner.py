@@ -272,15 +272,19 @@ def scan_llm_dirs(extra_dirs: list[str] | None = None) -> list[dict]:
     """
     roots: list[str] = []
 
-    # Honour ComfyUI's registered paths (includes extra_model_paths.yaml entries)
+    # Honour ComfyUI's registered paths (includes extra_model_paths.yaml entries).
+    # "LLM" (singular) is the convention used by ComfyUI-MiniMaxH3-Prompt-Writer
+    # and comfyui_llm_party; fall back to "LLMs" in case a node registered that.
     try:
         import folder_paths
-        registered = folder_paths.get_folder_paths("LLMs")
+        registered = (
+            folder_paths.get_folder_paths("LLM")
+            or folder_paths.get_folder_paths("LLMs")
+        )
         if registered:
             roots.extend(registered)
         else:
-            # LLMs not yet registered — use the conventional default
-            roots.append(os.path.join(folder_paths.base_path, "models", "LLMs"))
+            roots.append(os.path.join(folder_paths.base_path, "models", "LLM"))
     except Exception:
         pass
 
