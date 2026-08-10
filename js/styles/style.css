@@ -483,3 +483,121 @@ textarea.prompt-value-input {
     color: var(--p-surface-300, #aaa);
     margin: 4px 0 0;
 }
+
+/* ── Phase 3: Slot cards with appearance info ──────────────────────────────── */
+
+.fbt-ce-slot-card {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.fbt-ce-slot-info {
+    font-size: 10px;
+    color: var(--p-surface-400, #777);
+    padding: 0 0 0 30px;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-style: italic;
+    min-height: 14px;
+}
+
+/* ── Phase 3: Slot-reference completion popup ──────────────────────────────── */
+
+.fbt-ce-completion {
+    background: var(--comfy-menu-bg, #1e1e1e);
+    border: 1px solid var(--p-blue-500, #3b82f6);
+    border-radius: 5px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.6);
+    overflow: hidden;
+    font-size: 12px;
+}
+
+.fbt-ce-comp-item {
+    padding: 5px 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.fbt-ce-comp-item:hover,
+.fbt-ce-comp-item.active {
+    background: var(--p-blue-700, #1d4ed8);
+    color: #fff;
+}
+
+.fbt-ce-comp-name {
+    color: var(--p-surface-400, #aaa);
+    font-size: 11px;
+}
+
+.fbt-ce-comp-item.active .fbt-ce-comp-name,
+.fbt-ce-comp-item:hover .fbt-ce-comp-name {
+    color: rgba(255,255,255,0.7);
+}
+
+/* ── Phase 3: Inline new-resource forms in sidebar ─────────────────────────── */
+
+.fbt-ce-sb-new {
+    cursor: pointer;
+    color: var(--p-blue-400, #60a5fa);
+    font-size: 11px;
+    border-bottom: 1px solid var(--border-color, #333);
+    margin-bottom: 2px;
+}
+
+.fbt-ce-sb-new:hover {
+    background: var(--comfy-input-bg, #2a2a2a);
+}
+
+.fbt-ce-sb-hint {
+    font-size: 10px;
+    color: var(--p-surface-500, #666);
+    cursor: help;
+    flex-shrink: 0;
+}
+
+.fbt-ce-inline-form {
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.fbt-ce-form-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--p-surface-400, #888);
+    margin-bottom: 2px;
+}
+
+.fbt-ce-form-btns {
+    display: flex;
+    gap: 5px;
+    margin-top: 2px;
+}
+
+/* ── Phase 3: Background soundscape hint ────────────────────────────────────── */
+
+.fbt-ce-bg-hint {
+    margin-top: 4px;
+}
+
+.fbt-ce-hint-btn {
+    background: transparent;
+    border: 1px dashed var(--p-blue-500, #3b82f6);
+    border-radius: 3px;
+    color: var(--p-blue-400, #60a5fa);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 3px 8px;
+}
+
+.fbt-ce-hint-btn:hover {
+    background: var(--comfy-input-bg, #2a2a2a);
+}
