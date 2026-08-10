@@ -1704,7 +1704,7 @@ class SAMPreprocessNHWC(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SAMPreprocessNHWC"),
-            display_name="SAMPreprocessNHWC",
+            display_name="SAM Preprocess NHWC",
             category="🧊 frost-byte/Preprocessing",
             inputs=[
                 io.Image.Input("input_image", tooltip="Input IMAGE to preprocess for SAM" ),
@@ -1770,7 +1770,7 @@ class TailEnhancePro(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("TailEnhancePro"),
-            display_name="TailEnhancePro",
+            display_name="Tail Enhance Pro",
             category="🧊 frost-byte/Video",
             inputs=[
                 io.Image.Input("input_frames", tooltip="Input IMAGE frames to process"),
@@ -1922,7 +1922,7 @@ class TailSplit(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("TailSplit"),
-            display_name="TailSplit",
+            display_name="Tail Split",
             category="🧊 frost-byte/Video",
             inputs=[
                 io.Image.Input("image", tooltip="Input image batch"),
@@ -1994,7 +1994,7 @@ class OpaqueAlpha(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("OpaqueAlpha"),
-            display_name="OpaqueAlpha",
+            display_name="Opaque Alpha",
             category="🧊 frost-byte/Image Processing",
             inputs=[
                 io.Image.Input("image", tooltip="Input image, RGB or RGBA"),
@@ -2240,7 +2240,7 @@ class SubdirLister(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SubdirLister"),
-            display_name="SubdirLister",
+            display_name="Subdir Lister",
             category="🧊 frost-byte/File",
             inputs=[
                 io.String.Input("directory_path", default="", tooltip="Path to the directory"),
@@ -2294,7 +2294,7 @@ class QwenAspectRatio(io.ComfyNode):
             and the float value of the aspect ratio (width / height).
             """),
             node_id=prefixed_node_id("QwenAspectRatio"),
-            display_name="QwenAspectRatio",
+            display_name="Qwen Aspect Ratio",
             category="🧊 frost-byte/Image Processing",
             inputs=[
                 io.Image.Input("input_image", tooltip="Input IMAGE to compute aspect ratio from"),
@@ -3626,7 +3626,7 @@ class SceneSelect(io.ComfyNode):
 
         return io.Schema(
             node_id=prefixed_node_id("SceneSelect"),
-            display_name="SceneSelect",
+            display_name="Scene Select",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.String.Input("scenes_dir", default=default_dir, tooltip="Directory containing scene subdirectories"),
@@ -4041,7 +4041,7 @@ class SceneLoraStackSave(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SceneLoraStackSave"),
-            display_name="SceneLoraStackSave",
+            display_name="Scene LoRA Stack Save",
             category="🧊 frost-byte/Scene",
             description=(
                 "Save a LoRA stack to the scene directory as lora_stack.json. "
@@ -4108,7 +4108,7 @@ class SceneCreate(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SceneCreate"),
-            display_name="SceneCreate",
+            display_name="Scene Create",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.String.Input(id="scenes_dir", display_name="scenes_dir", tooltip="Root Directory where all scene subdirectories are saved"),
@@ -4412,7 +4412,7 @@ class SceneUpdate(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SceneUpdate"),
-            display_name="SceneUpdate",
+            display_name="Scene Update",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info_in", display_name="scene_info", tooltip="Scene Information" ),
@@ -4997,7 +4997,7 @@ class SceneView(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SceneView"),
-            display_name="SceneView",
+            display_name="Scene View",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Information" ),
@@ -5107,7 +5107,7 @@ class SceneMaskDefinition(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SceneMaskDefinition"),
-            display_name="SceneMaskDefinition",
+            display_name="Scene Mask Definition",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(
@@ -5592,7 +5592,7 @@ class SceneOutput(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SceneOutput"),
-            display_name="SceneOutput",
+            display_name="Scene Output",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Information"),
@@ -5709,7 +5709,7 @@ class SceneSave(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SceneSave"),
-            display_name="SceneSave",
+            display_name="Scene Save",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(id="scene_info", display_name="scene_info", tooltip="Scene Info Input"),
@@ -5748,7 +5748,7 @@ class SceneInput(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("SceneInput"),
-            display_name="SceneInput",
+            display_name="Scene Input",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.String.Input(id="scene_dir", display_name="scene_dir", tooltip="Directory where the scene is saved", multiline=False, default=""),
@@ -5874,7 +5874,7 @@ class StoryCreate(io.ComfyNode):
         
         return io.Schema(
             node_id=prefixed_node_id("StoryCreate"),
-            display_name="StoryCreate",
+            display_name="Story Create",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.String.Input(id="story_name", display_name="story_name", default="my_story", tooltip="Name of the story"),
@@ -5960,7 +5960,7 @@ class StoryEdit(io.ComfyNode):
         
         return io.Schema(
             node_id=prefixed_node_id("StoryEdit"),
-            display_name="StoryEdit",
+            display_name="Story Edit",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Combo.Input(id="story_select", display_name="Story", options=available_stories, default=available_stories[0], tooltip="Select a story to view/edit"),
@@ -6279,7 +6279,7 @@ class StoryView(io.ComfyNode):
         
         return io.Schema(
             node_id=prefixed_node_id("StoryView"),
-            display_name="StoryView",
+            display_name="Story View",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Custom("STORY_INFO").Input(id="story_info", display_name="story_info", tooltip="Story to view"),
@@ -6467,7 +6467,7 @@ class StorySceneBatch(io.ComfyNode):
         
         return io.Schema(
             node_id=prefixed_node_id("StorySceneBatch"),
-            display_name="StorySceneBatch",
+            display_name="Story Scene Batch",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Combo.Input(id="story_name", display_name="story_name", options=story_names, default=story_names[0] if story_names else "", tooltip="Select story to batch process"),
@@ -6803,7 +6803,7 @@ class StoryScenePick(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("StoryScenePick"),
-            display_name="StoryScenePick",
+            display_name="Story Scene Pick",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Custom("SCENE_BATCH").Input(id="scene_batch", display_name="scene_batch", tooltip="Scene descriptor list from StorySceneBatch"),
@@ -6948,7 +6948,7 @@ class StorySave(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("StorySave"),
-            display_name="StorySave",
+            display_name="Story Save",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Custom("STORY_INFO").Input(id="story_info", display_name="story_info", tooltip="Story to save"),
@@ -6998,7 +6998,7 @@ class StoryLoad(io.ComfyNode):
         
         return io.Schema(
             node_id=prefixed_node_id("StoryLoad"),
-            display_name="StoryLoad",
+            display_name="Story Load",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.String.Input(id="stories_dir", display_name="stories_dir", default=default_stories_dir_path, tooltip="Directory containing stories"),
@@ -7051,7 +7051,7 @@ class StorySceneImageSave(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("StorySceneImageSave"),
-            display_name="StorySceneImageSave",
+            display_name="Story Scene Image Save",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Image.Input(id="image", display_name="image", tooltip="Generated image to save"),
@@ -7167,7 +7167,7 @@ class StoryVideoBatch(io.ComfyNode):
         
         return io.Schema(
             node_id=prefixed_node_id("StoryVideoBatch"),
-            display_name="StoryVideoBatch",
+            display_name="Story Video Batch",
             category="🧊 frost-byte/Story",
             inputs=[
                 io.Combo.Input(id="story_name", display_name="story_name", options=available_stories, default=default_story, tooltip="Select story from available stories"),
@@ -7438,7 +7438,7 @@ class FBTextEncodeQwenImageEditPlus(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("FBTextEncodeQwenImageEditPlus"),
-            display_name="FBTextEncodeQwenImageEditPlus",
+            display_name="FB Qwen Image Edit Plus",
             category="🧊 frost-byte/conditioning",
             inputs=[
                 io.Clip.Input("clip"),
@@ -7521,7 +7521,7 @@ class LibberManager(io.ComfyNode):
         
         return io.Schema(
             node_id=prefixed_node_id("LibberManager"),
-            display_name="LibberManager",
+            display_name="Libber Manager",
             category="🧊 frost-byte/Libber",
             inputs=[
                 io.Combo.Input(
@@ -7639,7 +7639,7 @@ class LibberApply(io.ComfyNode):
         
         return io.Schema(
             node_id=prefixed_node_id("LibberApply"),
-            display_name="LibberApply",
+            display_name="Libber Apply",
             category="🧊 frost-byte/Libber",
             inputs=[
                 io.Combo.Input(
@@ -7770,7 +7770,7 @@ class ScenePromptManager(io.ComfyNode):
         
         return io.Schema(
             node_id=prefixed_node_id("ScenePromptManager"),
-            display_name="ScenePromptManager",
+            display_name="Scene Prompt Manager",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.String.Input("scenes_dir", default=default_dir, tooltip="Directory containing pose subdirectories"),
@@ -7961,7 +7961,7 @@ class PromptComposer(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id=prefixed_node_id("PromptComposer"),
-            display_name="PromptComposer",
+            display_name="Prompt Composer",
             category="🧊 frost-byte/Scene",
             inputs=[
                 io.Custom("SCENE_INFO").Input(
