@@ -148,6 +148,8 @@ _concept_reload_counter: int = 0
 _subject_reload_counter: int = 0
 # Incremented by POST /fbtools/scene_templates/reload so SceneTemplate nodes re-execute
 _scene_template_reload_counter: int = 0
+# Incremented by POST /fbtools/compositions/reload so PromptCompositionLoader nodes re-execute
+_composition_reload_counter: int = 0
 
 def prefixed_node_id(display_name: str) -> str:
     """Construct a globally-unique node_id using the shared extension prefix."""
@@ -12501,6 +12503,15 @@ async def _compositions_assemble(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@routes.post("/fbtools/compositions/reload")
+async def _compositions_reload(request):
+    """Increment reload counter so PromptCompositionLoader nodes re-execute."""
+    global _composition_reload_counter
+    _composition_reload_counter += 1
+    logger.info("Composition reload requested (counter=%d)", _composition_reload_counter)
+    return web.json_response({"success": True, "counter": _composition_reload_counter})
+
+
 # ── Background routes ─────────────────────────────────────────────────────────
 
 @routes.get("/fbtools/backgrounds/list")
@@ -12615,6 +12626,113 @@ async def _presets_sounds_delete(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+# ── Node: PromptCompositionLoader ─────────────────────────────────────────────
+
+_COMP_MODEL_TYPE_OPTIONS = ["composition default"] + list(_PROMPT_MODEL_TYPES)
+
+
+def _composition_get_names() -> list[str]:
+    """Return saved composition names for the combo widget, sorted by name."""
+    try:
+        items = _list_compositions(user_data_dir())
+        names = [c["name"] for c in items]
+        return names if names else ["(none)"]
+    except Exception:
+        return ["(none)"]
+
+
+class PromptCompositionLoader(io.ComfyNode):
+    """Load a saved prompt composition and assemble it into a model-specific prompt.
+
+    Select a composition by name from the dropdown. The assembled prompt and
+    concept IDs are ready to wire into text-conditioning and ConceptResolve nodes.
+
+    After saving a composition in the Prompt Compositions sidebar panel, any
+    PromptCompositionLoader nodes on the canvas automatically re-execute to pick
+    up the latest content (via the reload counter). A full page refresh is needed
+    for brand-new compositions to appear in the name dropdown.
+    """
+
+    node_id = prefixed_node_id("PromptCompositionLoader")
+    display_name = "Prompt Composition Loader"
+    category = "🧊 frost-byte/Scene"
+
+    @classmethod
+    def define_schema(cls):
+        names = _composition_get_names()
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            inputs=[
+                io.Combo.Input(
+                    "composition_name",
+                    options=names,
+                    display_name="Composition",
+                    tooltip="Select a saved composition. Refresh the page after saving brand-new ones.",
+                ),
+                io.Combo.Input(
+                    "model_type",
+                    options=_COMP_MODEL_TYPE_OPTIONS,
+                    display_name="Model Type",
+                    tooltip="'composition default' uses the model type stored inside the composition.",
+                ),
+            ],
+            outputs=[
+                io.String.Output("prompt", display_name="Prompt"),
+                io.String.Output(
+                    "concept_ids",
+                    display_name="Concept IDs",
+                    tooltip="Comma-separated concept IDs — wire into ConceptResolve.",
+                ),
+                io.String.Output("model_type_used", display_name="Model Type Used"),
+                io.String.Output("composition_name", display_name="Composition Name"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, composition_name: str = "", model_type: str = "composition default", **_):
+        comps_dir = os.path.join(user_data_dir(), "prompt_compositions")
+        try:
+            mtime = os.path.getmtime(comps_dir)
+        except OSError:
+            mtime = 0
+        return (comps_dir, composition_name, model_type, mtime, _composition_reload_counter)
+
+    @classmethod
+    def execute(cls, composition_name: str = "", model_type: str = "composition default") -> io.NodeOutput:
+        items = _list_compositions(user_data_dir())
+        matched = next((c for c in items if c["name"] == composition_name), None)
+        if matched is None:
+            logger.warning("PromptCompositionLoader: composition %r not found", composition_name)
+            return io.NodeOutput("", "", "", composition_name)
+
+        composition = _load_composition(user_data_dir(), matched["id"])
+
+        model_type_used = (
+            composition.get("model_type", "h3_ref2va")
+            if model_type == "composition default"
+            else model_type
+        )
+
+        registry = _load_subject_registry(default_subject_profiles_path())
+        backgrounds = _load_backgrounds_dict(user_data_dir())
+        resolved_subjects = _resolve_composition_subjects(composition, registry)
+        resolved_background = _resolve_composition_background(composition, backgrounds)
+
+        result = _assemble_composition(composition, resolved_subjects, resolved_background, model_type_used)
+
+        prompt = result.get("prompt", "")
+        concept_ids = ", ".join(result.get("concept_ids", []))
+
+        send_status_update(
+            cls.node_id,
+            f"Loaded: {composition_name} | {model_type_used} | {len(prompt)} chars",
+        )
+
+        return io.NodeOutput(prompt, concept_ids, model_type_used, composition.get("name", composition_name))
+
+
 # =============================================================================
 
 
@@ -12692,4 +12810,5 @@ class FBToolsExtension(ComfyExtension):
             # Scene Composition nodes
             SceneCompose,
             PromptAssemble,
+            PromptCompositionLoader,
         ]

@@ -1180,6 +1180,8 @@ async function _onSave() {
         const list = await compositionsApi.listCompositions();
         _S.savedComps = list.compositions ?? [];
         _populateSavedList();
+        // Increment server counter so PromptCompositionLoader nodes re-execute
+        compositionsApi.reloadCompositions().catch(() => {});
         _setStatus("Saved ✓");
     } catch (e) {
         _setStatus("Save failed: " + e.message, true);

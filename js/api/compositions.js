@@ -32,6 +32,11 @@ export class CompositionsAPI extends BaseAPI {
         return r.json();
     }
 
+    /** Increment the server reload counter so PromptCompositionLoader nodes re-execute. */
+    reloadCompositions() {
+        return this.post("/compositions/reload", {});
+    }
+
     /** Pass a composition object (inline) or a saved id string. */
     assembleComposition(compOrId, modelType) {
         const body =
