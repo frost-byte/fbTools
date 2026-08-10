@@ -14,7 +14,7 @@ Loads a scene template from the `scene_templates/` directory and exposes it for 
 
 | Input | Type | Notes |
 |---|---|---|
-| Template ID | COMBO | Template to load. Populated at ComfyUI startup — refresh the page after adding new templates. |
+| Template ID | COMBO | Template to load. Press R to refresh the list after adding new templates. |
 
 | Output | Type | Notes |
 |---|---|---|

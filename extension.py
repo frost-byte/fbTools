@@ -11456,6 +11456,23 @@ def _subject_get_ids() -> list[str]:
         return ["(none)"]
 
 
+_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".aac", ".m4a", ".opus"}
+
+
+def _audio_get_list() -> list[str]:
+    """Return audio filenames from the ComfyUI input directory for combo widgets."""
+    try:
+        input_dir = get_input_directory()
+        files = [
+            f for f in os.listdir(input_dir)
+            if os.path.splitext(f)[1].lower() in _AUDIO_EXTENSIONS
+        ]
+        files.sort(key=str.lower)
+        return ["None"] + files
+    except Exception:
+        return ["None"]
+
+
 def _load_subject_images(filenames: list[str]) -> "torch.Tensor | None":
     """Load character sheet images from the ComfyUI input directory.
 
@@ -11554,7 +11571,7 @@ class SubjectProfileLoad(io.ComfyNode):
                     "subject_id",
                     options=subject_ids,
                     display_name="Subject ID",
-                    tooltip="Subject to load.  Refresh the page after adding new subjects via SubjectProfileDefine.",
+                    tooltip="Subject to load. Press R to refresh the list after adding new subjects.",
                 ),
             ],
             outputs=[
@@ -11696,12 +11713,12 @@ class SubjectProfileDefine(io.ComfyNode):
                     multiline=True,
                     tooltip="Textual description of vocal quality for use in prompts referencing audio.",
                 ),
-                io.String.Input(
+                io.Combo.Input(
                     "audio_reference_file",
                     display_name="Audio Reference File",
-                    default="",
-                    multiline=False,
-                    tooltip="Filename of the voice reference clip in the ComfyUI input directory.",
+                    options=_audio_get_list(),
+                    default="None",
+                    tooltip="Voice reference clip from the ComfyUI input directory. Press R to refresh the list after adding new files.",
                 ),
                 io.Combo.Input(
                     "language",
@@ -11750,6 +11767,8 @@ class SubjectProfileDefine(io.ComfyNode):
     ) -> io.NodeOutput:
         if not subject_id.strip():
             raise ValueError("SubjectProfileDefine: subject_id cannot be empty")
+
+        audio_reference_file = "" if audio_reference_file == "None" else audio_reference_file
 
         path = default_subject_profiles_path()
         registry = _load_subject_registry(path)
@@ -11884,7 +11903,7 @@ class SceneTemplateLoad(io.ComfyNode):
 
     The combo is populated at extension load time from the user's
     scene_templates/ directory (seeded with bundled examples on first use).
-    Refresh the page after adding new templates to see them in the dropdown.
+    Press R to refresh the list after adding new templates.
     """
     node_id = prefixed_node_id("SceneTemplateLoad")
     display_name = "Scene Template Load"
@@ -11904,7 +11923,7 @@ class SceneTemplateLoad(io.ComfyNode):
                     "template_id",
                     options=template_id_options,
                     display_name="Template ID",
-                    tooltip="Scene template to load.  Refresh the page after adding new templates.",
+                    tooltip="Scene template to load. Press R to refresh the list after adding new templates.",
                 ),
             ],
             outputs=[
@@ -12950,7 +12969,7 @@ class PromptCompositionLoader(io.ComfyNode):
                     "composition_name",
                     options=names,
                     display_name="Composition",
-                    tooltip="Select a saved composition. Refresh the page after saving brand-new ones.",
+                    tooltip="Select a saved composition. Press R to refresh the list after saving new ones.",
                 ),
                 io.Combo.Input(
                     "model_type",
