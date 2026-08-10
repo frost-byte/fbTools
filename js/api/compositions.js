@@ -47,10 +47,30 @@ export class CompositionsAPI extends BaseAPI {
         return this.get("/subjects/list");
     }
 
+    saveSubject(subject) {
+        return this.post("/subjects/save", subject);
+    }
+
+    async deleteSubject(id) {
+        const r = await fetch(`/fbtools/subjects/delete?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!r.ok) throw new Error(`Delete failed: ${r.statusText}`);
+        return r.json();
+    }
+
     // ── Backgrounds ─────────────────────────────────────────────────────────────
 
     listBackgrounds() {
         return this.get("/backgrounds/list");
+    }
+
+    saveBackground(bg) {
+        return this.post("/backgrounds/save", bg);
+    }
+
+    async deleteBackground(id) {
+        const r = await fetch(`/fbtools/backgrounds/delete?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!r.ok) throw new Error(`Delete failed: ${r.statusText}`);
+        return r.json();
     }
 
     // ── Presets ─────────────────────────────────────────────────────────────────

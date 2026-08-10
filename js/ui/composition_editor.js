@@ -8,8 +8,9 @@
  *   {id, name, model_type, style, subjects, outfit_overrides, background,
  *    shots, overall_soundscape, non_diegetic_music}
  *
- * Phase 2 scope: structured form editor, resource sidebar, preview raw,
- *   copy to clipboard, save/load.  Smart elements (Phase 3-4) layer on top.
+ * Phase 3 additions: {S} slot-reference completion in action/camera fields,
+ *   subject slot appearance display, background soundscape auto-fill,
+ *   inline New Subject / New Background creation forms in the sidebar.
  */
 
 import { compositionsApi } from "../api/compositions.js";
@@ -44,6 +45,9 @@ const _S = {
 
 // Key DOM refs rebuilt on each panel render
 const _dom = {};
+
+// Slot-reference completion popup element (singleton)
+let _completionEl = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -146,6 +150,96 @@ function _sectionToggle(headerEl, bodyEl) {
     });
 }
 
+// ── Slot-reference completion ({S1}, {S2} …) ──────────────────────────────────
+
+function _dismissCompletion() {
+    if (_completionEl) { _completionEl.remove(); _completionEl = null; }
+}
+
+function _showCompletion(textEl, matches, bracePos) {
+    _dismissCompletion();
+    if (!matches.length) return;
+
+    const popup = _mk("div", { cls: "fbt-ce-completion" });
+
+    matches.forEach((key, i) => {
+        const subId  = _S.composition?.subjects?.[key] || "";
+        const subName = _S.subjects.find(s => s.id === subId)?.name || "";
+        const item = document.createElement("div");
+        item.className = "fbt-ce-comp-item" + (i === 0 ? " active" : "");
+        item.innerHTML = `<strong>${key}</strong>${subName ? ` <span class="fbt-ce-comp-name">${subName}</span>` : ""}`;
+        item.addEventListener("mousedown", e => {
+            e.preventDefault(); // keep focus on textEl
+            const curPos = textEl.selectionStart;
+            const before = textEl.value.substring(0, bracePos);
+            const after  = textEl.value.substring(curPos);
+            const insert = `{${key}}`;
+            textEl.value = before + insert + after;
+            const newPos = bracePos + insert.length;
+            textEl.selectionStart = textEl.selectionEnd = newPos;
+            textEl.dispatchEvent(new Event("input", { bubbles: true }));
+            _dismissCompletion();
+            textEl.focus();
+        });
+        popup.appendChild(item);
+    });
+
+    const rect = textEl.getBoundingClientRect();
+    Object.assign(popup.style, {
+        position:  "fixed",
+        left:      rect.left + "px",
+        top:       Math.min(rect.bottom + 2, window.innerHeight - 140) + "px",
+        minWidth:  Math.min(200, rect.width) + "px",
+        zIndex:    "9999",
+    });
+    document.body.appendChild(popup);
+    _completionEl = popup;
+
+    // Dismiss on blur (mousedown handler above prevents blur on item click)
+    const onBlur = () => _dismissCompletion();
+    textEl.addEventListener("blur", onBlur, { once: true });
+    // Dismiss on outside click (defer one tick so this event doesn't self-dismiss)
+    setTimeout(() => {
+        document.addEventListener("mousedown", function outsideClick(e) {
+            if (!_completionEl?.contains(e.target)) { _dismissCompletion(); }
+            document.removeEventListener("mousedown", outsideClick);
+        });
+    }, 0);
+}
+
+/** Attaches slot-reference completion to a text input or textarea. */
+function _attachCompletion(el) {
+    el.addEventListener("input", () => {
+        const pos    = el.selectionStart;
+        const before = el.value.substring(0, pos);
+        const last   = before.lastIndexOf("{");
+        if (last === -1) { _dismissCompletion(); return; }
+        const fragment = before.substring(last + 1);
+        // Only complete short, slot-key-shaped fragments: "", "S", "S1" …
+        if (fragment.length > 3 || !/^S?\d*$/.test(fragment)) { _dismissCompletion(); return; }
+        const matches = _slotKeys().filter(k => k.toLowerCase().startsWith(fragment.toLowerCase()));
+        if (!matches.length) { _dismissCompletion(); return; }
+        _showCompletion(el, matches, last);
+    });
+
+    el.addEventListener("keydown", e => {
+        if (!_completionEl) return;
+        if (e.key === "Escape") { e.stopPropagation(); _dismissCompletion(); return; }
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            const items = Array.from(_completionEl.querySelectorAll(".fbt-ce-comp-item"));
+            let idx = items.findIndex(i => i.classList.contains("active"));
+            items[idx]?.classList.remove("active");
+            idx = e.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
+            items[idx]?.classList.add("active");
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+            const active = _completionEl?.querySelector(".fbt-ce-comp-item.active");
+            if (active) { e.preventDefault(); active.dispatchEvent(new MouseEvent("mousedown")); }
+        }
+    });
+}
+
 // ── API load ───────────────────────────────────────────────────────────────────
 
 async function _loadResources() {
@@ -207,25 +301,96 @@ function _populateSubjectList() {
     const list = _dom.subjectList;
     if (!list) return;
     list.innerHTML = "";
+
+    // "New Subject" quick-add button
+    list.appendChild(_mk("div", {
+        cls: "fbt-ce-sb-item fbt-ce-sb-new",
+        textContent: "+ New Subject…",
+        onclick: () => _showNewSubjectForm(),
+    }));
+
     if (!_S.subjects.length) {
         list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No subjects defined" }));
         return;
     }
     _S.subjects.forEach(s => {
-        const item = _mk("div", {
-            cls: "fbt-ce-sb-item fbt-ce-clickable",
+        const item = _mk("div", { cls: "fbt-ce-sb-item fbt-ce-clickable" });
+        const nameEl = _mk("span", { cls: "fbt-ce-sb-name", textContent: s.name || s.id });
+        const hint   = _mk("span", {
+            cls: "fbt-ce-sb-hint",
             title: s.appearance_summary || "",
-            onclick: () => _assignNextSlot(s.id),
+            textContent: s.appearance_summary ? "…" : "",
         });
-        item.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: s.name || s.id }));
+        item.title = s.appearance_summary || "";
+        item.appendChild(nameEl);
+        item.appendChild(hint);
+        item.addEventListener("click", () => _assignNextSlot(s.id));
         list.appendChild(item);
     });
+}
+
+function _showNewSubjectForm() {
+    const list = _dom.subjectList;
+    if (!list) return;
+    list.innerHTML = "";
+
+    const nameEl    = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Name*" });
+    const summaryEl = _mk("textarea", { cls: "fbt-ce-textarea", placeholder: "Appearance summary…", rows: 2 });
+    const conceptEl = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Concept ID (optional)" });
+
+    const form = _mk("div", { cls: "fbt-ce-inline-form" }, [
+        _mk("div", { cls: "fbt-ce-form-label", textContent: "New Subject" }),
+        nameEl, summaryEl, conceptEl,
+    ]);
+
+    const btnRow = _mk("div", { cls: "fbt-ce-form-btns" });
+    btnRow.appendChild(_mk("button", {
+        cls: "fbt-ce-btn fbt-ce-btn-primary",
+        textContent: "Add",
+        onclick: async () => {
+            const name = nameEl.value.trim();
+            if (!name) { nameEl.focus(); return; }
+            const id = name.toLowerCase().replace(/\s+/g, "_").replace(/[^\w]/g, "");
+            try {
+                await compositionsApi.saveSubject({
+                    id,
+                    name,
+                    appearance: { summary: summaryEl.value.trim() },
+                    concept_id: conceptEl.value.trim(),
+                });
+                const res = await compositionsApi.listSubjects();
+                _S.subjects = res.subjects ?? [];
+                _populateSubjectList();
+                _rebuildSlots();
+                _toast(`Subject "${name}" added`, "success");
+            } catch (e) {
+                _toast("Failed: " + e.message, "error");
+            }
+        },
+    }));
+    btnRow.appendChild(_mk("button", {
+        cls: "fbt-ce-btn",
+        textContent: "Cancel",
+        onclick: () => _populateSubjectList(),
+    }));
+    form.appendChild(btnRow);
+
+    list.appendChild(form);
+    nameEl.focus();
 }
 
 function _populateBgList() {
     const list = _dom.bgList;
     if (!list) return;
     list.innerHTML = "";
+
+    // "New Background" quick-add button
+    list.appendChild(_mk("div", {
+        cls: "fbt-ce-sb-item fbt-ce-sb-new",
+        textContent: "+ New Background…",
+        onclick: () => _showNewBgForm(),
+    }));
+
     if (!_S.backgrounds.length) {
         list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No backgrounds defined" }));
         return;
@@ -239,6 +404,66 @@ function _populateBgList() {
         item.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: b.name || b.id }));
         list.appendChild(item);
     });
+}
+
+function _showNewBgForm() {
+    const list = _dom.bgList;
+    if (!list) return;
+    list.innerHTML = "";
+
+    const nameEl  = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Name*" });
+    const descEl  = _mk("textarea", { cls: "fbt-ce-textarea", placeholder: "Environment description…", rows: 2 });
+    const lightEl = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Lighting…" });
+    const sndEl   = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Default soundscape…" });
+
+    const form = _mk("div", { cls: "fbt-ce-inline-form" }, [
+        _mk("div", { cls: "fbt-ce-form-label", textContent: "New Background" }),
+        nameEl, descEl, lightEl, sndEl,
+    ]);
+
+    const btnRow = _mk("div", { cls: "fbt-ce-form-btns" });
+    btnRow.appendChild(_mk("button", {
+        cls: "fbt-ce-btn fbt-ce-btn-primary",
+        textContent: "Add",
+        onclick: async () => {
+            const name = nameEl.value.trim();
+            if (!name) { nameEl.focus(); return; }
+            try {
+                const saved = await compositionsApi.saveBackground({
+                    name,
+                    description: descEl.value.trim(),
+                    lighting:    lightEl.value.trim(),
+                    soundscape:  sndEl.value.trim(),
+                });
+                const res = await compositionsApi.listBackgrounds();
+                _S.backgrounds = res.backgrounds ?? [];
+                _populateBgList();
+                // Refresh the background dropdown in the editor
+                if (_dom.bgSel) {
+                    const cur = _dom.bgSel.value;
+                    _dom.bgSel.innerHTML = "";
+                    _bgOptions().forEach(o => {
+                        const opt = document.createElement("option");
+                        opt.value = o.id; opt.textContent = o.label;
+                        if (o.id === cur) opt.selected = true;
+                        _dom.bgSel.appendChild(opt);
+                    });
+                }
+                _toast(`Background "${name}" added`, "success");
+            } catch (e) {
+                _toast("Failed: " + e.message, "error");
+            }
+        },
+    }));
+    btnRow.appendChild(_mk("button", {
+        cls: "fbt-ce-btn",
+        textContent: "Cancel",
+        onclick: () => _populateBgList(),
+    }));
+    form.appendChild(btnRow);
+
+    list.appendChild(form);
+    nameEl.focus();
 }
 
 function _populatePresetList(list, presets, field) {
@@ -334,14 +559,25 @@ function _rebuildSlots() {
     const comp = _S.composition;
     const slots = _slotKeys();
     slots.forEach(key => {
-        const row = _mk("div", { cls: "fbt-ce-slot-row" });
+        const card  = _mk("div", { cls: "fbt-ce-slot-card" });
+        const row   = _mk("div", { cls: "fbt-ce-slot-row" });
         const label = _mk("span", { cls: "fbt-ce-slot-label", textContent: key });
 
         // Subject dropdown
         const subSel = _sel(_subjectOptions(true), comp.subjects[key] || "");
         subSel.className = "fbt-ce-select";
+
+        // Appearance info line below the row
+        const infoEl = _mk("div", { cls: "fbt-ce-slot-info" });
+        const updateInfo = (sid) => {
+            const s = _S.subjects.find(x => x.id === sid);
+            infoEl.textContent = s?.appearance_summary || "";
+        };
+        updateInfo(comp.subjects[key] || "");
+
         subSel.addEventListener("change", () => {
             comp.subjects[key] = subSel.value;
+            updateInfo(subSel.value);
             _markDirty();
         });
 
@@ -377,7 +613,9 @@ function _rebuildSlots() {
         row.appendChild(subSel);
         row.appendChild(outfit);
         row.appendChild(removeBtn);
-        container.appendChild(row);
+        card.appendChild(row);
+        card.appendChild(infoEl);
+        container.appendChild(card);
     });
     if (!slots.length) {
         container.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No subject slots. Click subjects in the sidebar to assign." }));
@@ -450,24 +688,26 @@ function _buildShotCard(shot, index) {
     ts.addEventListener("input", () => { shot.timestamp = ts.value.trim() || null; _markDirty(); });
     card.appendChild(_labeledRow("Timestamp", ts));
 
-    // Camera
+    // Camera — {S} completion enabled
     const cam = _mk("input", {
         cls: "fbt-ce-input",
         type: "text",
-        placeholder: "Camera direction…",
+        placeholder: "Camera direction… (type { for slot reference)",
         value: shot.camera || "",
     });
     cam.addEventListener("input", () => { shot.camera = cam.value; _markDirty(); });
+    _attachCompletion(cam);
     card.appendChild(_labeledRow("Camera", cam));
 
-    // Action
+    // Action — {S} completion enabled
     const action = _mk("textarea", {
         cls: "fbt-ce-textarea fbt-ce-action",
-        placeholder: "Describe what happens. Use {S1}, {S2} for subject references.",
+        placeholder: "Describe what happens. Type { to insert a subject reference ({S1}, {S2} …).",
         value: shot.action || "",
         rows: 3,
     });
     action.addEventListener("input", () => { shot.action = action.value; _markDirty(); });
+    _attachCompletion(action);
     card.appendChild(_labeledRow("Action", action));
 
     // Dialogue
@@ -622,12 +862,49 @@ function _buildEditor(parent) {
     // Subjects
     form.appendChild(_editorSection("Subjects", _buildSubjectSlotsSection));
 
-    // Background
+    // Background — changing it offers to auto-fill the soundscape field
     form.appendChild(_editorSection("Background", body => {
         _dom.bgSel = _sel(_bgOptions(), "");
         _dom.bgSel.className = "fbt-ce-select";
-        _dom.bgSel.addEventListener("change", () => { _S.composition.background = _dom.bgSel.value; _markDirty(); });
+
+        _dom.bgSoundscapeHint = _mk("div", { cls: "fbt-ce-bg-hint", style: { display: "none" } });
+
+        _dom.bgSel.addEventListener("change", () => {
+            const bgId = _dom.bgSel.value;
+            _S.composition.background = bgId;
+            _markDirty();
+
+            // Auto-fill or offer to fill soundscape from background
+            const bg = _S.backgrounds.find(b => b.id === bgId);
+            if (bg?.soundscape) {
+                if (!_S.composition.overall_soundscape?.trim()) {
+                    // Field is empty — auto-fill silently
+                    _S.composition.overall_soundscape = bg.soundscape;
+                    if (_dom.soundscapeArea) _dom.soundscapeArea.value = bg.soundscape;
+                    _dom.bgSoundscapeHint.style.display = "none";
+                } else {
+                    // Field already has content — show a replace button
+                    _dom.bgSoundscapeHint.innerHTML = "";
+                    _dom.bgSoundscapeHint.appendChild(_mk("button", {
+                        cls: "fbt-ce-hint-btn",
+                        textContent: "↙ Use background soundscape",
+                        title: bg.soundscape,
+                        onclick: () => {
+                            _S.composition.overall_soundscape = bg.soundscape;
+                            if (_dom.soundscapeArea) _dom.soundscapeArea.value = bg.soundscape;
+                            _markDirty();
+                            _dom.bgSoundscapeHint.style.display = "none";
+                        },
+                    }));
+                    _dom.bgSoundscapeHint.style.display = "";
+                }
+            } else {
+                _dom.bgSoundscapeHint.style.display = "none";
+            }
+        });
+
         body.appendChild(_dom.bgSel);
+        body.appendChild(_dom.bgSoundscapeHint);
     }));
 
     // Shots
@@ -925,9 +1202,9 @@ function _buildPanel(el) {
     _buildEditor(body);
     _dom.panel.appendChild(body);
 
-    // Ctrl+S to save
+    // Ctrl+S to save — stopPropagation prevents ComfyUI's document-level handler from also firing
     el.addEventListener("keydown", e => {
-        if (e.ctrlKey && e.key === "s") { e.preventDefault(); _onSave(); }
+        if (e.ctrlKey && e.key === "s") { e.preventDefault(); e.stopPropagation(); _onSave(); }
     });
 }
 
