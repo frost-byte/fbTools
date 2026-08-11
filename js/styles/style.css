@@ -976,3 +976,179 @@ textarea.prompt-value-input {
     gap: 6px;
     padding: 8px 10px 4px;
 }
+
+/* ── Frame-sampling param grid (used inside visual + audio pickers) ────────── */
+
+.fbt-be-param-section-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--p-surface-400, #888);
+    padding: 6px 0 2px;
+}
+
+.fbt-be-param-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 8px;
+    padding-bottom: 2px;
+}
+
+.fbt-be-param-cell {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+}
+
+.fbt-be-param-label {
+    flex: 1;
+    color: var(--p-surface-400, #888);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fbt-be-param-input {
+    width: 52px;
+    padding: 2px 4px;
+    font-size: 11px;
+    background: var(--comfy-input-bg, #1e1e1e);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 3px;
+    color: var(--fg-color, #ddd);
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.fbt-be-param-input:focus {
+    outline: 1px solid var(--p-primary-400, #5b9bd5);
+    border-color: var(--p-primary-400, #5b9bd5);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Scene Cast Editor  (fbt-cast-*)
+   Reuses most fbt-be-* and fbt-ce-* rules; only cast-specific layout below.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── List view ─────────────────────────────────────────────────────────────── */
+
+.fbt-cast-card {
+    cursor: pointer;
+}
+
+.fbt-cast-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.fbt-cast-count {
+    font-size: 11px;
+    color: var(--p-surface-400, #666);
+}
+
+.fbt-cast-date {
+    font-size: 11px;
+    color: var(--p-surface-400, #666);
+}
+
+.fbt-cast-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 2px 10px 6px;
+}
+
+/* ── Entry rows ────────────────────────────────────────────────────────────── */
+
+.fbt-cast-entries {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.fbt-cast-entry-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    background: var(--comfy-input-bg, #222);
+    border: 1px solid var(--border-color, #3a3a3a);
+    border-radius: 4px;
+}
+
+.fbt-cast-entry-top {
+    display: flex;
+    gap: 4px;
+}
+
+.fbt-cast-entry-subject {
+    flex: 0 0 38%;
+    min-width: 0;
+}
+
+.fbt-cast-entry-bundle {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.fbt-cast-entry-bot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Mode toggle: highlight when the entry overrides the bundle default */
+
+.fbt-cast-mode-toggle {
+    flex-shrink: 0;
+}
+
+.fbt-cast-mode-toggle.differs {
+    outline: 1px solid var(--p-amber-400, #fbbf24);
+    border-radius: 3px;
+}
+
+.fbt-cast-mode-toggle.differs .fbt-be-toggle-btn.active {
+    background: var(--p-amber-500, #f59e0b);
+    color: #111;
+}
+
+/* Audio label */
+
+.fbt-cast-audio-label {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.fbt-cast-audio-icon {
+    font-size: 14px;
+}
+
+.fbt-cast-remove-btn {
+    margin-left: auto;
+}
+
+/* ── Warnings ──────────────────────────────────────────────────────────────── */
+
+.fbt-cast-warnings {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--p-amber-400, #fbbf24);
+    background: color-mix(in srgb, var(--p-amber-400, #fbbf24) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--p-amber-400, #fbbf24) 30%, transparent);
+    border-radius: 4px;
+    margin: 4px 10px;
+}

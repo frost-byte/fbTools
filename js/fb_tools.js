@@ -466,6 +466,7 @@ import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, set
 import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
 import { renderCompositionEditor } from "./ui/composition_editor.js";
 import { renderBundleEditor }      from "./ui/bundle_editor.js";
+import { renderCastEditor }        from "./ui/cast_editor.js";
 
 // Store app ref once so all panels can fire toasts via window._fbtApp
 app.extensionManager.registerSidebarTab({
@@ -489,6 +490,18 @@ app.extensionManager.registerSidebarTab({
     render: (el) => {
         window._fbtApp = app;
         renderBundleEditor(el);
+    },
+});
+
+app.extensionManager.registerSidebarTab({
+    id: "fbt.cast-editor",
+    icon: "pi pi-users",
+    title: "Scene Casts",
+    tooltip: "Assign reference bundles to subjects for each scene cast",
+    type: "custom",
+    render: (el) => {
+        window._fbtApp = app;
+        renderCastEditor(el);
     },
 });
 

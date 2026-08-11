@@ -26,3 +26,4 @@ export {
 // UI Components
 export { renderCompositionEditor } from "./ui/composition_editor.js";
 export { renderBundleEditor }      from "./ui/bundle_editor.js";
+export { renderCastEditor }        from "./ui/cast_editor.js";

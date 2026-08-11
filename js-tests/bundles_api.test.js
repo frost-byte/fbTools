@@ -157,6 +157,25 @@ describe("BundlesAPI", () => {
         });
     });
 
+    // ── reloadCasts ────────────────────────────────────────────────────────────
+
+    describe("reloadCasts", () => {
+        test("posts to /fbtools/casts/reload", async () => {
+            mockFetch.mockResponse({ success: true, counter: 1 });
+            await api.reloadCasts();
+            const { url, options } = mockFetch.getCalls()[0];
+            expect(String(url)).toContain("/casts/reload");
+            expect(options.method).toBe("POST");
+        });
+
+        test("returns response with counter", async () => {
+            mockFetch.mockResponse({ success: true, counter: 3 });
+            const result = await api.reloadCasts();
+            expect(result.success).toBe(true);
+            expect(result.counter).toBe(3);
+        });
+    });
+
     // ── listSubjects ───────────────────────────────────────────────────────────
 
     describe("listSubjects", () => {

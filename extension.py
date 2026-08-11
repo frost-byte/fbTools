@@ -162,6 +162,8 @@ _subject_reload_counter: int = 0
 _scene_template_reload_counter: int = 0
 # Incremented by POST /fbtools/compositions/reload so PromptCompositionLoader nodes re-execute
 _composition_reload_counter: int = 0
+# Incremented by POST /fbtools/casts/reload so SceneCastLoad nodes re-execute
+_cast_reload_counter: int = 0
 
 def prefixed_node_id(display_name: str) -> str:
     """Construct a globally-unique node_id using the shared extension prefix."""
@@ -12655,6 +12657,140 @@ async def _media_list(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Scene Cast nodes  (Reference Bundle & Scene Cast system)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Custom type: SCENE_CAST ───────────────────────────────────────────────────
+
+SCENE_CAST_TYPE = "SCENE_CAST"
+
+
+@io.comfytype(io_type=SCENE_CAST_TYPE)
+class CastIOType:
+    """Carries a scene cast dict between SceneCastLoad → PromptCompositionLoader nodes."""
+    Type = object  # dict: {id, name, entries: [{subject_id, bundle_id, visual_mode, use_audio}], ...}
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "scene_cast", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+# ── Scene Cast helpers ────────────────────────────────────────────────────────
+
+def _cast_get_ids() -> list[str]:
+    """Return available cast IDs for combo population at schema time."""
+    try:
+        registry = _load_cast_registry(default_cast_registry_path())
+        ids = registry.cast_ids()
+        return ids if ids else ["(none)"]
+    except Exception:
+        return ["(none)"]
+
+
+# ── Node: SceneCastLoad ───────────────────────────────────────────────────────
+
+class SceneCastLoad(io.ComfyNode):
+    """Load a Scene Cast from disk.
+
+    A Scene Cast assigns a reference bundle to each subject in a composition,
+    with per-entry visual mode and audio toggles.  Wire the SCENE_CAST output
+    into PromptCompositionLoader to resolve reference media during assembly.
+    The combo is populated at extension load time; press R to refresh after
+    saving a new cast in the Scene Casts sidebar panel.
+    """
+    node_id = prefixed_node_id("SceneCastLoad")
+    display_name = "Scene Cast Load"
+    category = "🧊 frost-byte/Scene"
+    is_output_node = True
+
+    @classmethod
+    def define_schema(cls):
+        cast_ids = _cast_get_ids()
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            is_output_node=cls.is_output_node,
+            inputs=[
+                io.Combo.Input(
+                    "cast_id",
+                    options=cast_ids,
+                    display_name="Cast ID",
+                    tooltip="Scene cast to load. Press R to refresh after saving a new cast.",
+                ),
+            ],
+            outputs=[
+                CastIOType.Output(
+                    "scene_cast",
+                    display_name="Scene Cast",
+                    tooltip="Cast dict for wiring into PromptCompositionLoader.",
+                ),
+                io.String.Output(
+                    "cast_summary",
+                    display_name="Cast Summary",
+                    tooltip="Human-readable summary of the cast entries.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, cast_id: str = "", **_):
+        path = default_cast_registry_path()
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0
+        return (path, cast_id, mtime, _cast_reload_counter)
+
+    @classmethod
+    def execute(cls, cast_id: str = "") -> io.NodeOutput:
+        if not cast_id or cast_id == "(none)":
+            logger.warning("SceneCastLoad: no cast_id selected")
+            return io.NodeOutput(None, "")
+
+        path = default_cast_registry_path()
+        registry = _load_cast_registry(path)
+        cast = registry.get(cast_id)
+
+        if cast is None:
+            logger.warning("SceneCastLoad: cast_id %r not found in %s", cast_id, path)
+            return io.NodeOutput(None, f"Cast not found: {cast_id}")
+
+        entries = cast.get("entries", [])
+        n = len(entries)
+        lines = [f"Cast: {cast.get('name', cast_id)}  ({n} {'subject' if n == 1 else 'subjects'})"]
+        for e in entries:
+            mode = e.get("visual_mode", "images")
+            audio_flag = " + audio" if e.get("use_audio") else ""
+            lines.append(
+                f"  • {e.get('subject_id', '?')} → {e.get('bundle_id', '?')} [{mode}{audio_flag}]"
+            )
+
+        summary = "\n".join(lines)
+        send_status_update(
+            cls.node_id,
+            f"Loaded cast: {cast.get('name', cast_id)} | {n} {'entry' if n == 1 else 'entries'}",
+        )
+        return io.NodeOutput(cast, summary, ui={"cast_summary": summary})
+
+
+# ── Scene Cast reload endpoint ────────────────────────────────────────────────
+
+@routes.post("/fbtools/casts/reload")
+async def _casts_reload(request):
+    """Increment reload counter so SceneCastLoad nodes re-execute."""
+    global _cast_reload_counter
+    _cast_reload_counter += 1
+    logger.info("Scene casts reload requested (counter=%d)", _cast_reload_counter)
+    return web.json_response({"success": True, "counter": _cast_reload_counter})
+
+
+
 # ── Prompt Composition routes ─────────────────────────────────────────────────
 
 from .utils.prompt_compositions import (
@@ -13139,11 +13275,111 @@ def _composition_get_names() -> list[str]:
         return ["(none)"]
 
 
+def _resolve_cast_media(
+    scene_cast: dict,
+    bundle_registry,
+) -> "dict":
+    """Extract reference media and frame-sampling params from a scene cast dict.
+
+    Iterates entries in cast order.  Returns a dict with:
+      reference_video   – absolute path of first video-mode entry's file, or "".
+      reference_images  – [N,H,W,3] tensor from all image-mode entries, or None.
+      video_force_rate  – fps override for the visual Load Video node.
+      video_frame_cap   – frame cap for the visual Load Video node.
+      video_skip_first  – skip-first-frames for the visual Load Video node.
+      video_every_nth   – select-every-nth for the visual Load Video node.
+      audio_source      – "extract_from_visual" | "file" | "none".
+      audio_file        – absolute path to audio file (source=="file"), or "".
+      audio_force_rate  – fps override for the audio Load Video node (extract_from_visual).
+      audio_frame_cap   – frame cap for the audio Load Video node.
+      audio_skip_first  – skip-first-frames for the audio Load Video node.
+      audio_every_nth   – select-every-nth for the audio Load Video node.
+      audio_start_time  – start time in seconds for Load Audio (source=="file").
+      audio_duration    – duration in seconds for Load Audio; 0 = to end.
+    """
+    entries = scene_cast.get("entries", [])
+    reference_video = ""
+    image_files: list[str] = []
+    video_params: dict = {"force_rate": 0, "frame_load_cap": 16, "skip_first_frames": 0, "select_every_nth": 1}
+    audio_source = "none"
+    audio_file = ""
+    audio_params: dict = {"force_rate": 0, "frame_load_cap": 0, "skip_first_frames": 0, "select_every_nth": 1}
+    audio_time: dict = {"start_time": 0.0, "duration": 0.0}
+
+    for entry in entries:
+        bundle_id = entry.get("bundle_id", "")
+        visual_mode = entry.get("visual_mode", "images")
+        if not bundle_id:
+            continue
+        bundle = bundle_registry.get(bundle_id)
+        if bundle is None:
+            logger.debug("_resolve_cast_media: bundle %r not found", bundle_id)
+            continue
+        visual = bundle.get("visual", {})
+        audio = bundle.get("audio", {})
+
+        if visual_mode == "video":
+            if not reference_video:
+                vfile = visual.get("file", "")
+                if vfile:
+                    reference_video = os.path.join(get_input_directory(), vfile)
+                    video_params = {
+                        "force_rate":        visual.get("force_rate", 0),
+                        "frame_load_cap":    visual.get("frame_load_cap", 16),
+                        "skip_first_frames": visual.get("skip_first_frames", 0),
+                        "select_every_nth":  visual.get("select_every_nth", 1),
+                    }
+        else:
+            image_files.extend(visual.get("files", []))
+
+        # Resolve audio from first non-"none" source across all entries
+        if audio_source == "none":
+            a_src = audio.get("source", "none")
+            if a_src == "extract_from_visual" and visual_mode == "video" and visual.get("file"):
+                audio_source = a_src
+                audio_params = {
+                    "force_rate":        audio.get("force_rate", 0),
+                    "frame_load_cap":    audio.get("frame_load_cap", 0),
+                    "skip_first_frames": audio.get("skip_first_frames", 0),
+                    "select_every_nth":  audio.get("select_every_nth", 1),
+                }
+            elif a_src == "file":
+                a_file = audio.get("file", "")
+                if a_file:
+                    audio_source = a_src
+                    audio_file = os.path.join(get_input_directory(), a_file)
+                    audio_time = {
+                        "start_time": audio.get("start_time", 0.0),
+                        "duration":   audio.get("duration", 0.0),
+                    }
+
+    reference_images = _load_subject_images(image_files) if image_files else None
+    return {
+        "reference_video":  reference_video,
+        "reference_images": reference_images,
+        "video_force_rate": video_params["force_rate"],
+        "video_frame_cap":  video_params["frame_load_cap"],
+        "video_skip_first": video_params["skip_first_frames"],
+        "video_every_nth":  video_params["select_every_nth"],
+        "audio_source":     audio_source,
+        "audio_file":       audio_file,
+        "audio_force_rate": audio_params["force_rate"],
+        "audio_frame_cap":  audio_params["frame_load_cap"],
+        "audio_skip_first": audio_params["skip_first_frames"],
+        "audio_every_nth":  audio_params["select_every_nth"],
+        "audio_start_time": audio_time["start_time"],
+        "audio_duration":   audio_time["duration"],
+    }
+
+
 class PromptCompositionLoader(io.ComfyNode):
     """Load a saved prompt composition and assemble it into a model-specific prompt.
 
     Select a composition by name from the dropdown. The assembled prompt and
     concept IDs are ready to wire into text-conditioning and ConceptResolve nodes.
+
+    Optionally wire a SCENE_CAST from SceneCastLoad to resolve reference media
+    (video file path and/or image batch) from the cast's bundles.
 
     After saving a composition in the Prompt Compositions sidebar panel, any
     PromptCompositionLoader nodes on the canvas automatically re-execute to pick
@@ -13175,6 +13411,12 @@ class PromptCompositionLoader(io.ComfyNode):
                     display_name="Model Type",
                     tooltip="'composition default' uses the model type stored inside the composition.",
                 ),
+                CastIOType.Input(
+                    "scene_cast",
+                    display_name="Scene Cast",
+                    tooltip="Optional cast from SceneCastLoad. Resolves reference media (video path and images) from bundles.",
+                    optional=True,
+                ),
             ],
             outputs=[
                 io.String.Output("prompt", display_name="Prompt"),
@@ -13185,25 +13427,72 @@ class PromptCompositionLoader(io.ComfyNode):
                 ),
                 io.String.Output("model_type_used", display_name="Model Type Used"),
                 io.String.Output("composition_name", display_name="Composition Name"),
+                io.String.Output(
+                    "reference_video",
+                    display_name="Reference Video",
+                    tooltip="Absolute path to the first video-mode reference from the cast. Empty if no cast or no video entry.",
+                ),
+                io.Image.Output(
+                    "reference_images",
+                    display_name="Reference Images",
+                    tooltip="Image batch from image-mode cast entries in cast order. None if no cast or no image entries.",
+                ),
+                io.Int.Output("video_force_rate", display_name="Vid Force Rate",
+                              tooltip="FPS override for visual Load Video node (0 = native)."),
+                io.Int.Output("video_frame_cap",  display_name="Vid Frame Cap",
+                              tooltip="Max frames for visual Load Video node."),
+                io.Int.Output("video_skip_first", display_name="Vid Skip First",
+                              tooltip="Skip-first-frames for visual Load Video node."),
+                io.Int.Output("video_every_nth",  display_name="Vid Every Nth",
+                              tooltip="Select-every-Nth for visual Load Video node."),
+                io.String.Output("audio_source", display_name="Audio Source",
+                                 tooltip="'extract_from_visual' | 'file' | 'none'. Determines which audio output pins are populated."),
+                io.String.Output("audio_file", display_name="Audio File",
+                                 tooltip="Absolute path to audio file when audio_source is 'file'. Empty otherwise."),
+                io.Int.Output("audio_force_rate", display_name="Aud Force Rate",
+                              tooltip="FPS override for the audio Load Video node (extract_from_visual)."),
+                io.Int.Output("audio_frame_cap",  display_name="Aud Frame Cap",
+                              tooltip="Max frames for the audio Load Video node (extract_from_visual)."),
+                io.Int.Output("audio_skip_first", display_name="Aud Skip First",
+                              tooltip="Skip-first-frames for the audio Load Video node (extract_from_visual)."),
+                io.Int.Output("audio_every_nth",  display_name="Aud Every Nth",
+                              tooltip="Select-every-Nth for the audio Load Video node (extract_from_visual)."),
+                io.Float.Output("audio_start_time", display_name="Aud Start (s)",
+                                tooltip="Start time in seconds for Load Audio node (source='file')."),
+                io.Float.Output("audio_duration",   display_name="Aud Duration (s)",
+                                tooltip="Duration in seconds for Load Audio node; 0 = to end (source='file')."),
             ],
         )
 
     @classmethod
-    def fingerprint_inputs(cls, composition_name: str = "", model_type: str = "composition default", **_):
+    def fingerprint_inputs(cls, composition_name: str = "", model_type: str = "composition default", scene_cast=None, **_):
         comps_dir = os.path.join(user_data_dir(), "prompt_compositions")
         try:
             mtime = os.path.getmtime(comps_dir)
         except OSError:
             mtime = 0
-        return (comps_dir, composition_name, model_type, mtime, _composition_reload_counter)
+        cast_id = scene_cast.get("id", "") if scene_cast else ""
+        cast_modified = scene_cast.get("modified", "") if scene_cast else ""
+        try:
+            bundle_mtime = os.path.getmtime(default_bundle_registry_path()) if scene_cast else 0
+        except OSError:
+            bundle_mtime = 0
+        return (comps_dir, composition_name, model_type, mtime, _composition_reload_counter,
+                cast_id, cast_modified, bundle_mtime)
 
     @classmethod
-    def execute(cls, composition_name: str = "", model_type: str = "composition default") -> io.NodeOutput:
+    def execute(
+        cls,
+        composition_name: str = "",
+        model_type: str = "composition default",
+        scene_cast=None,
+    ) -> io.NodeOutput:
         items = _list_compositions(user_data_dir())
         matched = next((c for c in items if c["name"] == composition_name), None)
         if matched is None:
             logger.warning("PromptCompositionLoader: composition %r not found", composition_name)
-            return io.NodeOutput("", "", "", composition_name)
+            return io.NodeOutput("", "", "", composition_name, "", None,
+                                 0, 16, 0, 1, "none", "", 0, 0, 0, 1, 0.0, 0.0)
 
         composition = _load_composition(user_data_dir(), matched["id"])
 
@@ -13218,17 +13507,60 @@ class PromptCompositionLoader(io.ComfyNode):
         resolved_subjects = _resolve_composition_subjects(composition, registry)
         resolved_background = _resolve_composition_background(composition, backgrounds)
 
-        result = _assemble_composition(composition, resolved_subjects, resolved_background, model_type_used)
+        # Resolve cast: build video_entries for assembler + reference media tensors
+        video_entries: list[dict] = []
+        cast_media: dict = {
+            "reference_video": "", "reference_images": None,
+            "video_force_rate": 0, "video_frame_cap": 16, "video_skip_first": 0, "video_every_nth": 1,
+            "audio_source": "none", "audio_file": "",
+            "audio_force_rate": 0, "audio_frame_cap": 0, "audio_skip_first": 0, "audio_every_nth": 1,
+            "audio_start_time": 0.0, "audio_duration": 0.0,
+        }
+        if scene_cast:
+            bundle_registry = _load_bundle_registry(default_bundle_registry_path())
+            cast_media = _resolve_cast_media(scene_cast, bundle_registry)
+            for _ce in scene_cast.get("entries", []):
+                if _ce.get("visual_mode") == "video" and _ce.get("bundle_id"):
+                    _bundle = bundle_registry.get(_ce["bundle_id"])
+                    if _bundle:
+                        _vfile = _bundle.get("visual", {}).get("file", "")
+                        if _vfile:
+                            video_entries.append({
+                                "subject_id": _ce.get("subject_id", ""),
+                                "video_file": _vfile,
+                            })
+
+        result = _assemble_composition(
+            composition, resolved_subjects, resolved_background, model_type_used, video_entries
+        )
 
         prompt = result.get("prompt", "")
         concept_ids = ", ".join(result.get("concept_ids", []))
 
+        cast_note = f" | cast: {scene_cast.get('name', '?')}" if scene_cast else ""
         send_status_update(
             cls.node_id,
-            f"Loaded: {composition_name} | {model_type_used} | {len(prompt)} chars",
+            f"Loaded: {composition_name} | {model_type_used} | {len(prompt)} chars{cast_note}",
         )
 
-        return io.NodeOutput(prompt, concept_ids, model_type_used, composition.get("name", composition_name))
+        return io.NodeOutput(
+            prompt, concept_ids, model_type_used,
+            composition.get("name", composition_name),
+            cast_media["reference_video"],
+            cast_media["reference_images"],
+            cast_media["video_force_rate"],
+            cast_media["video_frame_cap"],
+            cast_media["video_skip_first"],
+            cast_media["video_every_nth"],
+            cast_media["audio_source"],
+            cast_media["audio_file"],
+            cast_media["audio_force_rate"],
+            cast_media["audio_frame_cap"],
+            cast_media["audio_skip_first"],
+            cast_media["audio_every_nth"],
+            cast_media["audio_start_time"],
+            cast_media["audio_duration"],
+        )
 
 
 # =============================================================================
@@ -13307,4 +13639,6 @@ class FBToolsExtension(ComfyExtension):
             SceneCompose,
             PromptAssemble,
             PromptCompositionLoader,
+            # Scene Cast nodes
+            SceneCastLoad,
         ]

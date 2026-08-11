@@ -95,10 +95,22 @@ class BundleRegistry:
         visual.setdefault("type", "images")
         visual.setdefault("file", "")
         visual.setdefault("files", [])
+        visual.setdefault("force_rate", 0)
+        visual.setdefault("frame_load_cap", 16)
+        visual.setdefault("skip_first_frames", 0)
+        visual.setdefault("select_every_nth", 1)
 
         audio = updated.setdefault("audio", {})
         audio.setdefault("source", "none")
         audio.setdefault("file", "")
+        # Frame-sampling params for extract_from_visual (second Load Video node)
+        audio.setdefault("force_rate", 0)
+        audio.setdefault("frame_load_cap", 0)
+        audio.setdefault("skip_first_frames", 0)
+        audio.setdefault("select_every_nth", 1)
+        # Time-based params for file source (Load Audio node)
+        audio.setdefault("start_time", 0.0)
+        audio.setdefault("duration", 0.0)
 
         new_reg.bundles[bundle_id] = updated
         return new_reg

@@ -50,6 +50,11 @@ export class BundlesAPI extends BaseAPI {
         return r.json();
     }
 
+    /** Increment the server reload counter so SceneCastLoad nodes re-execute. */
+    reloadCasts() {
+        return this.post("/casts/reload", {});
+    }
+
     // ── Shared ──────────────────────────────────────────────────────────────────
 
     listSubjects() {
