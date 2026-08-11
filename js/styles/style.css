@@ -116,34 +116,30 @@ textarea.prompt-value-input {
     overflow: hidden;
 }
 
-.fbt-ce-top-bar {
+.fbt-ce-info-row {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 8px;
-    border-bottom: 1px solid var(--border-color, #333);
-    flex-shrink: 0;
+    margin-bottom: 4px;
 }
 
-.fbt-ce-name-input {
-    flex: 1 1 auto;
-    min-width: 0;
-    background: var(--comfy-input-bg, #2a2a2a);
-    border: 1px solid var(--border-color, #444);
-    border-radius: 4px;
-    color: inherit;
-    padding: 4px 8px;
-    font-size: 13px;
+.fbt-ce-info-row:last-child {
+    margin-bottom: 0;
+}
+
+.fbt-ce-info-label {
+    flex-shrink: 0;
+    width: 42px;
+    font-size: 11px;
     font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--p-surface-400, #888);
 }
 
 .fbt-ce-dirty {
     color: var(--p-amber-400, #fbbf24);
     font-size: 10px;
-    flex-shrink: 0;
-}
-
-.fbt-ce-model-sel {
     flex-shrink: 0;
 }
 

@@ -100,7 +100,7 @@ function _bgOptions() {
 
 function _newComp() {
     return {
-        id: "", name: "New Composition",
+        id: "", name: "",
         model_type: "h3_ref2va", style: "",
         subjects: {}, outfit_overrides: {},
         background: "", shots: [],
@@ -1257,40 +1257,45 @@ function _insertSoundPreset(text) {
 function _buildEditor(parent) {
     const editorWrap = _mk("div", { cls: "fbt-ce-editor" });
 
-    // ─── Top bar ────────────────────────────────────────────────────────────────
-    const topBar = _mk("div", { cls: "fbt-ce-top-bar" });
-
-    _dom.nameInput = _mk("input", {
-        cls: "fbt-ce-name-input",
-        type: "text",
-        placeholder: "Composition name…",
-    });
-    _dom.nameInput.addEventListener("input", () => {
-        _S.composition.name = _dom.nameInput.value;
-        _markDirty();
-    });
-
-    _dom.dirtyDot = _mk("span", {
-        cls: "fbt-ce-dirty",
-        textContent: "●",
-        title: "Unsaved changes",
-        style: { display: "none" },
-    });
-
-    _dom.modelSel = _sel(MODEL_TYPES, "h3_ref2va");
-    _dom.modelSel.className = "fbt-ce-select fbt-ce-model-sel";
-    _dom.modelSel.addEventListener("change", () => {
-        _S.composition.model_type = _dom.modelSel.value;
-        _markDirty();
-    });
-
-    topBar.appendChild(_dom.nameInput);
-    topBar.appendChild(_dom.dirtyDot);
-    topBar.appendChild(_dom.modelSel);
-    editorWrap.appendChild(topBar);
-
     // ─── Scrollable form ────────────────────────────────────────────────────────
     const form = _mk("div", { cls: "fbt-ce-form" });
+
+    // Info (name + model)
+    form.appendChild(_editorSection("Info", body => {
+        _dom.nameInput = _mk("input", {
+            cls: "fbt-ce-input",
+            type: "text",
+            placeholder: "Untitled…",
+        });
+        _dom.nameInput.addEventListener("input", () => {
+            _S.composition.name = _dom.nameInput.value;
+            _markDirty();
+        });
+
+        _dom.dirtyDot = _mk("span", {
+            cls: "fbt-ce-dirty",
+            textContent: "●",
+            title: "Unsaved changes",
+            style: { display: "none" },
+        });
+
+        _dom.modelSel = _sel(MODEL_TYPES, "h3_ref2va");
+        _dom.modelSel.className = "fbt-ce-select";
+        _dom.modelSel.addEventListener("change", () => {
+            _S.composition.model_type = _dom.modelSel.value;
+            _markDirty();
+        });
+
+        body.appendChild(_mk("div", { cls: "fbt-ce-info-row" }, [
+            _mk("span", { cls: "fbt-ce-info-label", textContent: "Name" }),
+            _dom.nameInput,
+            _dom.dirtyDot,
+        ]));
+        body.appendChild(_mk("div", { cls: "fbt-ce-info-row" }, [
+            _mk("span", { cls: "fbt-ce-info-label", textContent: "Model" }),
+            _dom.modelSel,
+        ]));
+    }));
 
     // Style
     form.appendChild(_editorSection("Style", body => {
