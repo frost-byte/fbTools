@@ -1,6 +1,391 @@
 # CHANGELOG
 
 
+## v1.9.0 (2026-08-11)
+
+### Bug Fixes
+
+- **extension**: Use relative imports for late utils imports
+  ([`f0e3297`](https://github.com/frost-byte/fbTools/commit/f0e32972f7a225e6529dae33a033cf0b211180b5))
+
+All utils imports in the Prompt Composition and LLM route blocks were using bare absolute form (from
+  utils.x import) which fails when the package is loaded by ComfyUI as a relative package. Changed
+  to the same dot-prefix relative form used everywhere else in extension.py.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **llm**: Replace cross-module get_logger with stdlib logging in llm_client
+  ([`7bc4afd`](https://github.com/frost-byte/fbTools/commit/7bc4afd4b488d65375b5347540fb63408f7cc00c))
+
+Pure utils modules have no cross-module deps. Using get_logger from logging_utils caused a
+  ModuleNotFoundError at ComfyUI load time because utils/ has no __init__.py and the import path was
+  absolute. Replace with logging.getLogger(__name__) consistent with other standalone utils modules.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **llm**: Scanner skips root dir to avoid misidentifying stray GGUF files
+  ([`4c67a7d`](https://github.com/frost-byte/fbTools/commit/4c67a7d5ff3e8a3626696c4c05ecac9da6e0aa7a))
+
+_scan_directory now iterates root's children rather than treating root itself as a candidate model
+  dir. Fixes the case where a loose text-encoder .gguf (e.g. umt5-xxl-encoder-Q8_0.gguf) in the LLM
+  root causes the entire directory to be returned as a single model and recursion to stop, hiding
+  all nested model subdirectories.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **llm**: Use "LLM" (singular) as the canonical folder_paths key
+  ([`e797ade`](https://github.com/frost-byte/fbTools/commit/e797ade17e70924a2d6eaeb73ce158ac02bf3f40))
+
+The ComfyUI convention, established by ComfyUI-MiniMaxH3-Prompt-Writer and comfyui_llm_party, is
+  "LLM" not "LLMs". Scanner now checks "LLM" first with "LLMs" as fallback, and defaults to
+  models/LLM/ when neither is registered.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene**: Fix two bugs in assemble_composition adapter + add tests
+  ([`80fdd9a`](https://github.com/frost-byte/fbTools/commit/80fdd9a0954e5f4725eea52474992caeef97059d))
+
+Dialogue map was keyed by positional counter (shot_1, shot_2) but the template shot lookup uses the
+  shot's actual id field — so dialogue in shot N with non-dialogue shots before it was never
+  emitted. Fix: key dialogue map by shot["id"] directly.
+
+speaker_slot was absent from the template dialogue dict produced by _composition_shots_to_template,
+  so h3_ref2va / h3_fl2va always fell back to "en-us" regardless of the subject's configured
+  language. Fix: include speaker_slot (remapped S1→A via slot_map) in the dict.
+
+Adds test_assemble_composition.py (42 tests) covering: - S1/S2 → A/B slot remapping - {S1}/{S2}
+  placeholder replacement in action/camera text - Dialogue positional mapping by shot ID - Dialogue
+  language tag from speaker's voice.language - Background description, lighting, soundscape
+  integration - Composition soundscape overrides background soundscape - Style, music, outfit
+  overrides, concept IDs - All 8 model types produce non-empty output - {S} placeholders do not leak
+  into any model's output - Edge cases: empty subjects, empty shots, 3-subject mapping
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Initialise composition state before building panel
+  ([`e3d00b1`](https://github.com/frost-byte/fbTools/commit/e3d00b1b6c7ed220fe83cb9ba62c98d026d3a93b))
+
+_S.composition was null when _buildPanel called _rebuildShots during first render, causing a
+  TypeError on .shots. Moving _newComp() before _buildPanel ensures state is ready before any DOM
+  callbacks execute.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Chores
+
+- **nodes**: Unregister MultiLoraLoader, SceneWanVideoLoraMultiSave, LoraStackView
+  ([`bba5915`](https://github.com/frost-byte/fbTools/commit/bba5915dc7e33b72468668143dcb3f43c4283b94))
+
+Workflow audit (338 workflows scanned): - MultiLoraLoader: present in 1 workflow but fully
+  disconnected (no inputs or outputs wired) — confirmed never functional -
+  SceneWanVideoLoraMultiSave: zero workflow references - LoraStackView: was already absent from
+  get_node_list(); made explicit
+
+Class definitions retained in extension.py for reference. LoraEntryDefine and LoraStackCollect kept
+  — still active in 11-13 workflows each.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Code Style
+
+- **nodes**: Normalize display names to Title Case with spaces
+  ([`330870f`](https://github.com/frost-byte/fbTools/commit/330870f21a4376c0f7f4789dd34862df24a45ea1))
+
+All 29 node display_name values that used verbatim CamelCase class names are updated to Title Case
+  with spaces. FBTextEncodeQwenImageEditPlus is shortened to "FB Qwen Image Edit Plus" to avoid
+  collision with similarly named nodes from other packages. Node IDs are unchanged so existing
+  workflows are unaffected.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Unify LoraStackBuilder info icon with ConceptDefine style
+  ([`d4488f9`](https://github.com/frost-byte/fbTools/commit/d4488f9de09fb0ed9a81b2e1df8c98f31d0bf7d6))
+
+Remove the explicit circle (arc + stroke) from _lsbDrawIcon and replace with the same approach as
+  _cdDrawIcon: bold "i" centered directly in the rounded rect, font size proportional to icon size
+  (sz * 0.55). Both icons are now 18px rounded rects with the same visual weight.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Documentation
+
+- Add user-facing docs for Scene Composition Engine nodes
+  ([`6a6a330`](https://github.com/frost-byte/fbTools/commit/6a6a3304468fa7562cd64cc744ae45f8c43b82aa))
+
+Four new end-user reference docs covering all Phase 1–4 nodes: concept_registry.md,
+  subject_profiles.md, scene_composition.md, prompt_assembly.md. Each covers inputs/outputs, typical
+  workflow diagrams, and storage locations.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **nodes**: Add missing tooltip strings to SubjectProfileDefine, ConceptDefine, DatasetCaptioner,
+  TailEnhancePro
+  ([`321f30d`](https://github.com/frost-byte/fbTools/commit/321f30dfafee3262684ac84b0bea8adf6191287b))
+
+SubjectProfileDefine: name, face, hair, body, default_outfit
+
+ConceptDefine: description
+
+DatasetCaptioner: device
+
+TailEnhancePro: all 12 processing parameter inputs (tail_count, ref_window, deflicker, color match,
+  unsharp, bilateral filter)
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Features
+
+- **cast**: Add Reference Bundle and Scene Cast data layer
+  ([`7f0e422`](https://github.com/frost-byte/fbTools/commit/7f0e4228f33d3f2cb609ecb37eff1e2e8673db1a))
+
+Pure-utils modules (no ComfyUI deps) for the Reference Bundle & Scene Cast system (spec §1 data
+  layer):
+
+- utils/reference_bundles.py — BundleRegistry with upsert/delete/filter-by-subject, validation
+  (visual/audio source constraints), JSON persistence with .bak backup - utils/scene_casts.py —
+  CastRegistry with upsert/delete, per-entry update (bundle, visual_mode, use_audio), remove_entry,
+  resolve_cast_for_subject, validation - tests/test_reference_bundles.py — 29 tests covering CRUD,
+  immutability, filtering, serialisation roundtrip, persistence, and all validation rules -
+  tests/test_scene_casts.py — 40 tests covering all of the above plus update_entry partial-update
+  semantics and append-on-new-subject behaviour
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **cast**: Add Reference Bundle and Scene Cast REST endpoints
+  ([`5f30c5c`](https://github.com/frost-byte/fbTools/commit/5f30c5c4f1ab2bfb47e48518a9695b0304145f0c))
+
+Wires the step-1 utils into extension.py via 9 new aiohttp routes:
+
+Reference Bundles (4 routes): GET /fbtools/bundles/list — all bundles, optional ?subject_id= filter
+  GET /fbtools/bundles/get — single bundle by ?id= POST /fbtools/bundles/save — create / update
+  (upsert) DEL /fbtools/bundles/delete — remove by ?id=
+
+Scene Casts (4 routes): GET /fbtools/casts/list — all casts GET /fbtools/casts/get — single cast by
+  ?id= POST /fbtools/casts/save — create / update (upsert) DEL /fbtools/casts/delete — remove by
+  ?id=
+
+Media listing (1 route): GET /fbtools/media/list — files from input/ dir filtered by
+  ?type=image|video|audio|all
+
+Also adds _IMAGE_EXTENSIONS and _VIDEO_EXTENSIONS constants alongside the existing
+  _AUDIO_EXTENSIONS, and path helpers default_bundle_registry_path() and
+  default_cast_registry_path() following the same pattern as other registries.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **cast**: Add Reference Bundle Editor sidebar panel
+  ([`48fd32c`](https://github.com/frost-byte/fbTools/commit/48fd32c4d16188ee8dccf286c4757cb0cf93c657))
+
+New sidebar tab "Reference Bundles" (pi pi-images icon) for creating and managing reference media
+  bundles tied to subject profiles:
+
+js/api/bundles.js: BundlesAPI client covering bundles (list/get/save/delete), casts
+  (list/get/save/delete), subjects/list, and media/list — shared by both the Bundle Editor (step 3)
+  and the upcoming Cast Editor (step 4)
+
+js/ui/bundle_editor.js: Full panel implementation: - Top bar: subject-filter dropdown, free-text
+  search, + New button, ↺ refresh - List view: bundles grouped by subject, each card shows name,
+  VIDEO/IMAGES badge, audio indicator (🎙), tag chips, edit + delete actions - Editor form: name,
+  auto-generated ID (editable), subject dropdown, appearance override, visual toggle (Images/Video)
+  with file pickers, audio 3-way toggle (None/Extract from video/Separate file) with picker, tags,
+  save/cancel - Image list: ordered with ↑↓ reorder and × remove; add-image dropdown shows only
+  files not yet selected - Extract-from-visual warning when visual mode is Images
+
+js/styles/style.css: All fbt-be-* styles for panel, top bar, card list, group headers, badges, tags,
+  toggle buttons, image list rows, and form sections
+
+js/fb_tools.js + js/index.js: Register the new sidebar tab and export renderBundleEditor
+
+js-tests/bundles_api.test.js: 19 tests covering all BundlesAPI methods including URL encoding, query
+  param passing, body serialisation, and DELETE error handling
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **cast**: Add Scene Cast system and video/audio reference params
+  ([`ee99c55`](https://github.com/frost-byte/fbTools/commit/ee99c5539d1a9dce2698b88d95e5741fa8b0840e))
+
+Reference Bundle & Scene Cast system: - Scene Cast Editor sidebar panel (js/ui/cast_editor.js) with
+  two-line entry rows, bundle dropdown filtered by subject, visual mode toggle with amber 'differs'
+  highlight, and fire-and-forget cast reload after save/delete - SceneCastLoad node + SCENE_CAST
+  custom type; reload counter wired to POST /fbtools/casts/reload - PromptCompositionLoader:
+  optional SCENE_CAST input; resolves reference media (video path + image batch) and builds
+  video_entries for assembler - BundlesAPI.reloadCasts() client method
+
+Prompt assembler extensions: - Character sheets cited inline inside <Subject N> block ("Character
+  sheets: <Picture N> (primary identity)") per official H3 guide; removed standalone picture entries
+  from subject_definitions and retention_analysis - <Video N> reference labels in
+  subject_definitions (after subject blocks), retention_analysis, and summary - assemble_prompt() /
+  assemble_composition() accept video_entries list
+
+Video/audio reference frame-sampling params: - visual block gains force_rate, frame_load_cap,
+  skip_first_frames, select_every_nth for the Load Video node - audio extract_from_visual gains its
+  own independent set of four frame params (separate Load Video node instance, different segment
+  from visual) - audio file source gains start_time and duration (seconds) for Load Audio -
+  _resolve_cast_media() returns a 14-key dict covering all params - PromptCompositionLoader grows 12
+  new output pins: video frame params, audio_source, audio_file, audio frame params,
+  audio_start_time, audio_duration - Bundle editor UI shows frame-sampling grids for video visual
+  and extract_from_visual audio, and a Timing grid for file audio
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **editor**: Phase 7 — LLM assistant for Composition Editor
+  ([`be1f54c`](https://github.com/frost-byte/fbTools/commit/be1f54c54f7ae92352976b0263a33fb938265bb6))
+
+Add a local-LLM assistant panel to the Prompt Composition Editor sidebar.
+
+Scanner (utils/llm_scanner.py): - Scans ComfyUI/models/LLMs/ plus any paths registered in
+  extra_model_paths.yaml - Detects GGUF format (mmproj-*.gguf alongside main = vision capable) -
+  Detects HuggingFace format via config.json architectures / model_type / vision_config /
+  preprocessor - Returns capability tags (📷 Vision, 🎬 Video (native/frames), 🔤 Text only) -
+  Recommends Qwen2.5-VL 3B Instruct (GGUF) as default download
+
+Client (utils/llm_client.py): - GGUF inference via llama-cpp-python (optional, graceful absent) - HF
+  transformers path as secondary (optional) - load_model / unload_model with torch.cuda.empty_cache
+  on unload - Task-specific prompt builders: shot action, dialogue, camera, polish
+
+REST endpoints in extension.py: - GET /fbtools/llm/models — scan and return model list + default -
+  GET /fbtools/llm/status — current loaded model + backend flags - POST /fbtools/llm/load — load
+  model by descriptor - POST /fbtools/llm/unload — free VRAM - POST /fbtools/llm/generate — generic
+  text/image generation - POST /fbtools/llm/generate/shot_action, /dialogue, /polish - POST
+  /fbtools/llm/download/default — download starter GGUF via huggingface_hub
+
+Editor UI (composition_editor.js): - 🤖 LLM Assistant sidebar section with model picker + capability
+  tags - Load / Unload buttons; status line; generate buttons per field - Action / Dialogue / Polish
+  buttons target the focused shot card - Download prompt when no models found; mentions
+  extra_model_paths.yaml
+
+API client (js/api/llm.js): REST client for all LLM endpoints. Tests (tests/test_llm_scanner.py): 30
+  tests, all passing.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **nodes**: Replace audio_reference_file text input with file picker combo
+  ([`66b6215`](https://github.com/frost-byte/fbTools/commit/66b62154dd5821dfbf69c934dd26a69dc3632aa9))
+
+SubjectProfileDefine now shows a combo of audio files (.wav, .mp3, .flac, .ogg, .aac, .m4a, .opus)
+  from the ComfyUI input directory instead of a free-text field. Press R to refresh the list after
+  adding new files.
+
+Also corrects all "Refresh the page" tooltip/doc copy to "Press R" across SubjectProfileLoad,
+  SceneTemplateLoad, PromptCompositionLoader, and the four user-facing docs — R triggers
+  /object_info which re-runs define_schema and refreshes all combo options without a full page
+  reload.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **nodes**: Replace concept_id text input with combo in SubjectProfileDefine
+  ([`2502138`](https://github.com/frost-byte/fbTools/commit/2502138a081a2142238ebd76c13f8cb8d0214a48))
+
+Adds _concept_get_ids() helper that reads concept_registry.json at schema load time.
+  SubjectProfileDefine.concept_id is now a combo picker instead of a free-text field; "None" is
+  normalised to "" in execute(). Define nodes (ConceptDefine, SubjectProfileDefine) keep free-text
+  subject_id / concept_id inputs since those are used to create new entries.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene**: Add PromptCompositionLoader node with reload counter
+  ([`3da0d06`](https://github.com/frost-byte/fbTools/commit/3da0d0645672db623088bbb7a8d2c20193a49df2))
+
+- PromptCompositionLoader: selects a saved composition by name from a combo dropdown, assembles it
+  with the chosen model type, and outputs prompt + concept_ids (for ConceptResolve) +
+  model_type_used + name - model_type combo includes "composition default" as the first option so
+  the stored model type is used without requiring a second setting - fingerprint_inputs includes
+  compositions dir mtime + _composition_reload_counter so any PromptCompositionLoader node
+  re-executes when content changes - POST /fbtools/compositions/reload increments the counter -
+  Editor _onSave fires the reload endpoint (fire-and-forget) so canvas nodes pick up the latest
+  content immediately after saving
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Phase 4 shot management — reorder, duplicate, preset targeting, shortcuts
+  ([`02779a0`](https://github.com/frost-byte/fbTools/commit/02779a0ac7fef2ec51ff81552be19bc59a05b98e))
+
+- Add ↑/↓ reorder buttons and ⧉ duplicate to each shot card header - Track focused shot (focusin
+  delegation) so camera/sound presets insert into the correct shot's field rather than copying to
+  clipboard - _moveShot / _duplicateShot / _addNewShot helpers keep focus index in sync and scroll
+  the target card into view after rebuild - Ctrl+Shift+N: add shot, Ctrl+Shift+P: preview,
+  Ctrl+Shift+C: copy - Update sidebar section titles to "click to apply to shot" -
+  .fbt-ce-shot-active highlight (blue border) on the focused shot card
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Prompt Composition Editor — Phase 1 + Phase 2
+  ([`7a2bb7d`](https://github.com/frost-byte/fbTools/commit/7a2bb7db7f2e0b90dadf6c530c5408fbc599b1bd))
+
+Phase 1 — Backend data layer: - utils/prompt_compositions.py: composition CRUD,
+  resolve_subjects/background, validate - utils/composition_resources.py: backgrounds, camera
+  presets, sound presets CRUD - utils/prompt_assembler.py: add assemble_composition() and
+  _composition_shots_to_template() - extension.py: subject CRUD routes, composition CRUD + assemble
+  route, background CRUD routes, camera + sound preset routes (~305 lines)
+
+Phase 2 — Basic editor panel: - js/api/compositions.js: REST client for compositions, subjects,
+  backgrounds, presets - js/ui/composition_editor.js: full sidebar panel — resource sidebar,
+  structured form editor (subject slots, shot cards, dialogue), Preview Raw modal, Copy, Save/Load,
+  keyboard shortcut (Ctrl+S) - js/styles/style.css: composition editor styles (~480 lines) -
+  js/fb_tools.js: register sidebar tab via app.extensionManager.registerSidebarTab - js/index.js:
+  re-export CompositionsAPI and renderCompositionEditor
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Prompt Composition Editor — Phase 3 smart elements
+  ([`7d24ccb`](https://github.com/frost-byte/fbTools/commit/7d24ccbdefd1fe2bceb0c4f8476a40e3b983a7cb))
+
+- {S} slot-reference completion popup in action/camera text fields: type { to trigger, arrow keys to
+  navigate, Enter/Tab to insert, Esc to dismiss - Subject slot cards: appearance summary shown below
+  each slot dropdown - Background section: auto-fills soundscape when empty, or offers a replace
+  button when the soundscape field already has content - Sidebar "New Subject" inline form: name,
+  appearance summary, concept ID; saves via POST /fbtools/subjects/save, refreshes dropdowns -
+  Sidebar "New Background" inline form: name, description, lighting, soundscape; saves via POST
+  /fbtools/backgrounds/save, refreshes editor background dropdown - compositions.js: add
+  saveSubject(), deleteSubject(), saveBackground(), deleteBackground() to CompositionsAPI
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.8.0 (2026-08-07)
 
 ### Features
