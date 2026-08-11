@@ -1,6 +1,27 @@
 # CHANGELOG
 
 
+## v1.9.1 (2026-08-11)
+
+### Bug Fixes
+
+- **ui**: Move composition Name+Model into collapsible Info section
+  ([`557e7d5`](https://github.com/frost-byte/fbTools/commit/557e7d5a76143742e002e0e52adcb7310a9b7b33))
+
+Replace the standalone top bar with an Info section at the top of the scrollable form, matching the
+  Style/Subjects/Shots collapsible pattern. Name and Model each get their own labeled row
+  (fbt-ce-info-row + fbt-ce-info-label) so neither field is squished when the model dropdown has a
+  long selected value.
+
+Also initialize _newComp() with name: "" instead of "New Composition" to prevent silent data
+  corruption when the name field is visually small and a user types into it unaware that a default
+  value is already present.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.9.0 (2026-08-11)
 
 ### Bug Fixes
