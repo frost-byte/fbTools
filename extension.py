@@ -96,6 +96,18 @@ from .utils.prompt_assembler import (
     assemble_prompt as _assemble_prompt,
     MODEL_TYPES as _PROMPT_MODEL_TYPES,
 )
+from .utils.reference_bundles import (
+    BundleRegistry,
+    load_registry as _load_bundle_registry,
+    save_registry as _save_bundle_registry,
+    validate_bundle as _validate_bundle,
+)
+from .utils.scene_casts import (
+    CastRegistry,
+    load_registry as _load_cast_registry,
+    save_registry as _save_cast_registry,
+    validate_cast as _validate_cast,
+)
 
 from .utils.subject_compositor import (
     tensor_to_pil,
@@ -1471,6 +1483,16 @@ def default_registry_path() -> str:
 def default_subject_profiles_path() -> str:
     """Default path for the subject profiles JSON file."""
     return os.path.join(user_data_dir(), "subject_profiles.json")
+
+
+def default_bundle_registry_path() -> str:
+    """Default path for the reference bundles JSON file."""
+    return os.path.join(user_data_dir(), "reference_bundles.json")
+
+
+def default_cast_registry_path() -> str:
+    """Default path for the scene casts JSON file."""
+    return os.path.join(user_data_dir(), "scene_casts.json")
 
 
 def default_scene_templates_dir() -> str:
@@ -11467,6 +11489,8 @@ def _subject_get_ids() -> list[str]:
 
 
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".aac", ".m4a", ".opus"}
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
 
 
 def _audio_get_list() -> list[str]:
@@ -12464,6 +12488,169 @@ async def _subjects_delete(request):
         global _subject_reload_counter
         _subject_reload_counter += 1
         return web.json_response({"success": True})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── Reference Bundle routes ───────────────────────────────────────────────────
+
+@routes.get("/fbtools/bundles/list")
+async def _bundles_list(request):
+    """Return all bundles, optionally filtered by ?subject_id=."""
+    try:
+        subject_id = request.rel_url.query.get("subject_id") or None
+        registry = _load_bundle_registry(default_bundle_registry_path())
+        bundles = registry.list_bundles(subject_id=subject_id)
+        return web.json_response({"bundles": bundles})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/bundles/get")
+async def _bundles_get(request):
+    """Return a single bundle by ?id=<bundle_id>."""
+    bundle_id = request.rel_url.query.get("id", "")
+    if not bundle_id:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        registry = _load_bundle_registry(default_bundle_registry_path())
+        bundle = registry.get(bundle_id)
+        if bundle is None:
+            return web.json_response({"error": f"Bundle '{bundle_id}' not found"}, status=404)
+        return web.json_response(bundle)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/bundles/save")
+async def _bundles_save(request):
+    """Create or update a bundle.  Body: full bundle dict with 'id'."""
+    try:
+        data = await request.json()
+        bundle_id = (data.get("id") or "").strip()
+        if not bundle_id:
+            return web.json_response({"error": "Bundle 'id' is required"}, status=400)
+        path = default_bundle_registry_path()
+        registry = _load_bundle_registry(path)
+        registry = registry.upsert(data)
+        _save_bundle_registry(registry, path)
+        return web.json_response({"success": True, "id": bundle_id})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/bundles/delete")
+async def _bundles_delete(request):
+    """Delete a bundle by ?id=<bundle_id>."""
+    bundle_id = request.rel_url.query.get("id", "")
+    if not bundle_id:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        path = default_bundle_registry_path()
+        registry = _load_bundle_registry(path)
+        if registry.get(bundle_id) is None:
+            return web.json_response({"error": f"Bundle '{bundle_id}' not found"}, status=404)
+        registry = registry.delete(bundle_id)
+        _save_bundle_registry(registry, path)
+        return web.json_response({"success": True})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── Scene Cast routes ─────────────────────────────────────────────────────────
+
+@routes.get("/fbtools/casts/list")
+async def _casts_list(request):
+    """Return all scene casts."""
+    try:
+        registry = _load_cast_registry(default_cast_registry_path())
+        return web.json_response({"casts": registry.list_casts()})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/casts/get")
+async def _casts_get(request):
+    """Return a single cast by ?id=<cast_id>."""
+    cast_id = request.rel_url.query.get("id", "")
+    if not cast_id:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        registry = _load_cast_registry(default_cast_registry_path())
+        cast = registry.get(cast_id)
+        if cast is None:
+            return web.json_response({"error": f"Cast '{cast_id}' not found"}, status=404)
+        return web.json_response(cast)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/casts/save")
+async def _casts_save(request):
+    """Create or update a cast.  Body: full cast dict with 'id'."""
+    try:
+        data = await request.json()
+        cast_id = (data.get("id") or "").strip()
+        if not cast_id:
+            return web.json_response({"error": "Cast 'id' is required"}, status=400)
+        path = default_cast_registry_path()
+        registry = _load_cast_registry(path)
+        registry = registry.upsert(data)
+        _save_cast_registry(registry, path)
+        return web.json_response({"success": True, "id": cast_id})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/casts/delete")
+async def _casts_delete(request):
+    """Delete a cast by ?id=<cast_id>."""
+    cast_id = request.rel_url.query.get("id", "")
+    if not cast_id:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        path = default_cast_registry_path()
+        registry = _load_cast_registry(path)
+        if registry.get(cast_id) is None:
+            return web.json_response({"error": f"Cast '{cast_id}' not found"}, status=404)
+        registry = registry.delete(cast_id)
+        _save_cast_registry(registry, path)
+        return web.json_response({"success": True})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── Media file listing ────────────────────────────────────────────────────────
+
+@routes.get("/fbtools/media/list")
+async def _media_list(request):
+    """Return filenames from the ComfyUI input directory filtered by ?type=.
+
+    type: image | video | audio | all  (default: all)
+    Response: {"files": ["fname.mp4", ...]}
+    """
+    try:
+        media_type = request.rel_url.query.get("type", "all").lower()
+        if media_type == "image":
+            exts = _IMAGE_EXTENSIONS
+        elif media_type == "video":
+            exts = _VIDEO_EXTENSIONS
+        elif media_type == "audio":
+            exts = _AUDIO_EXTENSIONS
+        elif media_type == "all":
+            exts = _IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS
+        else:
+            return web.json_response(
+                {"error": f"Invalid type {media_type!r}. Use image, video, audio, or all."},
+                status=400,
+            )
+        input_dir = get_input_directory()
+        files = [
+            f for f in os.listdir(input_dir)
+            if os.path.splitext(f)[1].lower() in exts
+        ]
+        files.sort(key=str.lower)
+        return web.json_response({"files": files})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
