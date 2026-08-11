@@ -34,13 +34,20 @@ _SIMPLE_MODELS = {"ltx23", "flux2", "krea2", "qwen"}
 
 # ── Reference map ──────────────────────────────────────────────────────────────
 
-def _build_ref_map(scene_instance: dict) -> dict[str, dict]:
-    """Assign reference numbers (Subject N, Picture N, Audio N) per slot.
+def _build_ref_map(
+    scene_instance: dict,
+    video_entries: list[dict] | None = None,
+) -> dict[str, dict]:
+    """Assign reference numbers (Subject N, Picture N, Video N, Audio N) per slot.
 
     Numbering convention (independent per type, per spec):
       Subject 1, 2, … in slot order.
       Picture 1, 2, 3, … in slot order (continuous across all subjects).
+      Video 1, 2, … in slot order for slots matched by subject_id in video_entries.
       Audio 1, 2, … in slot order for slots that have audio files.
+
+    video_entries is an optional list of {subject_id, video_file} dicts from cast
+    resolution.  Matching is by subject_id identity.
 
     Returns a dict keyed by slot_id with typing info for each assigned slot.
     Slots not present in slot_assignments are absent from the result.
@@ -49,9 +56,17 @@ def _build_ref_map(scene_instance: dict) -> dict[str, dict]:
     outfit_overrides = scene_instance.get("outfit_overrides", {})
     ordered_slots = sorted(assignments.keys())
 
+    # Build subject_id → video_entry lookup (first match wins)
+    video_lookup: dict[str, dict] = {}
+    for ve in (video_entries or []):
+        sid = ve.get("subject_id", "")
+        if sid and sid not in video_lookup:
+            video_lookup[sid] = ve
+
     ref_map: dict[str, dict] = {}
     subject_counter = 1
     picture_counter = 1
+    video_counter = 1
     audio_counter = 1
 
     for slot_id in ordered_slots:
@@ -63,9 +78,18 @@ def _build_ref_map(scene_instance: dict) -> dict[str, dict]:
         sheets = subject.get("character_sheet_images", [])
         audio_file = voice.get("audio_reference_file", "")
         outfit = outfit_overrides.get(slot_id) or appearance.get("default_outfit", "")
+        subject_id = subject.get("subject_id", "")
 
         picture_nums = list(range(picture_counter, picture_counter + len(sheets)))
         picture_counter += len(sheets)
+
+        ve = video_lookup.get(subject_id) if subject_id else None
+        video_num: int | None = None
+        video_file: str = ""
+        if ve:
+            video_num = video_counter
+            video_file = ve.get("video_file", "")
+            video_counter += 1
 
         audio_num: int | None = None
         if audio_file:
@@ -73,7 +97,7 @@ def _build_ref_map(scene_instance: dict) -> dict[str, dict]:
             audio_counter += 1
 
         ref_map[slot_id] = {
-            "subject_id": subject.get("subject_id", ""),
+            "subject_id": subject_id,
             "name": subject.get("name", slot_id),
             "appearance_summary": appearance.get("summary", ""),
             "face": appearance.get("face", ""),
@@ -90,6 +114,8 @@ def _build_ref_map(scene_instance: dict) -> dict[str, dict]:
             "speaker_id": f"S{subject_counter}",
             "subject_label": f"<Subject {subject_counter}>",
             "picture_nums": picture_nums,
+            "video_num": video_num,
+            "video_file": video_file,
             "audio_num": audio_num,
         }
         subject_counter += 1
@@ -144,7 +170,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     # ── subject_definitions ────────────────────────────────────────────────────
     sd: list[str] = []
 
-    # All subjects first
+    # All subjects with character sheet refs cited inline (per H3 guide)
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
         name, label = info["name"], info["subject_label"]
@@ -158,19 +184,24 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             sd.append(f"  Body: {info['body']}")
         if info["outfit"]:
             sd.append(f"  Outfit: {info['outfit']}")
+        # Character-definition images cited inside the subject block, not standalone
+        if info["picture_nums"]:
+            sheet_parts = []
+            for i, pic_num in enumerate(info["picture_nums"]):
+                note = "primary identity" if i == 0 else "additional"
+                sheet_parts.append(f"<Picture {pic_num}> ({note})")
+            sd.append(f"  Character sheets: {', '.join(sheet_parts)}")
 
-    # All pictures
+    # Video references as standalone entries (whole-clip visual identity sources)
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
-        if not info["picture_nums"]:
+        if info["video_num"] is None:
             continue
         name = info["name"]
-        for i, pic_num in enumerate(info["picture_nums"]):
-            note = "primary identity reference" if i == 0 else "additional reference"
-            sd.append(
-                f"<Picture {pic_num}>: character sheet for {name} — {note}. "
-                "Preserve: face, hair, build."
-            )
+        sd.append(
+            f"<Video {info['video_num']}>: reference video for {name} ({info['speaker_id']}) "
+            "— whole-clip visual identity reference."
+        )
 
     # All audio
     for slot_id in ordered_slots:
@@ -188,10 +219,13 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
 
     # ── summary ────────────────────────────────────────────────────────────────
     has_sheets = any(info["picture_nums"] for info in ref_map.values())
+    has_video = any(info["video_num"] is not None for info in ref_map.values())
     has_audio = any(info["audio_num"] is not None for info in ref_map.values())
     task_parts = []
     if has_sheets:
         task_parts.append("reference generation")
+    if has_video:
+        task_parts.append("video reference")
     if has_audio:
         task_parts.append("audio reference")
     task_str = " + ".join(task_parts) if task_parts else "video generation"
@@ -208,6 +242,12 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             pic_str = f"<Picture {nums[0]}>-<Picture {nums[-1]}>"
         pic_refs.append(f"{info['name']} ({pic_str})")
 
+    video_refs: list[str] = []
+    for slot_id in ordered_slots:
+        info = ref_map[slot_id]
+        if info["video_num"] is not None:
+            video_refs.append(f"{info['name']} (<Video {info['video_num']}>)")
+
     audio_refs: list[str] = []
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
@@ -220,6 +260,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         summary_body_parts.append(
             f"Using character sheet images of {', '.join(pic_refs)} to generate a {template_name}."
         )
+    if video_refs:
+        summary_body_parts.append(f"Reference videos: {', '.join(video_refs)}.")
     if audio_refs:
         summary_body_parts.append(f"Voice references: {', '.join(audio_refs)}.")
 
@@ -238,8 +280,9 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         ra.append(f"{info['subject_label']} ({info['name']}): fully_preserved | {char_str}")
 
     for slot_id in ordered_slots:
-        for pic_num in ref_map[slot_id]["picture_nums"]:
-            ra.append(f"<Picture {pic_num}>: reference")
+        info = ref_map[slot_id]
+        if info["video_num"] is not None:
+            ra.append(f"<Video {info['video_num']}>: reference (visual identity, not fully_copy)")
 
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
@@ -482,6 +525,8 @@ def _assemble_simple(scene_instance: dict, ref_map: dict) -> str:
 def _build_assembly_report(scene_instance: dict, ref_map: dict, model_type: str) -> str:
     ordered_slots = sorted(ref_map.keys())
     total_images = sum(len(info["picture_nums"]) for info in ref_map.values())
+    video_slots = [s for s in ordered_slots if ref_map[s].get("video_num") is not None]
+    video_files = [ref_map[s]["video_file"] for s in video_slots]
     audio_slots = [s for s in ordered_slots if ref_map[s]["audio_num"] is not None]
     audio_files = [ref_map[s]["audio_file"] for s in audio_slots]
     concept_ids = [info["concept_id"] for info in ref_map.values() if info["concept_id"]]
@@ -515,6 +560,11 @@ def _build_assembly_report(scene_instance: dict, ref_map: dict, model_type: str)
 
     lines.append("Reference media:")
     lines.append(f"  Images: {total_images} total")
+    video_detail = f"{', '.join(video_files)}" if video_files else "none"
+    lines.append(
+        f"  Video: {len(video_files)} file{'s' if len(video_files) != 1 else ''}"
+        + (f" ({video_detail})" if video_files else "")
+    )
     audio_detail = (
         f"{', '.join(audio_files)}" if audio_files else "none"
     )
@@ -546,24 +596,32 @@ def _build_assembly_report(scene_instance: dict, ref_map: dict, model_type: str)
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def assemble_prompt(scene_instance: dict, model_type: str) -> dict:
+def assemble_prompt(
+    scene_instance: dict,
+    model_type: str,
+    video_entries: list[dict] | None = None,
+) -> dict:
     """Assemble a model-specific prompt from a SCENE_INSTANCE dict.
 
     Args:
         scene_instance: dict from compose_scene() / SceneCompose node.
         model_type:     one of MODEL_TYPES.
+        video_entries:  optional list of {subject_id, video_file} dicts from cast
+                        resolution.  Each matching subject gets a <Video N> label
+                        in H3 formats.  None or empty → no video references.
 
     Returns a dict with:
         prompt:                str — assembled prompt text
         concept_ids:           list[str] — concept IDs from assigned subjects
         reference_image_order: list[tuple[str, str]] — (slot_id, filename) in emit order
+        video_slots:           list[str] — slot IDs with video refs, in slot order
         audio_slots:           list[str] — slot IDs with audio files, in slot order
         assembly_report:       str — human-readable summary
     """
     if model_type not in MODEL_TYPES:
         raise ValueError(f"Unknown model_type {model_type!r}. Valid: {MODEL_TYPES}")
 
-    ref_map = _build_ref_map(scene_instance)
+    ref_map = _build_ref_map(scene_instance, video_entries)
 
     if model_type == "h3_ref2va":
         prompt = _assemble_h3_ref2va(scene_instance, ref_map)
@@ -588,6 +646,7 @@ def assemble_prompt(scene_instance: dict, model_type: str) -> dict:
         for fname in ref_map[slot_id]["character_sheet_images"]
     ]
 
+    video_slots = [s for s in ordered_slots if ref_map[s].get("video_num") is not None]
     audio_slots = [s for s in ordered_slots if ref_map[s]["audio_file"]]
 
     report = _build_assembly_report(scene_instance, ref_map, model_type)
@@ -596,6 +655,7 @@ def assemble_prompt(scene_instance: dict, model_type: str) -> dict:
         "prompt": prompt,
         "concept_ids": concept_ids,
         "reference_image_order": reference_image_order,
+        "video_slots": video_slots,
         "audio_slots": audio_slots,
         "assembly_report": report,
     }
@@ -608,6 +668,7 @@ def assemble_composition(
     resolved_subjects: dict[str, dict],
     resolved_background: dict | None,
     model_type: str,
+    video_entries: list[dict] | None = None,
 ) -> dict:
     """Assemble a prompt from a PromptComposition dict.
 
@@ -681,7 +742,7 @@ def assemble_composition(
         "outfit_overrides": outfit_overrides,
     }
 
-    return assemble_prompt(scene_instance, model_type)
+    return assemble_prompt(scene_instance, model_type, video_entries)
 
 
 def _composition_shots_to_template(shots: list[dict], slot_map: dict[str, str]) -> list[dict]:

@@ -283,13 +283,16 @@ def test_h3_ref2va_subject_definitions_lists_subjects():
     assert "<Subject 1> [Alice]: a tall woman with red hair" in prompt
 
 
-def test_h3_ref2va_subject_definitions_lists_pictures():
+def test_h3_ref2va_subject_definitions_lists_pictures_inline():
     alice = _make_subject("Alice", sheets=["sheet1.png", "sheet2.png"])
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "<Picture 1>:" in prompt
-    assert "<Picture 2>:" in prompt
-    assert "primary identity reference" in prompt
+    # Character sheets are cited inline within the subject block
+    assert "Character sheets:" in prompt
+    assert "<Picture 1> (primary identity)" in prompt
+    assert "<Picture 2> (additional)" in prompt
+    # No standalone <Picture N>: entries (each sheet's label appears only inline)
+    assert "<Picture 1>: character sheet" not in prompt
 
 
 def test_h3_ref2va_subject_definitions_lists_audio():
@@ -592,3 +595,131 @@ def test_report_shows_concept_ids():
     scene = _make_scene(slot_A=alice)
     report = assemble_prompt(scene, "h3_ref2va")["assembly_report"]
     assert "char_alice" in report
+
+
+# ── Video references ──────────────────────────────────────────────────────────
+
+def _video_entries(*pairs):
+    """Build a video_entries list from (subject_id, video_file) pairs."""
+    return [{"subject_id": sid, "video_file": vf} for sid, vf in pairs]
+
+
+def test_video_entries_adds_video_label_in_h3_ref2va():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice_ref.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "<Video 1>" in prompt
+
+
+def test_video_label_in_subject_definitions():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "<Video 1>: reference video for Alice" in prompt
+
+
+def test_video_in_retention_analysis():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "<Video 1>: reference (visual identity, not fully_copy)" in prompt
+
+
+def test_video_in_summary_task_str():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "video reference" in prompt
+
+
+def test_video_refs_in_summary_body():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "Reference videos:" in prompt
+    assert "Alice (<Video 1>)" in prompt
+
+
+def test_video_numbering_continuous_across_slots():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    bob = _make_subject("Bob", subject_id="char_bob")
+    scene = _make_scene(slot_A=alice, slot_B=bob)
+    ve = _video_entries(("char_alice", "a.mp4"), ("char_bob", "b.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "<Video 1>" in prompt
+    assert "<Video 2>" in prompt
+
+
+def test_video_slots_in_result():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    bob = _make_subject("Bob", subject_id="char_bob")
+    scene = _make_scene(slot_A=alice, slot_B=bob)
+    ve = _video_entries(("char_alice", "a.mp4"))
+    result = assemble_prompt(scene, "h3_ref2va", ve)
+    assert result["video_slots"] == ["A"]
+
+
+def test_no_video_entries_no_video_label():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "<Video" not in prompt
+
+
+def test_video_matched_by_subject_id_not_slot():
+    # Bob is in slot A but video_entry matches by subject_id "char_bob"
+    bob = _make_subject("Bob", subject_id="char_bob")
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=bob, slot_B=alice)
+    ve = _video_entries(("char_bob", "bob.mp4"))
+    result = assemble_prompt(scene, "h3_ref2va", ve)
+    assert result["video_slots"] == ["A"]  # Bob is in slot A
+    assert "<Video 1>" in result["prompt"]
+
+
+def test_unmatched_video_entry_ignored():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_nobody", "nobody.mp4"))  # no subject matches
+    result = assemble_prompt(scene, "h3_ref2va", ve)
+    assert result["video_slots"] == []
+    assert "<Video" not in result["prompt"]
+
+
+def test_video_not_shown_in_h3_fl2va():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_fl2va", ve)["prompt"]
+    assert "<Video" not in prompt
+
+
+def test_report_shows_video_files():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    report = assemble_prompt(scene, "h3_ref2va", ve)["assembly_report"]
+    assert "alice.mp4" in report
+    assert "Video:" in report
+
+
+def test_video_and_sheets_and_audio_together():
+    alice = _make_subject("Alice", subject_id="char_alice", sheets=["a.png"], audio="a.wav")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    result = assemble_prompt(scene, "h3_ref2va", ve)
+    prompt = result["prompt"]
+    # All three types present
+    assert "<Subject 1>" in prompt
+    assert "<Picture 1>" in prompt
+    assert "<Video 1>" in prompt
+    assert "<Audio 1>" in prompt
+    # task string includes all three
+    assert "reference generation" in prompt
+    assert "video reference" in prompt
+    assert "audio reference" in prompt

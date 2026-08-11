@@ -96,8 +96,18 @@ def test_upsert_defaults_missing_fields():
     assert b["visual"]["type"] == "images"
     assert b["visual"]["file"] == ""
     assert b["visual"]["files"] == []
+    assert b["visual"]["force_rate"] == 0
+    assert b["visual"]["frame_load_cap"] == 16
+    assert b["visual"]["skip_first_frames"] == 0
+    assert b["visual"]["select_every_nth"] == 1
     assert b["audio"]["source"] == "none"
     assert b["audio"]["file"] == ""
+    assert b["audio"]["force_rate"] == 0
+    assert b["audio"]["frame_load_cap"] == 0
+    assert b["audio"]["skip_first_frames"] == 0
+    assert b["audio"]["select_every_nth"] == 1
+    assert b["audio"]["start_time"] == 0.0
+    assert b["audio"]["duration"] == 0.0
     assert b["appearance_override"] == ""
     assert b["tags"] == []
 
@@ -275,3 +285,90 @@ def test_valid_audio_file_source():
     b = _video_bundle()
     b["audio"] = {"source": "file", "file": "alice_voice.wav"}
     assert validate_bundle(b) == []
+
+
+# ── Frame-sampling params ──────────────────────────────────────────────────────
+
+def test_upsert_preserves_custom_visual_frame_params():
+    reg = BundleRegistry()
+    bundle = _video_bundle()
+    bundle["visual"]["force_rate"] = 24
+    bundle["visual"]["frame_load_cap"] = 32
+    bundle["visual"]["skip_first_frames"] = 10
+    bundle["visual"]["select_every_nth"] = 2
+    r = reg.upsert(bundle)
+    b = r.get("b_vid")
+    assert b["visual"]["force_rate"] == 24
+    assert b["visual"]["frame_load_cap"] == 32
+    assert b["visual"]["skip_first_frames"] == 10
+    assert b["visual"]["select_every_nth"] == 2
+
+
+def test_upsert_preserves_custom_audio_frame_params():
+    reg = BundleRegistry()
+    bundle = _video_bundle()
+    bundle["audio"]["force_rate"] = 8
+    bundle["audio"]["frame_load_cap"] = 16
+    bundle["audio"]["skip_first_frames"] = 60
+    bundle["audio"]["select_every_nth"] = 3
+    r = reg.upsert(bundle)
+    b = r.get("b_vid")
+    assert b["audio"]["force_rate"] == 8
+    assert b["audio"]["frame_load_cap"] == 16
+    assert b["audio"]["skip_first_frames"] == 60
+    assert b["audio"]["select_every_nth"] == 3
+
+
+def test_upsert_preserves_audio_time_params():
+    reg = BundleRegistry()
+    bundle = _video_bundle()
+    bundle["audio"]["source"] = "file"
+    bundle["audio"]["file"] = "voice.wav"
+    bundle["audio"]["start_time"] = 3.5
+    bundle["audio"]["duration"] = 10.0
+    r = reg.upsert(bundle)
+    b = r.get("b_vid")
+    assert b["audio"]["start_time"] == 3.5
+    assert b["audio"]["duration"] == 10.0
+
+
+def test_upsert_defaults_frame_params_when_absent():
+    reg = BundleRegistry()
+    # Bundle with no frame params at all — should get defaults
+    r = reg.upsert({"id": "x", "subject_id": "s", "visual": {"type": "video", "file": "v.mp4", "files": []}})
+    b = r.get("x")
+    assert b["visual"]["force_rate"] == 0
+    assert b["visual"]["frame_load_cap"] == 16
+    assert b["visual"]["skip_first_frames"] == 0
+    assert b["visual"]["select_every_nth"] == 1
+    assert b["audio"]["force_rate"] == 0
+    assert b["audio"]["frame_load_cap"] == 0
+    assert b["audio"]["skip_first_frames"] == 0
+    assert b["audio"]["select_every_nth"] == 1
+    assert b["audio"]["start_time"] == 0.0
+    assert b["audio"]["duration"] == 0.0
+
+
+def test_upsert_does_not_override_existing_frame_params():
+    """setdefault must not overwrite values already present on the incoming bundle."""
+    reg = BundleRegistry()
+    bundle = _video_bundle()
+    bundle["visual"]["frame_load_cap"] = 48
+    r = reg.upsert(bundle)
+    assert r.get("b_vid")["visual"]["frame_load_cap"] == 48
+
+
+def test_roundtrip_preserves_frame_params(tmp_path):
+    path = str(tmp_path / "bundles.json")
+    reg = BundleRegistry()
+    bundle = _video_bundle()
+    bundle["visual"]["force_rate"] = 12
+    bundle["audio"]["skip_first_frames"] = 30
+    bundle["audio"]["start_time"] = 1.5
+    r = reg.upsert(bundle)
+    save_registry(r, path, backup=False)
+    loaded = load_registry(path)
+    b = loaded.get("b_vid")
+    assert b["visual"]["force_rate"] == 12
+    assert b["audio"]["skip_first_frames"] == 30
+    assert b["audio"]["start_time"] == 1.5

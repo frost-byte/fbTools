@@ -198,8 +198,8 @@ function _startNew(subjectId = "") {
         id:                  "",
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
-        visual:              { type: "images", file: "", files: [] },
-        audio:               { source: "none", file: "" },
+        visual:              { type: "images", file: "", files: [], force_rate: 0, frame_load_cap: 16, skip_first_frames: 0, select_every_nth: 1 },
+        audio:               { source: "none", file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0 },
         appearance_override: "",
         tags:                [],
     };
@@ -335,6 +335,8 @@ function _renderForm() {
                 cls: "fbt-be-warn",
                 textContent: "Switch visual to Video first, or choose a separate audio file.",
             }));
+        } else if (b.audio.source === "extract_from_visual") {
+            _buildFrameParamSection(audioPickerWrap, b.audio, "Frame sampling (2nd Load Video node)");
         } else if (b.audio.source === "file") {
             _buildAudioPicker(audioPickerWrap, b);
         }
@@ -397,6 +399,42 @@ function _formRow(label, fieldEl) {
     ]);
 }
 
+function _buildParamCell(labelText, obj, key, { isFloat = false, hint = "" } = {}) {
+    const cell = _mk("div", { cls: "fbt-be-param-cell" });
+    const lbl = _mk("span", { cls: "fbt-be-param-label", textContent: labelText });
+    if (hint) lbl.title = hint;
+    const inp = _mk("input", {
+        cls: "fbt-be-param-input",
+        type: "number", min: 0,
+        step: isFloat ? 0.1 : 1,
+        value: (obj[key] ?? (isFloat ? 0.0 : 0)),
+    });
+    inp.addEventListener("input", () => {
+        obj[key] = isFloat ? parseFloat(inp.value) || 0 : parseInt(inp.value) || 0;
+    });
+    cell.appendChild(lbl);
+    cell.appendChild(inp);
+    return cell;
+}
+
+function _buildFrameParamSection(wrap, obj, title = "Frame sampling") {
+    wrap.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: title }));
+    const grid = _mk("div", { cls: "fbt-be-param-grid" });
+    grid.appendChild(_buildParamCell("FPS override", obj, "force_rate",       { hint: "0 = use native fps" }));
+    grid.appendChild(_buildParamCell("Frame cap",    obj, "frame_load_cap",   { hint: "0 = no cap" }));
+    grid.appendChild(_buildParamCell("Skip first",   obj, "skip_first_frames"));
+    grid.appendChild(_buildParamCell("Every Nth",    obj, "select_every_nth", { hint: "1 = every frame" }));
+    wrap.appendChild(grid);
+}
+
+function _buildAudioTimeSection(wrap, obj) {
+    wrap.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: "Timing" }));
+    const grid = _mk("div", { cls: "fbt-be-param-grid" });
+    grid.appendChild(_buildParamCell("Start (s)", obj, "start_time", { isFloat: true, hint: "Start time in seconds" }));
+    grid.appendChild(_buildParamCell("Duration (s)", obj, "duration", { isFloat: true, hint: "0 = to end of file" }));
+    wrap.appendChild(grid);
+}
+
 function _buildToggle(values, labels, current, onChange) {
     const wrap = _mk("div", { cls: "fbt-be-toggle-row" });
     values.forEach((val, i) => {
@@ -417,24 +455,25 @@ function _buildToggle(values, labels, current, onChange) {
 function _buildVideoPicker(wrap, b) {
     if (!_S.mediaVideos.length) {
         wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No video files in input directory" }));
-        return;
+    } else {
+        const sel = document.createElement("select");
+        sel.className = "fbt-ce-select";
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "— select video file —";
+        if (!b.visual.file) blank.selected = true;
+        sel.appendChild(blank);
+        _S.mediaVideos.forEach(f => {
+            const o = document.createElement("option");
+            o.value = f;
+            o.textContent = f;
+            if (f === b.visual.file) o.selected = true;
+            sel.appendChild(o);
+        });
+        sel.addEventListener("change", () => { b.visual.file = sel.value; });
+        wrap.appendChild(sel);
     }
-    const sel = document.createElement("select");
-    sel.className = "fbt-ce-select";
-    const blank = document.createElement("option");
-    blank.value = "";
-    blank.textContent = "— select video file —";
-    if (!b.visual.file) blank.selected = true;
-    sel.appendChild(blank);
-    _S.mediaVideos.forEach(f => {
-        const o = document.createElement("option");
-        o.value = f;
-        o.textContent = f;
-        if (f === b.visual.file) o.selected = true;
-        sel.appendChild(o);
-    });
-    sel.addEventListener("change", () => { b.visual.file = sel.value; });
-    wrap.appendChild(sel);
+    _buildFrameParamSection(wrap, b.visual);
 }
 
 function _buildImageList(wrap, b) {
@@ -523,24 +562,25 @@ function _buildImageList(wrap, b) {
 function _buildAudioPicker(wrap, b) {
     if (!_S.mediaAudio.length) {
         wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No audio files in input directory" }));
-        return;
+    } else {
+        const sel = document.createElement("select");
+        sel.className = "fbt-ce-select";
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "— select audio file —";
+        if (!b.audio.file) blank.selected = true;
+        sel.appendChild(blank);
+        _S.mediaAudio.forEach(f => {
+            const o = document.createElement("option");
+            o.value = f;
+            o.textContent = f;
+            if (f === b.audio.file) o.selected = true;
+            sel.appendChild(o);
+        });
+        sel.addEventListener("change", () => { b.audio.file = sel.value; });
+        wrap.appendChild(sel);
     }
-    const sel = document.createElement("select");
-    sel.className = "fbt-ce-select";
-    const blank = document.createElement("option");
-    blank.value = "";
-    blank.textContent = "— select audio file —";
-    if (!b.audio.file) blank.selected = true;
-    sel.appendChild(blank);
-    _S.mediaAudio.forEach(f => {
-        const o = document.createElement("option");
-        o.value = f;
-        o.textContent = f;
-        if (f === b.audio.file) o.selected = true;
-        sel.appendChild(o);
-    });
-    sel.addEventListener("change", () => { b.audio.file = sel.value; });
-    wrap.appendChild(sel);
+    _buildAudioTimeSection(wrap, b.audio);
 }
 
 async function _onSave(b, warnEl) {
