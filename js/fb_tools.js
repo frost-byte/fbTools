@@ -465,8 +465,9 @@ import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
 import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect, setupLoraStackBuilder } from "./nodes/lora.js";
 import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
 import { renderCompositionEditor } from "./ui/composition_editor.js";
+import { renderBundleEditor }      from "./ui/bundle_editor.js";
 
-// Register the Prompt Composition Editor as a sidebar tab
+// Store app ref once so all panels can fire toasts via window._fbtApp
 app.extensionManager.registerSidebarTab({
     id: "fbt.composition-editor",
     icon: "pi pi-file-edit",
@@ -474,9 +475,20 @@ app.extensionManager.registerSidebarTab({
     tooltip: "Structured prompt editor for video generation",
     type: "custom",
     render: (el) => {
-        // Store app ref so the editor can fire toasts
         window._fbtApp = app;
         renderCompositionEditor(el);
+    },
+});
+
+app.extensionManager.registerSidebarTab({
+    id: "fbt.bundle-editor",
+    icon: "pi pi-images",
+    title: "Reference Bundles",
+    tooltip: "Manage reference media bundles for subjects",
+    type: "custom",
+    render: (el) => {
+        window._fbtApp = app;
+        renderBundleEditor(el);
     },
 });
 
