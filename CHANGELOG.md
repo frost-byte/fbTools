@@ -1,6 +1,115 @@
 # CHANGELOG
 
 
+## v1.14.0 (2026-08-12)
+
+### Bug Fixes
+
+- **assembler**: Align H3 subject_definitions reference phrasing with empirical best practice
+  ([`2379a45`](https://github.com/frost-byte/fbTools/commit/2379a45313cea820131c4e18d4bd63d0773673d9))
+
+Matching the manually-crafted prompt format that produces better results:
+
+- Video inline citation: "from <Video N>" instead of "in <Video N>" - Picture inline citation: "from
+  the character sheet contained in <Picture N>" (singular) or "from the character sheets contained
+  in <Picture N> and <Picture M>" (plural) instead of plain "in <Picture N>" - Add standalone <Video
+  N> role lines after subject lines, before audio lines; description is task-flag-aware: video
+  continuation → "is the continuation starting point for the target video" video editing → "is the
+  source video being edited" default → "is the visual identity reference for <Subject N>" - Hoist
+  active_flags computation to top of _assemble_h3_ref2va so it is available in both
+  subject_definitions and summary sections - Update 2 existing tests; add 5 new tests
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **assembler**: Align H3 task types with official MiniMax docs
+  ([`69b5ad1`](https://github.com/frost-byte/fbTools/commit/69b5ad144477a48f0f3fa28f1b6de09cdeb74fbe))
+
+Per the MiniMax H3 Ref2VA specification, the valid task types are: reference generation, keyframe
+  completion, video editing, video continuation, audio reference, audio reuse.
+
+"video reference" is not an official type.
+
+- Auto-detection: pictures AND videos that provide guidance both fall under "reference generation"
+  (same bucket per spec); voice timbre files stay as "audio reference" - "video editing" / "video
+  continuation" / "keyframe completion" / "audio reuse" cannot be auto-detected and require user
+  task_flags - video editing tasks open the summary body with the required sentence: "The target
+  video is an edited version of <Video N>." - Composition Editor task flag checkboxes updated to 6
+  official types - PromptAssemble tooltip updated with full type list - All affected tests updated;
+  5 new tests added
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **assembler**: Rewrite H3 Ref2VA subject_definitions to match official MiniMax format
+  ([`7598601`](https://github.com/frost-byte/fbTools/commit/7598601086ba9dcd71b35c48d30757f0fe123497))
+
+Rewrites the subject_definitions section of _assemble_h3_ref2va to use the official MiniMax H3
+  single-line prose format per subject, with picture/video references cited inline and audio
+  references as separate bottom entries.
+
+- subject line: "<Subject N> is [summary] in <Pic N> [and <Pic M>], with [details]." - audio line:
+  "<Audio N> is the voice-timbre reference for <Subject N> (S1), containing [voice]." - removes old
+  multi-line Face:/Hair:/Body:/Outfit: sub-bullets - removes standalone <Video N>: reference lines
+  (video now inline in subject line) - fixes auto-detected task tag from "video continuation" to
+  "video reference" - adds task_flags user override on PromptAssemble node and assemble_composition
+  path - adds task flag checkboxes in Composition Editor Info section (h3_ref2va only) - updates all
+  affected tests to match new format; adds 3 new task_flags tests
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **assembler**: Use neutral from <Picture N> phrasing for image references
+  ([`03ed843`](https://github.com/frost-byte/fbTools/commit/03ed843ef69dc20cad3822054ad066265a7104f5))
+
+Drops the "character sheet contained in" qualification since picture references may be any type —
+  individual shots, style references, poses, environments, etc. Plain "from <Picture N>" is
+  consistent with "from <Video N>" and makes no assumptions about image purpose.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Features
+
+- **cast**: Wire Reference Bundle fields into H3 Ref2VA prompt assembly
+  ([`85c1411`](https://github.com/frost-byte/fbTools/commit/85c1411ea290b4493e186d61afed510c97ea140b))
+
+Enrich resolved subjects from Scene Cast bundle data before prompt assembly: image-mode visual.files
+  → character_sheet_images (appended, deduped), use_audio bundles → voice.audio_reference_file, and
+  appearance_override → appearance.summary.
+
+- Add apply_cast_to_subjects() to utils/prompt_compositions.py (pure, no ComfyUI deps); deep-copies
+  subjects so registries are never mutated - Import and call from PromptCompositionLoader.execute()
+  between cast resolution and _assemble_composition() - 14 new tests in
+  tests/test_cast_enrichment.py
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Add edit/delete for existing backgrounds in Composition Editor
+  ([`7dbb3a0`](https://github.com/frost-byte/fbTools/commit/7dbb3a0af59fb8fa9db7c64599e9424dd06cd497))
+
+Backgrounds in the sidebar now show a pencil (✎) button on hover that opens an inline edit form
+  pre-filled with the background's current name, description, lighting, and soundscape fields.
+
+- Refactored _showNewBgForm into _showBgForm(existing) covering both create and edit;
+  _showBgForm(null) is the new-background path - Edit form adds a Delete button (danger style,
+  confirm dialog) that removes the background and clears the composition's background field if it
+  was pointing to the deleted entry - Extracted _refreshBgDropdown() helper that syncs
+  _S.backgrounds, rebuilds the sidebar list, and refreshes the editor dropdown in one call - Each
+  background row is now wrapped in fbt-ce-sb-item-row flex container; edit button fades in on row
+  hover
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.13.0 (2026-08-12)
 
 ### Features
