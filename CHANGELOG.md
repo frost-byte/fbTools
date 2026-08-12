@@ -1,6 +1,26 @@
 # CHANGELOG
 
 
+## v1.11.0 (2026-08-12)
+
+### Features
+
+- **ui**: Add LoRA association and concept_id to Prompt Compositions
+  ([`a339c95`](https://github.com/frost-byte/fbTools/commit/a339c956104718af02ac40fda33e41335be1e0a7))
+
+- Composition schema gets `loras: [{name, weight, target}]` and `concept_id` fields - New LoRAs
+  section in editor: Add LoRA button creates rows with name dropdown, weight input, and model_target
+  selector; outputs as LORA_STACK_DATA pin on PromptCompositionLoader → wire into LoraStackApply -
+  Composition-level concept_id in Info section; merged with per-subject concept IDs on the
+  concept_ids output of PromptCompositionLoader - Concept ID now editable on each assigned subject
+  slot row (saves to subject_profiles.json via subjects/save merge, no full reload needed) - New GET
+  /fbtools/loras/list endpoint returns sorted LoRA filename list
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.10.0 (2026-08-12)
 
 ### Features
