@@ -1787,12 +1787,15 @@ function _buildEditor(parent) {
         _dom.modelSel = _sel(MODEL_TYPES, "h3_ref2va");
         _dom.modelSel.className = "fbt-ce-select";
 
-        // Task flags row — only visible for h3_ref2va
+        // Task flags row — only visible for h3_ref2va.
+        // Official MiniMax types; "video reference" is NOT valid per spec.
         const H3_TASK_FLAGS = [
             "reference generation",
-            "video reference",
+            "keyframe completion",
+            "video editing",
             "video continuation",
             "audio reference",
+            "audio reuse",
         ];
         _dom.taskFlagsRow = _mk("div", { cls: "fbt-ce-info-row fbt-ce-task-flags-row" });
         _dom.taskFlagsRow.appendChild(_mk("span", { cls: "fbt-ce-info-label", textContent: "Task flags" }));

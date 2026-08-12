@@ -638,8 +638,9 @@ def test_video_in_summary_task_str():
     scene = _make_scene(slot_A=alice)
     ve = _video_entries(("char_alice", "alice.mp4"))
     prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
-    # Video reference is flagged as "video reference" in the bracket task tag
-    assert "video reference" in prompt
+    # Per MiniMax docs, a video providing character guidance auto-detects as
+    # "reference generation" — not a separate "video reference" type
+    assert "reference generation" in prompt
 
 
 def test_video_refs_in_summary_body():
@@ -725,10 +726,12 @@ def test_video_and_sheets_and_audio_together():
     assert "<Picture 1>" in prompt
     assert "<Video 1>" in prompt
     assert "<Audio 1>" in prompt
-    # bracket task tag includes all three types
+    # Per MiniMax docs, pictures and videos both fall under "reference generation";
+    # voice timbre files fall under "audio reference"
     assert "reference generation" in prompt
-    assert "video reference" in prompt
     assert "audio reference" in prompt
+    # No "video reference" — that is not an official MiniMax task type
+    assert "video reference" not in prompt
 
 
 # ── task_flags user override ──────────────────────────────────────────────────
@@ -737,14 +740,14 @@ def test_task_flags_override_auto_detect():
     alice = _make_subject("Alice", subject_id="char_alice")
     ve = _video_entries(("char_alice", "alice.mp4"))
     scene = _make_scene(slot_A=alice)
-    # Without override, video reference auto-detected
+    # Without override, video auto-detects as "reference generation"
     auto_prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
-    assert "video reference" in auto_prompt
+    assert "reference generation" in auto_prompt
     # With user override to "video continuation", bracket tag changes
     scene_with_flags = {**scene, "task_flags": ["video continuation"]}
     override_prompt = assemble_prompt(scene_with_flags, "h3_ref2va", ve)["prompt"]
     assert "video continuation" in override_prompt
-    assert "video reference" not in override_prompt
+    assert "reference generation" not in override_prompt
 
 
 def test_task_flags_override_empty_falls_back_to_auto():
@@ -760,3 +763,38 @@ def test_task_flags_multiple_flags_joined_correctly():
     scene = {**_make_scene(slot_A=alice), "task_flags": ["video continuation", "audio reference"]}
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
     assert "[video continuation + audio reference]" in prompt
+
+
+def test_video_editing_opens_with_edited_version_sentence():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    scene_editing = {**scene, "task_flags": ["video editing"]}
+    prompt = assemble_prompt(scene_editing, "h3_ref2va", ve)["prompt"]
+    assert "The target video is an edited version of <Video 1>." in prompt
+    assert "[video editing]" in prompt
+
+
+def test_non_editing_tasks_open_with_shows_sentence():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "The target video shows" in prompt
+    assert "The target video is an edited version" not in prompt
+
+
+def test_audio_reuse_flag_appears_in_bracket():
+    alice = _make_subject("Alice", audio="alice.wav")
+    scene = {**_make_scene(slot_A=alice), "task_flags": ["video editing", "audio reuse"]}
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "[video editing + audio reuse]" in prompt
+
+
+def test_auto_detect_only_audio_gives_audio_reference():
+    alice = _make_subject("Alice", audio="alice.wav")
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "audio reference" in prompt
+    # No pictures or video → no "reference generation"
+    assert "reference generation" not in prompt
