@@ -290,8 +290,8 @@ def test_h3_ref2va_subject_definitions_lists_pictures_inline():
     alice = _make_subject("Alice", sheets=["sheet1.png", "sheet2.png"])
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    # Pictures cited as "from the character sheets contained in <Picture 1> and <Picture 2>"
-    assert "from the character sheets contained in <Picture 1> and <Picture 2>" in prompt
+    # Pictures cited as "from <Picture 1> and <Picture 2>" — neutral, no type assumption
+    assert "from <Picture 1> and <Picture 2>" in prompt
     assert "Character sheets:" not in prompt
     assert "(primary identity)" not in prompt
 
@@ -765,12 +765,11 @@ def test_task_flags_multiple_flags_joined_correctly():
     assert "[video continuation + audio reference]" in prompt
 
 
-def test_single_sheet_uses_singular_phrasing():
+def test_single_picture_uses_from_phrasing():
     alice = _make_subject("Alice", sheets=["sheet.png"])
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "from the character sheet contained in <Picture 1>" in prompt
-    assert "character sheets" not in prompt
+    assert "from <Picture 1>" in prompt
 
 
 def test_video_standalone_line_default_role():
