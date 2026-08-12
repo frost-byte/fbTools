@@ -32,6 +32,12 @@ const MODEL_TYPES = [
 
 const LANGUAGES = ["English", "Japanese", "Chinese", "Korean", "Spanish", "French", "German", "Other"];
 
+const LORA_MODEL_TARGETS = [
+    "LTX2.3", "Wan2.2-Native-High", "Wan2.2-Native-Low",
+    "Wan2.2-Wrapper-High", "Wan2.2-Wrapper-Low",
+    "Flux2/Klein", "Qwen", "MiniMaxH3", "Z-Image",
+];
+
 // ── Module state ───────────────────────────────────────────────────────────────
 
 const _S = {
@@ -47,6 +53,8 @@ const _S = {
     libbers:        [],    // available libber filenames from /fbtools/libber/list
     libberData:     {},    // filename → {keys, lib_dict} cache
     settings:       { libber_delimiter: "%" },
+    // LoRA state
+    lorasList:      [],    // LoRA filenames from /fbtools/loras/list
     // LLM assistant state
     llmModels:      [],    // descriptors from /fbtools/llm/models
     llmDefault:     null,  // recommended default model info
@@ -107,10 +115,12 @@ function _newComp() {
     return {
         id: "", name: "",
         model_type: "h3_ref2va", style: "",
+        concept_id: "",
         subjects: {}, outfit_overrides: {},
         background: "", shots: [],
         overall_soundscape: "", non_diegetic_music: "",
         libbers: [],
+        loras: [],
     };
 }
 
@@ -379,7 +389,7 @@ function _attachLibberCompletion(el) {
 
 async function _loadResources() {
     try {
-        const [subj, bg, cam, snd, comps, llmData, llmStatus, settingsRes, libbersRes] = await Promise.allSettled([
+        const [subj, bg, cam, snd, comps, llmData, llmStatus, settingsRes, libbersRes, lorasRes] = await Promise.allSettled([
             compositionsApi.listSubjects(),
             compositionsApi.listBackgrounds(),
             compositionsApi.listCameraPresets(),
@@ -389,6 +399,7 @@ async function _loadResources() {
             llmApi.status(),
             compositionsApi.getSettings(),
             libberAPI.listLibbers(),
+            compositionsApi.listLoras(),
         ]);
         _S.subjects      = subj.value?.subjects      ?? [];
         _S.backgrounds   = bg.value?.backgrounds     ?? [];
@@ -404,7 +415,8 @@ async function _loadResources() {
             _S.settings = settingsRes.value;
             if (_dom.delimInput) _dom.delimInput.value = _S.settings.libber_delimiter ?? "%";
         }
-        _S.libbers = libbersRes.value?.files ?? [];
+        _S.libbers    = libbersRes.value?.files  ?? [];
+        _S.lorasList  = lorasRes.value?.loras    ?? [];
     } catch (e) {
         console.error("fbt CompositionEditor: resource load error", e);
     }
@@ -1089,9 +1101,34 @@ function _rebuildSlots() {
         };
         updateInfo(comp.subjects[key] || "");
 
+        // Concept ID — editable inline, saves to subject profile on change
+        const conceptRow = _mk("div", { cls: "fbt-ce-slot-concept-row" });
+        conceptRow.appendChild(_mk("span", { cls: "fbt-ce-slot-concept-label", textContent: "Concept" }));
+        const conceptInput = _mk("input", {
+            cls: "fbt-ce-input fbt-ce-slot-concept-input",
+            type: "text",
+            placeholder: "concept ID…",
+            value: _S.subjects.find(s => s.id === (comp.subjects[key] || ""))?.concept_id || "",
+        });
+        const updateConceptId = (sid) => {
+            conceptInput.value = _S.subjects.find(s => s.id === sid)?.concept_id || "";
+        };
+        conceptInput.addEventListener("change", async () => {
+            const sid = comp.subjects[key];
+            if (!sid) return;
+            const newCid = conceptInput.value.trim();
+            try {
+                await compositionsApi.saveSubject({ id: sid, concept_id: newCid });
+                const sub = _S.subjects.find(s => s.id === sid);
+                if (sub) sub.concept_id = newCid;
+            } catch (_) { _toast("Failed to update concept ID", "error"); }
+        });
+        conceptRow.appendChild(conceptInput);
+
         subSel.addEventListener("change", () => {
             comp.subjects[key] = subSel.value;
             updateInfo(subSel.value);
+            updateConceptId(subSel.value);
             _markDirty();
         });
 
@@ -1129,6 +1166,7 @@ function _rebuildSlots() {
         row.appendChild(removeBtn);
         card.appendChild(row);
         card.appendChild(infoEl);
+        card.appendChild(conceptRow);
         container.appendChild(card);
     });
     if (!slots.length) {
@@ -1414,6 +1452,66 @@ function _insertSoundPreset(text) {
     _toast("Sound preset applied", "success");
 }
 
+// ── LoRAs section ─────────────────────────────────────────────────────────────
+
+function _rebuildLoras() {
+    const c = _dom.lorasContainer;
+    if (!c) return;
+    c.innerHTML = "";
+    const loras = _S.composition?.loras ?? [];
+
+    loras.forEach((entry, i) => {
+        const row = _mk("div", { cls: "fbt-ce-lora-row" });
+
+        // Name dropdown
+        const nameSel = document.createElement("select");
+        nameSel.className = "fbt-ce-select fbt-ce-lora-name";
+        [{ id: "", label: "— select LoRA —" }, ..._S.lorasList.map(n => ({ id: n, label: n }))].forEach(({ id, label }) => {
+            const o = document.createElement("option");
+            o.value = id; o.textContent = label;
+            if (id === entry.name) o.selected = true;
+            nameSel.appendChild(o);
+        });
+        nameSel.addEventListener("change", () => { entry.name = nameSel.value; _markDirty(); });
+
+        // Weight
+        const weightInput = _mk("input", {
+            cls: "fbt-ce-lora-weight",
+            type: "number", min: 0, max: 2, step: 0.05,
+            value: entry.weight ?? 1.0,
+            title: "LoRA weight (strength_model and strength_clip)",
+        });
+        weightInput.addEventListener("input", () => { entry.weight = parseFloat(weightInput.value) || 1.0; _markDirty(); });
+
+        // Target
+        const targetSel = document.createElement("select");
+        targetSel.className = "fbt-ce-select fbt-ce-lora-target";
+        LORA_MODEL_TARGETS.forEach(t => {
+            const o = document.createElement("option");
+            o.value = t; o.textContent = t;
+            if (t === (entry.target ?? "MiniMaxH3")) o.selected = true;
+            targetSel.appendChild(o);
+        });
+        targetSel.addEventListener("change", () => { entry.target = targetSel.value; _markDirty(); });
+
+        // Remove
+        const removeBtn = _mk("button", {
+            cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Remove LoRA", textContent: "✕",
+            onclick: () => { _S.composition.loras.splice(i, 1); _rebuildLoras(); _markDirty(); },
+        });
+
+        row.appendChild(nameSel);
+        row.appendChild(weightInput);
+        row.appendChild(targetSel);
+        row.appendChild(removeBtn);
+        c.appendChild(row);
+    });
+
+    if (!loras.length) {
+        c.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No LoRAs attached." }));
+    }
+}
+
 // ── Libbers section ───────────────────────────────────────────────────────────
 
 async function _rebuildLibbers() {
@@ -1521,6 +1619,20 @@ function _buildEditor(parent) {
             _mk("span", { cls: "fbt-ce-info-label", textContent: "Model" }),
             _dom.modelSel,
         ]));
+
+        _dom.compConceptInput = _mk("input", {
+            cls: "fbt-ce-input",
+            type: "text",
+            placeholder: "Scene-level concept ID (optional)…",
+        });
+        _dom.compConceptInput.addEventListener("input", () => {
+            _S.composition.concept_id = _dom.compConceptInput.value;
+            _markDirty();
+        });
+        body.appendChild(_mk("div", { cls: "fbt-ce-info-row" }, [
+            _mk("span", { cls: "fbt-ce-info-label", textContent: "Concept" }),
+            _dom.compConceptInput,
+        ]));
     }));
 
     // Style
@@ -1585,6 +1697,23 @@ function _buildEditor(parent) {
 
     // Shots
     form.appendChild(_editorSection("Shots", _buildShotsSection));
+
+    // LoRAs
+    form.appendChild(_editorSection("LoRAs", body => {
+        _dom.lorasContainer = _mk("div", { cls: "fbt-ce-loras-list" });
+        body.appendChild(_dom.lorasContainer);
+        body.appendChild(_mk("button", {
+            cls: "fbt-ce-add-btn",
+            textContent: "+ Add LoRA",
+            onclick: () => {
+                if (!_S.composition.loras) _S.composition.loras = [];
+                _S.composition.loras.push({ name: "", weight: 1.0, target: "MiniMaxH3" });
+                _rebuildLoras();
+                _markDirty();
+            },
+        }));
+        _rebuildLoras();
+    }));
 
     // Libbers
     form.appendChild(_editorSection("Libbers", body => {
@@ -1856,6 +1985,7 @@ function _populateEditor() {
     if (!comp) return;
     if (_dom.nameInput) _dom.nameInput.value = comp.name || "";
     if (_dom.modelSel) _dom.modelSel.value = comp.model_type || "h3_ref2va";
+    if (_dom.compConceptInput) _dom.compConceptInput.value = comp.concept_id || "";
     if (_dom.styleInput) _dom.styleInput.value = comp.style || "";
     if (_dom.soundscapeArea) _dom.soundscapeArea.value = comp.overall_soundscape || "";
     if (_dom.musicArea) _dom.musicArea.value = comp.non_diegetic_music || "";
@@ -1863,6 +1993,7 @@ function _populateEditor() {
     // Rebuild dynamic sections
     _rebuildSlots();
     _rebuildShots();
+    _rebuildLoras();
     _rebuildLibbers();
 
     // Update background dropdown

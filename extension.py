@@ -9469,6 +9469,16 @@ def _compute_lora_hash(path: str) -> str:
     return h.hexdigest()
 
 
+@routes.get("/fbtools/loras/list")
+async def _loras_list(request):
+    """Return sorted list of LoRA filenames from all registered loras folders."""
+    try:
+        names = sorted(folder_paths.get_filename_list("loras"))
+        return web.json_response({"loras": names})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 @routes.get("/fbtools/lora/civitai_info")
 async def get_lora_civitai_info(request):
     """Fetch model version info from civitai by lora filename.
@@ -13557,6 +13567,14 @@ class PromptCompositionLoader(io.ComfyNode):
                                 tooltip="Start time in seconds for Load Audio node (source='file')."),
                 io.Float.Output("audio_duration",   display_name="Aud Duration (s)",
                                 tooltip="Duration in seconds for Load Audio node; 0 = to end (source='file')."),
+                LoraStackData.Output(
+                    "lora_stack_data",
+                    display_name="LoRA Stack",
+                    tooltip=(
+                        "LoRAs attached to this composition as LORA_STACK_DATA. "
+                        "Wire into LoraStackApply. Empty if no LoRAs are attached."
+                    ),
+                ),
             ],
         )
 
@@ -13592,7 +13610,7 @@ class PromptCompositionLoader(io.ComfyNode):
         if matched is None:
             logger.warning("PromptCompositionLoader: composition %r not found", composition_name)
             return io.NodeOutput("", "", "", composition_name, "", None,
-                                 0, 16, 0, 1, "none", "", 0, 0, 0, 1, 0.0, 0.0)
+                                 0, 16, 0, 1, "none", "", 0, 0, 0, 1, 0.0, 0.0, None)
 
         composition = _load_composition(user_data_dir(), matched["id"])
 
@@ -13644,7 +13662,26 @@ class PromptCompositionLoader(io.ComfyNode):
                 prompt, libbers_list, cs.get("libber_delimiter", "%"), LibberStateManager.instance()
             )
 
-        concept_ids = ", ".join(result.get("concept_ids", []))
+        # Merge per-subject concept_ids with the composition-level concept_id
+        all_cids = result.get("concept_ids", [])
+        comp_cid = composition.get("concept_id", "").strip()
+        if comp_cid and comp_cid not in all_cids:
+            all_cids = all_cids + [comp_cid]
+        concept_ids = ", ".join(all_cids)
+
+        # Build LORA_STACK_DATA from composition's attached LoRAs
+        lora_stack_data = [
+            {
+                "lora":           e["name"],
+                "strength_model": float(e.get("weight", 1.0)),
+                "strength_clip":  float(e.get("weight", 1.0)),
+                "enabled":        True,
+                "model_target":   e.get("target", "MiniMaxH3"),
+                "audio_enabled":  False,
+            }
+            for e in composition.get("loras", [])
+            if e.get("name")
+        ] or None
 
         cast_note = f" | cast: {scene_cast.get('name', '?')}" if scene_cast else ""
         send_status_update(
@@ -13669,6 +13706,7 @@ class PromptCompositionLoader(io.ComfyNode):
             cast_media["audio_every_nth"],
             cast_media["audio_start_time"],
             cast_media["audio_duration"],
+            lora_stack_data,
         )
 
 
