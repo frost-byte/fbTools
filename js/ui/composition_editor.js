@@ -15,6 +15,7 @@
 
 import { compositionsApi } from "../api/compositions.js";
 import { llmApi } from "../api/llm.js";
+import { libberAPI } from "../api/libber.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -42,6 +43,10 @@ const _S = {
     savedComps:     [],
     dirty:          false,
     shotSeq:        0,
+    // Libber state
+    libbers:        [],    // available libber filenames from /fbtools/libber/list
+    libberData:     {},    // filename → {keys, lib_dict} cache
+    settings:       { libber_delimiter: "%" },
     // LLM assistant state
     llmModels:      [],    // descriptors from /fbtools/llm/models
     llmDefault:     null,  // recommended default model info
@@ -105,6 +110,7 @@ function _newComp() {
         subjects: {}, outfit_overrides: {},
         background: "", shots: [],
         overall_soundscape: "", non_diegetic_music: "",
+        libbers: [],
     };
 }
 
@@ -250,11 +256,130 @@ function _attachCompletion(el) {
     });
 }
 
+// ── Libber key completion (%key%) ──────────────────────────────────────────────
+
+/** Build flat list of {displayKey, insertKey, libberName} from attached libbers. */
+function _libberCompletionKeys() {
+    const attached = _S.composition?.libbers ?? [];
+    if (!attached.length) return [];
+
+    // Count occurrences of each key across libbers to detect duplicates
+    const counts = {};
+    attached.forEach(name => {
+        const keys = _S.libberData[name]?.keys ?? [];
+        keys.forEach(k => { counts[k] = (counts[k] || 0) + 1; });
+    });
+
+    const result = [];
+    attached.forEach((name, i) => {
+        const keys = _S.libberData[name]?.keys ?? [];
+        keys.forEach(k => {
+            const isDup = counts[k] > 1;
+            result.push({
+                displayKey: isDup ? `${k}:${i + 1}` : k,
+                insertKey:  isDup ? `${k}:${i + 1}` : k,
+                libberName: name,
+            });
+        });
+    });
+    return result;
+}
+
+/** Show libber key completion popup at the position of the opening delimiter. */
+function _showLibberCompletion(textEl, matches, delimPos) {
+    _dismissCompletion();
+    if (!matches.length) return;
+    const d = _S.settings?.libber_delimiter ?? "%";
+
+    const popup = _mk("div", { cls: "fbt-ce-completion" });
+    matches.forEach(({ displayKey, insertKey, libberName }, i) => {
+        const item = document.createElement("div");
+        item.className = "fbt-ce-comp-item" + (i === 0 ? " active" : "");
+        item.innerHTML = `<strong>${d}${displayKey}${d}</strong><span class="fbt-ce-comp-name">${libberName}</span>`;
+        item.addEventListener("mousedown", e => {
+            e.preventDefault();
+            const curPos = textEl.selectionStart;
+            const before = textEl.value.substring(0, delimPos);
+            const after  = textEl.value.substring(curPos);
+            const insert = `${d}${insertKey}${d}`;
+            textEl.value = before + insert + after;
+            const newPos = delimPos + insert.length;
+            textEl.selectionStart = textEl.selectionEnd = newPos;
+            textEl.dispatchEvent(new Event("input", { bubbles: true }));
+            _dismissCompletion();
+            textEl.focus();
+        });
+        popup.appendChild(item);
+    });
+
+    const rect = textEl.getBoundingClientRect();
+    Object.assign(popup.style, {
+        position: "fixed",
+        left:     rect.left + "px",
+        top:      Math.min(rect.bottom + 2, window.innerHeight - 140) + "px",
+        minWidth: Math.min(200, rect.width) + "px",
+        zIndex:   "9999",
+    });
+    document.body.appendChild(popup);
+    _completionEl = popup;
+
+    textEl.addEventListener("blur", _dismissCompletion, { once: true });
+    setTimeout(() => {
+        document.addEventListener("mousedown", function outsideClick(e) {
+            if (!_completionEl?.contains(e.target)) _dismissCompletion();
+            document.removeEventListener("mousedown", outsideClick);
+        });
+    }, 0);
+}
+
+/** Attaches libber %key% completion to a text input or textarea. */
+function _attachLibberCompletion(el) {
+    el.addEventListener("input", () => {
+        const d = _S.settings?.libber_delimiter ?? "%";
+        const pos    = el.selectionStart;
+        const before = el.value.substring(0, pos);
+        const last   = before.lastIndexOf(d);
+        if (last === -1) return;
+
+        // Only trigger when the delimiter is not preceded by an alphanumeric (e.g. "100%" → skip)
+        const charBefore = last > 0 ? before[last - 1] : "";
+        if (/[a-z0-9_]/i.test(charBefore)) return;
+
+        const fragment = before.substring(last + d.length);
+        // Fragment must be alphanumeric/underscore/colon (covers partial "sub1:2" too)
+        if (!/^[a-z0-9_:]*$/i.test(fragment)) return;
+
+        const all = _libberCompletionKeys();
+        if (!all.length) return;
+        const frag = fragment.toLowerCase();
+        const matches = all.filter(({ displayKey }) => displayKey.toLowerCase().startsWith(frag));
+        if (!matches.length) { _dismissCompletion(); return; }
+        _showLibberCompletion(el, matches, last);
+    });
+
+    el.addEventListener("keydown", e => {
+        if (!_completionEl) return;
+        if (e.key === "Escape") { e.stopPropagation(); _dismissCompletion(); return; }
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            const items = Array.from(_completionEl.querySelectorAll(".fbt-ce-comp-item"));
+            let idx = items.findIndex(i => i.classList.contains("active"));
+            items[idx]?.classList.remove("active");
+            idx = e.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
+            items[idx]?.classList.add("active");
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+            const active = _completionEl?.querySelector(".fbt-ce-comp-item.active");
+            if (active) { e.preventDefault(); active.dispatchEvent(new MouseEvent("mousedown")); }
+        }
+    });
+}
+
 // ── API load ───────────────────────────────────────────────────────────────────
 
 async function _loadResources() {
     try {
-        const [subj, bg, cam, snd, comps, llmData, llmStatus] = await Promise.allSettled([
+        const [subj, bg, cam, snd, comps, llmData, llmStatus, settingsRes, libbersRes] = await Promise.allSettled([
             compositionsApi.listSubjects(),
             compositionsApi.listBackgrounds(),
             compositionsApi.listCameraPresets(),
@@ -262,6 +387,8 @@ async function _loadResources() {
             compositionsApi.listCompositions(),
             llmApi.listModels(),
             llmApi.status(),
+            compositionsApi.getSettings(),
+            libberAPI.listLibbers(),
         ]);
         _S.subjects      = subj.value?.subjects      ?? [];
         _S.backgrounds   = bg.value?.backgrounds     ?? [];
@@ -273,6 +400,11 @@ async function _loadResources() {
         const st = llmStatus.value;
         _S.llmLoaded     = st?.loaded_model  ?? null;
         _S.llmVision     = st?.supports_vision ?? false;
+        if (settingsRes.value) {
+            _S.settings = settingsRes.value;
+            if (_dom.delimInput) _dom.delimInput.value = _S.settings.libber_delimiter ?? "%";
+        }
+        _S.libbers = libbersRes.value?.files ?? [];
     } catch (e) {
         console.error("fbt CompositionEditor: resource load error", e);
     }
@@ -849,6 +981,32 @@ function _buildLlmSection(parent) {
     parent.appendChild(_buildSidebarSection("🤖 LLM Assistant", body));
 }
 
+function _buildSettingsSection(parent) {
+    const body = _mk("div", { cls: "fbt-ce-sb-body" });
+
+    const row = _mk("div", { cls: "fbt-ce-settings-row" });
+    row.appendChild(_mk("span", { cls: "fbt-ce-settings-label", textContent: "Libber delimiter" }));
+
+    _dom.delimInput = _mk("input", {
+        cls: "fbt-ce-delimiter-input",
+        type: "text",
+        maxLength: 1,
+        value: _S.settings?.libber_delimiter ?? "%",
+        title: "Single character used to wrap libber keys (e.g. %key%)",
+    });
+    _dom.delimInput.addEventListener("change", async () => {
+        const d = _dom.delimInput.value;
+        if (!d.length) { _dom.delimInput.value = _S.settings.libber_delimiter; return; }
+        _S.settings.libber_delimiter = d;
+        try { await compositionsApi.saveSettings(_S.settings); } catch (_) {}
+        _rebuildLibbers(); // refresh key chips to show updated delimiter
+    });
+    row.appendChild(_dom.delimInput);
+    body.appendChild(row);
+
+    parent.appendChild(_buildSidebarSection("⚙ Settings", body));
+}
+
 function _buildSidebar(parent) {
     const sidebar = _mk("div", { cls: "fbt-ce-sidebar" });
 
@@ -864,6 +1022,7 @@ function _buildSidebar(parent) {
     sidebar.appendChild(_buildSidebarSection("Camera Presets (click to apply to shot)", _dom.camList));
     sidebar.appendChild(_buildSidebarSection("Sound Presets (click to apply to shot)", _dom.sndList));
     _buildLlmSection(sidebar);
+    _buildSettingsSection(sidebar);
 
     parent.appendChild(sidebar);
 }
@@ -1074,6 +1233,7 @@ function _buildShotCard(shot, index) {
     });
     cam.addEventListener("input", () => { shot.camera = cam.value; _markDirty(); });
     _attachCompletion(cam);
+    _attachLibberCompletion(cam);
     card.appendChild(_labeledRow("Camera", cam));
 
     // Action — {S} completion enabled
@@ -1085,6 +1245,7 @@ function _buildShotCard(shot, index) {
     });
     action.addEventListener("input", () => { shot.action = action.value; _markDirty(); });
     _attachCompletion(action);
+    _attachLibberCompletion(action);
     card.appendChild(_labeledRow("Action", action));
 
     // Dialogue
@@ -1126,6 +1287,7 @@ function _buildShotCard(shot, index) {
             rows: 2,
         });
         dlgText.addEventListener("input", () => { if (shot.dialogue) shot.dialogue.text = dlgText.value; _markDirty(); });
+        _attachLibberCompletion(dlgText);
 
         dlgFields.appendChild(_labeledRow("Speaker", spkSel));
         dlgFields.appendChild(_labeledRow("Language", langSel));
@@ -1252,6 +1414,70 @@ function _insertSoundPreset(text) {
     _toast("Sound preset applied", "success");
 }
 
+// ── Libbers section ───────────────────────────────────────────────────────────
+
+async function _rebuildLibbers() {
+    const c = _dom.libbersContainer;
+    if (!c) return;
+    c.innerHTML = "";
+
+    if (!_S.libbers.length) {
+        c.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No libber files found in libbers directory." }));
+        return;
+    }
+
+    const attached = new Set(_S.composition?.libbers ?? []);
+    const d = _S.settings?.libber_delimiter ?? "%";
+
+    for (const name of _S.libbers) {
+        const isAttached = attached.has(name);
+
+        const row = _mk("div", { cls: "fbt-ce-libber-row" });
+        const cb = _mk("input", { type: "checkbox" });
+        cb.checked = isAttached;
+        const label = _mk("span", { cls: "fbt-ce-libber-name", textContent: name });
+
+        cb.addEventListener("change", async () => {
+            if (!_S.composition.libbers) _S.composition.libbers = [];
+            if (cb.checked) {
+                if (!_S.composition.libbers.includes(name)) _S.composition.libbers.push(name);
+                if (!_S.libberData[name]) {
+                    try {
+                        const key = name.replace(/\.json$/i, "");
+                        _S.libberData[name] = await libberAPI.getLibberData(key);
+                    } catch (_) {}
+                }
+            } else {
+                _S.composition.libbers = _S.composition.libbers.filter(n => n !== name);
+            }
+            _markDirty();
+            _rebuildLibbers();
+        });
+
+        row.appendChild(cb);
+        row.appendChild(label);
+        c.appendChild(row);
+
+        // Show key chips when attached and data is loaded
+        if (isAttached) {
+            if (!_S.libberData[name]) {
+                try {
+                    const key = name.replace(/\.json$/i, "");
+                    _S.libberData[name] = await libberAPI.getLibberData(key);
+                } catch (_) {}
+            }
+            const keys = _S.libberData[name]?.keys ?? [];
+            if (keys.length) {
+                const chipsEl = _mk("div", { cls: "fbt-ce-libber-keys" });
+                keys.forEach(k => {
+                    chipsEl.appendChild(_mk("span", { cls: "fbt-ce-libber-key-chip", textContent: `${d}${k}${d}` }));
+                });
+                c.appendChild(chipsEl);
+            }
+        }
+    }
+}
+
 // ── Main editor area ───────────────────────────────────────────────────────────
 
 function _buildEditor(parent) {
@@ -1305,6 +1531,7 @@ function _buildEditor(parent) {
             placeholder: "Visual style, e.g. cinematic with shallow depth of field…",
         });
         _dom.styleInput.addEventListener("input", () => { _S.composition.style = _dom.styleInput.value; _markDirty(); });
+        _attachLibberCompletion(_dom.styleInput);
         body.appendChild(_dom.styleInput);
     }));
 
@@ -1359,6 +1586,13 @@ function _buildEditor(parent) {
     // Shots
     form.appendChild(_editorSection("Shots", _buildShotsSection));
 
+    // Libbers
+    form.appendChild(_editorSection("Libbers", body => {
+        _dom.libbersContainer = _mk("div", { cls: "fbt-ce-libbers-list" });
+        body.appendChild(_dom.libbersContainer);
+        _rebuildLibbers();
+    }));
+
     // Soundscape
     form.appendChild(_editorSection("Overall Soundscape", body => {
         _dom.soundscapeArea = _mk("textarea", {
@@ -1367,6 +1601,7 @@ function _buildEditor(parent) {
             rows: 3,
         });
         _dom.soundscapeArea.addEventListener("input", () => { _S.composition.overall_soundscape = _dom.soundscapeArea.value; _markDirty(); });
+        _attachLibberCompletion(_dom.soundscapeArea);
         body.appendChild(_dom.soundscapeArea);
     }));
 
@@ -1378,6 +1613,7 @@ function _buildEditor(parent) {
             rows: 2,
         });
         _dom.musicArea.addEventListener("input", () => { _S.composition.non_diegetic_music = _dom.musicArea.value; _markDirty(); });
+        _attachLibberCompletion(_dom.musicArea);
         body.appendChild(_dom.musicArea);
     }));
 
@@ -1627,6 +1863,7 @@ function _populateEditor() {
     // Rebuild dynamic sections
     _rebuildSlots();
     _rebuildShots();
+    _rebuildLibbers();
 
     // Update background dropdown
     if (_dom.bgSel) {

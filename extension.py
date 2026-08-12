@@ -12911,6 +12911,54 @@ async def _compositions_reload(request):
     return web.json_response({"success": True, "counter": _composition_reload_counter})
 
 
+# ── Composition system settings ───────────────────────────────────────────────
+
+def _composition_settings_path() -> str:
+    return os.path.join(user_data_dir(), "composition_settings.json")
+
+
+def _read_composition_settings() -> dict:
+    defaults: dict = {"libber_delimiter": "%"}
+    path = _composition_settings_path()
+    if not os.path.exists(path):
+        return defaults
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {**defaults, **data}
+    except Exception:
+        return defaults
+
+
+def _write_composition_settings(settings: dict) -> None:
+    path = _composition_settings_path()
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, indent=2)
+
+
+@routes.get("/fbtools/compositions/settings")
+async def _compositions_settings_get(request):
+    """Return global composition system settings."""
+    return web.json_response(_read_composition_settings())
+
+
+@routes.post("/fbtools/compositions/settings")
+async def _compositions_settings_post(request):
+    """Update global composition system settings."""
+    try:
+        body = await request.json()
+        settings = _read_composition_settings()
+        if "libber_delimiter" in body:
+            d = str(body["libber_delimiter"])
+            if len(d) == 1:
+                settings["libber_delimiter"] = d
+        _write_composition_settings(settings)
+        return web.json_response(settings)
+    except Exception as exc:
+        logger.exception("Error saving composition settings")
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 # ── LLM assistant routes ──────────────────────────────────────────────────────
 
 from .utils.llm_scanner import scan_llm_dirs as _llm_scan_dirs, DEFAULT_MODEL as _LLM_DEFAULT_MODEL
@@ -13372,6 +13420,54 @@ def _resolve_cast_media(
     }
 
 
+def _apply_composition_libbers(text: str, libbers: list, delimiter: str, manager) -> str:
+    """Apply libbers in order to text, resolving :n indexed references first.
+
+    Indexed refs like %key:2% use the 2nd attached libber (1-based).
+    Plain refs like %key% chain through all libbers in order (first match wins).
+    The composition's delimiter is used regardless of what each libber file stores.
+    """
+    if not libbers or not text:
+        return text
+
+    # Load all referenced libbers; strip .json extension for the state manager key
+    loaded: list = []
+    for name in libbers:
+        key = name[:-5] if name.endswith(".json") else name
+        loaded.append(manager.ensure_libber(key))
+
+    esc = re.escape(delimiter)
+
+    # First pass: resolve indexed refs (%key:2%) using the specified libber slot
+    def _replace_indexed(m: re.Match) -> str:
+        inner = m.group(1)
+        if ":" not in inner:
+            return m.group(0)
+        raw_key, idx_str = inner.rsplit(":", 1)
+        try:
+            idx = int(idx_str) - 1
+        except ValueError:
+            return m.group(0)
+        if 0 <= idx < len(loaded) and loaded[idx]:
+            lb = loaded[idx]
+            val = lb.get_lib(raw_key)
+            if val is not None:
+                temp = Libber(lib_dict=dict(lb.libs), delimiter=delimiter, max_depth=lb.max_depth)
+                return temp.substitute(val)
+        return m.group(0)
+
+    indexed_pat = esc + r'([a-z0-9_]+:[0-9]+)' + esc
+    text = re.sub(indexed_pat, _replace_indexed, text)
+
+    # Second pass: plain unindexed refs — chain through libbers in order
+    for lb in loaded:
+        if lb:
+            temp = Libber(lib_dict=dict(lb.libs), delimiter=delimiter, max_depth=lb.max_depth)
+            text = temp.substitute(text)
+
+    return text
+
+
 class PromptCompositionLoader(io.ComfyNode):
     """Load a saved prompt composition and assemble it into a model-specific prompt.
 
@@ -13477,8 +13573,12 @@ class PromptCompositionLoader(io.ComfyNode):
             bundle_mtime = os.path.getmtime(default_bundle_registry_path()) if scene_cast else 0
         except OSError:
             bundle_mtime = 0
+        try:
+            settings_mtime = os.path.getmtime(_composition_settings_path())
+        except OSError:
+            settings_mtime = 0
         return (comps_dir, composition_name, model_type, mtime, _composition_reload_counter,
-                cast_id, cast_modified, bundle_mtime)
+                cast_id, cast_modified, bundle_mtime, settings_mtime)
 
     @classmethod
     def execute(
@@ -13535,6 +13635,15 @@ class PromptCompositionLoader(io.ComfyNode):
         )
 
         prompt = result.get("prompt", "")
+
+        # Apply attached libbers using the composition delimiter from global settings
+        libbers_list = composition.get("libbers", [])
+        if libbers_list:
+            cs = _read_composition_settings()
+            prompt = _apply_composition_libbers(
+                prompt, libbers_list, cs.get("libber_delimiter", "%"), LibberStateManager.instance()
+            )
+
         concept_ids = ", ".join(result.get("concept_ids", []))
 
         cast_note = f" | cast: {scene_cast.get('name', '?')}" if scene_cast else ""

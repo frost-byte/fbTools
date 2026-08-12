@@ -546,6 +546,73 @@ textarea.prompt-value-input {
     color: rgba(255,255,255,0.7);
 }
 
+/* ── Libbers section (per-composition) ──────────────────────────────────────── */
+
+.fbt-ce-libbers-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.fbt-ce-libber-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+}
+
+.fbt-ce-libber-name {
+    font-size: 12px;
+    color: var(--fg-color, #ddd);
+}
+
+.fbt-ce-libber-keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 2px 0 6px 20px;
+}
+
+.fbt-ce-libber-key-chip {
+    font-family: monospace;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--comfy-input-bg, #1e1e1e);
+    border: 1px solid var(--border-color, #444);
+    color: var(--p-amber-400, #fbbf24);
+    white-space: nowrap;
+}
+
+/* ── Settings section (sidebar, global) ─────────────────────────────────────── */
+
+.fbt-ce-settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.fbt-ce-settings-label {
+    font-size: 11px;
+    color: var(--p-surface-400, #888);
+    flex: 1;
+}
+
+.fbt-ce-delimiter-input {
+    width: 28px;
+    text-align: center;
+    font-family: monospace;
+    font-size: 13px;
+    padding: 2px 4px;
+    background: var(--comfy-input-bg, #1e1e1e);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 3px;
+    color: var(--fg-color, #ddd);
+    flex-shrink: 0;
+}
+
 /* ── Phase 3: Inline new-resource forms in sidebar ─────────────────────────── */
 
 .fbt-ce-sb-new {
