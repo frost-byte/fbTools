@@ -565,6 +565,21 @@ function _showNewSubjectForm() {
     nameEl.focus();
 }
 
+async function _refreshBgDropdown(selectId) {
+    const res = await compositionsApi.listBackgrounds();
+    _S.backgrounds = res.backgrounds ?? [];
+    _populateBgList();
+    if (_dom.bgSel) {
+        _dom.bgSel.innerHTML = "";
+        _bgOptions().forEach(o => {
+            const opt = document.createElement("option");
+            opt.value = o.id; opt.textContent = o.label;
+            if (o.id === selectId) opt.selected = true;
+            _dom.bgSel.appendChild(opt);
+        });
+    }
+}
+
 function _populateBgList() {
     const list = _dom.bgList;
     if (!list) return;
@@ -574,7 +589,7 @@ function _populateBgList() {
     list.appendChild(_mk("div", {
         cls: "fbt-ce-sb-item fbt-ce-sb-new",
         textContent: "+ New Background…",
-        onclick: () => _showNewBgForm(),
+        onclick: () => _showBgForm(null),
     }));
 
     if (!_S.backgrounds.length) {
@@ -582,72 +597,103 @@ function _populateBgList() {
         return;
     }
     _S.backgrounds.forEach(b => {
-        const item = _mk("div", {
-            cls: "fbt-ce-sb-item fbt-ce-clickable",
+        const row = _mk("div", { cls: "fbt-ce-sb-item-row" });
+
+        const nameEl = _mk("div", {
+            cls: "fbt-ce-sb-item fbt-ce-clickable fbt-ce-sb-item-flex",
             title: b.description || "",
             onclick: () => _assignBg(b.id),
         });
-        item.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: b.name || b.id }));
-        list.appendChild(item);
+        nameEl.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: b.name || b.id }));
+
+        const editBtn = _mk("button", {
+            cls: "fbt-ce-sb-edit-btn",
+            textContent: "✎",
+            title: "Edit background",
+        });
+        editBtn.addEventListener("click", e => { e.stopPropagation(); _showBgForm(b); });
+
+        row.appendChild(nameEl);
+        row.appendChild(editBtn);
+        list.appendChild(row);
     });
 }
 
-function _showNewBgForm() {
+function _showBgForm(existing) {
     const list = _dom.bgList;
     if (!list) return;
     list.innerHTML = "";
 
+    const isEdit  = !!existing;
     const nameEl  = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Name*" });
     const descEl  = _mk("textarea", { cls: "fbt-ce-textarea", placeholder: "Environment description…", rows: 2 });
     const lightEl = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Lighting…" });
     const sndEl   = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Default soundscape…" });
 
+    if (isEdit) {
+        nameEl.value  = existing.name        || "";
+        descEl.value  = existing.description  || "";
+        lightEl.value = existing.lighting     || "";
+        sndEl.value   = existing.soundscape   || "";
+    }
+
     const form = _mk("div", { cls: "fbt-ce-inline-form" }, [
-        _mk("div", { cls: "fbt-ce-form-label", textContent: "New Background" }),
+        _mk("div", { cls: "fbt-ce-form-label", textContent: isEdit ? "Edit Background" : "New Background" }),
         nameEl, descEl, lightEl, sndEl,
     ]);
 
     const btnRow = _mk("div", { cls: "fbt-ce-form-btns" });
     btnRow.appendChild(_mk("button", {
         cls: "fbt-ce-btn fbt-ce-btn-primary",
-        textContent: "Add",
+        textContent: isEdit ? "Save" : "Add",
         onclick: async () => {
             const name = nameEl.value.trim();
             if (!name) { nameEl.focus(); return; }
             try {
-                const saved = await compositionsApi.saveBackground({
+                const bg = {
                     name,
                     description: descEl.value.trim(),
                     lighting:    lightEl.value.trim(),
                     soundscape:  sndEl.value.trim(),
-                });
-                const res = await compositionsApi.listBackgrounds();
-                _S.backgrounds = res.backgrounds ?? [];
-                _populateBgList();
-                // Refresh the background dropdown in the editor
-                if (_dom.bgSel) {
-                    const cur = _dom.bgSel.value;
-                    _dom.bgSel.innerHTML = "";
-                    _bgOptions().forEach(o => {
-                        const opt = document.createElement("option");
-                        opt.value = o.id; opt.textContent = o.label;
-                        if (o.id === cur) opt.selected = true;
-                        _dom.bgSel.appendChild(opt);
-                    });
-                }
-                _toast(`Background "${name}" added`, "success");
+                };
+                if (isEdit) bg.id = existing.id;
+                const saved = await compositionsApi.saveBackground(bg);
+                await _refreshBgDropdown(_dom.bgSel?.value || "");
+                _toast(`Background "${name}" ${isEdit ? "updated" : "added"}`, "success");
             } catch (e) {
                 _toast("Failed: " + e.message, "error");
             }
         },
     }));
+
+    if (isEdit) {
+        btnRow.appendChild(_mk("button", {
+            cls: "fbt-ce-btn fbt-ce-btn-danger",
+            textContent: "Delete",
+            onclick: async () => {
+                if (!confirm(`Delete background "${existing.name}"?`)) return;
+                try {
+                    await compositionsApi.deleteBackground(existing.id);
+                    // Clear the composition's background field if it pointed here
+                    if (_S.composition.background === existing.id) {
+                        _S.composition.background = "";
+                        _markDirty();
+                    }
+                    await _refreshBgDropdown(_S.composition.background || "");
+                    _toast(`Deleted "${existing.name}"`, "success");
+                } catch (e) {
+                    _toast("Failed to delete: " + e.message, "error");
+                }
+            },
+        }));
+    }
+
     btnRow.appendChild(_mk("button", {
         cls: "fbt-ce-btn",
         textContent: "Cancel",
         onclick: () => _populateBgList(),
     }));
     form.appendChild(btnRow);
-
     list.appendChild(form);
     nameEl.focus();
 }
