@@ -1,6 +1,31 @@
 # CHANGELOG
 
 
+## v1.12.0 (2026-08-12)
+
+### Features
+
+- **scene**: Add Outfit Registry system
+  ([`0323e6d`](https://github.com/frost-byte/fbTools/commit/0323e6defe1fa1f4e9513362ecded1112228fb76))
+
+Add utils/outfit_registry.py with OutfitRegistry class (load/save/define/ remove/list), three new
+  nodes (OutfitRegistryLoad, OutfitDefine, OutfitList), and OUTFIT_REGISTRY custom type wired into
+  SceneCompose.
+
+SceneCompose gains optional outfit_registry + outfit_A_id–outfit_D_id inputs: explicit text
+  overrides still win; registry descriptions fill in when no text override is provided.
+
+REST API: GET/POST /fbtools/outfits/registry|save|reload, DELETE /outfits/delete.
+
+Frontend: Outfits sidebar section in the Composition Editor with list/edit/ delete, modal editor
+  (id, name, description, tags), and LLM-assisted image analysis button (visible only when a vision
+  model is loaded).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.11.0 (2026-08-12)
 
 ### Features
