@@ -55,6 +55,8 @@ const _S = {
     settings:       { libber_delimiter: "%" },
     // LoRA state
     lorasList:      [],    // LoRA filenames from /fbtools/loras/list
+    // Outfit registry state
+    outfits:        {},    // id → {name, description, tags} from /fbtools/outfits/registry
     // LLM assistant state
     llmModels:      [],    // descriptors from /fbtools/llm/models
     llmDefault:     null,  // recommended default model info
@@ -389,7 +391,7 @@ function _attachLibberCompletion(el) {
 
 async function _loadResources() {
     try {
-        const [subj, bg, cam, snd, comps, llmData, llmStatus, settingsRes, libbersRes, lorasRes] = await Promise.allSettled([
+        const [subj, bg, cam, snd, comps, llmData, llmStatus, settingsRes, libbersRes, lorasRes, outfitsRes] = await Promise.allSettled([
             compositionsApi.listSubjects(),
             compositionsApi.listBackgrounds(),
             compositionsApi.listCameraPresets(),
@@ -400,6 +402,7 @@ async function _loadResources() {
             compositionsApi.getSettings(),
             libberAPI.listLibbers(),
             compositionsApi.listLoras(),
+            compositionsApi.getOutfitRegistry(),
         ]);
         _S.subjects      = subj.value?.subjects      ?? [];
         _S.backgrounds   = bg.value?.backgrounds     ?? [];
@@ -415,8 +418,9 @@ async function _loadResources() {
             _S.settings = settingsRes.value;
             if (_dom.delimInput) _dom.delimInput.value = _S.settings.libber_delimiter ?? "%";
         }
-        _S.libbers    = libbersRes.value?.files  ?? [];
-        _S.lorasList  = lorasRes.value?.loras    ?? [];
+        _S.libbers    = libbersRes.value?.files    ?? [];
+        _S.lorasList  = lorasRes.value?.loras     ?? [];
+        _S.outfits    = outfitsRes.value?.outfits ?? {};
     } catch (e) {
         console.error("fbt CompositionEditor: resource load error", e);
     }
@@ -660,6 +664,163 @@ function _refreshSidebar() {
     _populateBgList();
     _populatePresetList(_dom.camList, _S.cameraPresets, _insertCameraPreset);
     _populatePresetList(_dom.sndList, _S.soundPresets, _insertSoundPreset);
+}
+
+// ── Outfit Registry sidebar section ───────────────────────────────────────────
+
+const DEFAULT_OUTFIT_QUERY =
+    "Describe this outfit concisely for video generation prompts. " +
+    "Focus on garment types, colors, materials, and notable accessories.";
+
+function _outfitIdFromRow(row) { return row?.dataset.outfitId ?? ""; }
+
+function _rebuildOutfitList() {
+    const list = _dom.outfitList;
+    if (!list) return;
+    list.innerHTML = "";
+    const entries = Object.entries(_S.outfits).sort(([, a], [, b]) =>
+        (a.name || "").localeCompare(b.name || ""));
+    if (!entries.length) {
+        list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No outfits defined." }));
+        return;
+    }
+    entries.forEach(([id, entry]) => {
+        const row = _mk("div", { cls: "fbt-ce-outfit-row" });
+        row.dataset.outfitId = id;
+        const nameEl = _mk("div", { cls: "fbt-ce-outfit-name", textContent: entry.name || id });
+        const idEl   = _mk("div", { cls: "fbt-ce-outfit-id",   textContent: id });
+        const editBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "Edit",
+            onclick: () => _openOutfitEditor(id) });
+        const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-danger", textContent: "✕",
+            onclick: async () => {
+                if (!confirm(`Delete outfit '${id}'?`)) return;
+                try {
+                    await compositionsApi.deleteOutfit(id);
+                    delete _S.outfits[id];
+                    _rebuildOutfitList();
+                } catch (e) { alert(`Delete failed: ${e.message}`); }
+            }});
+        const ctrl = _mk("div", { cls: "fbt-ce-outfit-ctrl" }, [editBtn, delBtn]);
+        row.appendChild(_mk("div", { cls: "fbt-ce-outfit-info" }, [nameEl, idEl]));
+        row.appendChild(ctrl);
+        list.appendChild(row);
+    });
+}
+
+function _openOutfitEditor(existingId) {
+    const isNew = !existingId;
+    const entry = existingId ? (_S.outfits[existingId] || {}) : {};
+
+    // Modal overlay
+    const overlay = _mk("div", { cls: "fbt-ce-modal-overlay",
+        onclick: e => { if (e.target === overlay) overlay.remove(); } });
+
+    const modal = _mk("div", { cls: "fbt-ce-modal" });
+    overlay.appendChild(modal);
+
+    modal.appendChild(_mk("div", { cls: "fbt-ce-modal-title",
+        textContent: isNew ? "New Outfit" : `Edit Outfit: ${existingId}` }));
+
+    const idInput   = _mk("input", { cls: "fbt-ce-input", placeholder: "outfit_id (snake_case)",
+        value: existingId || "", disabled: !isNew });
+    const nameInput = _mk("input", { cls: "fbt-ce-input", placeholder: "Display name",
+        value: entry.name || "" });
+    const tagsInput = _mk("input", { cls: "fbt-ce-input", placeholder: "Tags (comma-separated, optional)",
+        value: (entry.tags || []).join(", ") });
+    const descArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-desc",
+        placeholder: "Outfit description…", value: entry.description || "" });
+
+    // LLM analyze section (shown only when vision model loaded)
+    const analyzeSection = _mk("div", { cls: "fbt-ce-outfit-analyze" });
+    if (_S.llmVision) {
+        const imgInput   = _mk("input", { cls: "fbt-ce-input", placeholder: "Image filename (from ComfyUI input dir)" });
+        const queryArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-query",
+            placeholder: "Describe what you want from the analysis…",
+            value: DEFAULT_OUTFIT_QUERY });
+        const analyzeBtn = _mk("button", { cls: "fbt-ce-btn",
+            textContent: "🔍 Analyze with LLM",
+            onclick: async () => {
+                const imgName = imgInput.value.trim();
+                if (!imgName) { alert("Enter an image filename first."); return; }
+                analyzeBtn.disabled = true;
+                analyzeBtn.textContent = "Analyzing…";
+                try {
+                    const r = await llmApi.generate(queryArea.value.trim() || DEFAULT_OUTFIT_QUERY,
+                        { images: [imgName], max_tokens: 400 });
+                    if (r?.text) descArea.value = r.text.trim();
+                } catch (e) { alert(`LLM error: ${e.message}`); }
+                finally {
+                    analyzeBtn.disabled = false;
+                    analyzeBtn.textContent = "🔍 Analyze with LLM";
+                }
+            }});
+        analyzeSection.appendChild(_mk("div", { cls: "fbt-ce-hint", textContent: "LLM Image Analysis" }));
+        analyzeSection.appendChild(imgInput);
+        analyzeSection.appendChild(queryArea);
+        analyzeSection.appendChild(analyzeBtn);
+    }
+
+    const saveBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Save",
+        onclick: async () => {
+            const id = isNew ? idInput.value.trim() : existingId;
+            if (!id) { alert("Outfit ID is required."); return; }
+            if (!/^[a-z0-9_]+$/.test(id)) { alert("ID must be lowercase letters, digits, or underscores."); return; }
+            const outfit = {
+                id,
+                name:        nameInput.value.trim(),
+                description: descArea.value.trim(),
+                tags:        tagsInput.value.split(",").map(t => t.trim()).filter(Boolean),
+            };
+            try {
+                await compositionsApi.saveOutfit(outfit);
+                _S.outfits[id] = { name: outfit.name, description: outfit.description, tags: outfit.tags };
+                _rebuildOutfitList();
+                overlay.remove();
+            } catch (e) { alert(`Save failed: ${e.message}`); }
+        }});
+    const cancelBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "Cancel",
+        onclick: () => overlay.remove() });
+
+    const btnRow = _mk("div", { cls: "fbt-ce-modal-btns" }, [cancelBtn, saveBtn]);
+
+    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "ID" }));
+    modal.appendChild(idInput);
+    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Name" }));
+    modal.appendChild(nameInput);
+    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Tags" }));
+    modal.appendChild(tagsInput);
+    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Description" }));
+    modal.appendChild(descArea);
+    if (_S.llmVision) modal.appendChild(analyzeSection);
+    modal.appendChild(btnRow);
+
+    document.body.appendChild(overlay);
+    (isNew ? idInput : nameInput).focus();
+}
+
+function _buildOutfitsSection(parent) {
+    const body = _mk("div", { cls: "fbt-ce-sb-body" });
+    _dom.outfitList = _mk("div", { cls: "fbt-ce-sb-list" });
+
+    const addBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
+        textContent: "+ New Outfit",
+        onclick: () => _openOutfitEditor(null) });
+    const reloadBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
+        textContent: "↺",
+        title: "Reload outfit registry from disk",
+        onclick: async () => {
+            try {
+                const r = await compositionsApi.getOutfitRegistry();
+                _S.outfits = r?.outfits ?? {};
+                _rebuildOutfitList();
+            } catch (e) { console.error("Outfit reload error", e); }
+        }});
+
+    const ctrl = _mk("div", { cls: "fbt-ce-outfit-section-ctrl" }, [addBtn, reloadBtn]);
+    body.appendChild(ctrl);
+    body.appendChild(_dom.outfitList);
+    _rebuildOutfitList();
+    parent.appendChild(_buildSidebarSection("Outfits", body));
 }
 
 // ── LLM assistant sidebar section ─────────────────────────────────────────────
@@ -1033,6 +1194,7 @@ function _buildSidebar(parent) {
     sidebar.appendChild(_buildSidebarSection("Backgrounds (click to assign)", _dom.bgList));
     sidebar.appendChild(_buildSidebarSection("Camera Presets (click to apply to shot)", _dom.camList));
     sidebar.appendChild(_buildSidebarSection("Sound Presets (click to apply to shot)", _dom.sndList));
+    _buildOutfitsSection(sidebar);
     _buildLlmSection(sidebar);
     _buildSettingsSection(sidebar);
 

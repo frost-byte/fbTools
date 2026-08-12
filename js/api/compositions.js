@@ -92,6 +92,26 @@ export class CompositionsAPI extends BaseAPI {
         return this.get("/loras/list");
     }
 
+    // ── Outfits ─────────────────────────────────────────────────────────────────
+
+    getOutfitRegistry() {
+        return this.get("/outfits/registry");
+    }
+
+    saveOutfit(outfit) {
+        return this.post("/outfits/save", outfit);
+    }
+
+    async deleteOutfit(id) {
+        const r = await fetch(`/fbtools/outfits/delete?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!r.ok) throw new Error(`Delete failed: ${r.statusText}`);
+        return r.json();
+    }
+
+    reloadOutfits() {
+        return this.post("/outfits/reload", {});
+    }
+
     listCameraPresets() {
         return this.get("/presets/cameras");
     }

@@ -108,6 +108,11 @@ from .utils.scene_casts import (
     save_registry as _save_cast_registry,
     validate_cast as _validate_cast,
 )
+from .utils.outfit_registry import (
+    OutfitRegistry,
+    load_outfit_registry as _load_outfit_registry,
+    save_outfit_registry as _save_outfit_registry,
+)
 
 from .utils.subject_compositor import (
     tensor_to_pil,
@@ -162,6 +167,8 @@ _subject_reload_counter: int = 0
 _scene_template_reload_counter: int = 0
 # Incremented by POST /fbtools/compositions/reload so PromptCompositionLoader nodes re-execute
 _composition_reload_counter: int = 0
+# Incremented by POST /fbtools/outfits/reload so OutfitRegistryLoad nodes re-execute
+_outfit_reload_counter: int = 0
 # Incremented by POST /fbtools/casts/reload so SceneCastLoad nodes re-execute
 _cast_reload_counter: int = 0
 
@@ -1495,6 +1502,11 @@ def default_bundle_registry_path() -> str:
 def default_cast_registry_path() -> str:
     """Default path for the scene casts JSON file."""
     return os.path.join(user_data_dir(), "scene_casts.json")
+
+
+def default_outfit_registry_path() -> str:
+    """Default path for the outfit registry JSON file."""
+    return os.path.join(user_data_dir(), "outfit_registry.json")
 
 
 def default_scene_templates_dir() -> str:
@@ -12086,6 +12098,256 @@ async def _scene_templates_list(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+# ── Custom type: OUTFIT_REGISTRY ─────────────────────────────────────────────
+
+OUTFIT_REGISTRY_TYPE = "OUTFIT_REGISTRY"
+
+
+@io.comfytype(io_type=OUTFIT_REGISTRY_TYPE)
+class OutfitRegistryIOType:
+    """Carries an OutfitRegistry instance between Load → Define nodes."""
+    Type = object  # OutfitRegistry instance
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "outfit_registry", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+# ── Outfit Registry helpers ───────────────────────────────────────────────────
+
+def _outfit_get_ids() -> list[str]:
+    """Read outfit_registry.json and return outfit IDs for combo widgets."""
+    try:
+        reg = _load_outfit_registry(default_outfit_registry_path())
+        ids = reg.outfit_ids()
+        return ids if ids else ["(none)"]
+    except Exception:
+        return ["(none)"]
+
+
+# ── Node: OutfitRegistryLoad ──────────────────────────────────────────────────
+
+class OutfitRegistryLoad(io.ComfyNode):
+    """Load the outfit registry from disk.
+
+    Outputs an OUTFIT_REGISTRY that can be chained through OutfitDefine nodes
+    or wired directly into SceneCompose for slot-based outfit lookups.
+    """
+    node_id = prefixed_node_id("OutfitRegistryLoad")
+    display_name = "Outfit Registry Load"
+    category = "🧊 frost-byte/Scene"
+    is_output_node = True
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            is_output_node=cls.is_output_node,
+            inputs=[
+                io.String.Input(
+                    "registry_file",
+                    display_name="Registry File (leave empty for default)",
+                    default="",
+                    tooltip=(
+                        "Absolute path to an outfit_registry.json file. "
+                        "Leave empty to use the default user-data location."
+                    ),
+                    multiline=False,
+                ),
+            ],
+            outputs=[
+                OutfitRegistryIOType.Output(
+                    "outfit_registry",
+                    display_name="Outfit Registry",
+                    tooltip="Outfit registry to wire into OutfitDefine or SceneCompose.",
+                ),
+                io.String.Output(
+                    "available_outfits",
+                    display_name="Available Outfits",
+                    tooltip="Human-readable list of all defined outfits.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, registry_file: str = "", **_):
+        path = registry_file.strip() or default_outfit_registry_path()
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0
+        return (path, mtime, _outfit_reload_counter)
+
+    @classmethod
+    def execute(cls, registry_file: str = ""):
+        path = registry_file.strip() or default_outfit_registry_path()
+        registry = _load_outfit_registry(path)
+        available = registry.list_outfits()
+        return io.NodeOutput(registry, available, ui={"available_outfits": available})
+
+
+# ── Node: OutfitDefine ────────────────────────────────────────────────────────
+
+class OutfitDefine(io.ComfyNode):
+    """Define (or update) one outfit entry in the registry.
+
+    Chain multiple OutfitDefine nodes to build up a registry inline.
+    If auto_save is enabled the registry is written back to its source file.
+    """
+    node_id = prefixed_node_id("OutfitDefine")
+    display_name = "Outfit Define"
+    category = "🧊 frost-byte/Scene"
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            inputs=[
+                OutfitRegistryIOType.Input(
+                    "outfit_registry",
+                    display_name="Outfit Registry",
+                    tooltip="Registry from OutfitRegistryLoad or a previous OutfitDefine.",
+                ),
+                io.String.Input(
+                    "outfit_id",
+                    display_name="Outfit ID",
+                    default="",
+                    tooltip="Unique snake_case identifier, e.g. casual_summer or formal_black.",
+                    multiline=False,
+                ),
+                io.String.Input(
+                    "name",
+                    display_name="Display Name",
+                    default="",
+                    tooltip="Human-readable label shown in OutfitList.",
+                    multiline=False,
+                ),
+                io.String.Input(
+                    "description",
+                    display_name="Description",
+                    default="",
+                    multiline=True,
+                    tooltip=(
+                        "Outfit description used in prompts. "
+                        "Describe garments, colors, materials, and accessories."
+                    ),
+                ),
+                io.String.Input(
+                    "tags",
+                    display_name="Tags (comma-separated)",
+                    default="",
+                    multiline=False,
+                    tooltip="Optional tags for filtering, e.g. casual, formal, summer.",
+                    optional=True,
+                ),
+                io.Boolean.Input(
+                    "auto_save",
+                    display_name="Auto Save",
+                    default=False,
+                    tooltip="If enabled, persist the updated registry to disk after each execution.",
+                ),
+            ],
+            outputs=[
+                OutfitRegistryIOType.Output(
+                    "outfit_registry",
+                    display_name="Outfit Registry",
+                    tooltip="Updated registry with this outfit entry added or replaced.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        outfit_registry: OutfitRegistry,
+        outfit_id: str = "",
+        name: str = "",
+        description: str = "",
+        tags: str = "",
+        auto_save: bool = False,
+    ) -> io.NodeOutput:
+        outfit_id = outfit_id.strip()
+        if not outfit_id:
+            send_status_update(cls.node_id, "outfit_id is empty — skipped", level="warn")
+            return io.NodeOutput(outfit_registry)
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        updated = outfit_registry.define(outfit_id, name, description, tag_list)
+        if auto_save:
+            try:
+                updated.save()
+                send_status_update(cls.node_id, f"Saved outfit '{outfit_id}'")
+            except Exception as exc:
+                logger.warning("OutfitDefine: auto_save failed: %s", exc)
+                send_status_update(cls.node_id, f"Save failed: {exc}", level="warn")
+        else:
+            send_status_update(cls.node_id, f"Defined outfit '{outfit_id}' (not saved)")
+        return io.NodeOutput(updated)
+
+
+# ── Node: OutfitList ──────────────────────────────────────────────────────────
+
+class OutfitList(io.ComfyNode):
+    """Display a summary of all outfits in the registry, optionally filtered by tag."""
+    node_id = prefixed_node_id("OutfitList")
+    display_name = "Outfit List"
+    category = "🧊 frost-byte/Scene"
+    is_output_node = True
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            is_output_node=cls.is_output_node,
+            inputs=[
+                OutfitRegistryIOType.Input(
+                    "outfit_registry",
+                    display_name="Outfit Registry",
+                    tooltip="Registry to inspect.",
+                ),
+                io.String.Input(
+                    "tag_filter",
+                    display_name="Filter by Tag",
+                    default="",
+                    multiline=False,
+                    tooltip="Show only outfits that include this tag. Leave empty for all.",
+                    optional=True,
+                ),
+            ],
+            outputs=[
+                io.String.Output(
+                    "outfit_list",
+                    display_name="Outfit List",
+                    tooltip="Formatted list of matching outfits.",
+                ),
+                io.Int.Output(
+                    "outfit_count",
+                    display_name="Count",
+                    tooltip="Number of matching outfits.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, outfit_registry: OutfitRegistry, tag_filter: str = ""):
+        flt = tag_filter.strip() or None
+        listing = outfit_registry.list_outfits(flt)
+        count = len([
+            oid for oid, e in outfit_registry.outfits.items()
+            if flt is None or flt in e.get("tags", [])
+        ])
+        return io.NodeOutput(listing, count, ui={"outfit_list": listing, "outfit_count": count})
+
+
 # ── Custom type: SCENE_INSTANCE ──────────────────────────────────────────────
 
 SCENE_INSTANCE_TYPE = "SCENE_INSTANCE"
@@ -12219,6 +12481,50 @@ class SceneCompose(io.ComfyNode):
                     tooltip="Replaces slot D subject's default outfit for this scene only.",
                     optional=True,
                 ),
+                OutfitRegistryIOType.Input(
+                    "outfit_registry",
+                    display_name="Outfit Registry",
+                    tooltip=(
+                        "Optional outfit registry from OutfitRegistryLoad. "
+                        "When connected, outfit_*_id inputs resolve to registry descriptions."
+                    ),
+                    optional=True,
+                ),
+                io.String.Input(
+                    "outfit_A_id",
+                    display_name="Outfit A ID",
+                    default="",
+                    multiline=False,
+                    tooltip=(
+                        "ID of an outfit in the registry to use for slot A. "
+                        "Ignored if outfit_override_A is non-empty."
+                    ),
+                    optional=True,
+                ),
+                io.String.Input(
+                    "outfit_B_id",
+                    display_name="Outfit B ID",
+                    default="",
+                    multiline=False,
+                    tooltip="ID of an outfit in the registry for slot B.",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "outfit_C_id",
+                    display_name="Outfit C ID",
+                    default="",
+                    multiline=False,
+                    tooltip="ID of an outfit in the registry for slot C.",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "outfit_D_id",
+                    display_name="Outfit D ID",
+                    default="",
+                    multiline=False,
+                    tooltip="ID of an outfit in the registry for slot D.",
+                    optional=True,
+                ),
             ],
             outputs=[
                 SceneInstanceIOType.Output(
@@ -12250,6 +12556,11 @@ class SceneCompose(io.ComfyNode):
         outfit_override_B: str = "",
         outfit_override_C: str = "",
         outfit_override_D: str = "",
+        outfit_registry=None,
+        outfit_A_id: str = "",
+        outfit_B_id: str = "",
+        outfit_C_id: str = "",
+        outfit_D_id: str = "",
     ) -> io.NodeOutput:
         if template is None:
             return io.NodeOutput(None, "No template connected.")
@@ -12258,11 +12569,20 @@ class SceneCompose(io.ComfyNode):
 
         slot_assignments = {"A": slot_A, "B": slot_B, "C": slot_C, "D": slot_D}
         dialogue = [dialogue_1, dialogue_2, dialogue_3, dialogue_4]
+
+        # Explicit text overrides win; registry lookups fill in where text is empty
+        def _resolve_outfit(text_override: str, outfit_id: str) -> str:
+            if text_override.strip():
+                return text_override
+            if outfit_id.strip() and isinstance(outfit_registry, OutfitRegistry):
+                return outfit_registry.get_description(outfit_id.strip())
+            return text_override
+
         outfit_overrides = {
-            "A": outfit_override_A,
-            "B": outfit_override_B,
-            "C": outfit_override_C,
-            "D": outfit_override_D,
+            "A": _resolve_outfit(outfit_override_A, outfit_A_id),
+            "B": _resolve_outfit(outfit_override_B, outfit_B_id),
+            "C": _resolve_outfit(outfit_override_C, outfit_C_id),
+            "D": _resolve_outfit(outfit_override_D, outfit_D_id),
         }
 
         warnings = _validate_scene(template_dict, slot_assignments)
@@ -12401,6 +12721,71 @@ class PromptAssemble(io.ComfyNode):
             concept_ids_str, report,
             ui={"assembly_report": report},
         )
+
+
+# ── Outfit REST API endpoints ─────────────────────────────────────────────────
+
+@routes.post("/fbtools/outfits/reload")
+async def _outfits_reload(request):
+    """Increment reload counter so OutfitRegistryLoad nodes re-execute."""
+    global _outfit_reload_counter
+    _outfit_reload_counter += 1
+    logger.info("Outfit registry reload requested (counter=%d)", _outfit_reload_counter)
+    return web.json_response({"success": True, "counter": _outfit_reload_counter})
+
+
+@routes.get("/fbtools/outfits/registry")
+async def _outfits_get_registry(request):
+    """Return the outfit registry as JSON for the frontend."""
+    try:
+        registry = _load_outfit_registry(default_outfit_registry_path())
+        return web.json_response(registry.to_dict())
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/outfits/save")
+async def _outfits_save(request):
+    """Create or update one outfit entry.
+
+    Body: { id, name, description, tags?: [] }
+    """
+    try:
+        data = await request.json()
+        outfit_id = data.get("id", "").strip()
+        if not outfit_id:
+            return web.json_response({"error": "id is required"}, status=400)
+        path = default_outfit_registry_path()
+        registry = _load_outfit_registry(path)
+        tags = data.get("tags", [])
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
+        updated = registry.define(
+            outfit_id,
+            data.get("name", ""),
+            data.get("description", ""),
+            tags,
+        )
+        _save_outfit_registry(updated, path, backup=True)
+        return web.json_response({"success": True, "id": outfit_id})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/outfits/delete")
+async def _outfits_delete(request):
+    """Delete an outfit entry by ?id=<outfit_id>."""
+    outfit_id = request.rel_url.query.get("id", "")
+    if not outfit_id:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        path = default_outfit_registry_path()
+        registry = _load_outfit_registry(path)
+        updated = registry.remove(outfit_id)
+        _save_outfit_registry(updated, path, backup=True)
+        return web.json_response({"success": True})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 # ── Concept REST API endpoints ─────────────────────────────────────────────────
@@ -13782,6 +14167,10 @@ class FBToolsExtension(ComfyExtension):
             # Scene Template nodes
             SceneTemplateLoad,
             SceneTemplateList,
+            # Outfit Registry nodes
+            OutfitRegistryLoad,
+            OutfitDefine,
+            OutfitList,
             # Scene Composition nodes
             SceneCompose,
             PromptAssemble,
