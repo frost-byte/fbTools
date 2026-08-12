@@ -216,10 +216,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         if info["video_num"] is not None:
             ref_parts.append(f"<Video {info['video_num']}>")
         if info["picture_nums"]:
-            n = len(info["picture_nums"])
             pics = _join_labels([f"<Picture {p}>" for p in info["picture_nums"]])
-            sheet_word = "character sheet" if n == 1 else "character sheets"
-            ref_parts.append(f"the {sheet_word} contained in {pics}")
+            ref_parts.append(pics)
         ref_phrase = (" from " + " and ".join(ref_parts)) if ref_parts else ""
 
         # Appearance details as flowing prose
