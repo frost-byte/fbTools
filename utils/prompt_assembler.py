@@ -191,10 +191,18 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     ordered_slots = sorted(ref_map.keys())
     sections: list[str] = []
 
+    # Resolve task flags early — needed in both subject_definitions and summary
+    user_flags: list[str] = scene_instance.get("task_flags") or []
+    active_flags: set[str] = set(user_flags)
+
     # ── subject_definitions ────────────────────────────────────────────────────
-    # Official MiniMax format: one prose line per subject with inline references;
-    # audio lines follow at the bottom.
+    # Format (per MiniMax best practice):
+    #   Subject lines:  "<Subject N> is [summary] from <Video N> / from the
+    #                   character sheet(s) contained in <Picture N>, with [details]."
+    #   Video lines:    "<Video N> is the continuation starting point…" (task-aware)
+    #   Audio lines:    "<Audio N> is the voice-timbre reference for <Subject N> (SN)…"
     sd: list[str] = []
+    video_sd_lines: list[str] = []
     audio_sd_lines: list[str] = []
 
     for slot_id in ordered_slots:
@@ -202,11 +210,17 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         label = info["subject_label"]
         summary = info["appearance_summary"] or info["name"]
 
-        # Inline reference citation: pictures first, then video
-        ref_labels: list[str] = [f"<Picture {n}>" for n in info["picture_nums"]]
+        # Inline reference phrase — video first ("from <Video N>"), then
+        # character sheets ("from the character sheet(s) contained in <Picture N>")
+        ref_parts: list[str] = []
         if info["video_num"] is not None:
-            ref_labels.append(f"<Video {info['video_num']}>")
-        ref_phrase = f" in {_join_labels(ref_labels)}" if ref_labels else ""
+            ref_parts.append(f"<Video {info['video_num']}>")
+        if info["picture_nums"]:
+            n = len(info["picture_nums"])
+            pics = _join_labels([f"<Picture {p}>" for p in info["picture_nums"]])
+            sheet_word = "character sheet" if n == 1 else "character sheets"
+            ref_parts.append(f"the {sheet_word} contained in {pics}")
+        ref_phrase = (" from " + " and ".join(ref_parts)) if ref_parts else ""
 
         # Appearance details as flowing prose
         detail_parts = [
@@ -216,6 +230,17 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
 
         sd.append(f"{label} is {summary}{ref_phrase}{detail_phrase}.")
 
+        # Standalone video role line (task-flag-aware)
+        if info["video_num"] is not None:
+            vnum = info["video_num"]
+            if "video continuation" in active_flags:
+                video_role = "is the continuation starting point for the target video"
+            elif "video editing" in active_flags:
+                video_role = "is the source video being edited"
+            else:
+                video_role = f"is the visual identity reference for {label}"
+            video_sd_lines.append(f"<Video {vnum}> {video_role}")
+
         if info["audio_num"] is not None:
             voice = info["voice_description"] or f"spoken {info['language']} vocal layer"
             audio_sd_lines.append(
@@ -223,6 +248,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 f"({info['speaker_id']}), containing {voice}."
             )
 
+    sd.extend(video_sd_lines)
     sd.extend(audio_sd_lines)
     sections.append("subject_definitions:\n" + "\n".join(sd))
 
@@ -235,7 +261,6 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     # both fall under "reference generation".  Intent-based types (video editing,
     # video continuation, keyframe completion, audio reuse) cannot be auto-detected
     # from file presence — users must supply them via task_flags.
-    user_flags: list[str] = scene_instance.get("task_flags") or []
     if user_flags:
         task_tag = "[" + " + ".join(user_flags) + "]"
     else:
@@ -257,7 +282,6 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
 
     shots = template.get("shots", [])
     narrative: list[str] = []
-    active_flags = set(user_flags)
 
     # video editing tasks must open with a fixed sentence naming the source video
     if "video editing" in active_flags:
