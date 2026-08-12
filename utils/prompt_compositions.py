@@ -213,3 +213,79 @@ def validate_composition(composition: dict) -> list[str]:
     if not composition.get("shots"):
         warnings.append("No shots defined")
     return warnings
+
+
+# ── Cast enrichment ────────────────────────────────────────────────────────────
+
+def apply_cast_to_subjects(
+    resolved_subjects: dict,
+    composition: dict,
+    scene_cast: dict,
+    bundle_registry,
+) -> dict:
+    """Enrich resolved_subjects with per-bundle visual, audio, and appearance data.
+
+    For each cast entry that matches a composition slot:
+      - image-mode  visual.files      → appended to character_sheet_images
+      - use_audio=True                → bundle audio set as voice.audio_reference_file
+      - appearance_override (non-empty) → replaces appearance.summary
+
+    bundle_registry must support .get(bundle_id) -> dict | None.
+
+    Returns a new dict of deep-copied, enriched subject dicts so the
+    originals (from the registry) are never mutated.
+    """
+    import copy as _copy
+
+    # Reverse map: subject_id → slot key (e.g. "char_alice" → "S1")
+    subj_to_slot: dict = {
+        sid: slot
+        for slot, sid in composition.get("subjects", {}).items()
+        if sid
+    }
+
+    enriched = {slot: _copy.deepcopy(subj) for slot, subj in resolved_subjects.items()}
+
+    for entry in scene_cast.get("entries", []):
+        subject_id = entry.get("subject_id", "")
+        bundle_id  = entry.get("bundle_id", "")
+        if not subject_id or not bundle_id:
+            continue
+        slot = subj_to_slot.get(subject_id)
+        if slot is None or slot not in enriched:
+            continue
+        bundle = bundle_registry.get(bundle_id)
+        if bundle is None:
+            continue
+
+        subj        = enriched[slot]
+        visual_mode = entry.get("visual_mode", "images")
+        visual      = bundle.get("visual", {})
+        audio       = bundle.get("audio", {})
+
+        # 1. Image-mode files → character_sheet_images (deduplicated, appended)
+        if visual_mode == "images":
+            files = [f for f in visual.get("files", []) if f]
+            if files:
+                sheets: list = subj.setdefault("character_sheet_images", [])
+                for f in files:
+                    if f not in sheets:
+                        sheets.append(f)
+
+        # 2. Audio → voice.audio_reference_file
+        if entry.get("use_audio", False):
+            audio_src  = audio.get("source", "none")
+            audio_file = ""
+            if audio_src == "file":
+                audio_file = audio.get("file", "")
+            elif audio_src == "extract_from_visual":
+                audio_file = visual.get("file", "")
+            if audio_file:
+                subj.setdefault("voice", {})["audio_reference_file"] = audio_file
+
+        # 3. Appearance override → appearance.summary
+        override = bundle.get("appearance_override", "").strip()
+        if override:
+            subj.setdefault("appearance", {})["summary"] = override
+
+    return enriched
