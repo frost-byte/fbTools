@@ -88,6 +88,10 @@ export class CompositionsAPI extends BaseAPI {
 
     // ── Presets ─────────────────────────────────────────────────────────────────
 
+    listLoras() {
+        return this.get("/loras/list");
+    }
+
     listCameraPresets() {
         return this.get("/presets/cameras");
     }
