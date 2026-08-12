@@ -13218,6 +13218,7 @@ from .utils.prompt_compositions import (
     resolve_subjects as _resolve_composition_subjects,
     resolve_background as _resolve_composition_background,
     validate_composition as _validate_composition,
+    apply_cast_to_subjects as _apply_cast_to_subjects,
 )
 from .utils.composition_resources import (
     list_backgrounds as _list_backgrounds,
@@ -14111,6 +14112,13 @@ class PromptCompositionLoader(io.ComfyNode):
         if scene_cast:
             bundle_registry = _load_bundle_registry(default_bundle_registry_path())
             cast_media = _resolve_cast_media(scene_cast, bundle_registry)
+
+            # Enrich subjects with bundle visual files, audio, and appearance override
+            resolved_subjects = _apply_cast_to_subjects(
+                resolved_subjects, composition, scene_cast, bundle_registry
+            )
+
+            # Build video_entries: video-mode bundles → <Video N> labels in H3 prompt
             for _ce in scene_cast.get("entries", []):
                 if _ce.get("visual_mode") == "video" and _ce.get("bundle_id"):
                     _bundle = bundle_registry.get(_ce["bundle_id"])
