@@ -57,6 +57,8 @@ import uuid
 import re
 import copy
 import hashlib
+import random
+from collections import deque
 from pydantic import BaseModel, ConfigDict
 from .utils.logging_utils import get_logger
 from .story_models import SceneInStory, StoryInfo, save_story, load_story
@@ -13816,11 +13818,17 @@ def _resolve_cast_media(
 
 
 def _apply_composition_libbers(text: str, libbers: list, delimiter: str, manager) -> str:
-    """Apply libbers in order to text, resolving :n indexed references first.
+    """Apply libbers in order to text, resolving references in three passes.
 
-    Indexed refs like %key:2% use the 2nd attached libber (1-based).
-    Plain refs like %key% chain through all libbers in order (first match wins).
-    The composition's delimiter is used regardless of what each libber file stores.
+    Pass 0 — %*%        : random value drawn from the combined pool of all attached
+                          libbers (sampling without replacement; wraps when exhausted).
+    Pass 1 — %key:N%    : named key from the Nth libber (1-based).
+             %*:N%      : random value from the Nth libber (sampling without replacement).
+    Pass 2 — %key%      : plain ref chained through all libbers in order (first match wins).
+
+    Within a single call every %*:N% (or %*%) draws a DIFFERENT key from that libber's
+    shuffled queue.  When all keys have been drawn the queue refills with a new shuffle
+    so no key repeats until every other key has been used at least once.
     """
     if not libbers or not text:
         return text
@@ -13833,28 +13841,89 @@ def _apply_composition_libbers(text: str, libbers: list, delimiter: str, manager
 
     esc = re.escape(delimiter)
 
-    # First pass: resolve indexed refs (%key:2%) using the specified libber slot
+    # ── Per-libber shuffled queues (for %*:N%) ────────────────────────────────
+    _per_queue: dict[int, deque] = {}
+
+    def _libber_keys(idx: int) -> list[str]:
+        lb = loaded[idx] if 0 <= idx < len(loaded) and loaded[idx] else None
+        return list(lb.libs.keys()) if lb else []
+
+    def _pop_from_libber(idx: int) -> str | None:
+        """Pop the next key from libber idx's shuffled deque; refill when empty."""
+        if idx not in _per_queue:
+            keys = _libber_keys(idx)
+            if not keys:
+                return None
+            random.shuffle(keys)
+            _per_queue[idx] = deque(keys)
+        q = _per_queue[idx]
+        if not q:
+            keys = _libber_keys(idx)
+            if not keys:
+                return None
+            random.shuffle(keys)
+            q.extend(keys)
+        return q.popleft()
+
+    def _resolve_value(lb, key: str) -> str:
+        val = lb.get_lib(key)
+        if val is None:
+            return ""
+        temp = Libber(lib_dict=dict(lb.libs), delimiter=delimiter, max_depth=lb.max_depth)
+        return temp.substitute(val)
+
+    # ── Combined queue (for %*%) ───────────────────────────────────────────────
+    # Each entry is (libber_index, key) — shuffle once across all attached libbers.
+    _combined_queue: deque = deque()
+
+    def _fill_combined() -> None:
+        pairs = [
+            (i, key)
+            for i, lb in enumerate(loaded)
+            if lb
+            for key in lb.libs
+        ]
+        random.shuffle(pairs)
+        _combined_queue.extend(pairs)
+
+    def _pop_combined() -> str:
+        if not _combined_queue:
+            _fill_combined()
+        if not _combined_queue:
+            return ""
+        idx, key = _combined_queue.popleft()
+        lb = loaded[idx] if 0 <= idx < len(loaded) and loaded[idx] else None
+        return _resolve_value(lb, key) if lb else ""
+
+    # ── Pass 0: %*% — combined-pool wildcard ──────────────────────────────────
+    _fill_combined()
+    text = re.sub(re.escape(delimiter) + r'\*' + re.escape(delimiter), lambda _: _pop_combined(), text)
+
+    # ── Pass 1: %key:N% and %*:N% — indexed refs ─────────────────────────────
     def _replace_indexed(m: re.Match) -> str:
-        inner = m.group(1)
-        if ":" not in inner:
-            return m.group(0)
+        inner = m.group(1)   # e.g. "key:2" or "*:1"
         raw_key, idx_str = inner.rsplit(":", 1)
         try:
             idx = int(idx_str) - 1
         except ValueError:
             return m.group(0)
+
+        if raw_key == "*":
+            key = _pop_from_libber(idx)
+            if key is None:
+                return ""
+            lb = loaded[idx] if 0 <= idx < len(loaded) and loaded[idx] else None
+            return _resolve_value(lb, key) if lb else ""
+
+        # Named key from specific libber slot
         if 0 <= idx < len(loaded) and loaded[idx]:
-            lb = loaded[idx]
-            val = lb.get_lib(raw_key)
-            if val is not None:
-                temp = Libber(lib_dict=dict(lb.libs), delimiter=delimiter, max_depth=lb.max_depth)
-                return temp.substitute(val)
+            return _resolve_value(loaded[idx], raw_key) or m.group(0)
         return m.group(0)
 
-    indexed_pat = esc + r'([a-z0-9_]+:[0-9]+)' + esc
+    indexed_pat = esc + r'((?:[a-z0-9_]+|\*):[0-9]+)' + esc
     text = re.sub(indexed_pat, _replace_indexed, text)
 
-    # Second pass: plain unindexed refs — chain through libbers in order
+    # ── Pass 2: plain unindexed refs — chain through libbers in order ─────────
     for lb in loaded:
         if lb:
             temp = Libber(lib_dict=dict(lb.libs), delimiter=delimiter, max_depth=lb.max_depth)

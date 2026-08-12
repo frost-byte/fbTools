@@ -556,6 +556,30 @@ textarea.prompt-value-input {
     color: rgba(255,255,255,0.7);
 }
 
+.fbt-ce-comp-random {
+    border-top: 1px solid var(--border-color, #333);
+}
+
+.fbt-ce-comp-random:first-child {
+    border-top: none;
+}
+
+.fbt-ce-comp-random-key {
+    font-family: monospace;
+    color: var(--p-amber-400, #fbbf24);
+    font-style: italic;
+}
+
+.fbt-ce-comp-name-random {
+    color: var(--p-amber-600, #d97706);
+    font-style: italic;
+}
+
+.fbt-ce-comp-item.active .fbt-ce-comp-name-random,
+.fbt-ce-comp-item:hover .fbt-ce-comp-name-random {
+    color: rgba(255,255,255,0.7);
+}
+
 /* ── LoRAs section (per-composition) ────────────────────────────────────────── */
 
 .fbt-ce-loras-list {

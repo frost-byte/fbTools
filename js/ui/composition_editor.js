@@ -270,7 +270,7 @@ function _attachCompletion(el) {
 
 // ── Libber key completion (%key%) ──────────────────────────────────────────────
 
-/** Build flat list of {displayKey, insertKey, libberName} from attached libbers. */
+/** Build flat list of {displayKey, insertKey, libberName, isRandom} from attached libbers. */
 function _libberCompletionKeys() {
     const attached = _S.composition?.libbers ?? [];
     if (!attached.length) return [];
@@ -283,6 +283,18 @@ function _libberCompletionKeys() {
     });
 
     const result = [];
+
+    // Random wildcard entries — one per attached libber, plus one combined
+    if (attached.length === 1) {
+        result.push({ displayKey: "* random", insertKey: "*:1", libberName: attached[0], isRandom: true });
+    } else {
+        result.push({ displayKey: "* random (any)", insertKey: "*", libberName: "all libbers", isRandom: true });
+        attached.forEach((name, i) => {
+            result.push({ displayKey: `* random :${i + 1}`, insertKey: `*:${i + 1}`, libberName: name, isRandom: true });
+        });
+    }
+
+    // Named key entries
     attached.forEach((name, i) => {
         const keys = _S.libberData[name]?.keys ?? [];
         keys.forEach(k => {
@@ -291,6 +303,7 @@ function _libberCompletionKeys() {
                 displayKey: isDup ? `${k}:${i + 1}` : k,
                 insertKey:  isDup ? `${k}:${i + 1}` : k,
                 libberName: name,
+                isRandom:   false,
             });
         });
     });
@@ -304,10 +317,12 @@ function _showLibberCompletion(textEl, matches, delimPos) {
     const d = _S.settings?.libber_delimiter ?? "%";
 
     const popup = _mk("div", { cls: "fbt-ce-completion" });
-    matches.forEach(({ displayKey, insertKey, libberName }, i) => {
+    matches.forEach(({ displayKey, insertKey, libberName, isRandom }, i) => {
         const item = document.createElement("div");
-        item.className = "fbt-ce-comp-item" + (i === 0 ? " active" : "");
-        item.innerHTML = `<strong>${d}${displayKey}${d}</strong><span class="fbt-ce-comp-name">${libberName}</span>`;
+        item.className = "fbt-ce-comp-item" + (i === 0 ? " active" : "") + (isRandom ? " fbt-ce-comp-random" : "");
+        item.innerHTML = isRandom
+            ? `<span class="fbt-ce-comp-random-key">${d}${insertKey}${d}</span><span class="fbt-ce-comp-name fbt-ce-comp-name-random">${libberName}</span>`
+            : `<strong>${d}${displayKey}${d}</strong><span class="fbt-ce-comp-name">${libberName}</span>`;
         item.addEventListener("mousedown", e => {
             e.preventDefault();
             const curPos = textEl.selectionStart;
@@ -358,13 +373,16 @@ function _attachLibberCompletion(el) {
         if (/[a-z0-9_]/i.test(charBefore)) return;
 
         const fragment = before.substring(last + d.length);
-        // Fragment must be alphanumeric/underscore/colon (covers partial "sub1:2" too)
-        if (!/^[a-z0-9_:]*$/i.test(fragment)) return;
+        // Fragment must be alphanumeric/underscore/colon/asterisk (covers %key:2%, %*:1%, %*%)
+        if (!/^[a-z0-9_:*]*$/i.test(fragment)) return;
 
         const all = _libberCompletionKeys();
         if (!all.length) return;
         const frag = fragment.toLowerCase();
-        const matches = all.filter(({ displayKey }) => displayKey.toLowerCase().startsWith(frag));
+        // Typing "*" shows only random entries; anything else filters named keys (and hides random)
+        const matches = frag === "*" || frag === ""
+            ? all.filter(({ displayKey, isRandom }) => isRandom || displayKey.toLowerCase().startsWith(frag))
+            : all.filter(({ displayKey, isRandom }) => !isRandom && displayKey.toLowerCase().startsWith(frag));
         if (!matches.length) { _dismissCompletion(); return; }
         _showLibberCompletion(el, matches, last);
     });
