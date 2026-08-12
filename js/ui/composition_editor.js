@@ -118,6 +118,7 @@ function _newComp() {
         id: "", name: "",
         model_type: "h3_ref2va", style: "",
         concept_id: "",
+        task_flags: [],
         subjects: {}, outfit_overrides: {},
         background: "", shots: [],
         overall_soundscape: "", non_diegetic_music: "",
@@ -1785,8 +1786,41 @@ function _buildEditor(parent) {
 
         _dom.modelSel = _sel(MODEL_TYPES, "h3_ref2va");
         _dom.modelSel.className = "fbt-ce-select";
+
+        // Task flags row — only visible for h3_ref2va
+        const H3_TASK_FLAGS = [
+            "reference generation",
+            "video reference",
+            "video continuation",
+            "audio reference",
+        ];
+        _dom.taskFlagsRow = _mk("div", { cls: "fbt-ce-info-row fbt-ce-task-flags-row" });
+        _dom.taskFlagsRow.appendChild(_mk("span", { cls: "fbt-ce-info-label", textContent: "Task flags" }));
+        const flagsWrap = _mk("div", { cls: "fbt-ce-task-flags-wrap" });
+        _dom.taskFlagBoxes = {};
+        for (const flag of H3_TASK_FLAGS) {
+            const lbl = _mk("label", { cls: "fbt-ce-task-flag-label" });
+            const cb = _mk("input", { type: "checkbox" });
+            cb.addEventListener("change", () => {
+                const active = H3_TASK_FLAGS.filter(f => _dom.taskFlagBoxes[f]?.checked);
+                _S.composition.task_flags = active;
+                _markDirty();
+            });
+            _dom.taskFlagBoxes[flag] = cb;
+            lbl.appendChild(cb);
+            lbl.appendChild(document.createTextNode(" " + flag));
+            flagsWrap.appendChild(lbl);
+        }
+        _dom.taskFlagsRow.appendChild(flagsWrap);
+
+        function _updateTaskFlagsVisibility() {
+            const show = (_dom.modelSel.value === "h3_ref2va");
+            _dom.taskFlagsRow.style.display = show ? "" : "none";
+        }
+
         _dom.modelSel.addEventListener("change", () => {
             _S.composition.model_type = _dom.modelSel.value;
+            _updateTaskFlagsVisibility();
             _markDirty();
         });
 
@@ -1799,6 +1833,8 @@ function _buildEditor(parent) {
             _mk("span", { cls: "fbt-ce-info-label", textContent: "Model" }),
             _dom.modelSel,
         ]));
+        body.appendChild(_dom.taskFlagsRow);
+        _updateTaskFlagsVisibility();
 
         _dom.compConceptInput = _mk("input", {
             cls: "fbt-ce-input",
@@ -2164,11 +2200,24 @@ function _populateEditor() {
     const comp = _S.composition;
     if (!comp) return;
     if (_dom.nameInput) _dom.nameInput.value = comp.name || "";
-    if (_dom.modelSel) _dom.modelSel.value = comp.model_type || "h3_ref2va";
+    if (_dom.modelSel) {
+        _dom.modelSel.value = comp.model_type || "h3_ref2va";
+        if (_dom.taskFlagsRow) {
+            _dom.taskFlagsRow.style.display = (_dom.modelSel.value === "h3_ref2va") ? "" : "none";
+        }
+    }
     if (_dom.compConceptInput) _dom.compConceptInput.value = comp.concept_id || "";
     if (_dom.styleInput) _dom.styleInput.value = comp.style || "";
     if (_dom.soundscapeArea) _dom.soundscapeArea.value = comp.overall_soundscape || "";
     if (_dom.musicArea) _dom.musicArea.value = comp.non_diegetic_music || "";
+
+    // Populate task flags checkboxes
+    if (_dom.taskFlagBoxes) {
+        const activeFlags = comp.task_flags || [];
+        for (const [flag, cb] of Object.entries(_dom.taskFlagBoxes)) {
+            cb.checked = activeFlags.includes(flag);
+        }
+    }
 
     // Rebuild dynamic sections
     _rebuildSlots();
