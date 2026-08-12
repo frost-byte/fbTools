@@ -143,6 +143,26 @@ textarea.prompt-value-input {
     flex-shrink: 0;
 }
 
+.fbt-ce-task-flags-row {
+    align-items: flex-start;
+}
+
+.fbt-ce-task-flags-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+}
+
+.fbt-ce-task-flag-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    color: var(--p-surface-200, #ccc);
+}
+
 .fbt-ce-form {
     flex: 1 1 auto;
     overflow-y: auto;

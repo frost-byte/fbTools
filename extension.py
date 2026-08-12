@@ -12635,6 +12635,17 @@ class PromptAssemble(io.ComfyNode):
                     display_name="Model Type",
                     tooltip="Target model prompt format.",
                 ),
+                io.String.Input(
+                    "task_flags",
+                    default="",
+                    display_name="Task Flags (H3)",
+                    tooltip=(
+                        "Comma-separated H3 task type flags that override auto-detection. "
+                        "Valid values: reference generation, video reference, video continuation, "
+                        "audio reference. Leave blank to auto-detect from connected references."
+                    ),
+                    optional=True,
+                ),
                 ConceptRegistryIOType.Input(
                     "concept_registry",
                     display_name="Concept Registry",
@@ -12681,10 +12692,16 @@ class PromptAssemble(io.ComfyNode):
         cls,
         scene_instance=None,
         model_type: str = "h3_ref2va",
+        task_flags: str = "",
         concept_registry=None,
     ) -> io.NodeOutput:
         if scene_instance is None:
             return io.NodeOutput("", None, None, None, "", "No scene instance connected.")
+
+        # Thread user-specified task flags into scene_instance for h3_ref2va
+        if task_flags and task_flags.strip():
+            flags = [f.strip() for f in task_flags.split(",") if f.strip()]
+            scene_instance = {**scene_instance, "task_flags": flags}
 
         result = _assemble_prompt(scene_instance, model_type)
 

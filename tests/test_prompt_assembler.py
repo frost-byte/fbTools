@@ -140,8 +140,10 @@ def test_subject_numbers_in_slot_order():
     result = assemble_prompt(scene, "h3_ref2va")
     prompt = result["prompt"]
     # Subject 1 is Alice (slot A), Subject 2 is Bob (slot B)
-    assert "<Subject 1> [Alice]" in prompt
-    assert "<Subject 2> [Bob]" in prompt
+    assert "<Subject 1>" in prompt
+    assert "<Subject 2>" in prompt
+    # Slot A (Alice) must appear before slot B (Bob) in subject_definitions
+    assert prompt.index("<Subject 1>") < prompt.index("<Subject 2>")
 
 
 def test_picture_numbers_continuous_across_slots():
@@ -280,26 +282,27 @@ def test_h3_ref2va_subject_definitions_lists_subjects():
     alice = _make_subject("Alice", summary="a tall woman with red hair")
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "<Subject 1> [Alice]: a tall woman with red hair" in prompt
+    # Official format: "<Subject N> is [summary]..."
+    assert "<Subject 1> is a tall woman with red hair" in prompt
 
 
 def test_h3_ref2va_subject_definitions_lists_pictures_inline():
     alice = _make_subject("Alice", sheets=["sheet1.png", "sheet2.png"])
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    # Character sheets are cited inline within the subject block
-    assert "Character sheets:" in prompt
-    assert "<Picture 1> (primary identity)" in prompt
-    assert "<Picture 2> (additional)" in prompt
-    # No standalone <Picture N>: entries (each sheet's label appears only inline)
-    assert "<Picture 1>: character sheet" not in prompt
+    # Official format: picture refs cited inline in the subject line
+    assert "in <Picture 1> and <Picture 2>" in prompt
+    # No old-style sub-labels
+    assert "Character sheets:" not in prompt
+    assert "(primary identity)" not in prompt
 
 
 def test_h3_ref2va_subject_definitions_lists_audio():
     alice = _make_subject("Alice", audio="alice.wav")
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "<Audio 1>:" in prompt
+    # Official format: "<Audio N> is the voice-timbre reference for <Subject N> (SN)..."
+    assert "<Audio 1> is the voice-timbre reference for" in prompt
     assert "(S1)" in prompt
 
 
@@ -617,7 +620,9 @@ def test_video_label_in_subject_definitions():
     scene = _make_scene(slot_A=alice)
     ve = _video_entries(("char_alice", "alice.mp4"))
     prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
-    assert "<Video 1>: reference video for Alice" in prompt
+    # Official format: video cited inline in the subject line
+    assert "in <Video 1>" in prompt
+    assert "<Video 1>" in prompt
 
 
 def test_video_in_retention_analysis():
@@ -633,6 +638,7 @@ def test_video_in_summary_task_str():
     scene = _make_scene(slot_A=alice)
     ve = _video_entries(("char_alice", "alice.mp4"))
     prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    # Video reference is flagged as "video reference" in the bracket task tag
     assert "video reference" in prompt
 
 
@@ -641,8 +647,8 @@ def test_video_refs_in_summary_body():
     scene = _make_scene(slot_A=alice)
     ve = _video_entries(("char_alice", "alice.mp4"))
     prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
-    assert "Reference videos:" in prompt
-    assert "Alice (<Video 1>)" in prompt
+    # Video is still numbered and cited in subject_definitions, not the summary body
+    assert "<Video 1>" in prompt
 
 
 def test_video_numbering_continuous_across_slots():
@@ -719,7 +725,38 @@ def test_video_and_sheets_and_audio_together():
     assert "<Picture 1>" in prompt
     assert "<Video 1>" in prompt
     assert "<Audio 1>" in prompt
-    # task string includes all three
+    # bracket task tag includes all three types
     assert "reference generation" in prompt
     assert "video reference" in prompt
     assert "audio reference" in prompt
+
+
+# ── task_flags user override ──────────────────────────────────────────────────
+
+def test_task_flags_override_auto_detect():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    scene = _make_scene(slot_A=alice)
+    # Without override, video reference auto-detected
+    auto_prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "video reference" in auto_prompt
+    # With user override to "video continuation", bracket tag changes
+    scene_with_flags = {**scene, "task_flags": ["video continuation"]}
+    override_prompt = assemble_prompt(scene_with_flags, "h3_ref2va", ve)["prompt"]
+    assert "video continuation" in override_prompt
+    assert "video reference" not in override_prompt
+
+
+def test_task_flags_override_empty_falls_back_to_auto():
+    alice = _make_subject("Alice", sheets=["a.png"])
+    scene = _make_scene(slot_A=alice)
+    scene_with_empty = {**scene, "task_flags": []}
+    prompt = assemble_prompt(scene_with_empty, "h3_ref2va")["prompt"]
+    assert "reference generation" in prompt
+
+
+def test_task_flags_multiple_flags_joined_correctly():
+    alice = _make_subject("Alice")
+    scene = {**_make_scene(slot_A=alice), "task_flags": ["video continuation", "audio reference"]}
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "[video continuation + audio reference]" in prompt

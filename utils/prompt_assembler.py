@@ -32,6 +32,30 @@ _PRODUCTION_MODELS = {"wan22", "bernini"}
 _SIMPLE_MODELS = {"ltx23", "flux2", "krea2", "qwen"}
 
 
+# ── Formatting helpers ─────────────────────────────────────────────────────────
+
+def _join_labels(labels: list[str]) -> str:
+    """Oxford-comma join for reference labels: '<Pic 1>, <Pic 2>, and <Pic 3>'."""
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return ", ".join(labels[:-1]) + ", and " + labels[-1]
+
+
+def _join_details(parts: list[str]) -> str:
+    """Oxford-comma join for appearance detail phrases."""
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return ", ".join(parts[:-1]) + ", and " + parts[-1]
+
+
 # ── Reference map ──────────────────────────────────────────────────────────────
 
 def _build_ref_map(
@@ -168,106 +192,102 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     sections: list[str] = []
 
     # ── subject_definitions ────────────────────────────────────────────────────
+    # Official MiniMax format: one prose line per subject with inline references;
+    # audio lines follow at the bottom.
     sd: list[str] = []
+    audio_sd_lines: list[str] = []
 
-    # All subjects with character sheet refs cited inline (per H3 guide)
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
-        name, label = info["name"], info["subject_label"]
-        summary = info["appearance_summary"]
-        sd.append(f"{label} [{name}]: {summary}")
-        if info["face"]:
-            sd.append(f"  Face: {info['face']}")
-        if info["hair"]:
-            sd.append(f"  Hair: {info['hair']}")
-        if info["body"]:
-            sd.append(f"  Body: {info['body']}")
-        if info["outfit"]:
-            sd.append(f"  Outfit: {info['outfit']}")
-        # Character-definition images cited inside the subject block, not standalone
-        if info["picture_nums"]:
-            sheet_parts = []
-            for i, pic_num in enumerate(info["picture_nums"]):
-                note = "primary identity" if i == 0 else "additional"
-                sheet_parts.append(f"<Picture {pic_num}> ({note})")
-            sd.append(f"  Character sheets: {', '.join(sheet_parts)}")
+        label = info["subject_label"]
+        summary = info["appearance_summary"] or info["name"]
 
-    # Video references as standalone entries (whole-clip visual identity sources)
-    for slot_id in ordered_slots:
-        info = ref_map[slot_id]
-        if info["video_num"] is None:
-            continue
-        name = info["name"]
-        sd.append(
-            f"<Video {info['video_num']}>: reference video for {name} ({info['speaker_id']}) "
-            "— whole-clip visual identity reference."
-        )
+        # Inline reference citation: pictures first, then video
+        ref_labels: list[str] = [f"<Picture {n}>" for n in info["picture_nums"]]
+        if info["video_num"] is not None:
+            ref_labels.append(f"<Video {info['video_num']}>")
+        ref_phrase = f" in {_join_labels(ref_labels)}" if ref_labels else ""
 
-    # All audio
-    for slot_id in ordered_slots:
-        info = ref_map[slot_id]
-        if info["audio_num"] is None:
-            continue
-        name = info["name"]
-        voice = info["voice_description"] or f"{name}'s voice"
-        sd.append(
-            f"<Audio {info['audio_num']}>: voice timbre reference for {name} "
-            f"({info['speaker_id']}) — {voice}. Language: {info['language']}."
-        )
+        # Appearance details as flowing prose
+        detail_parts = [
+            info[f] for f in ("hair", "face", "body", "outfit") if info.get(f)
+        ]
+        detail_phrase = f", with {_join_details(detail_parts)}" if detail_parts else ""
 
+        sd.append(f"{label} is {summary}{ref_phrase}{detail_phrase}.")
+
+        if info["audio_num"] is not None:
+            voice = info["voice_description"] or f"spoken {info['language']} vocal layer"
+            audio_sd_lines.append(
+                f"<Audio {info['audio_num']}> is the voice-timbre reference for {label} "
+                f"({info['speaker_id']}), containing {voice}."
+            )
+
+    sd.extend(audio_sd_lines)
     sections.append("subject_definitions:\n" + "\n".join(sd))
 
     # ── summary ────────────────────────────────────────────────────────────────
     has_sheets = any(info["picture_nums"] for info in ref_map.values())
     has_video = any(info["video_num"] is not None for info in ref_map.values())
     has_audio = any(info["audio_num"] is not None for info in ref_map.values())
-    task_parts = []
-    if has_sheets:
-        task_parts.append("reference generation")
-    if has_video:
-        task_parts.append("video reference")
-    if has_audio:
-        task_parts.append("audio reference")
-    task_str = " + ".join(task_parts) if task_parts else "video generation"
 
-    pic_refs: list[str] = []
-    for slot_id in ordered_slots:
-        info = ref_map[slot_id]
-        if not info["picture_nums"]:
-            continue
-        nums = info["picture_nums"]
-        if len(nums) == 1:
-            pic_str = f"<Picture {nums[0]}>"
-        else:
-            pic_str = f"<Picture {nums[0]}>-<Picture {nums[-1]}>"
-        pic_refs.append(f"{info['name']} ({pic_str})")
+    # User-provided task_flags override auto-detection; otherwise infer from refs
+    user_flags: list[str] = scene_instance.get("task_flags") or []
+    if user_flags:
+        task_tag = "[" + " + ".join(user_flags) + "]"
+    else:
+        task_parts: list[str] = []
+        if has_sheets:
+            task_parts.append("reference generation")
+        if has_video:
+            task_parts.append("video reference")
+        if has_audio:
+            task_parts.append("audio reference")
+        task_tag = "[" + " + ".join(task_parts) + "]" if task_parts else "[video generation]"
 
-    video_refs: list[str] = []
-    for slot_id in ordered_slots:
-        info = ref_map[slot_id]
-        if info["video_num"] is not None:
-            video_refs.append(f"{info['name']} (<Video {info['video_num']}>)")
+    # Build bare {A}→<Subject N> map for the summary narrative (no names/appearance)
+    slot_to_label = {slot_id: ref_map[slot_id]["subject_label"] for slot_id in ordered_slots}
 
-    audio_refs: list[str] = []
+    def _bare(text: str) -> str:
+        """Replace {A}/{B}/etc. with bare <Subject N> labels."""
+        for sid, lbl in slot_to_label.items():
+            text = text.replace("{" + sid + "}", lbl)
+        return text
+
+    shots = template.get("shots", [])
+    narrative: list[str] = []
+
+    # Opening sentence from the first shot's action
+    if shots:
+        first_action = shots[0].get("action", "").strip()
+        if first_action:
+            replaced = _bare(first_action).rstrip(".")
+            narrative.append(f"The target video shows {replaced}.")
+
+    # One sentence per subsequent shot
+    for shot in shots[1:]:
+        action = shot.get("action", "").strip()
+        if action:
+            replaced = _bare(action)
+            if replaced and not replaced[0].isupper():
+                replaced = replaced[0].upper() + replaced[1:]
+            if not replaced.endswith("."):
+                replaced += "."
+            narrative.append(replaced)
+
+    # Audio voice-timbre reference closing sentence
+    audio_voice_parts: list[str] = []
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
         if info["audio_num"] is not None:
-            audio_refs.append(f"{info['name']} (<Audio {info['audio_num']}>)")
+            audio_voice_parts.append(
+                f"<Audio {info['audio_num']}> as the voice-timbre reference for {info['subject_label']}"
+            )
+    if audio_voice_parts:
+        narrative.append("The scene uses " + " and ".join(audio_voice_parts) + ".")
 
-    template_name = scene_instance.get("template_name", "scene")
-    summary_body_parts: list[str] = []
-    if pic_refs:
-        summary_body_parts.append(
-            f"Using character sheet images of {', '.join(pic_refs)} to generate a {template_name}."
-        )
-    if video_refs:
-        summary_body_parts.append(f"Reference videos: {', '.join(video_refs)}.")
-    if audio_refs:
-        summary_body_parts.append(f"Voice references: {', '.join(audio_refs)}.")
-
-    sections.append(
-        f"summary:\nThis is a {task_str} task. " + " ".join(summary_body_parts)
-    )
+    narrative_str = " ".join(narrative) if narrative else "Video generation scene."
+    sections.append(f"summary:\n{task_tag} {narrative_str}")
 
     # ── retention_analysis ─────────────────────────────────────────────────────
     ra: list[str] = []
@@ -733,7 +753,7 @@ def assemble_composition(
         "non_diegetic_music": composition.get("non_diegetic_music", "N/A"),
     }
 
-    scene_instance = {
+    scene_instance: dict = {
         "template_id":      composition.get("id", ""),
         "template_name":    composition.get("name", ""),
         "template":         virtual_template,
@@ -741,6 +761,11 @@ def assemble_composition(
         "dialogue":         dialogue,
         "outfit_overrides": outfit_overrides,
     }
+
+    # Pass user-configured task flags into scene_instance for h3_ref2va
+    composition_flags = composition.get("task_flags") or []
+    if composition_flags:
+        scene_instance["task_flags"] = composition_flags
 
     return assemble_prompt(scene_instance, model_type, video_entries)
 
