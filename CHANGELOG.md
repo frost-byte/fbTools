@@ -1,6 +1,28 @@
 # CHANGELOG
 
 
+## v1.10.0 (2026-08-12)
+
+### Features
+
+- **ui**: Add Libber integration to Prompt Composition editor
+  ([`5420946`](https://github.com/frost-byte/fbTools/commit/5420946b0f13ba1b9656fcac7c1e1dd0294e1a7f))
+
+- Composition schema gets a `libbers: []` field (attached libber files) - New Libbers section in
+  editor form: check/uncheck to attach libbers, attached libbers show their keys as amber monospace
+  chips - `%key%` completion in ALL text fields (style, camera, action, dialogue, soundscape,
+  music): triggers on delimiter char, shows key + libber name, auto-inserts closing delimiter;
+  %key:N% notation for disambiguation when the same key exists in multiple attached libbers (1-based
+  index) - Global Settings section at bottom of sidebar: single-char delimiter input (default %),
+  persisted to composition_settings.json via REST - PromptCompositionLoader node applies attached
+  libbers to the assembled prompt at execute time, honouring the configured delimiter and :N indexed
+  references; fingerprint includes settings file mtime so the node re-executes when settings change
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.9.1 (2026-08-11)
 
 ### Bug Fixes
