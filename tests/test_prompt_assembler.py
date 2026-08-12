@@ -290,9 +290,8 @@ def test_h3_ref2va_subject_definitions_lists_pictures_inline():
     alice = _make_subject("Alice", sheets=["sheet1.png", "sheet2.png"])
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    # Official format: picture refs cited inline in the subject line
-    assert "in <Picture 1> and <Picture 2>" in prompt
-    # No old-style sub-labels
+    # Pictures cited as "from the character sheets contained in <Picture 1> and <Picture 2>"
+    assert "from the character sheets contained in <Picture 1> and <Picture 2>" in prompt
     assert "Character sheets:" not in prompt
     assert "(primary identity)" not in prompt
 
@@ -620,9 +619,10 @@ def test_video_label_in_subject_definitions():
     scene = _make_scene(slot_A=alice)
     ve = _video_entries(("char_alice", "alice.mp4"))
     prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
-    # Official format: video cited inline in the subject line
-    assert "in <Video 1>" in prompt
-    assert "<Video 1>" in prompt
+    # Video cited inline in subject line as "from <Video N>"
+    assert "from <Video 1>" in prompt
+    # Plus standalone role line
+    assert "<Video 1> is" in prompt
 
 
 def test_video_in_retention_analysis():
@@ -763,6 +763,38 @@ def test_task_flags_multiple_flags_joined_correctly():
     scene = {**_make_scene(slot_A=alice), "task_flags": ["video continuation", "audio reference"]}
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
     assert "[video continuation + audio reference]" in prompt
+
+
+def test_single_sheet_uses_singular_phrasing():
+    alice = _make_subject("Alice", sheets=["sheet.png"])
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "from the character sheet contained in <Picture 1>" in prompt
+    assert "character sheets" not in prompt
+
+
+def test_video_standalone_line_default_role():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "<Video 1> is the visual identity reference for <Subject 1>" in prompt
+
+
+def test_video_standalone_line_continuation_role():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = {**_make_scene(slot_A=alice), "task_flags": ["video continuation"]}
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "<Video 1> is the continuation starting point for the target video" in prompt
+
+
+def test_video_standalone_line_editing_role():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = {**_make_scene(slot_A=alice), "task_flags": ["video editing"]}
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "<Video 1> is the source video being edited" in prompt
 
 
 def test_video_editing_opens_with_edited_version_sentence():
