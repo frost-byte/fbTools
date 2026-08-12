@@ -1,6 +1,32 @@
 # CHANGELOG
 
 
+## v1.13.0 (2026-08-12)
+
+### Features
+
+- **libber**: Add random wildcard notation for libber key selection
+  ([`13139aa`](https://github.com/frost-byte/fbTools/commit/13139aaaf74f0e6a9445432574b88f06bbdefd3c))
+
+Add %*:N% (random from libber N) and %*% (random from combined pool) notation to the composition
+  libber substitution system.
+
+Each occurrence draws from a per-libber shuffled deque (sampling without replacement), so no key
+  repeats until every key in that libber has been used at least once. When exhausted the queue
+  refills with a new shuffle. The combined %*% pool interleaves all attached libbers before
+  shuffling.
+
+Pass order: %*% (combined) → %key:N% / %*:N% (indexed) → %key% (chained).
+
+Frontend: completion popup shows random entries in amber italic for each attached libber (and a
+  combined "any" entry when multiple are attached). Typing `*` after the delimiter filters to show
+  only random entries.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.12.0 (2026-08-12)
 
 ### Features
