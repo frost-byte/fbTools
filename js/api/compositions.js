@@ -37,6 +37,14 @@ export class CompositionsAPI extends BaseAPI {
         return this.post("/compositions/reload", {});
     }
 
+    getSettings() {
+        return this.get("/compositions/settings");
+    }
+
+    saveSettings(settings) {
+        return this.post("/compositions/settings", settings);
+    }
+
     /** Pass a composition object (inline) or a saved id string. */
     assembleComposition(compOrId, modelType) {
         const body =
