@@ -12640,9 +12640,12 @@ class PromptAssemble(io.ComfyNode):
                     default="",
                     display_name="Task Flags (H3)",
                     tooltip=(
-                        "Comma-separated H3 task type flags that override auto-detection. "
-                        "Valid values: reference generation, video reference, video continuation, "
-                        "audio reference. Leave blank to auto-detect from connected references."
+                        "Comma-separated H3 task type flags for the summary bracket tag. "
+                        "Overrides auto-detection when non-empty. "
+                        "Official types: reference generation, keyframe completion, "
+                        "video editing, video continuation, audio reference, audio reuse. "
+                        "Leave blank to auto-detect (reference generation when refs present, "
+                        "audio reference when voice refs present)."
                     ),
                     optional=True,
                 ),

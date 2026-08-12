@@ -227,20 +227,21 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     sections.append("subject_definitions:\n" + "\n".join(sd))
 
     # ── summary ────────────────────────────────────────────────────────────────
-    has_sheets = any(info["picture_nums"] for info in ref_map.values())
-    has_video = any(info["video_num"] is not None for info in ref_map.values())
+    has_refs = any(info["picture_nums"] or info["video_num"] is not None for info in ref_map.values())
     has_audio = any(info["audio_num"] is not None for info in ref_map.values())
 
-    # User-provided task_flags override auto-detection; otherwise infer from refs
+    # User-provided task_flags override auto-detection; otherwise infer from refs.
+    # Per MiniMax docs, pictures AND videos that provide character/style/camera guidance
+    # both fall under "reference generation".  Intent-based types (video editing,
+    # video continuation, keyframe completion, audio reuse) cannot be auto-detected
+    # from file presence — users must supply them via task_flags.
     user_flags: list[str] = scene_instance.get("task_flags") or []
     if user_flags:
         task_tag = "[" + " + ".join(user_flags) + "]"
     else:
         task_parts: list[str] = []
-        if has_sheets:
+        if has_refs:
             task_parts.append("reference generation")
-        if has_video:
-            task_parts.append("video reference")
         if has_audio:
             task_parts.append("audio reference")
         task_tag = "[" + " + ".join(task_parts) + "]" if task_parts else "[video generation]"
@@ -256,16 +257,25 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
 
     shots = template.get("shots", [])
     narrative: list[str] = []
+    active_flags = set(user_flags)
 
-    # Opening sentence from the first shot's action
-    if shots:
+    # video editing tasks must open with a fixed sentence naming the source video
+    if "video editing" in active_flags:
+        first_video = next(
+            (info["video_num"] for info in ref_map.values() if info["video_num"] is not None),
+            None,
+        )
+        if first_video is not None:
+            narrative.append(f"The target video is an edited version of <Video {first_video}>.")
+    elif shots:
+        # All other tasks: open from the first shot's action
         first_action = shots[0].get("action", "").strip()
         if first_action:
             replaced = _bare(first_action).rstrip(".")
             narrative.append(f"The target video shows {replaced}.")
 
     # One sentence per subsequent shot
-    for shot in shots[1:]:
+    for shot in (shots[1:] if "video editing" not in active_flags else shots):
         action = shot.get("action", "").strip()
         if action:
             replaced = _bare(action)
