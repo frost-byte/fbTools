@@ -1,6 +1,47 @@
 # CHANGELOG
 
 
+## v1.17.0 (2026-08-13)
+
+### Features
+
+- **node**: Add CompositionToH3Conditioning terminal node (Steps 5-7)
+  ([`9bef84b`](https://github.com/frost-byte/fbTools/commit/9bef84b7abe37aa9362da4f778d45d38b4d10b78))
+
+Completes the H3 refplan action plan.
+
+Three media-loading helpers added above the node class:
+
+_h3_resolve_path(path) — absolute-or-input-dir path resolution _h3_load_image(path) — PIL →
+  [1,H,W,3] float32 tensor _h3_load_video_frames(path, params) — VHS cv_frame_generator adapter →
+  [B,H,W,3] float32 tensor _h3_load_audio(path, start, dur) — VHS get_audio (ffmpeg) with torchaudio
+  fallback for standalone files
+
+CompositionToH3Conditioning (category: conditioning):
+
+Inputs: h3_refplan (FBTOOLS_H3_REFPLAN), clip, vae, audio_vae, width, height, length, ref_image_size
+  (match|max) Outputs: positive (CONDITIONING), LATENT
+
+fingerprint_inputs: md5 hash of bundle JSON + getmtime of every referenced file +
+  width/height/length/ref_image_size. Invalidates on any file edit without needing a reload counter.
+
+execute: iterates the bundle's references list in order (images → [soundtrack+video] pairs →
+  standalone audio), loads each via the above helpers, assembles
+  ref_images/ref_videos/ref_video_audios/ ref_audios dicts with 0-based suffix keys, and delegates
+  to MiniMaxH3ReferenceToVideo.execute (lazily imported). Suffix pairing convention: ref_video_N ↔
+  ref_video_audio_N (same video_ordinal-1). Standalone audio uses a sequential 0-based counter
+  independent of audio_ordinal.
+
+Graceful degradation: missing files are logged and skipped; an empty reference set degrades to
+  text-to-video (native node handles it).
+
+Node registered in FBToolsExtension.get_node_list().
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.16.0 (2026-08-13)
 
 ### Features
