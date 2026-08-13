@@ -147,6 +147,134 @@ def _build_ref_map(
     return ref_map
 
 
+# ── H3 reference plan ─────────────────────────────────────────────────────────
+
+def _build_h3_refplan(
+    scene_instance: dict,
+    video_entries: list[dict] | None = None,
+) -> dict:
+    """Build the FBTOOLS_H3_REFPLAN ordered reference descriptor bundle.
+
+    Produces a references list in the exact order the native
+    MiniMaxH3ReferenceToVideo node builds its ref_items, so that both the
+    assembled prompt and the terminal node derive identical label ordinals:
+
+        images (slot order, one entry per sheet)
+        per video (slot order):
+            soundtrack_audio entry (if audio_source == "extract_from_visual")
+            video entry
+        standalone audio (slot order, from voice.audio_reference_file)
+
+    video_entries items must carry:
+        subject_id, video_file, load_params,
+        audio_source ("extract_from_visual" | "none"),
+        audio_path, audio_start_time, audio_duration,
+        audio_retention ("timbre" | "reuse" | "style"), audio_role
+
+    Subject dicts (slot_assignments values) must carry voice fields:
+        audio_reference_file, audio_start_time, audio_duration,
+        audio_retention, audio_role
+    (populated by apply_cast_to_subjects when use_audio is True).
+
+    Returns {"references": [...]} — caller merges additional fields (prompt,
+    model_type, etc.) before attaching to the node output.
+    """
+    assignments = scene_instance.get("slot_assignments", {})
+    ordered_slots = sorted(assignments.keys())
+
+    # Build subject_id → video_entry lookup (slot/cast order; first match wins)
+    video_lookup: dict[str, dict] = {}
+    for ve in (video_entries or []):
+        sid = ve.get("subject_id", "")
+        if sid and sid not in video_lookup:
+            video_lookup[sid] = ve
+
+    references: list[dict] = []
+    picture_counter = 1
+    video_counter   = 1
+    audio_counter   = 1
+
+    # Pass 1: collect image entries (all images before any audio/video)
+    for slot_id in ordered_slots:
+        subject = assignments.get(slot_id)
+        if subject is None:
+            continue
+        sheets = subject.get("character_sheet_images", [])
+        subject_id = subject.get("subject_id", "")
+        for path in sheets:
+            references.append({
+                "modality":       "image",
+                "picture_ordinal": picture_counter,
+                "subject_id":     subject_id,
+                "slot_id":        slot_id,
+                "path":           path,
+            })
+            picture_counter += 1
+
+    # Pass 2: per-video — soundtrack audio (if any) immediately before its video
+    for slot_id in ordered_slots:
+        subject = assignments.get(slot_id)
+        if subject is None:
+            continue
+        subject_id = subject.get("subject_id", "")
+        ve = video_lookup.get(subject_id) if subject_id else None
+        if ve is None:
+            continue
+
+        has_soundtrack = ve.get("audio_source") == "extract_from_visual"
+        this_video_ordinal = video_counter
+
+        if has_soundtrack:
+            references.append({
+                "modality":      "soundtrack_audio",
+                "audio_ordinal": audio_counter,
+                "video_ordinal": this_video_ordinal,
+                "subject_id":    subject_id,
+                "slot_id":       slot_id,
+                "path":          ve.get("audio_path", ve.get("video_file", "")),
+                "start_time":    ve.get("audio_start_time", 0.0),
+                "duration":      ve.get("audio_duration", 0.0),
+                "retention":     ve.get("audio_retention", "timbre"),
+                "role":          ve.get("audio_role", ""),
+            })
+            audio_counter += 1
+
+        references.append({
+            "modality":     "video",
+            "video_ordinal": this_video_ordinal,
+            "subject_id":   subject_id,
+            "slot_id":      slot_id,
+            "path":         ve.get("video_file", ""),
+            "load_params":  ve.get("load_params", {}),
+        })
+        video_counter += 1
+
+    # Pass 3: standalone audio entries (voice.audio_reference_file)
+    for slot_id in ordered_slots:
+        subject = assignments.get(slot_id)
+        if subject is None:
+            continue
+        voice = subject.get("voice", {})
+        audio_file = voice.get("audio_reference_file", "")
+        if not audio_file:
+            continue
+        subject_id = subject.get("subject_id", "")
+        references.append({
+            "modality":      "audio",
+            "audio_ordinal": audio_counter,
+            "subject_id":    subject_id,
+            "slot_id":       slot_id,
+            "path":          audio_file,
+            "start_time":    voice.get("audio_start_time", 0.0),
+            "duration":      voice.get("audio_duration", 0.0),
+            "retention":     voice.get("audio_retention", "timbre"),
+            "role":          voice.get("audio_role", ""),
+        })
+        audio_counter += 1
+
+    return {"references": references}
+
+
 # ── Placeholder replacement ────────────────────────────────────────────────────
 
 def _replace_h3(text: str, ref_map: dict, seen: set) -> str:
