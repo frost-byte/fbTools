@@ -14128,9 +14128,22 @@ class PromptCompositionLoader(io.ComfyNode):
     def fingerprint_inputs(cls, composition_name: str = "", model_type: str = "composition default", scene_cast=None, **_):
         comps_dir = os.path.join(user_data_dir(), "prompt_compositions")
         try:
-            mtime = os.path.getmtime(comps_dir)
+            dir_mtime = os.path.getmtime(comps_dir)
         except OSError:
-            mtime = 0
+            dir_mtime = 0
+        # Also key off the matched composition file's own mtime so that out-of-band
+        # JSON edits (editing the file on disk without touching the editor) invalidate
+        # the node without needing the reload counter.
+        file_mtime = 0
+        if composition_name:
+            items = _list_compositions(user_data_dir())
+            matched = next((c for c in items if c["name"] == composition_name), None)
+            if matched:
+                cpath = os.path.join(comps_dir, f"{matched['id']}.json")
+                try:
+                    file_mtime = os.path.getmtime(cpath)
+                except OSError:
+                    pass
         cast_id = scene_cast.get("id", "") if scene_cast else ""
         cast_modified = scene_cast.get("modified", "") if scene_cast else ""
         try:
@@ -14141,8 +14154,8 @@ class PromptCompositionLoader(io.ComfyNode):
             settings_mtime = os.path.getmtime(_composition_settings_path())
         except OSError:
             settings_mtime = 0
-        return (comps_dir, composition_name, model_type, mtime, _composition_reload_counter,
-                cast_id, cast_modified, bundle_mtime, settings_mtime)
+        return (comps_dir, composition_name, model_type, dir_mtime, file_mtime,
+                _composition_reload_counter, cast_id, cast_modified, bundle_mtime, settings_mtime)
 
     @classmethod
     def execute(
