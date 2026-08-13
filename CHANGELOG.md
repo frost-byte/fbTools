@@ -1,6 +1,52 @@
 # CHANGELOG
 
 
+## v1.16.0 (2026-08-13)
+
+### Features
+
+- **assembler**: Retention-aware audio phrasing and fix <Audio N> ordinals
+  ([`17ffd95`](https://github.com/frost-byte/fbTools/commit/17ffd95246bcf33915c10267369dfab4756e22e9))
+
+Step 2 of the H3 refplan action plan.
+
+Bug fixed: _build_ref_map assigned standalone audio ordinals starting at 1 without accounting for
+  soundtrack audios (extract_from_visual). When both types were present, the <Audio N> label in the
+  assembled prompt would not match what MiniMaxH3ReferenceToVideo assigns at inference time.
+
+Fix: two pre-passes now assign audio ordinals in native ref_items order — soundtracks first (slot
+  order), then standalone files (slot order) — exactly mirroring the three-pass algorithm in
+  _build_h3_refplan. Ordinal parity is now guaranteed across the prompt assembler and the terminal
+  node.
+
+New ref_map fields: audio_retention, audio_role (standalone), soundtrack_num, soundtrack_retention,
+  soundtrack_role (for extract_from_visual video entries).
+
+_assemble_h3_ref2va updated in three places:
+
+subject_definitions: - Soundtrack entries now get their own <Audio N> line. - timbre → "…without
+  copying the original signal" (matching the h3_prompt libber's %nocopy% convention) - reuse →
+  "…reproduced verbatim" - style → "audio style and rhythm reference…" - Non-empty audio_role
+  overrides the generic description entirely.
+
+summary: - has_audio now includes soundtrack_num; both audio modalities contribute to the [audio
+  reference] task tag and the closing sentence. - Closing sentence uses retention-appropriate phrase
+  per audio entry.
+
+retention_analysis: - timbre → "reference - its vocal timbre guides … without copying the original
+  signal" (replaces old "reference (voice timbre only, not fully_copy)") - reuse → "fully_copy" -
+  style → "reference (audio style, not fully_copy)" - Soundtrack audio entries appear before
+  standalone in retention_analysis.
+
+16 new tests in tests/test_h3_audio_phrasing.py cover ordinal correctness (both modality types,
+  mixed cases) and retention/role phrasing in all three sections. Updated one existing test whose
+  assertion matched old phrasing.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.15.0 (2026-08-13)
 
 ### Features
