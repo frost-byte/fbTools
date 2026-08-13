@@ -404,13 +404,21 @@ export function setupLibberManager(nodeType, nodeData, app) {
         this._libberRefreshTable = refreshTable;
     };
     
+    // onConfigure fires after widget values are restored from the saved workflow.
+    // Re-run refreshTable so the correct libber is loaded based on the saved name.
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (config) {
+        if (onConfigure) onConfigure.apply(this, arguments);
+        if (this._libberRefreshTable) this._libberRefreshTable();
+    };
+
     // Handle execution updates
     const onExecuted = nodeType.prototype.onExecuted;
     nodeType.prototype.onExecuted = function (message) {
         if (onExecuted) {
             onExecuted.apply(this, arguments);
         }
-        
+
         // Refresh table after execution
         if (this._libberRefreshTable) {
             this._libberRefreshTable();
