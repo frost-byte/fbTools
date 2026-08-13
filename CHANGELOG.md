@@ -1,6 +1,27 @@
 # CHANGELOG
 
 
+## v1.17.1 (2026-08-13)
+
+### Bug Fixes
+
+- **node**: Fold composition file mtime into PromptCompositionLoader fingerprint
+  ([`f7d57f1`](https://github.com/frost-byte/fbTools/commit/f7d57f14de1d98e342ae2528503043df75550c68))
+
+The fingerprint previously keyed only off the compositions directory mtime and the reload counter.
+  Directory mtime moves when files are added or removed, but NOT when an existing composition file
+  is edited in-place (e.g. via a text editor or external tool). Out-of-band JSON edits were
+  invisible to the cache until the user manually hit the reload button.
+
+Fix: resolve the matched composition file path (comps_dir/<id>.json) and include its getmtime in the
+  fingerprint tuple alongside the directory mtime. The reload counter is still present as an escape
+  hatch for cases where mtime is unreliable (network filesystems, etc.).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.17.0 (2026-08-13)
 
 ### Features
