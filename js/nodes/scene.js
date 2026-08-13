@@ -243,9 +243,12 @@ export function setupSceneSelect(nodeType, nodeData, app) {
             };
         }
         
+        // Expose for onConfigure (workflow reload)
+        this._updateSceneDir = updateSceneDir;
+
         // Initial update
         updateSceneDir();
-        
+
         // Add DOM widget for prompt display
         const displayWidget = this.addDOMWidget(
             "prompts_display",
@@ -542,6 +545,15 @@ export function setupSceneSelect(nodeType, nodeData, app) {
         };
         
         return result;
+    };
+
+    // onConfigure fires after widget values are restored from the saved workflow.
+    // Re-run updateSceneDir so the mask_name options and prompt display reflect
+    // the saved scenes_dir / selected_scene values.
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (config) {
+        if (onConfigure) onConfigure.apply(this, arguments);
+        if (this._updateSceneDir) this._updateSceneDir();
     };
 }
 
