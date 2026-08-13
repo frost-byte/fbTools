@@ -588,27 +588,11 @@ function _onSendToWorkflow(wrapEl) {
 }
 
 function _pushToNode(node, entries) {
-    const _w = (name) => node.widgets?.find(w => w.name === name);
-    const SLOTS = 4;
-
-    for (let i = 1; i <= SLOTS; i++) {
-        const e = entries[i - 1];
-        if (e) {
-            const sw = _w(`subject_${i}`);     if (sw) sw.value = e.subject_id  || "";
-            const bw = _w(`bundle_${i}`);      if (bw) bw.value = e.bundle_id   || "";
-            const mw = _w(`visual_mode_${i}`); if (mw) mw.value = e.visual_mode || "images";
-            const aw = _w(`use_audio_${i}`);   if (aw) aw.value = !!e.use_audio;
-        } else {
-            // Clear unused slots
-            const sw = _w(`subject_${i}`);     if (sw) sw.value = "";
-            const bw = _w(`bundle_${i}`);      if (bw) bw.value = "";
-            const mw = _w(`visual_mode_${i}`); if (mw) mw.value = "images";
-            const aw = _w(`use_audio_${i}`);   if (aw) aw.value = false;
-        }
-    }
-
-    // Refresh the DOM table widget and mark canvas dirty
-    node._refreshCastTable?.(entries.slice(0, SLOTS));
+    // JSON-backed: write all entries as one JSON string to the backing widget,
+    // then tell the node's DOM table to refresh itself.
+    const jsonWidget = node.widgets?.find(w => w.name === "cast_entries_json");
+    if (jsonWidget) jsonWidget.value = JSON.stringify(entries);
+    node._refreshCastTable?.(entries);
     window._fbtApp?.graph?.setDirtyCanvas(true, false);
 }
 
