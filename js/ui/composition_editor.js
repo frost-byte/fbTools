@@ -2041,6 +2041,14 @@ function _buildEditor(parent) {
         title: "Start a new composition",
         onclick: _onNew,
     }));
+    const _stwWrap = _mk("div", { cls: "fbt-ce-stw-wrap" });
+    _stwWrap.appendChild(_mk("button", {
+        cls: "fbt-ce-btn",
+        textContent: "Send to Workflow",
+        title: "Set a Prompt Composition Loader node on the canvas to load this composition",
+        onclick: () => _onSendToWorkflow(_stwWrap),
+    }));
+    actionBar.appendChild(_stwWrap);
     actionBar.appendChild(_dom.statusEl);
     editorWrap.appendChild(actionBar);
 
@@ -2204,6 +2212,99 @@ function _onNew() {
     _S.composition = _newComp();
     _populateEditor();
     _markClean();
+}
+
+function _onSendToWorkflow(wrapEl) {
+    // Toggle: close existing picker if already open
+    const existing = wrapEl.querySelector(".fbt-ce-stw-picker");
+    if (existing) { existing.remove(); return; }
+
+    const compName = _S.composition?.name;
+    if (!compName) {
+        _setStatus("Save the composition first.", true);
+        return;
+    }
+
+    const TARGET_TYPE = "fbt_PromptCompositionLoader";
+    const graphNodes = (typeof app !== "undefined" && app?.graph?._nodes) || [];
+    const loaderNodes = graphNodes.filter(n => n.type === TARGET_TYPE);
+
+    const picker = _mk("div", { cls: "fbt-ce-stw-picker" });
+
+    if (loaderNodes.length === 0) {
+        picker.appendChild(_mk("div", {
+            cls: "fbt-ce-stw-empty",
+            textContent: "No Prompt Composition Loader nodes on canvas",
+        }));
+    } else {
+        loaderNodes.forEach(node => {
+            const widget = node.widgets?.find(w => w.name === "composition_name");
+            const curVal = widget?.value || "(empty)";
+            const isCurrent = curVal === compName;
+            const row = _mk("div", {
+                cls: "fbt-ce-stw-row",
+                title: `Set node #${node.id} to: ${compName}`,
+            });
+            row.appendChild(_mk("span", {
+                cls: "fbt-ce-stw-row-label",
+                textContent: (isCurrent ? "✓ " : "") + curVal,
+            }));
+            row.appendChild(_mk("span", { cls: "fbt-ce-stw-row-idx", textContent: `#${node.id}` }));
+            row.addEventListener("click", () => {
+                if (widget) {
+                    widget.value = compName;
+                    app.graph.setDirtyCanvas(true, false);
+                    compositionsApi.reload().catch(() => {});
+                }
+                picker.remove();
+                document.removeEventListener("pointerdown", _closeOnOutside, true);
+                _setStatus(`Sent to node #${node.id}`);
+            });
+            picker.appendChild(row);
+        });
+    }
+
+    // "Create new" row
+    const newRow = _mk("div", {
+        cls: "fbt-ce-stw-row fbt-ce-stw-new",
+        textContent: "＋ New Prompt Composition Loader",
+        title: "Add a new Prompt Composition Loader node to the canvas",
+    });
+    newRow.addEventListener("click", () => {
+        picker.remove();
+        document.removeEventListener("pointerdown", _closeOnOutside, true);
+        if (typeof LiteGraph === "undefined" || !app?.graph) {
+            _setStatus("Canvas not available", true);
+            return;
+        }
+        const node = LiteGraph.createNode(TARGET_TYPE);
+        if (!node) { _setStatus("Could not create node", true); return; }
+        const mouse = app.canvas?.canvas_mouse;
+        node.pos = mouse ? [mouse[0] + 20, mouse[1] + 20] : [200, 200];
+        app.graph.add(node);
+        // Widget may not exist until the node is fully initialized
+        setTimeout(() => {
+            const w = node.widgets?.find(w => w.name === "composition_name");
+            if (w) {
+                w.value = compName;
+                app.graph.setDirtyCanvas(true, false);
+                compositionsApi.reload().catch(() => {});
+            }
+        }, 80);
+        _setStatus("Created Prompt Composition Loader");
+    });
+    picker.appendChild(newRow);
+
+    // Click-away listener
+    const _closeOnOutside = (e) => {
+        if (!wrapEl.contains(e.target)) {
+            picker.remove();
+            document.removeEventListener("pointerdown", _closeOnOutside, true);
+        }
+    };
+    document.addEventListener("pointerdown", _closeOnOutside, true);
+
+    wrapEl.appendChild(picker);
 }
 
 // ── Sidebar click actions ──────────────────────────────────────────────────────

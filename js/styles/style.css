@@ -457,6 +457,64 @@ textarea.prompt-value-input {
     text-align: left;
 }
 
+/* ── Send-to-workflow picker ──────────────────────────────────────────────────── */
+
+.fbt-ce-stw-wrap {
+    position: relative;
+}
+
+.fbt-ce-stw-picker {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 0;
+    min-width: 230px;
+    background: var(--comfy-menu-bg, #1a1a1a);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 4px;
+    box-shadow: 0 -4px 14px rgba(0, 0, 0, 0.45);
+    z-index: 1000;
+    overflow: hidden;
+}
+
+.fbt-ce-stw-empty {
+    padding: 8px 10px;
+    font-size: 11px;
+    color: var(--p-surface-400, #888);
+    font-style: italic;
+}
+
+.fbt-ce-stw-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 10px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.fbt-ce-stw-row:hover {
+    background: var(--comfy-input-bg, #2a2a2a);
+}
+
+.fbt-ce-stw-row-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fbt-ce-stw-row-idx {
+    font-size: 10px;
+    color: var(--p-surface-400, #888);
+    flex-shrink: 0;
+}
+
+.fbt-ce-stw-new {
+    color: var(--p-blue-400, #60a5fa);
+    border-top: 1px solid var(--border-color, #333);
+}
+
 .fbt-ce-add-btn:hover {
     border-color: var(--p-blue-400, #60a5fa);
     background: var(--comfy-input-bg, #2a2a2a);
