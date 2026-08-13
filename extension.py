@@ -13216,50 +13216,13 @@ class SceneCastLoad(io.ComfyNode):
 
 # ── Node: SceneCastBuild ──────────────────────────────────────────────────────
 
-_SCB_SLOTS = 4
-_SCB_VISUAL_MODES = ["images", "video"]
-
-
-def _scb_inputs() -> list:
-    """Build the 16 hidden-by-JS inputs for SceneCastBuild (4 slots × 4 fields)."""
-    inputs = []
-    for i in range(1, _SCB_SLOTS + 1):
-        inputs += [
-            io.String.Input(
-                f"subject_{i}",
-                display_name=f"Subject {i}",
-                default="",
-                tooltip=f"Subject ID for slot {i}. Managed via the Scene Casts sidebar.",
-            ),
-            io.String.Input(
-                f"bundle_{i}",
-                display_name=f"Bundle {i}",
-                default="",
-                tooltip=f"Bundle ID for slot {i}.",
-            ),
-            io.Combo.Input(
-                f"visual_mode_{i}",
-                display_name=f"Mode {i}",
-                options=_SCB_VISUAL_MODES,
-                default="images",
-                tooltip=f"Visual mode for slot {i}: images or video.",
-            ),
-            io.Boolean.Input(
-                f"use_audio_{i}",
-                display_name=f"Audio {i}",
-                default=False,
-                tooltip=f"Include audio reference for slot {i}.",
-            ),
-        ]
-    return inputs
-
-
 class SceneCastBuild(io.ComfyNode):
     """Build a Scene Cast inline on the canvas without a saved file.
 
-    Configure up to 4 subject → bundle assignments directly as node widgets.
-    Use the Scene Casts sidebar "Send to Workflow" button to push the current
-    cast editor state to this node and switch between configurations quickly.
+    All entries are stored as a single JSON string (cast_entries_json) so the
+    frontend can manage any number of subject → bundle assignments through a
+    DOM table widget with +/− row buttons.  Use the Scene Casts sidebar
+    "Send to Workflow" button to push entries to this node directly.
 
     Outputs the same SCENE_CAST type as SceneCastLoad, so it wires into
     PromptCompositionLoader unchanged.
@@ -13275,7 +13238,17 @@ class SceneCastBuild(io.ComfyNode):
             node_id=cls.node_id,
             display_name=cls.display_name,
             category=cls.category,
-            inputs=_scb_inputs(),
+            inputs=[
+                io.String.Input(
+                    "cast_entries_json",
+                    display_name="Cast Entries",
+                    default="[]",
+                    tooltip=(
+                        "JSON array of cast entries. "
+                        "Managed via the Scene Casts sidebar — do not edit by hand."
+                    ),
+                ),
+            ],
             outputs=[
                 CastIOType.Output(
                     "scene_cast",
@@ -13285,13 +13258,13 @@ class SceneCastBuild(io.ComfyNode):
                 io.String.Output(
                     "cast_summary",
                     display_name="Cast Summary",
-                    tooltip="Human-readable summary of configured slots.",
+                    tooltip="Human-readable summary of configured entries.",
                 ),
             ],
         )
 
     @classmethod
-    def fingerprint_inputs(cls, **kwargs):
+    def fingerprint_inputs(cls, cast_entries_json: str = "[]", **_):
         bundle_mtime = subject_mtime = 0
         try:
             bundle_mtime = os.path.getmtime(default_bundle_registry_path())
@@ -13303,45 +13276,40 @@ class SceneCastBuild(io.ComfyNode):
             )
         except OSError:
             pass
-        slot_values = tuple(
-            (
-                kwargs.get(f"subject_{i}", ""),
-                kwargs.get(f"bundle_{i}", ""),
-                kwargs.get(f"visual_mode_{i}", "images"),
-                kwargs.get(f"use_audio_{i}", False),
-            )
-            for i in range(1, _SCB_SLOTS + 1)
-        )
-        return (bundle_mtime, subject_mtime, *slot_values)
+        return (bundle_mtime, subject_mtime, cast_entries_json)
 
     @classmethod
-    def execute(cls, **kwargs) -> io.NodeOutput:
+    def execute(cls, cast_entries_json: str = "[]", **_) -> io.NodeOutput:
+        try:
+            raw = json.loads(cast_entries_json or "[]")
+            if not isinstance(raw, list):
+                raw = []
+        except Exception:
+            raw = []
+
         entries = []
-        for i in range(1, _SCB_SLOTS + 1):
-            subject_id  = (kwargs.get(f"subject_{i}") or "").strip()
-            bundle_id   = (kwargs.get(f"bundle_{i}") or "").strip()
-            visual_mode = kwargs.get(f"visual_mode_{i}", "images")
-            use_audio   = bool(kwargs.get(f"use_audio_{i}", False))
+        for e in raw:
+            subject_id  = str(e.get("subject_id",  "")).strip()
+            bundle_id   = str(e.get("bundle_id",   "")).strip()
+            visual_mode = e.get("visual_mode", "images")
+            use_audio   = bool(e.get("use_audio", False))
             if subject_id and bundle_id:
                 entries.append({
                     "subject_id":  subject_id,
                     "bundle_id":   bundle_id,
-                    "visual_mode": visual_mode,
+                    "visual_mode": visual_mode if visual_mode in ("images", "video") else "images",
                     "use_audio":   use_audio,
                 })
 
-        cast = {
-            "id":      "_inline",
-            "name":    "_inline",
-            "entries": entries,
-        }
+        cast = {"id": "_inline", "name": "_inline", "entries": entries}
 
         n = len(entries)
         lines = [f"Inline cast  ({n} {'subject' if n == 1 else 'subjects'})"]
         for e in entries:
-            mode = e["visual_mode"]
             audio_flag = " + audio" if e["use_audio"] else ""
-            lines.append(f"  • {e['subject_id']} → {e['bundle_id']} [{mode}{audio_flag}]")
+            lines.append(
+                f"  • {e['subject_id']} → {e['bundle_id']} [{e['visual_mode']}{audio_flag}]"
+            )
         summary = "\n".join(lines)
 
         send_status_update(

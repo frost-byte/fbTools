@@ -1,20 +1,19 @@
 /**
- * SceneCastBuild node — interactive slot table.
+ * SceneCastBuild node — JSON-backed interactive entry table.
  *
- * All 16 standard widgets (subject_N, bundle_N, visual_mode_N, use_audio_N)
- * are hidden via setWidgetVisible so the node presents only a compact 4-row
- * table. The table's selects/toggles/checkbox write back to those hidden
- * widgets so ComfyUI serialises them with the workflow.
+ * One hidden STRING widget (cast_entries_json) serialises all entries as a
+ * JSON array.  The DOM widget renders a table with +/− row controls so the
+ * user can add or remove entries freely (no fixed-slot limit).
  *
  * node._refreshCastTable(entries?) is exposed for the cast editor's
- * "Send to Workflow" button to call after pushing widget values.
+ * "Send to Workflow" button to call after pushing new entries.
  */
 
 import { setWidgetVisible } from "../utils/widgets.js";
 import { bundlesApi }       from "../api/bundles.js";
 
-const SLOTS       = 4;
-const TARGET_TYPE = "fbt_SceneCastBuild";
+const JSON_WIDGET = "cast_entries_json";
+const MAX_ENTRIES = 8;
 
 // ── CSS (injected once) ────────────────────────────────────────────────────────
 
@@ -42,24 +41,17 @@ function _injectCss() {
     text-align: left;
     white-space: nowrap;
 }
-.fbt-scb-table thead th.fbt-scb-center {
-    text-align: center;
-}
+.fbt-scb-table thead th.fbt-scb-c { text-align: center; }
 .fbt-scb-table tbody tr {
     border-top: 1px solid var(--border-color, #333);
-    transition: opacity 0.15s;
 }
-.fbt-scb-table tbody tr.fbt-scb-empty {
-    opacity: 0.38;
-}
+.fbt-scb-table tbody tr.fbt-scb-empty { opacity: 0.38; }
 .fbt-scb-table tbody td {
     padding: 3px 4px;
     vertical-align: middle;
 }
-.fbt-scb-table tbody td.fbt-scb-center {
-    text-align: center;
-}
-.fbt-scb-slot-num {
+.fbt-scb-table tbody td.fbt-scb-c { text-align: center; }
+.fbt-scb-row-num {
     color: var(--p-surface-400, #888);
     font-size: 10px;
     width: 16px;
@@ -104,66 +96,97 @@ function _injectCss() {
     cursor: pointer;
     accent-color: var(--p-blue-400, #60a5fa);
 }
+.fbt-scb-rm-btn {
+    background: transparent;
+    border: none;
+    color: var(--p-red-400, #f87171);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    line-height: 1;
+}
+.fbt-scb-rm-btn:hover { color: var(--p-red-300, #fca5a5); }
+.fbt-scb-add-btn {
+    margin-top: 5px;
+    width: 100%;
+    padding: 3px 0;
+    background: transparent;
+    border: 1px dashed var(--border-color, #444);
+    border-radius: 3px;
+    color: var(--p-blue-400, #60a5fa);
+    font-size: 11px;
+    cursor: pointer;
+}
+.fbt-scb-add-btn:hover { border-color: var(--p-blue-400, #60a5fa); }
 `;
     document.head.appendChild(s);
 }
 
 // ── Node setup ────────────────────────────────────────────────────────────────
 
-export function setupSceneCastBuild(nodeType) {
+export function setupSceneCastBuild(nodeType, _nodeData, app) {
     _injectCss();
 
     const _orig = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
         _orig?.call(this);
-        _buildCastBuildUI(this);
+        _buildCastBuildUI(this, app);
     };
 }
 
-function _buildCastBuildUI(node) {
-    // ── 1. Hide all standard widgets ──────────────────────────────────────────
-    // Iterate the whole widget list rather than looking up by name so nothing
-    // is missed. Boolean/toggle widgets in ComfyUI V3 have their own draw()
-    // that can bypass the type="hidden" check, so we nuke that too.
-    (node.widgets || []).forEach(w => {
-        setWidgetVisible(w, false);
-        if (typeof w.draw === "function" && !w._origDraw) {
-            w._origDraw = w.draw;
-            w.draw = () => {};
-        }
-    });
-    const _w = (name) => node.widgets?.find(w => w.name === name);
+function _buildCastBuildUI(node, app) {
+    // ── 1. Find and hide the single JSON backing widget ───────────────────────
+    // We use a regular STRING widget (not boolean) so setWidgetVisible works
+    // reliably regardless of ComfyUI version quirks.
+    const jsonWidget = node.widgets?.find(w => w.name === JSON_WIDGET);
+    if (jsonWidget) setWidgetVisible(jsonWidget, false);
 
-    // ── 2. State for subject / bundle lists ───────────────────────────────────
-    let _subjects = [];   // [{id, name}]
-    let _bundles  = [];   // [{id, name, subject_id}]
+    // ── 2. Internal state ─────────────────────────────────────────────────────
+    let _subjects = [];
+    let _bundles  = [];
 
-    // Per-slot DOM references for refresh
-    const _rows = [];   // [{subjSel, bundSel, imgBtn, vidBtn, audCb}]
+    // Parse initial entries from the widget value (populated from saved workflow)
+    let _entries = [];
+    try {
+        const parsed = JSON.parse(jsonWidget?.value || "[]");
+        if (Array.isArray(parsed)) _entries = parsed;
+    } catch { /* leave empty */ }
 
-    // ── 3. Build DOM widget ───────────────────────────────────────────────────
+    // ── 3. Build DOM structure ────────────────────────────────────────────────
     const wrap = document.createElement("div");
     wrap.className = "fbt-scb-wrap";
 
     const table = document.createElement("table");
     table.className = "fbt-scb-table";
 
-    // Header
     const thead = document.createElement("thead");
     thead.innerHTML = `<tr>
-        <th class="fbt-scb-slot-num"></th>
-        <th style="width:30%">Subject</th>
-        <th style="width:34%">Bundle</th>
-        <th class="fbt-scb-center" style="width:52px">Mode</th>
-        <th class="fbt-scb-center" style="width:28px">Aud</th>
+        <th class="fbt-scb-row-num"></th>
+        <th style="width:28%">Subject</th>
+        <th style="width:32%">Bundle</th>
+        <th class="fbt-scb-c" style="width:50px">Mode</th>
+        <th class="fbt-scb-c" style="width:26px">Aud</th>
+        <th style="width:18px"></th>
     </tr>`;
     table.appendChild(thead);
 
     const tbody = document.createElement("tbody");
     table.appendChild(tbody);
-    wrap.appendChild(table);
 
-    // ── 4. Build row helpers ──────────────────────────────────────────────────
+    const addBtn = document.createElement("button");
+    addBtn.className = "fbt-scb-add-btn";
+    addBtn.textContent = "+ Add entry";
+    addBtn.addEventListener("click", () => {
+        if (_entries.length >= MAX_ENTRIES) return;
+        _entries.push({ subject_id: "", bundle_id: "", visual_mode: "images", use_audio: false });
+        _rebuildTable();
+        _syncWidget();
+    });
+
+    wrap.appendChild(table);
+    wrap.appendChild(addBtn);
+
+    // ── 4. Select helpers ─────────────────────────────────────────────────────
 
     function _fillSubjectSel(sel, currentId) {
         sel.innerHTML = "";
@@ -200,22 +223,24 @@ function _buildCastBuildUI(node) {
         });
     }
 
-    function _buildRow(slotIdx) {
-        const i = slotIdx + 1;  // 1-based for widget names
+    // ── 5. Build a single table row ───────────────────────────────────────────
 
+    function _buildRow(idx) {
+        const entry = _entries[idx];
         const tr = document.createElement("tr");
+        tr.classList.toggle("fbt-scb-empty", !entry.subject_id || !entry.bundle_id);
 
-        // Slot number cell
+        // Row number
         const numTd = document.createElement("td");
-        numTd.className = "fbt-scb-slot-num";
-        numTd.textContent = String(i);
+        numTd.className = "fbt-scb-row-num";
+        numTd.textContent = String(idx + 1);
         tr.appendChild(numTd);
 
         // Subject select
         const subjTd = document.createElement("td");
         const subjSel = document.createElement("select");
         subjSel.className = "fbt-scb-sel";
-        _fillSubjectSel(subjSel, _w(`subject_${i}`)?.value || "");
+        _fillSubjectSel(subjSel, entry.subject_id);
         subjTd.appendChild(subjSel);
         tr.appendChild(subjTd);
 
@@ -223,26 +248,23 @@ function _buildCastBuildUI(node) {
         const bundTd = document.createElement("td");
         const bundSel = document.createElement("select");
         bundSel.className = "fbt-scb-sel";
-        _fillBundleSel(bundSel, subjSel.value, _w(`bundle_${i}`)?.value || "");
+        _fillBundleSel(bundSel, entry.subject_id, entry.bundle_id);
         bundTd.appendChild(bundSel);
         tr.appendChild(bundTd);
 
         // Mode toggle
         const modeTd = document.createElement("td");
-        modeTd.className = "fbt-scb-center";
+        modeTd.className = "fbt-scb-c";
         const modeWrap = document.createElement("div");
         modeWrap.className = "fbt-scb-mode";
         const imgBtn = document.createElement("button");
-        imgBtn.className = "fbt-scb-mode-btn";
+        imgBtn.className = "fbt-scb-mode-btn" + (entry.visual_mode !== "video" ? " active" : "");
         imgBtn.textContent = "Img";
-        imgBtn.title = "Images mode";
+        imgBtn.title = "Images";
         const vidBtn = document.createElement("button");
-        vidBtn.className = "fbt-scb-mode-btn";
+        vidBtn.className = "fbt-scb-mode-btn" + (entry.visual_mode === "video" ? " active" : "");
         vidBtn.textContent = "Vid";
-        vidBtn.title = "Video mode";
-        const curMode = _w(`visual_mode_${i}`)?.value || "images";
-        imgBtn.classList.toggle("active", curMode === "images");
-        vidBtn.classList.toggle("active", curMode === "video");
+        vidBtn.title = "Video";
         modeWrap.appendChild(imgBtn);
         modeWrap.appendChild(vidBtn);
         modeTd.appendChild(modeWrap);
@@ -250,121 +272,135 @@ function _buildCastBuildUI(node) {
 
         // Audio checkbox
         const audTd = document.createElement("td");
-        audTd.className = "fbt-scb-center";
+        audTd.className = "fbt-scb-c";
         const audCb = document.createElement("input");
         audCb.type = "checkbox";
         audCb.className = "fbt-scb-audio";
         audCb.title = "Use audio reference";
-        audCb.checked = !!(_w(`use_audio_${i}`)?.value);
+        audCb.checked = !!entry.use_audio;
         audTd.appendChild(audCb);
         tr.appendChild(audTd);
 
-        // ── Wire events ───────────────────────────────────────────────────────
+        // Remove button
+        const rmTd = document.createElement("td");
+        const rmBtn = document.createElement("button");
+        rmBtn.className = "fbt-scb-rm-btn";
+        rmBtn.textContent = "✕";
+        rmBtn.title = "Remove entry";
+        rmBtn.addEventListener("click", () => {
+            _entries.splice(idx, 1);
+            _rebuildTable();
+            _syncWidget();
+        });
+        rmTd.appendChild(rmBtn);
+        tr.appendChild(rmTd);
 
-        const _syncEmpty = () => {
-            const active = subjSel.value && bundSel.value;
-            tr.classList.toggle("fbt-scb-empty", !active);
-        };
+        // ── Events ────────────────────────────────────────────────────────────
 
         subjSel.addEventListener("change", () => {
-            const sw = _w(`subject_${i}`);
-            if (sw) sw.value = subjSel.value;
-            // Refill bundles filtered to new subject
-            _fillBundleSel(bundSel, subjSel.value, _w(`bundle_${i}`)?.value || "");
-            _syncEmpty();
-            app?.graph?.setDirtyCanvas(true, false);
+            entry.subject_id = subjSel.value;
+            // Clear bundle if it belongs to a different subject
+            const cur = _bundles.find(b => b.id === entry.bundle_id);
+            if (cur?.subject_id && cur.subject_id !== entry.subject_id) {
+                entry.bundle_id = "";
+            }
+            _fillBundleSel(bundSel, entry.subject_id, entry.bundle_id);
+            tr.classList.toggle("fbt-scb-empty", !entry.subject_id || !entry.bundle_id);
+            _syncWidget();
         });
 
         bundSel.addEventListener("change", () => {
-            const bw = _w(`bundle_${i}`);
-            if (bw) bw.value = bundSel.value;
-            _syncEmpty();
-            app?.graph?.setDirtyCanvas(true, false);
+            entry.bundle_id = bundSel.value;
+            // Auto-inherit bundle's visual type
+            const bun = _bundles.find(b => b.id === entry.bundle_id);
+            if (bun?.visual?.type) {
+                entry.visual_mode = bun.visual.type;
+                imgBtn.classList.toggle("active", entry.visual_mode !== "video");
+                vidBtn.classList.toggle("active", entry.visual_mode === "video");
+            }
+            tr.classList.toggle("fbt-scb-empty", !entry.subject_id || !entry.bundle_id);
+            _syncWidget();
         });
 
         imgBtn.addEventListener("click", () => {
-            const mw = _w(`visual_mode_${i}`);
-            if (mw) mw.value = "images";
+            entry.visual_mode = "images";
             imgBtn.classList.add("active");
             vidBtn.classList.remove("active");
-            app?.graph?.setDirtyCanvas(true, false);
+            _syncWidget();
         });
 
         vidBtn.addEventListener("click", () => {
-            const mw = _w(`visual_mode_${i}`);
-            if (mw) mw.value = "video";
+            entry.visual_mode = "video";
             vidBtn.classList.add("active");
             imgBtn.classList.remove("active");
-            app?.graph?.setDirtyCanvas(true, false);
+            _syncWidget();
         });
 
         audCb.addEventListener("change", () => {
-            const aw = _w(`use_audio_${i}`);
-            if (aw) aw.value = audCb.checked;
-            app?.graph?.setDirtyCanvas(true, false);
+            entry.use_audio = audCb.checked;
+            _syncWidget();
         });
 
-        _syncEmpty();
-        tbody.appendChild(tr);
-        _rows[slotIdx] = { subjSel, bundSel, imgBtn, vidBtn, audCb };
+        return tr;
     }
 
-    for (let s = 0; s < SLOTS; s++) _buildRow(s);
+    // ── 6. Rebuild the whole tbody ────────────────────────────────────────────
 
-    // ── 5. Add DOM widget ─────────────────────────────────────────────────────
-    const displayWidget = node.addDOMWidget("cast_build_table", "preview", wrap, {
+    function _rebuildTable() {
+        tbody.innerHTML = "";
+        _entries.forEach((_, i) => tbody.appendChild(_buildRow(i)));
+        addBtn.style.display = _entries.length >= MAX_ENTRIES ? "none" : "";
+        // Update DOM widget height
+        if (displayWidget) {
+            displayWidget.computeSize = () => [0, _tableHeight()];
+            node.setSize?.([node.size[0], node.size[1]]);
+        }
+    }
+
+    function _tableHeight() {
+        return Math.max(70, 28 + _entries.length * 28 + 26);
+    }
+
+    // ── 7. Sync entries → hidden widget ───────────────────────────────────────
+
+    function _syncWidget() {
+        if (jsonWidget) jsonWidget.value = JSON.stringify(_entries);
+        app?.graph?.setDirtyCanvas?.(true, false);
+    }
+
+    // ── 8. Add DOM widget ─────────────────────────────────────────────────────
+    let displayWidget = null;
+    displayWidget = node.addDOMWidget("cast_build_table", "preview", wrap, {
         serialize: false,
         hideOnZoom: false,
         getValue() { return null; },
         setValue() {},
     });
-    displayWidget.computeSize = () => [0, 110];
+    displayWidget.computeSize = () => [0, _tableHeight()];
 
-    // ── 6. Refresh function (called by cast editor "Send to Workflow") ────────
+    // ── 9. Public refresh (called by cast editor "Send to Workflow") ──────────
 
-    node._refreshCastTable = function (entries) {
-        // entries: optional [{subject_id, bundle_id, visual_mode, use_audio}]
-        // If omitted, re-reads from hidden widget values.
-        for (let s = 0; s < SLOTS; s++) {
-            const i = s + 1;
-            const r = _rows[s];
-            if (!r) continue;
-
-            let subjectId  = _w(`subject_${i}`)?.value || "";
-            let bundleId   = _w(`bundle_${i}`)?.value  || "";
-            let visualMode = _w(`visual_mode_${i}`)?.value || "images";
-            let useAudio   = !!(_w(`use_audio_${i}`)?.value);
-
-            if (entries && s < entries.length) {
-                subjectId  = entries[s].subject_id  || "";
-                bundleId   = entries[s].bundle_id   || "";
-                visualMode = entries[s].visual_mode || "images";
-                useAudio   = !!entries[s].use_audio;
-            }
-
-            _fillSubjectSel(r.subjSel, subjectId);
-            _fillBundleSel(r.bundSel, subjectId, bundleId);
-            r.imgBtn.classList.toggle("active", visualMode === "images");
-            r.vidBtn.classList.toggle("active", visualMode === "video");
-            r.audCb.checked = useAudio;
-
-            const active = subjectId && bundleId;
-            r.subjSel.closest("tr").classList.toggle("fbt-scb-empty", !active);
+    node._refreshCastTable = function (newEntries) {
+        if (Array.isArray(newEntries)) {
+            _entries = newEntries.map(e => ({ ...e }));
+            _syncWidget();
         }
+        // Re-fill selects with latest API data then rebuild rows
+        _rebuildTable();
     };
 
-    // ── 7. Load subject + bundle lists from API ───────────────────────────────
+    // ── 10. Load subject + bundle lists, then render ──────────────────────────
     Promise.allSettled([
         bundlesApi.listSubjects(),
         bundlesApi.listBundles(),
     ]).then(([subjRes, bundRes]) => {
         _subjects = subjRes.value?.subjects ?? [];
         _bundles  = bundRes.value?.bundles  ?? [];
-        // Re-render selects with live data, preserving current widget values
-        node._refreshCastTable();
-    }).catch(() => {});
+        _rebuildTable();
+    }).catch(() => {
+        _rebuildTable();
+    });
 
-    // ── 8. Minimum node size ──────────────────────────────────────────────────
-    node.size[0] = Math.max(node.size[0], 360);
-    node.size[1] = Math.max(node.size[1], 160);
+    node.size[0] = Math.max(node.size[0], 370);
+    node.size[1] = Math.max(node.size[1], _tableHeight() + 60);
 }
