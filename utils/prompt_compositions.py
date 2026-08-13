@@ -272,16 +272,21 @@ def apply_cast_to_subjects(
                     if f not in sheets:
                         sheets.append(f)
 
-        # 2. Audio → voice.audio_reference_file
-        if entry.get("use_audio", False):
-            audio_src  = audio.get("source", "none")
-            audio_file = ""
-            if audio_src == "file":
-                audio_file = audio.get("file", "")
-            elif audio_src == "extract_from_visual":
-                audio_file = visual.get("file", "")
+        # 2. Audio → voice fields
+        # extract_from_visual means the audio is a VIDEO SOUNDTRACK — it is handled
+        # at the video-entry level (video_entries_full / soundtrack_audio in the
+        # refplan) and must NOT also appear as a standalone voice.audio_reference_file,
+        # which would create a duplicate reference.  Only source="file" (a separate
+        # standalone audio asset) populates the subject's voice fields.
+        if entry.get("use_audio", False) and audio.get("source") == "file":
+            audio_file = audio.get("file", "")
             if audio_file:
-                subj.setdefault("voice", {})["audio_reference_file"] = audio_file
+                v = subj.setdefault("voice", {})
+                v["audio_reference_file"] = audio_file
+                v["audio_start_time"]     = audio.get("start_time", 0.0)
+                v["audio_duration"]       = audio.get("duration", 0.0)
+                v["audio_retention"]      = audio.get("retention", "timbre")
+                v["audio_role"]           = audio.get("role", "")
 
         # 3. Appearance override → appearance.summary
         override = bundle.get("appearance_override", "").strip()

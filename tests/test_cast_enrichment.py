@@ -117,7 +117,9 @@ def test_audio_file_source_sets_reference():
     assert result["S1"]["voice"]["audio_reference_file"] == "alice.wav"
 
 
-def test_audio_extract_from_visual_uses_video_file():
+def test_audio_extract_from_visual_does_not_set_voice_file():
+    # extract_from_visual is a VIDEO SOUNDTRACK — handled at video-entry level in
+    # the refplan; must NOT also appear as a standalone voice.audio_reference_file.
     subj = _subject("Alice")
     comp = _composition({"S1": "alice"})
     cast = _cast([_entry("alice", "b1", visual_mode="video", use_audio=True)])
@@ -126,7 +128,7 @@ def test_audio_extract_from_visual_uses_video_file():
         audio_source="extract_from_visual",
     )})
     result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["voice"]["audio_reference_file"] == "alice_clip.mp4"
+    assert result["S1"]["voice"]["audio_reference_file"] == ""
 
 
 def test_use_audio_false_does_not_set_reference():
@@ -145,6 +147,30 @@ def test_audio_source_none_does_not_set_reference():
     reg  = _BundleRegistry({"b1": _bundle(audio_source="none")})
     result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
     assert result["S1"]["voice"]["audio_reference_file"] == ""
+
+
+def test_audio_file_source_carries_timing_and_role():
+    subj = _subject("Alice")
+    comp = _composition({"S1": "alice"})
+    cast = _cast([_entry("alice", "b1", use_audio=True)])
+    reg  = _BundleRegistry({"b1": _bundle(
+        audio_source="file",
+        audio_file="alice.wav",
+        # bundle also has retention/role/timing
+    )})
+    # Manually inject timing fields into the bundle dict for this test
+    bundle = reg.get("b1")
+    bundle["audio"]["start_time"] = 2.5
+    bundle["audio"]["duration"]   = 8.0
+    bundle["audio"]["retention"]  = "reuse"
+    bundle["audio"]["role"]       = "dialogue track"
+    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
+    v = result["S1"]["voice"]
+    assert v["audio_reference_file"] == "alice.wav"
+    assert v["audio_start_time"]     == 2.5
+    assert v["audio_duration"]       == 8.0
+    assert v["audio_retention"]      == "reuse"
+    assert v["audio_role"]           == "dialogue track"
 
 
 # ── Appearance override ────────────────────────────────────────────────────────

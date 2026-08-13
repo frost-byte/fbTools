@@ -199,7 +199,7 @@ function _startNew(subjectId = "") {
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
         visual:              { type: "images", file: "", files: [], force_rate: 0, frame_load_cap: 16, skip_first_frames: 0, select_every_nth: 1 },
-        audio:               { source: "none", file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0 },
+        audio:               { source: "none", file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "" },
         appearance_override: "",
         tags:                [],
     };
@@ -336,9 +336,12 @@ function _renderForm() {
                 textContent: "Switch visual to Video first, or choose a separate audio file.",
             }));
         } else if (b.audio.source === "extract_from_visual") {
-            _buildFrameParamSection(audioPickerWrap, b.audio, "Frame sampling (2nd Load Video node)");
+            _buildFrameParamSection(audioPickerWrap, b.audio, "Frame sampling (legacy VHS path)");
+            _buildAudioTimeSection(audioPickerWrap, b.audio);
+            _buildAudioRoleSection(audioPickerWrap, b.audio);
         } else if (b.audio.source === "file") {
             _buildAudioPicker(audioPickerWrap, b);
+            _buildAudioRoleSection(audioPickerWrap, b.audio);
         }
     };
     audioSourceEl.addEventListener("change", () => {
@@ -433,6 +436,35 @@ function _buildAudioTimeSection(wrap, obj) {
     grid.appendChild(_buildParamCell("Start (s)", obj, "start_time", { isFloat: true, hint: "Start time in seconds" }));
     grid.appendChild(_buildParamCell("Duration (s)", obj, "duration", { isFloat: true, hint: "0 = to end of file" }));
     wrap.appendChild(grid);
+}
+
+function _buildAudioRoleSection(wrap, audio) {
+    wrap.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: "Prompt role" }));
+
+    const retSel = document.createElement("select");
+    retSel.className = "fbt-ce-select";
+    [
+        { id: "timbre", label: "Timbre reference — do not copy signal" },
+        { id: "reuse",  label: "Audio reuse — reproduce verbatim" },
+        { id: "style",  label: "Style / rhythm reference" },
+    ].forEach(({ id, label }) => {
+        const o = document.createElement("option");
+        o.value = id;
+        o.textContent = label;
+        if (id === (audio.retention || "timbre")) o.selected = true;
+        retSel.appendChild(o);
+    });
+    retSel.addEventListener("change", () => { audio.retention = retSel.value; });
+
+    const roleEl = _mk("input", {
+        cls: "fbt-ce-input", type: "text",
+        placeholder: "Role description (auto-generated if empty)",
+        value: audio.role || "",
+    });
+    roleEl.addEventListener("input", () => { audio.role = roleEl.value; });
+
+    wrap.appendChild(retSel);
+    wrap.appendChild(roleEl);
 }
 
 function _buildToggle(values, labels, current, onChange) {

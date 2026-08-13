@@ -13092,6 +13092,24 @@ class CastIOType:
         def __init__(self, name: str, **kwargs):
             super().__init__(name, **kwargs)
 
+
+H3_REFPLAN_TYPE = "FBTOOLS_H3_REFPLAN"
+
+
+@io.comfytype(io_type=H3_REFPLAN_TYPE)
+class H3RefplanType:
+    """Ordered reference descriptor bundle from PromptCompositionLoader → CompositionToH3Conditioning.
+
+    Carries descriptors (paths + params) for all references in native node order:
+      images → [soundtrack_audio + video] pairs → standalone_audios
+    Terminal node decodes media and delegates to MiniMaxH3ReferenceToVideo.execute.
+    """
+    Type = object  # dict: {prompt, model_type, ref_image_size, references: [...]}
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
     class Output(io.Output):
         def __init__(self, name: str = "scene_cast", **kwargs):
             super().__init__(name, **kwargs)
@@ -13234,6 +13252,7 @@ from .utils.composition_resources import (
     load_backgrounds as _load_backgrounds_dict,
 )
 from .utils.prompt_assembler import assemble_composition as _assemble_composition
+from .utils.prompt_assembler import _build_h3_refplan
 
 
 @routes.get("/fbtools/compositions/list")
@@ -13748,20 +13767,24 @@ def _resolve_cast_media(
     """Extract reference media and frame-sampling params from a scene cast dict.
 
     Iterates entries in cast order.  Returns a dict with:
-      reference_video   – absolute path of first video-mode entry's file, or "".
-      reference_images  – [N,H,W,3] tensor from all image-mode entries, or None.
-      video_force_rate  – fps override for the visual Load Video node.
-      video_frame_cap   – frame cap for the visual Load Video node.
-      video_skip_first  – skip-first-frames for the visual Load Video node.
-      video_every_nth   – select-every-nth for the visual Load Video node.
-      audio_source      – "extract_from_visual" | "file" | "none".
-      audio_file        – absolute path to audio file (source=="file"), or "".
-      audio_force_rate  – fps override for the audio Load Video node (extract_from_visual).
-      audio_frame_cap   – frame cap for the audio Load Video node.
-      audio_skip_first  – skip-first-frames for the audio Load Video node.
-      audio_every_nth   – select-every-nth for the audio Load Video node.
-      audio_start_time  – start time in seconds for Load Audio (source=="file").
-      audio_duration    – duration in seconds for Load Audio; 0 = to end.
+      reference_video    – absolute path of first video-mode entry's file, or "".
+      reference_images   – [N,H,W,3] tensor from all image-mode entries, or None.
+      video_force_rate   – fps override for the visual Load Video node.
+      video_frame_cap    – frame cap for the visual Load Video node.
+      video_skip_first   – skip-first-frames for the visual Load Video node.
+      video_every_nth    – select-every-nth for the visual Load Video node.
+      audio_source       – "extract_from_visual" | "file" | "none".
+      audio_file         – absolute path to audio file (source=="file"), or "".
+      audio_force_rate   – fps override for the audio Load Video node (extract_from_visual).
+      audio_frame_cap    – frame cap for the audio Load Video node.
+      audio_skip_first   – skip-first-frames for the audio Load Video node.
+      audio_every_nth    – select-every-nth for the audio Load Video node.
+      audio_start_time   – start time in seconds for Load Audio (source=="file").
+      audio_duration     – duration in seconds for Load Audio; 0 = to end.
+      video_entries_full – list of all video-mode entry descriptors (for refplan):
+                           [{subject_id, video_file, load_params, audio_source,
+                             audio_path, audio_start_time, audio_duration,
+                             audio_retention, audio_role}, …]
     """
     entries = scene_cast.get("entries", [])
     reference_video = ""
@@ -13771,10 +13794,14 @@ def _resolve_cast_media(
     audio_file = ""
     audio_params: dict = {"force_rate": 0, "frame_load_cap": 0, "skip_first_frames": 0, "select_every_nth": 1}
     audio_time: dict = {"start_time": 0.0, "duration": 0.0}
+    video_entries_full: list[dict] = []
+
+    input_dir = get_input_directory()
 
     for entry in entries:
         bundle_id = entry.get("bundle_id", "")
         visual_mode = entry.get("visual_mode", "images")
+        subject_id = entry.get("subject_id", "")
         if not bundle_id:
             continue
         bundle = bundle_registry.get(bundle_id)
@@ -13785,20 +13812,54 @@ def _resolve_cast_media(
         audio = bundle.get("audio", {})
 
         if visual_mode == "video":
-            if not reference_video:
-                vfile = visual.get("file", "")
-                if vfile:
-                    reference_video = os.path.join(get_input_directory(), vfile)
-                    video_params = {
-                        "force_rate":        visual.get("force_rate", 0),
-                        "frame_load_cap":    visual.get("frame_load_cap", 16),
-                        "skip_first_frames": visual.get("skip_first_frames", 0),
-                        "select_every_nth":  visual.get("select_every_nth", 1),
-                    }
+            vfile = visual.get("file", "")
+            if vfile:
+                abs_vfile = os.path.join(input_dir, vfile)
+                entry_load_params = {
+                    "force_rate":        visual.get("force_rate", 0),
+                    "frame_load_cap":    visual.get("frame_load_cap", 16),
+                    "skip_first_frames": visual.get("skip_first_frames", 0),
+                    "select_every_nth":  visual.get("select_every_nth", 1),
+                }
+                # Legacy flat output: first video only
+                if not reference_video:
+                    reference_video = abs_vfile
+                    video_params = entry_load_params
+
+                # Determine audio config for this video entry
+                a_src = audio.get("source", "none")
+                entry_audio_source = "none"
+                entry_audio_path   = ""
+                entry_audio_start  = 0.0
+                entry_audio_dur    = 0.0
+                if a_src == "extract_from_visual":
+                    entry_audio_source = "extract_from_visual"
+                    entry_audio_path   = abs_vfile
+                    entry_audio_start  = audio.get("start_time", 0.0)
+                    entry_audio_dur    = audio.get("duration", 0.0)
+                elif a_src == "file":
+                    af = audio.get("file", "")
+                    if af:
+                        entry_audio_source = "file"
+                        entry_audio_path   = os.path.join(input_dir, af)
+                        entry_audio_start  = audio.get("start_time", 0.0)
+                        entry_audio_dur    = audio.get("duration", 0.0)
+
+                video_entries_full.append({
+                    "subject_id":       subject_id,
+                    "video_file":       vfile,
+                    "load_params":      entry_load_params,
+                    "audio_source":     entry_audio_source,
+                    "audio_path":       entry_audio_path,
+                    "audio_start_time": entry_audio_start,
+                    "audio_duration":   entry_audio_dur,
+                    "audio_retention":  audio.get("retention", "timbre"),
+                    "audio_role":       audio.get("role", ""),
+                })
         else:
             image_files.extend(visual.get("files", []))
 
-        # Resolve audio from first non-"none" source across all entries
+        # Legacy flat audio: first non-"none" source across all entries
         if audio_source == "none":
             a_src = audio.get("source", "none")
             if a_src == "extract_from_visual" and visual_mode == "video" and visual.get("file"):
@@ -13813,7 +13874,7 @@ def _resolve_cast_media(
                 a_file = audio.get("file", "")
                 if a_file:
                     audio_source = a_src
-                    audio_file = os.path.join(get_input_directory(), a_file)
+                    audio_file = os.path.join(input_dir, a_file)
                     audio_time = {
                         "start_time": audio.get("start_time", 0.0),
                         "duration":   audio.get("duration", 0.0),
@@ -13821,20 +13882,21 @@ def _resolve_cast_media(
 
     reference_images = _load_subject_images(image_files) if image_files else None
     return {
-        "reference_video":  reference_video,
-        "reference_images": reference_images,
-        "video_force_rate": video_params["force_rate"],
-        "video_frame_cap":  video_params["frame_load_cap"],
-        "video_skip_first": video_params["skip_first_frames"],
-        "video_every_nth":  video_params["select_every_nth"],
-        "audio_source":     audio_source,
-        "audio_file":       audio_file,
-        "audio_force_rate": audio_params["force_rate"],
-        "audio_frame_cap":  audio_params["frame_load_cap"],
-        "audio_skip_first": audio_params["skip_first_frames"],
-        "audio_every_nth":  audio_params["select_every_nth"],
-        "audio_start_time": audio_time["start_time"],
-        "audio_duration":   audio_time["duration"],
+        "reference_video":    reference_video,
+        "reference_images":   reference_images,
+        "video_force_rate":   video_params["force_rate"],
+        "video_frame_cap":    video_params["frame_load_cap"],
+        "video_skip_first":   video_params["skip_first_frames"],
+        "video_every_nth":    video_params["select_every_nth"],
+        "audio_source":       audio_source,
+        "audio_file":         audio_file,
+        "audio_force_rate":   audio_params["force_rate"],
+        "audio_frame_cap":    audio_params["frame_load_cap"],
+        "audio_skip_first":   audio_params["skip_first_frames"],
+        "audio_every_nth":    audio_params["select_every_nth"],
+        "audio_start_time":   audio_time["start_time"],
+        "audio_duration":     audio_time["duration"],
+        "video_entries_full": video_entries_full,
     }
 
 
@@ -14050,6 +14112,15 @@ class PromptCompositionLoader(io.ComfyNode):
                         "Wire into LoraStackApply. Empty if no LoRAs are attached."
                     ),
                 ),
+                H3RefplanType.Output(
+                    "h3_refplan",
+                    display_name="H3 Ref Plan",
+                    tooltip=(
+                        "Ordered reference descriptor bundle (FBTOOLS_H3_REFPLAN). "
+                        "Wire into CompositionToH3Conditioning to load media and build conditioning "
+                        "without manual VHS/audio-loader wiring."
+                    ),
+                ),
             ],
         )
 
@@ -14085,7 +14156,7 @@ class PromptCompositionLoader(io.ComfyNode):
         if matched is None:
             logger.warning("PromptCompositionLoader: composition %r not found", composition_name)
             return io.NodeOutput("", "", "", composition_name, "", None,
-                                 0, 16, 0, 1, "none", "", 0, 0, 0, 1, 0.0, 0.0, None)
+                                 0, 16, 0, 1, "none", "", 0, 0, 0, 1, 0.0, 0.0, None, None)
 
         composition = _load_composition(user_data_dir(), matched["id"])
 
@@ -14101,34 +14172,27 @@ class PromptCompositionLoader(io.ComfyNode):
         resolved_background = _resolve_composition_background(composition, backgrounds)
 
         # Resolve cast: build video_entries for assembler + reference media tensors
-        video_entries: list[dict] = []
         cast_media: dict = {
             "reference_video": "", "reference_images": None,
             "video_force_rate": 0, "video_frame_cap": 16, "video_skip_first": 0, "video_every_nth": 1,
             "audio_source": "none", "audio_file": "",
             "audio_force_rate": 0, "audio_frame_cap": 0, "audio_skip_first": 0, "audio_every_nth": 1,
             "audio_start_time": 0.0, "audio_duration": 0.0,
+            "video_entries_full": [],
         }
         if scene_cast:
             bundle_registry = _load_bundle_registry(default_bundle_registry_path())
             cast_media = _resolve_cast_media(scene_cast, bundle_registry)
 
-            # Enrich subjects with bundle visual files, audio, and appearance override
+            # Enrich subjects with bundle image files, standalone audio, and appearance override
             resolved_subjects = _apply_cast_to_subjects(
                 resolved_subjects, composition, scene_cast, bundle_registry
             )
 
-            # Build video_entries: video-mode bundles → <Video N> labels in H3 prompt
-            for _ce in scene_cast.get("entries", []):
-                if _ce.get("visual_mode") == "video" and _ce.get("bundle_id"):
-                    _bundle = bundle_registry.get(_ce["bundle_id"])
-                    if _bundle:
-                        _vfile = _bundle.get("visual", {}).get("file", "")
-                        if _vfile:
-                            video_entries.append({
-                                "subject_id": _ce.get("subject_id", ""),
-                                "video_file": _vfile,
-                            })
+        # video_entries_full carries full descriptors (paths, load params, audio config)
+        # for all video-mode cast entries; used by both the prompt assembler (for
+        # <Video N> labels) and _build_h3_refplan (for the terminal node).
+        video_entries: list[dict] = cast_media["video_entries_full"]
 
         result = _assemble_composition(
             composition, resolved_subjects, resolved_background, model_type_used, video_entries
@@ -14165,6 +14229,16 @@ class PromptCompositionLoader(io.ComfyNode):
             if e.get("name")
         ] or None
 
+        # Build FBTOOLS_H3_REFPLAN from enriched subjects + full video descriptors
+        scene_instance_for_plan = {
+            "slot_assignments": resolved_subjects,
+            "outfit_overrides": composition.get("outfit_overrides", {}),
+        }
+        h3_refplan = _build_h3_refplan(scene_instance_for_plan, video_entries)
+        h3_refplan["prompt"]         = prompt
+        h3_refplan["model_type"]     = model_type_used
+        h3_refplan["ref_image_size"] = "match"
+
         cast_note = f" | cast: {scene_cast.get('name', '?')}" if scene_cast else ""
         send_status_update(
             cls.node_id,
@@ -14189,6 +14263,7 @@ class PromptCompositionLoader(io.ComfyNode):
             cast_media["audio_start_time"],
             cast_media["audio_duration"],
             lora_stack_data,
+            h3_refplan,
         )
 
 
