@@ -122,13 +122,17 @@ export function setupSceneCastBuild(nodeType) {
 
 function _buildCastBuildUI(node) {
     // ── 1. Hide all standard widgets ──────────────────────────────────────────
+    // Iterate the whole widget list rather than looking up by name so nothing
+    // is missed. Boolean/toggle widgets in ComfyUI V3 have their own draw()
+    // that can bypass the type="hidden" check, so we nuke that too.
+    (node.widgets || []).forEach(w => {
+        setWidgetVisible(w, false);
+        if (typeof w.draw === "function" && !w._origDraw) {
+            w._origDraw = w.draw;
+            w.draw = () => {};
+        }
+    });
     const _w = (name) => node.widgets?.find(w => w.name === name);
-    for (let i = 1; i <= SLOTS; i++) {
-        setWidgetVisible(_w(`subject_${i}`),     false);
-        setWidgetVisible(_w(`bundle_${i}`),      false);
-        setWidgetVisible(_w(`visual_mode_${i}`), false);
-        setWidgetVisible(_w(`use_audio_${i}`),   false);
-    }
 
     // ── 2. State for subject / bundle lists ───────────────────────────────────
     let _subjects = [];   // [{id, name}]
