@@ -1193,14 +1193,17 @@ export function setupStoryEdit(nodeType, nodeData, app) {
         }
 
         // Initialize: Update preview scene options based on currently selected story
+        // Expose for onConfigure (workflow reload)
+        node._loadStoryData = loadStoryData;
+
         const initialStorySelect = widgets.find(w => w.name === 'story_select')?.value;
         if (initialStorySelect) {
             // Load available scenes first
             await loadAvailableScenes();
-            
+
             // Update preview scene combo for current story first
             await updatePreviewSceneOptions(initialStorySelect);
-            
+
             // Then load story data
             loadStoryData();
         } else {
@@ -1214,6 +1217,14 @@ export function setupStoryEdit(nodeType, nodeData, app) {
                 </div>
             `;
         }
+    };
+
+    // onConfigure fires after widget values are restored from the saved workflow.
+    // Re-run loadStoryData so the table shows the saved story_select value.
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (config) {
+        if (onConfigure) onConfigure.apply(this, arguments);
+        if (this._loadStoryData) this._loadStoryData();
     };
 
     // Handle execution - parse story data from UI text output
@@ -1230,17 +1241,17 @@ export function setupStoryEdit(nodeType, nodeData, app) {
             try {
                 const storyData = JSON.parse(textArray[2]);
                 console.log("fb_tools -> StoryEdit: Received story data:", storyData);
-                
+
                 // Update the table with the received data
                 if (storyData.scenes && storyData.scenes.length > 0) {
                     this._currentStoryData = storyData;
                     this._currentScenes = storyData.scenes;
-                    
+
                     // Re-render the table with the new data
                     if (this._renderTable) {
                         this._renderTable(storyData);
                     }
-                    
+
                     console.log(`fb_tools -> StoryEdit: Table updated with ${storyData.scenes.length} scenes`);
                 }
             } catch (error) {
@@ -1327,7 +1338,18 @@ export function setupStorySceneBatch(nodeType, nodeData, app) {
             }
         }
     };
-    
+
+    // onConfigure fires after widget values are restored from the saved workflow.
+    // Re-fetch job_id options for the saved story_name value.
+    const onConfigureBatch = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (config) {
+        if (onConfigureBatch) onConfigureBatch.apply(this, arguments);
+        const storyNameWidget = this.widgets?.find(w => w.name === 'story_name');
+        if (storyNameWidget?.value) {
+            fetchAndUpdateJobIdOptions(this, storyNameWidget.value);
+        }
+    };
+
     /**
      * Fetch available stories from API and update dropdown
      */
