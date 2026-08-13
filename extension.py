@@ -13214,6 +13214,143 @@ class SceneCastLoad(io.ComfyNode):
         return io.NodeOutput(cast, summary, ui={"cast_summary": summary})
 
 
+# ── Node: SceneCastBuild ──────────────────────────────────────────────────────
+
+_SCB_SLOTS = 4
+_SCB_VISUAL_MODES = ["images", "video"]
+
+
+def _scb_inputs() -> list:
+    """Build the 16 hidden-by-JS inputs for SceneCastBuild (4 slots × 4 fields)."""
+    inputs = []
+    for i in range(1, _SCB_SLOTS + 1):
+        inputs += [
+            io.String.Input(
+                f"subject_{i}",
+                display_name=f"Subject {i}",
+                default="",
+                tooltip=f"Subject ID for slot {i}. Managed via the Scene Casts sidebar.",
+            ),
+            io.String.Input(
+                f"bundle_{i}",
+                display_name=f"Bundle {i}",
+                default="",
+                tooltip=f"Bundle ID for slot {i}.",
+            ),
+            io.Combo.Input(
+                f"visual_mode_{i}",
+                display_name=f"Mode {i}",
+                options=_SCB_VISUAL_MODES,
+                default="images",
+                tooltip=f"Visual mode for slot {i}: images or video.",
+            ),
+            io.Boolean.Input(
+                f"use_audio_{i}",
+                display_name=f"Audio {i}",
+                default=False,
+                tooltip=f"Include audio reference for slot {i}.",
+            ),
+        ]
+    return inputs
+
+
+class SceneCastBuild(io.ComfyNode):
+    """Build a Scene Cast inline on the canvas without a saved file.
+
+    Configure up to 4 subject → bundle assignments directly as node widgets.
+    Use the Scene Casts sidebar "Send to Workflow" button to push the current
+    cast editor state to this node and switch between configurations quickly.
+
+    Outputs the same SCENE_CAST type as SceneCastLoad, so it wires into
+    PromptCompositionLoader unchanged.
+    """
+
+    node_id = prefixed_node_id("SceneCastBuild")
+    display_name = "Scene Cast Build"
+    category = "🧊 frost-byte/Scene"
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            inputs=_scb_inputs(),
+            outputs=[
+                CastIOType.Output(
+                    "scene_cast",
+                    display_name="Scene Cast",
+                    tooltip="Inline cast dict for wiring into PromptCompositionLoader.",
+                ),
+                io.String.Output(
+                    "cast_summary",
+                    display_name="Cast Summary",
+                    tooltip="Human-readable summary of configured slots.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, **kwargs):
+        bundle_mtime = subject_mtime = 0
+        try:
+            bundle_mtime = os.path.getmtime(default_bundle_registry_path())
+        except OSError:
+            pass
+        try:
+            subject_mtime = os.path.getmtime(
+                os.path.join(user_data_dir(), "subject_profiles.json")
+            )
+        except OSError:
+            pass
+        slot_values = tuple(
+            (
+                kwargs.get(f"subject_{i}", ""),
+                kwargs.get(f"bundle_{i}", ""),
+                kwargs.get(f"visual_mode_{i}", "images"),
+                kwargs.get(f"use_audio_{i}", False),
+            )
+            for i in range(1, _SCB_SLOTS + 1)
+        )
+        return (bundle_mtime, subject_mtime, *slot_values)
+
+    @classmethod
+    def execute(cls, **kwargs) -> io.NodeOutput:
+        entries = []
+        for i in range(1, _SCB_SLOTS + 1):
+            subject_id  = (kwargs.get(f"subject_{i}") or "").strip()
+            bundle_id   = (kwargs.get(f"bundle_{i}") or "").strip()
+            visual_mode = kwargs.get(f"visual_mode_{i}", "images")
+            use_audio   = bool(kwargs.get(f"use_audio_{i}", False))
+            if subject_id and bundle_id:
+                entries.append({
+                    "subject_id":  subject_id,
+                    "bundle_id":   bundle_id,
+                    "visual_mode": visual_mode,
+                    "use_audio":   use_audio,
+                })
+
+        cast = {
+            "id":      "_inline",
+            "name":    "_inline",
+            "entries": entries,
+        }
+
+        n = len(entries)
+        lines = [f"Inline cast  ({n} {'subject' if n == 1 else 'subjects'})"]
+        for e in entries:
+            mode = e["visual_mode"]
+            audio_flag = " + audio" if e["use_audio"] else ""
+            lines.append(f"  • {e['subject_id']} → {e['bundle_id']} [{mode}{audio_flag}]")
+        summary = "\n".join(lines)
+
+        send_status_update(
+            cls.node_id,
+            f"Inline cast: {n} {'entry' if n == 1 else 'entries'}",
+        )
+        return io.NodeOutput(cast, summary)
+
+
 # ── Scene Cast reload endpoint ────────────────────────────────────────────────
 
 @routes.post("/fbtools/casts/reload")
@@ -14590,4 +14727,5 @@ class FBToolsExtension(ComfyExtension):
             CompositionToH3Conditioning,
             # Scene Cast nodes
             SceneCastLoad,
+            SceneCastBuild,
         ]

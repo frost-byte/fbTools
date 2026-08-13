@@ -490,6 +490,128 @@ async function _onSave(cast, warnEl) {
     }
 }
 
+// ── Send to Workflow ──────────────────────────────────────────────────────────
+
+const SCB_NODE_TYPE = "fbt_SceneCastBuild";
+
+function _onSendToWorkflow(wrapEl) {
+    // Toggle: close existing picker if already open
+    const existing = wrapEl.querySelector(".fbt-ce-stw-picker");
+    if (existing) { existing.remove(); return; }
+
+    if (!_S.editing) {
+        _toast("Open a cast to edit before sending to workflow", "warn");
+        return;
+    }
+
+    const entries = _S.editing.entries || [];
+    if (!entries.length) {
+        _toast("Add at least one entry before sending", "warn");
+        return;
+    }
+
+    const app = window._fbtApp;
+    const graphNodes = app?.graph?._nodes || [];
+    const builders = graphNodes.filter(n => n.type === SCB_NODE_TYPE);
+
+    const picker = document.createElement("div");
+    picker.className = "fbt-ce-stw-picker";
+
+    if (!builders.length) {
+        const empty = document.createElement("div");
+        empty.className = "fbt-ce-stw-empty";
+        empty.textContent = "No Scene Cast Build nodes on canvas";
+        picker.appendChild(empty);
+    } else {
+        builders.forEach(node => {
+            // Show first non-empty subject widget as the node label
+            const firstSubj = node.widgets?.find(
+                w => w.name && w.name.startsWith("subject_") && w.value
+            )?.value || "(empty)";
+
+            const row = document.createElement("div");
+            row.className = "fbt-ce-stw-row";
+            row.title = `Push ${entries.length} ${entries.length === 1 ? "entry" : "entries"} to node #${node.id}`;
+
+            const label = document.createElement("span");
+            label.className = "fbt-ce-stw-row-label";
+            label.textContent = firstSubj;
+            const idx = document.createElement("span");
+            idx.className = "fbt-ce-stw-row-idx";
+            idx.textContent = `#${node.id}`;
+            row.appendChild(label);
+            row.appendChild(idx);
+
+            row.addEventListener("click", () => {
+                _pushToNode(node, entries);
+                picker.remove();
+                document.removeEventListener("pointerdown", _closeOnOutside, true);
+                _toast(`Sent ${entries.length} ${entries.length === 1 ? "entry" : "entries"} to node #${node.id}`, "success");
+            });
+            picker.appendChild(row);
+        });
+    }
+
+    // "Create new" row
+    const newRow = document.createElement("div");
+    newRow.className = "fbt-ce-stw-row fbt-ce-stw-new";
+    newRow.textContent = "＋ New Scene Cast Build node";
+    newRow.title = "Add a new Scene Cast Build node to the canvas";
+    newRow.addEventListener("click", () => {
+        picker.remove();
+        document.removeEventListener("pointerdown", _closeOnOutside, true);
+        if (typeof LiteGraph === "undefined" || !app?.graph) {
+            _toast("Canvas not available", "error");
+            return;
+        }
+        const node = LiteGraph.createNode(SCB_NODE_TYPE);
+        if (!node) { _toast("Could not create node", "error"); return; }
+        const mouse = app.canvas?.canvas_mouse;
+        node.pos = mouse ? [mouse[0] + 20, mouse[1] + 20] : [200, 200];
+        app.graph.add(node);
+        setTimeout(() => {
+            _pushToNode(node, entries);
+        }, 120);
+        _toast("Created Scene Cast Build node", "success");
+    });
+    picker.appendChild(newRow);
+
+    const _closeOnOutside = (e) => {
+        if (!wrapEl.contains(e.target)) {
+            picker.remove();
+            document.removeEventListener("pointerdown", _closeOnOutside, true);
+        }
+    };
+    document.addEventListener("pointerdown", _closeOnOutside, true);
+
+    wrapEl.appendChild(picker);
+}
+
+function _pushToNode(node, entries) {
+    const _w = (name) => node.widgets?.find(w => w.name === name);
+    const SLOTS = 4;
+
+    for (let i = 1; i <= SLOTS; i++) {
+        const e = entries[i - 1];
+        if (e) {
+            const sw = _w(`subject_${i}`);     if (sw) sw.value = e.subject_id  || "";
+            const bw = _w(`bundle_${i}`);      if (bw) bw.value = e.bundle_id   || "";
+            const mw = _w(`visual_mode_${i}`); if (mw) mw.value = e.visual_mode || "images";
+            const aw = _w(`use_audio_${i}`);   if (aw) aw.value = !!e.use_audio;
+        } else {
+            // Clear unused slots
+            const sw = _w(`subject_${i}`);     if (sw) sw.value = "";
+            const bw = _w(`bundle_${i}`);      if (bw) bw.value = "";
+            const mw = _w(`visual_mode_${i}`); if (mw) mw.value = "images";
+            const aw = _w(`use_audio_${i}`);   if (aw) aw.value = false;
+        }
+    }
+
+    // Refresh the DOM table widget and mark canvas dirty
+    node._refreshCastTable?.(entries.slice(0, SLOTS));
+    window._fbtApp?.graph?.setDirtyCanvas(true, false);
+}
+
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
 function _buildTopBar() {
@@ -500,6 +622,16 @@ function _buildTopBar() {
         textContent: "+ New Cast",
         onclick: () => _startNew(),
     }));
+
+    // Send to Workflow wrapper + button
+    const stwWrap = _mk("div", { cls: "fbt-ce-stw-wrap" });
+    stwWrap.appendChild(_mk("button", {
+        cls: "fbt-ce-btn",
+        textContent: "Send to Workflow",
+        title: "Push the current cast entries to a Scene Cast Build node on the canvas",
+        onclick: () => _onSendToWorkflow(stwWrap),
+    }));
+    bar.appendChild(stwWrap);
 
     bar.appendChild(_mk("button", {
         cls: "fbt-ce-icon-btn fbt-be-refresh-btn",
