@@ -312,11 +312,11 @@ def test_h3_ref2va_retention_analysis_fully_preserved():
     assert "<Subject 1> (Alice): fully_preserved" in prompt
 
 
-def test_h3_ref2va_retention_analysis_audio_not_fully_copy():
+def test_h3_ref2va_retention_analysis_audio_timbre_has_nocopy():
     alice = _make_subject("Alice", audio="a.wav")
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "not fully_copy" in prompt
+    assert "without copying the original signal" in prompt
 
 
 def test_h3_ref2va_dialogue_tags():
