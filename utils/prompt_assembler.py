@@ -68,10 +68,12 @@ def _build_ref_map(
       Subject 1, 2, … in slot order.
       Picture 1, 2, 3, … in slot order (continuous across all subjects).
       Video 1, 2, … in slot order for slots matched by subject_id in video_entries.
-      Audio 1, 2, … in slot order for slots that have audio files.
+      Audio 1, 2, … mirrors native ref_items order:
+        first all soundtrack audios (extract_from_visual, in slot order),
+        then all standalone audio files (in slot order).
 
-    video_entries is an optional list of {subject_id, video_file} dicts from cast
-    resolution.  Matching is by subject_id identity.
+    video_entries is an optional list of {subject_id, video_file, audio_source, …}
+    dicts from cast resolution.  Matching is by subject_id identity.
 
     Returns a dict keyed by slot_id with typing info for each assigned slot.
     Slots not present in slot_assignments are absent from the result.
@@ -87,11 +89,34 @@ def _build_ref_map(
         if sid and sid not in video_lookup:
             video_lookup[sid] = ve
 
+    # Pre-assign audio ordinals in native ref_items order so <Audio N> in the
+    # prompt matches what MiniMaxH3ReferenceToVideo assigns:
+    #   1. soundtrack audios (extract_from_visual, in slot order)
+    #   2. standalone audio files (voice.audio_reference_file, in slot order)
+    _audio_ctr = 1
+    pre_soundtrack_nums: dict[str, int] = {}   # subject_id → ordinal
+    pre_standalone_nums: dict[str, int] = {}   # slot_id    → ordinal
+    for slot_id in ordered_slots:
+        subj = assignments.get(slot_id)
+        if subj is None:
+            continue
+        sid = subj.get("subject_id", "")
+        ve = video_lookup.get(sid) if sid else None
+        if ve is not None and ve.get("audio_source") == "extract_from_visual":
+            pre_soundtrack_nums[sid] = _audio_ctr
+            _audio_ctr += 1
+    for slot_id in ordered_slots:
+        subj = assignments.get(slot_id)
+        if subj is None:
+            continue
+        if subj.get("voice", {}).get("audio_reference_file", ""):
+            pre_standalone_nums[slot_id] = _audio_ctr
+            _audio_ctr += 1
+
     ref_map: dict[str, dict] = {}
     subject_counter = 1
     picture_counter = 1
     video_counter = 1
-    audio_counter = 1
 
     for slot_id in ordered_slots:
         subject = assignments.get(slot_id)
@@ -110,15 +135,21 @@ def _build_ref_map(
         ve = video_lookup.get(subject_id) if subject_id else None
         video_num: int | None = None
         video_file: str = ""
+        soundtrack_num: int | None = None
+        soundtrack_retention: str = "timbre"
+        soundtrack_role: str = ""
         if ve:
             video_num = video_counter
             video_file = ve.get("video_file", "")
             video_counter += 1
+            if ve.get("audio_source") == "extract_from_visual":
+                soundtrack_num = pre_soundtrack_nums.get(subject_id)
+                soundtrack_retention = ve.get("audio_retention", "timbre")
+                soundtrack_role = ve.get("audio_role", "")
 
         audio_num: int | None = None
         if audio_file:
-            audio_num = audio_counter
-            audio_counter += 1
+            audio_num = pre_standalone_nums.get(slot_id)
 
         ref_map[slot_id] = {
             "subject_id": subject_id,
@@ -131,6 +162,8 @@ def _build_ref_map(
             "outfit": outfit,
             "voice_description": voice.get("description", ""),
             "audio_file": audio_file,
+            "audio_retention": voice.get("audio_retention", "timbre"),
+            "audio_role": voice.get("audio_role", ""),
             "language": voice.get("language", "en-us") or "en-us",
             "character_sheet_images": list(sheets),
             "concept_id": subject.get("concept_id", ""),
@@ -141,6 +174,9 @@ def _build_ref_map(
             "video_num": video_num,
             "video_file": video_file,
             "audio_num": audio_num,
+            "soundtrack_num": soundtrack_num,
+            "soundtrack_retention": soundtrack_retention,
+            "soundtrack_role": soundtrack_role,
         }
         subject_counter += 1
 
@@ -367,12 +403,41 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 video_role = f"is the visual identity reference for {label}"
             video_sd_lines.append(f"<Video {vnum}> {video_role}")
 
+        # Soundtrack audio line (extract_from_visual — audio from the video)
+        if info["soundtrack_num"] is not None:
+            snd_num = info["soundtrack_num"]
+            snd_ret = info["soundtrack_retention"]
+            snd_role = info["soundtrack_role"]
+            vnum = info["video_num"]
+            if snd_role:
+                desc = snd_role
+            elif snd_ret == "reuse":
+                desc = f"the audio track from <Video {vnum}>, reproduced verbatim"
+            elif snd_ret == "style":
+                desc = f"the audio style and rhythm reference from <Video {vnum}>"
+            else:
+                desc = (f"the voice-timbre reference from <Video {vnum}>, "
+                        "without copying the original signal")
+            audio_sd_lines.append(f"<Audio {snd_num}> is {desc}.")
+
+        # Standalone audio line (voice.audio_reference_file)
         if info["audio_num"] is not None:
-            voice = info["voice_description"] or f"spoken {info['language']} vocal layer"
-            audio_sd_lines.append(
-                f"<Audio {info['audio_num']}> is the voice-timbre reference for {label} "
-                f"({info['speaker_id']}), containing {voice}."
-            )
+            aud_num = info["audio_num"]
+            aud_ret = info["audio_retention"]
+            aud_role = info["audio_role"]
+            voice_desc = info["voice_description"] or f"spoken {info['language']} vocal layer"
+            spk = f"{label} ({info['speaker_id']})"
+            if aud_role:
+                desc = f"{aud_role} for {spk}"
+            elif aud_ret == "reuse":
+                desc = f"the audio for {spk}, {voice_desc}, reproduced verbatim"
+            elif aud_ret == "style":
+                desc = (f"the audio style and rhythm reference for {spk}, "
+                        f"containing {voice_desc}")
+            else:
+                desc = (f"the voice-timbre reference for {spk}, "
+                        f"containing {voice_desc}, without copying the original signal")
+            audio_sd_lines.append(f"<Audio {aud_num}> is {desc}.")
 
     sd.extend(video_sd_lines)
     sd.extend(audio_sd_lines)
@@ -380,7 +445,10 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
 
     # ── summary ────────────────────────────────────────────────────────────────
     has_refs = any(info["picture_nums"] or info["video_num"] is not None for info in ref_map.values())
-    has_audio = any(info["audio_num"] is not None for info in ref_map.values())
+    has_audio = any(
+        info["audio_num"] is not None or info["soundtrack_num"] is not None
+        for info in ref_map.values()
+    )
 
     # User-provided task_flags override auto-detection; otherwise infer from refs.
     # Per MiniMax docs, pictures AND videos that provide character/style/camera guidance
@@ -435,14 +503,30 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 replaced += "."
             narrative.append(replaced)
 
-    # Audio voice-timbre reference closing sentence
+    # Audio reference closing sentence (soundtracks first, then standalone)
     audio_voice_parts: list[str] = []
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
+        if info["soundtrack_num"] is not None:
+            snd_ret = info["soundtrack_retention"]
+            lbl = info["subject_label"]
+            if snd_ret == "reuse":
+                phrase = f"<Audio {info['soundtrack_num']}> as the audio to reproduce verbatim for {lbl}"
+            elif snd_ret == "style":
+                phrase = f"<Audio {info['soundtrack_num']}> as the audio style reference for {lbl}"
+            else:
+                phrase = f"<Audio {info['soundtrack_num']}> as the voice-timbre reference for {lbl}"
+            audio_voice_parts.append(phrase)
         if info["audio_num"] is not None:
-            audio_voice_parts.append(
-                f"<Audio {info['audio_num']}> as the voice-timbre reference for {info['subject_label']}"
-            )
+            aud_ret = info["audio_retention"]
+            lbl = info["subject_label"]
+            if aud_ret == "reuse":
+                phrase = f"<Audio {info['audio_num']}> as the audio to reproduce verbatim for {lbl}"
+            elif aud_ret == "style":
+                phrase = f"<Audio {info['audio_num']}> as the audio style reference for {lbl}"
+            else:
+                phrase = f"<Audio {info['audio_num']}> as the voice-timbre reference for {lbl}"
+            audio_voice_parts.append(phrase)
     if audio_voice_parts:
         narrative.append("The scene uses " + " and ".join(audio_voice_parts) + ".")
 
@@ -464,10 +548,27 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         if info["video_num"] is not None:
             ra.append(f"<Video {info['video_num']}>: reference (visual identity, not fully_copy)")
 
+    def _audio_ra_line(aud_num: int, retention: str, subj_label: str) -> str:
+        if retention == "reuse":
+            return f"<Audio {aud_num}>: fully_copy"
+        if retention == "style":
+            return f"<Audio {aud_num}>: reference (audio style, not fully_copy)"
+        return (f"<Audio {aud_num}>: reference - its vocal timbre guides the "
+                f"dialogue delivery of {subj_label}, without copying the original signal")
+
+    for slot_id in ordered_slots:
+        info = ref_map[slot_id]
+        if info["soundtrack_num"] is not None:
+            ra.append(_audio_ra_line(
+                info["soundtrack_num"], info["soundtrack_retention"], info["subject_label"]
+            ))
+
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
         if info["audio_num"] is not None:
-            ra.append(f"<Audio {info['audio_num']}>: reference (voice timbre only, not fully_copy)")
+            ra.append(_audio_ra_line(
+                info["audio_num"], info["audio_retention"], info["subject_label"]
+            ))
 
     sections.append("retention_analysis:\n" + "\n".join(ra))
 
