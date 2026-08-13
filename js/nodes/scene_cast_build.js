@@ -127,10 +127,18 @@ function _injectCss() {
 export function setupSceneCastBuild(nodeType, _nodeData, app) {
     _injectCss();
 
-    const _orig = nodeType.prototype.onNodeCreated;
+    const _origCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
-        _orig?.call(this);
+        _origCreated?.call(this);
         _buildCastBuildUI(this, app);
+    };
+
+    // onConfigure fires after widget values are restored from the saved workflow.
+    // Rebuild the table so saved entries are visible on reload.
+    const _origConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (config) {
+        _origConfigure?.call(this, config);
+        this._refreshCastTable?.();
     };
 }
 
@@ -382,10 +390,16 @@ function _buildCastBuildUI(node, app) {
 
     node._refreshCastTable = function (newEntries) {
         if (Array.isArray(newEntries)) {
+            // Called by cast editor "Send to Workflow" — use the provided entries
             _entries = newEntries.map(e => ({ ...e }));
             _syncWidget();
+        } else {
+            // Called after workflow load (onConfigure) — re-read from widget
+            try {
+                const parsed = JSON.parse(jsonWidget?.value || "[]");
+                if (Array.isArray(parsed)) _entries = parsed;
+            } catch { /* leave as-is */ }
         }
-        // Re-fill selects with latest API data then rebuild rows
         _rebuildTable();
     };
 
