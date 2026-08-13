@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v1.19.1 (2026-08-13)
+
+### Bug Fixes
+
+- **ui**: Suppress boolean widget draw() to prevent toggle leaking through in SceneCastBuild
+  ([`0a4d76a`](https://github.com/frost-byte/fbTools/commit/0a4d76ae991833995e97c936eae59cb767097052))
+
+ComfyUI V3 toggle widgets have a custom draw() that can bypass the type="hidden" check used by
+  setWidgetVisible. Fix by iterating all standard widgets (not by name to avoid any lookup miss) and
+  overriding draw() as a belt-and-suspenders guard. Resolves Audio 4 appearing above the slot table.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.19.0 (2026-08-13)
 
 ### Features
