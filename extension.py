@@ -14143,8 +14143,8 @@ class PromptCompositionLoader(io.ComfyNode):
     Select a composition by name from the dropdown. The assembled prompt and
     concept IDs are ready to wire into text-conditioning and ConceptResolve nodes.
 
-    Optionally wire a SCENE_CAST from SceneCastLoad to resolve reference media
-    (video file path and/or image batch) from the cast's bundles.
+    Optionally wire a SCENE_CAST from SceneCastLoad or SceneCastBuild to resolve
+    reference media (video file path and/or image batch) from the cast's bundles.
 
     After saving a composition in the Prompt Compositions sidebar panel, any
     PromptCompositionLoader nodes on the canvas automatically re-execute to pick
@@ -14179,7 +14179,7 @@ class PromptCompositionLoader(io.ComfyNode):
                 CastIOType.Input(
                     "scene_cast",
                     display_name="Scene Cast",
-                    tooltip="Optional cast from SceneCastLoad. Resolves reference media (video path and images) from bundles.",
+                    tooltip="Optional cast from SceneCastLoad or SceneCastBuild. Resolves reference media (video path and images) from bundles.",
                     optional=True,
                 ),
             ],
