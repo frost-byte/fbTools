@@ -1,6 +1,42 @@
 # CHANGELOG
 
 
+## v1.15.0 (2026-08-13)
+
+### Features
+
+- **cast**: Add FBTOOLS_H3_REFPLAN bundle output to PromptCompositionLoader
+  ([`5b5c8e9`](https://github.com/frost-byte/fbTools/commit/5b5c8e9c3576b93e21051b283be5446be241eda1))
+
+Steps 0–4 of the H3 refplan action plan:
+
+- Step 0: Add retention/role fields to bundle audio schema and editor UI (timbre/reuse/style modes;
+  free-text role label; shown for both extract_from_visual and file sources in bundle_editor.js)
+
+- Step 1: Implement _build_h3_refplan() in utils/prompt_assembler.py Three-pass algorithm mirrors
+  native MiniMaxH3ReferenceToVideo ref_items order: images → [soundtrack_audio + video] pairs →
+  standalone audios. Ordinals (picture_ordinal/video_ordinal/audio_ordinal) are assigned so <Picture
+  N>/<Video K>/<Audio J> labels in the prompt match what the tokenizer derives from ref_items.
+  Parity verified by 9 new tests in tests/test_h3_refplan_parity.py.
+
+- Step 3: Extend _resolve_cast_media to collect video_entries_full — all video-mode cast entry
+  descriptors with full audio config (source, path, start_time, duration, retention, role). Existing
+  flat outputs unchanged.
+
+- Step 4: Add FBTOOLS_H3_REFPLAN wire type and H3RefplanType class. PromptCompositionLoader gains an
+  h3_refplan output; execute() builds the bundle from enriched resolved_subjects +
+  video_entries_full and attaches prompt/model_type/ref_image_size before returning.
+
+Also: fix apply_cast_to_subjects so extract_from_visual audio no longer sets
+  voice.audio_reference_file (it is a video soundtrack handled by the refplan's soundtrack_audio
+  pass, not a standalone voice reference). Verified by updated test_cast_enrichment.py (15 tests,
+  all passing).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.14.0 (2026-08-12)
 
 ### Bug Fixes
