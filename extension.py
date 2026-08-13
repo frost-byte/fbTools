@@ -14491,10 +14491,12 @@ class CompositionToH3Conditioning(io.ComfyNode):
     Common-case graph: PromptCompositionLoader → CompositionToH3Conditioning → sampler.
     """
 
+    node_id = prefixed_node_id("CompositionToH3Conditioning")
+
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id=prefixed_node_id("CompositionToH3Conditioning"),
+            node_id=cls.node_id,
             display_name="Composition → H3 Conditioning",
             category="🧊 frost-byte/conditioning",
             description=(
