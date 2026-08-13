@@ -14268,6 +14268,233 @@ class PromptCompositionLoader(io.ComfyNode):
 
 
 # =============================================================================
+# CompositionToH3Conditioning — media-loading terminal node
+# =============================================================================
+
+def _h3_resolve_path(path: str) -> str:
+    """Return an absolute path, falling back to ComfyUI input directory."""
+    if not path:
+        return ""
+    if os.path.isabs(path) and os.path.exists(path):
+        return path
+    candidate = os.path.join(get_input_directory(), path)
+    if os.path.exists(candidate):
+        return candidate
+    return path  # let callers decide what to do with a missing path
+
+
+def _h3_load_image(path: str):
+    """Load an image file and return a [1,H,W,3] float32 tensor in [0,1]."""
+    resolved = _h3_resolve_path(path)
+    if not os.path.exists(resolved):
+        logger.warning("CompositionToH3: image not found: %s", path)
+        return None
+    try:
+        pil = Image.open(resolved).convert("RGB")
+        arr = np.array(pil, dtype=np.float32) / 255.0   # [H,W,3]
+        return torch.from_numpy(arr).unsqueeze(0)        # [1,H,W,3]
+    except Exception as exc:
+        logger.warning("CompositionToH3: failed to load image %s: %s", path, exc)
+        return None
+
+
+def _h3_load_video_frames(path: str, load_params: dict):
+    """Load video frames using VHS cv_frame_generator → [B,H,W,3] float32."""
+    resolved = _h3_resolve_path(path)
+    if not os.path.exists(resolved):
+        logger.warning("CompositionToH3: video not found: %s", path)
+        return None
+    try:
+        from videohelpersuite.load_video_nodes import cv_frame_generator
+        import cv2 as _cv2
+    except ImportError:
+        logger.warning("CompositionToH3: VHS not available — trying cv2 directly")
+        try:
+            import cv2 as _cv2
+        except ImportError:
+            logger.error("CompositionToH3: cv2 not available; cannot load video %s", path)
+            return None
+
+    force_rate        = int(load_params.get("force_rate", 0))
+    frame_load_cap    = int(load_params.get("frame_load_cap", 0))
+    skip_first_frames = int(load_params.get("skip_first_frames", 0))
+    select_every_nth  = int(load_params.get("select_every_nth", 1)) or 1
+
+    try:
+        gen = cv_frame_generator(resolved, force_rate, frame_load_cap,
+                                 skip_first_frames, select_every_nth)
+        next(gen)   # discard metadata tuple (width, height, fps, duration, ...)
+        frames = []
+        for frame in gen:
+            # VHS cv_frame_generator yields float32 numpy arrays already in [0,1]
+            # (it does torch.from_numpy(frame).div_(255) in-place on the shared buffer)
+            t = torch.from_numpy(np.ascontiguousarray(frame))
+            frames.append(t)
+        if not frames:
+            logger.warning("CompositionToH3: no frames loaded from %s", path)
+            return None
+        return torch.stack(frames, dim=0)  # [B,H,W,3]
+    except Exception as exc:
+        logger.warning("CompositionToH3: failed to load video %s: %s", path, exc)
+        return None
+
+
+def _h3_load_audio(path: str, start_time: float = 0.0, duration: float = 0.0):
+    """Load audio using VHS get_audio (ffmpeg) → {'waveform': [B,C,L], 'sample_rate': int}."""
+    resolved = _h3_resolve_path(path)
+    if not os.path.exists(resolved):
+        logger.warning("CompositionToH3: audio file not found: %s", path)
+        return None
+    try:
+        from videohelpersuite.utils import get_audio
+        return get_audio(resolved, start_time=start_time,
+                         duration=duration if duration > 0 else 0)
+    except ImportError:
+        pass
+    # Fallback: torchaudio
+    try:
+        import torchaudio
+        waveform, sr = torchaudio.load(resolved)
+        if start_time > 0 or duration > 0:
+            start_sample = int(start_time * sr)
+            end_sample = (int((start_time + duration) * sr)
+                         if duration > 0 else waveform.shape[-1])
+            waveform = waveform[:, start_sample:end_sample]
+        return {"waveform": waveform.unsqueeze(0), "sample_rate": sr}
+    except Exception as exc:
+        logger.warning("CompositionToH3: failed to load audio %s: %s", path, exc)
+        return None
+
+
+class CompositionToH3Conditioning(io.ComfyNode):
+    """Terminal node: consume FBTOOLS_H3_REFPLAN, decode all media internally,
+    and delegate to MiniMaxH3ReferenceToVideo to produce conditioning + latent.
+
+    Common-case graph: PromptCompositionLoader → CompositionToH3Conditioning → sampler.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=prefixed_node_id("CompositionToH3Conditioning"),
+            display_name="Composition → H3 Conditioning",
+            category="🧊 frost-byte/conditioning",
+            description=(
+                "Decodes all references in an FBTOOLS_H3_REFPLAN bundle "
+                "(images, videos, audio) and calls MiniMaxH3ReferenceToVideo "
+                "to produce conditioning + AV latent."
+            ),
+            inputs=[
+                H3RefplanType.Input("h3_refplan"),
+                io.Clip.Input("clip"),
+                io.Vae.Input("vae"),
+                io.Vae.Input("audio_vae"),
+                io.Int.Input("width",  default=1344, min=32, max=8192, step=32),
+                io.Int.Input("height", default=768,  min=32, max=8192, step=32),
+                io.Int.Input("length", default=124,  min=5,  max=3600, step=17,
+                             tooltip="Frame count at 24 fps (124 = ~5s)"),
+                io.Combo.Input(
+                    "ref_image_size", options=["match", "max"], default="match",
+                    tooltip=(
+                        "'match' scales refs to the generation canvas area (faster). "
+                        "'max' uses full 2048px short-edge fidelity (slower)."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Conditioning.Output(display_name="positive"),
+                io.Latent.Output(),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, h3_refplan, width, height, length, ref_image_size, **_):
+        bundle_hash = hashlib.md5(
+            json.dumps(h3_refplan or {}, sort_keys=True).encode()
+        ).hexdigest()
+        file_mtimes = []
+        for ref in (h3_refplan or {}).get("references", []):
+            path = _h3_resolve_path(ref.get("path", ""))
+            try:
+                file_mtimes.append(f"{path}:{os.path.getmtime(path):.3f}")
+            except OSError:
+                file_mtimes.append(f"{path}:missing")
+        return (bundle_hash, *file_mtimes, width, height, length, ref_image_size)
+
+    @classmethod
+    def execute(cls, h3_refplan, clip, vae, audio_vae,
+                width, height, length, ref_image_size="match") -> io.NodeOutput:
+        try:
+            from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
+        except ImportError as exc:
+            raise RuntimeError(
+                f"MiniMaxH3ReferenceToVideo not found in comfy_extras. "
+                f"Ensure ComfyUI includes nodes_minimax_h3.py. ({exc})"
+            ) from exc
+
+        if not h3_refplan:
+            raise ValueError("h3_refplan is required — wire PromptCompositionLoader's "
+                             "'H3 Ref Plan' output into this node.")
+
+        references   = h3_refplan.get("references", [])
+        prompt       = h3_refplan.get("prompt", "")
+
+        ref_images        = {}
+        ref_videos        = {}
+        ref_video_audios  = {}
+        ref_audios        = {}
+        standalone_idx    = 0
+
+        for ref in references:
+            modality = ref.get("modality", "")
+            path     = ref.get("path", "")
+
+            if modality == "image":
+                frames = _h3_load_image(path)
+                if frames is not None:
+                    n = ref["picture_ordinal"] - 1
+                    ref_images[f"ref_image_{n}"] = frames
+
+            elif modality == "video":
+                frames = _h3_load_video_frames(path, ref.get("load_params", {}))
+                if frames is not None:
+                    n = ref["video_ordinal"] - 1
+                    ref_videos[f"ref_video_{n}"] = frames
+
+            elif modality == "soundtrack_audio":
+                # Key suffix must match the paired ref_video_N (same video_ordinal)
+                audio = _h3_load_audio(path, ref.get("start_time", 0.0),
+                                       ref.get("duration", 0.0))
+                if audio is not None:
+                    n = ref["video_ordinal"] - 1
+                    ref_video_audios[f"ref_video_audio_{n}"] = audio
+
+            elif modality == "audio":
+                audio = _h3_load_audio(path, ref.get("start_time", 0.0),
+                                       ref.get("duration", 0.0))
+                if audio is not None:
+                    ref_audios[f"ref_audio_{standalone_idx}"] = audio
+                    standalone_idx += 1
+
+        send_status_update(
+            cls.node_id,
+            f"H3 conditioning: {len(ref_images)} image(s), "
+            f"{len(ref_videos)} video(s), "
+            f"{len(ref_video_audios)} soundtrack(s), "
+            f"{len(ref_audios)} standalone audio(s)",
+        )
+
+        return MiniMaxH3ReferenceToVideo.execute(
+            clip, vae, audio_vae, prompt, width, height, length,
+            ref_image_size=ref_image_size,
+            ref_images=ref_images or None,
+            ref_videos=ref_videos or None,
+            ref_video_audios=ref_video_audios or None,
+            ref_audios=ref_audios or None,
+        )
+
+
+# =============================================================================
 
 
 class FBToolsExtension(ComfyExtension):
@@ -14347,6 +14574,7 @@ class FBToolsExtension(ComfyExtension):
             SceneCompose,
             PromptAssemble,
             PromptCompositionLoader,
+            CompositionToH3Conditioning,
             # Scene Cast nodes
             SceneCastLoad,
         ]
