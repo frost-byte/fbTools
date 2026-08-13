@@ -1,6 +1,29 @@
 # CHANGELOG
 
 
+## v1.19.0 (2026-08-13)
+
+### Features
+
+- **scene**: Add SceneCastBuild node for inline cast configuration
+  ([`6bb22cc`](https://github.com/frost-byte/fbTools/commit/6bb22cc76bc18c771531e22778a15aec62909e9c))
+
+New node builds a SCENE_CAST without a saved file. Outputs the same SCENE_CAST type as SceneCastLoad
+  — wires into PromptCompositionLoader unchanged.
+
+- Python: SceneCastBuild with 4 slots (subject/bundle/visual_mode/use_audio each), all hidden behind
+  a DOM table widget in the frontend. - JS: scene_cast_build.js renders a compact 4-row interactive
+  table. Selects are populated from the live subject/bundle registry via API. Changing any field
+  syncs back to the hidden widget and marks the canvas dirty. _refreshCastTable() exposed for editor
+  integration. - Cast editor: "Send to Workflow" button in the top bar discovers fbt_SceneCastBuild
+  nodes on the canvas, shows a picker, and pushes the current editing entries to the selected node.
+  "Create new" option adds a fresh node and positions it near the canvas mouse.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.18.0 (2026-08-13)
 
 ### Features
