@@ -12649,6 +12649,16 @@ class PromptAssemble(io.ComfyNode):
                     ),
                     optional=True,
                 ),
+                CastIOType.Input(
+                    "scene_cast",
+                    display_name="Scene Cast",
+                    tooltip=(
+                        "Optional cast from SceneCastLoad or SceneCastBuild. "
+                        "When connected, subjects whose bundle has visual_mode='video' "
+                        "receive a <Video N> reference label in H3 prompts."
+                    ),
+                    optional=True,
+                ),
                 ConceptRegistryIOType.Input(
                     "concept_registry",
                     display_name="Concept Registry",
@@ -12696,6 +12706,7 @@ class PromptAssemble(io.ComfyNode):
         scene_instance=None,
         model_type: str = "h3_ref2va",
         task_flags: str = "",
+        scene_cast=None,
         concept_registry=None,
     ) -> io.NodeOutput:
         if scene_instance is None:
@@ -12706,7 +12717,13 @@ class PromptAssemble(io.ComfyNode):
             flags = [f.strip() for f in task_flags.split(",") if f.strip()]
             scene_instance = {**scene_instance, "task_flags": flags}
 
-        result = _assemble_prompt(scene_instance, model_type)
+        # Resolve video_entries from cast so subjects flagged as video get <Video N> labels
+        video_entries: list[dict] = []
+        if scene_cast:
+            cast_media = _resolve_cast_media(scene_cast)
+            video_entries = cast_media.get("video_entries_full", [])
+
+        result = _assemble_prompt(scene_instance, model_type, video_entries or None)
 
         # Load reference images in declared order
         image_order = result["reference_image_order"]
