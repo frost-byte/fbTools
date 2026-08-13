@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v1.18.0 (2026-08-13)
+
+### Features
+
+- **ui**: Add Send to Workflow button to Composition Editor
+  ([`49cf283`](https://github.com/frost-byte/fbTools/commit/49cf283d6ea575b4c5b3bbdb5a31b0355a8a8df3))
+
+Opens a picker listing all PromptCompositionLoader nodes on the canvas by their current
+  composition_name widget value. Selecting a node sets its widget to the current composition.
+  "Create new" option adds a fresh node and sets its widget via a short timeout after graph.add().
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.17.1 (2026-08-13)
 
 ### Bug Fixes
