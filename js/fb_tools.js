@@ -464,6 +464,7 @@ import { setupDatasetCaptionViewer } from "./nodes/dataset_caption_viewer.js";
 import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
 import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect, setupLoraStackBuilder } from "./nodes/lora.js";
 import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
+import { setupSceneCastBuild } from "./nodes/scene_cast_build.js";
 import { renderCompositionEditor } from "./ui/composition_editor.js";
 import { renderBundleEditor }      from "./ui/bundle_editor.js";
 import { renderCastEditor }        from "./ui/cast_editor.js";
@@ -645,6 +646,11 @@ app.registerExtension({
         }
         else if (isNode("ConceptDefine")) {
             setupConceptDefine(nodeType, nodeData, app);
+        }
+
+        // Scene Cast nodes
+        else if (isNode("SceneCastBuild")) {
+            setupSceneCastBuild(nodeType, nodeData, app);
         }
 
         // Add context menu for frost-byte nodes only.
