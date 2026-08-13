@@ -139,7 +139,7 @@ function _buildCastBuildUI(node, app) {
     // We use a regular STRING widget (not boolean) so setWidgetVisible works
     // reliably regardless of ComfyUI version quirks.
     const jsonWidget = node.widgets?.find(w => w.name === JSON_WIDGET);
-    if (jsonWidget) setWidgetVisible(jsonWidget, false);
+    if (jsonWidget) setWidgetVisible(jsonWidget, false, node);
 
     // ── 2. Internal state ─────────────────────────────────────────────────────
     let _subjects = [];

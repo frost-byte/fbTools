@@ -3,25 +3,27 @@
  */
 
 /**
- * Show or hide a widget by toggling its type to/from "hidden".
- * Remembers the original type so it can be restored later.
+ * Show or hide a widget.
+ * Sets widget.hidden (modern frontend), widget.type (LiteGraph fallback),
+ * collapses computeSize, and hides any DOM element attached to the widget.
+ * Pass node to have the node recalculate its size immediately.
  * @param {object|null} widget
  * @param {boolean} visible
+ * @param {object|null} node - optional; if provided, node.setSize is called
  */
-export function setWidgetVisible(widget, visible) {
+export function setWidgetVisible(widget, visible, node = null) {
     if (!widget) return;
+    widget.hidden = !visible;
     if (visible) {
-        if (widget._savedType !== undefined) {
-            widget.type = widget._savedType;
-            delete widget.computeSize;
-        }
+        widget.type = widget._origType ?? widget.type;
+        delete widget.computeSize;
     } else {
-        if (widget.type !== "hidden") {
-            widget._savedType = widget.type;
-        }
+        widget._origType = widget._origType ?? widget.type;
         widget.type = "hidden";
         widget.computeSize = () => [0, -4];
     }
+    if (widget.element) widget.element.style.display = visible ? "" : "none";
+    if (node) node.setSize(node.computeSize());
 }
 
 /**
