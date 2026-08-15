@@ -823,6 +823,17 @@ textarea.prompt-value-input {
     flex-shrink: 0;
 }
 
+/* ── Camera / Sound preset add form ─────────────────────────────────────────── */
+
+.fbt-ce-preset-form {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 4px 2px;
+    border-top: 1px solid var(--border-color, #333);
+    margin-top: 4px;
+}
+
 /* ── Outfit Registry sidebar section ────────────────────────────────────────── */
 
 .fbt-ce-outfit-section-ctrl {
@@ -1358,6 +1369,105 @@ textarea.prompt-value-input {
     display: flex;
     gap: 6px;
     padding: 8px 10px 4px;
+}
+
+/* ── Bundle editor LLM appearance analyzer ─────────────────────────────────── */
+
+.fbt-be-llm-section {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px 10px;
+    background: color-mix(in srgb, var(--p-amber-400, #fbbf24) 5%, transparent);
+    border-top: 1px dashed color-mix(in srgb, var(--p-amber-400, #fbbf24) 30%, transparent);
+    border-bottom: 1px dashed color-mix(in srgb, var(--p-amber-400, #fbbf24) 30%, transparent);
+}
+
+.fbt-be-llm-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.fbt-be-llm-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--p-amber-400, #fbbf24);
+}
+
+.fbt-be-llm-hint {
+    font-size: 10px;
+    color: var(--p-surface-400, #888);
+    font-style: italic;
+}
+
+.fbt-be-llm-top-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.fbt-be-llm-img-sel {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.fbt-be-llm-video-row {
+    font-size: 11px;
+    color: var(--p-surface-300, #aaa);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 2px 0;
+}
+
+.fbt-be-llm-video-name {
+    font-style: italic;
+}
+
+.fbt-be-llm-frame-input {
+    width: 72px;
+    flex-shrink: 0;
+}
+
+.fbt-be-llm-frame-count {
+    flex: 1 1 auto;
+    font-size: 10px;
+    color: var(--p-surface-400, #888);
+}
+
+.fbt-be-llm-analyze-btn {
+    align-self: flex-start;
+}
+
+.fbt-be-llm-query {
+    font-size: 11px;
+    min-height: 48px;
+    resize: vertical;
+}
+
+.fbt-be-llm-preview {
+    width: 100%;
+    max-height: 180px;
+    object-fit: contain;
+    border-radius: 4px;
+    background: var(--comfy-input-bg, #1a1a1a);
+    border: 1px solid var(--border-color, #333);
+}
+
+.fbt-be-llm-result {
+    font-size: 11px;
+    min-height: 56px;
+    resize: vertical;
+    background: color-mix(in srgb, var(--p-green-400, #4ade80) 5%, var(--comfy-input-bg, #222));
+    border-color: color-mix(in srgb, var(--p-green-400, #4ade80) 25%, transparent);
+}
+
+.fbt-be-llm-apply-row {
+    display: flex;
+    gap: 6px;
 }
 
 /* ── Frame-sampling param grid (used inside visual + audio pickers) ────────── */
