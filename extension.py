@@ -12452,6 +12452,18 @@ class SceneCompose(io.ComfyNode):
                     optional=True,
                 ),
                 io.String.Input(
+                    "scene_synopsis",
+                    display_name="Scene Synopsis",
+                    default="",
+                    multiline=True,
+                    tooltip=(
+                        "Concise scene overview used as the summary body in H3 prompts. "
+                        "Use {A}/{B}/{C}/{D} slot references — expanded to <Subject N> labels at assemble time. "
+                        "Overrides the automatic shot-action summary when non-empty."
+                    ),
+                    optional=True,
+                ),
+                io.String.Input(
                     "outfit_override_A",
                     display_name="Outfit Override A",
                     default="",
@@ -12550,6 +12562,7 @@ class SceneCompose(io.ComfyNode):
         slot_B=None,
         slot_C=None,
         slot_D=None,
+        scene_synopsis: str = "",
         dialogue_1: str = "",
         dialogue_2: str = "",
         dialogue_3: str = "",
@@ -12589,6 +12602,8 @@ class SceneCompose(io.ComfyNode):
 
         warnings = _validate_scene(template_dict, slot_assignments)
         instance = _compose_scene(template_dict, slot_assignments, dialogue, outfit_overrides)
+        if scene_synopsis.strip():
+            instance["scene_synopsis"] = scene_synopsis.strip()
         summary = _format_scene_summary(instance, validation_warnings=warnings)
 
         if warnings:
@@ -13057,6 +13072,86 @@ async def _casts_delete(request):
 
 
 # ── Media file listing ────────────────────────────────────────────────────────
+
+_TMP_FRAME_PREFIX = "_fbt_tmp_"
+
+
+def _purge_old_tmp_frames(input_dir: str, max_age_s: int = 1800) -> None:
+    """Delete _fbt_tmp_* files older than max_age_s seconds."""
+    now = time.time()
+    for f in os.listdir(input_dir):
+        if f.startswith(_TMP_FRAME_PREFIX):
+            fpath = os.path.join(input_dir, f)
+            try:
+                if now - os.path.getmtime(fpath) > max_age_s:
+                    os.remove(fpath)
+            except OSError:
+                pass
+
+
+@routes.post("/fbtools/media/extract_frame")
+async def _media_extract_frame(request):
+    """Extract a single frame from a video in the ComfyUI input directory.
+
+    Body: {filename: str, frame_index: int}
+    Response: {tmp_filename: str, frame_count: int, width: int, height: int}
+    The caller is responsible for deleting the temp file via DELETE /fbtools/media/extract_frame.
+    """
+    try:
+        body = await request.json()
+        filename = body.get("filename", "").strip()
+        frame_index = int(body.get("frame_index", 0))
+        if not filename:
+            return web.json_response({"error": "filename is required"}, status=400)
+
+        input_dir = get_input_directory()
+        video_path = os.path.join(input_dir, filename)
+        if not os.path.exists(video_path):
+            return web.json_response({"error": f"File not found: {filename}"}, status=404)
+
+        def _extract():
+            import cv2
+            cap = cv2.VideoCapture(video_path)
+            try:
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                idx = max(0, min(frame_index, frame_count - 1))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ok, frame = cap.read()
+                if not ok:
+                    raise RuntimeError(f"Could not read frame {idx}")
+                _purge_old_tmp_frames(input_dir)
+                tmp_name = f"{_TMP_FRAME_PREFIX}{uuid.uuid4().hex[:12]}.jpg"
+                tmp_path = os.path.join(input_dir, tmp_name)
+                cv2.imwrite(tmp_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                return {"tmp_filename": tmp_name, "frame_count": frame_count,
+                        "width": width, "height": height, "frame_index": idx}
+            finally:
+                cap.release()
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _extract)
+        return web.json_response(result)
+    except Exception as exc:
+        logger.error("extract_frame error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/media/extract_frame")
+async def _media_delete_tmp_frame(request):
+    """Delete a temp frame file created by extract_frame. ?filename=<tmp_filename>"""
+    fname = request.rel_url.query.get("filename", "").strip()
+    if not fname or not fname.startswith(_TMP_FRAME_PREFIX):
+        return web.json_response({"error": "Invalid or missing filename"}, status=400)
+    try:
+        fpath = os.path.join(get_input_directory(), fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+        return web.json_response({"success": True})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
 
 @routes.get("/fbtools/media/list")
 async def _media_list(request):
@@ -13911,7 +14006,7 @@ def _resolve_cast_media(
     entries = scene_cast.get("entries", [])
     reference_video = ""
     image_files: list[str] = []
-    video_params: dict = {"force_rate": 0, "frame_load_cap": 16, "skip_first_frames": 0, "select_every_nth": 1}
+    video_params: dict = {"force_rate": 0, "frame_load_cap": 96, "skip_first_frames": 0, "select_every_nth": 1}
     audio_source = "none"
     audio_file = ""
     audio_params: dict = {"force_rate": 0, "frame_load_cap": 0, "skip_first_frames": 0, "select_every_nth": 1}
@@ -13939,7 +14034,7 @@ def _resolve_cast_media(
                 abs_vfile = os.path.join(input_dir, vfile)
                 entry_load_params = {
                     "force_rate":        visual.get("force_rate", 0),
-                    "frame_load_cap":    visual.get("frame_load_cap", 16),
+                    "frame_load_cap":    visual.get("frame_load_cap", 96),
                     "skip_first_frames": visual.get("skip_first_frames", 0),
                     "select_every_nth":  visual.get("select_every_nth", 1),
                 }
@@ -14176,6 +14271,17 @@ class PromptCompositionLoader(io.ComfyNode):
                     display_name="Model Type",
                     tooltip="'composition default' uses the model type stored inside the composition.",
                 ),
+                io.String.Input(
+                    "filename_prefix",
+                    display_name="Filename Prefix",
+                    default="",
+                    tooltip=(
+                        "Optional prefix prepended literally to the composition name for the filename_prefix output. "
+                        "Include a trailing '/' to make it a folder (e.g. 'video/' → 'video/bbc_ride'). "
+                        "Wire the output into a VHS_VideoCombine filename_prefix input."
+                    ),
+                    optional=True,
+                ),
                 CastIOType.Input(
                     "scene_cast",
                     display_name="Scene Cast",
@@ -14193,6 +14299,11 @@ class PromptCompositionLoader(io.ComfyNode):
                 io.String.Output("model_type_used", display_name="Model Type Used"),
                 io.String.Output("composition_name", display_name="Composition Name"),
                 io.String.Output(
+                    "filename_prefix",
+                    display_name="Filename Prefix",
+                    tooltip="prefix + composition name (e.g. 'video/bbc_ride'). Wire into VHS_VideoCombine filename_prefix.",
+                ),
+                io.String.Output(
                     "reference_video",
                     display_name="Reference Video",
                     tooltip="Absolute path to the first video-mode reference from the cast. Empty if no cast or no video entry.",
@@ -14202,26 +14313,10 @@ class PromptCompositionLoader(io.ComfyNode):
                     display_name="Reference Images",
                     tooltip="Image batch from image-mode cast entries in cast order. None if no cast or no image entries.",
                 ),
-                io.Int.Output("video_force_rate", display_name="Vid Force Rate",
-                              tooltip="FPS override for visual Load Video node (0 = native)."),
-                io.Int.Output("video_frame_cap",  display_name="Vid Frame Cap",
-                              tooltip="Max frames for visual Load Video node."),
-                io.Int.Output("video_skip_first", display_name="Vid Skip First",
-                              tooltip="Skip-first-frames for visual Load Video node."),
-                io.Int.Output("video_every_nth",  display_name="Vid Every Nth",
-                              tooltip="Select-every-Nth for visual Load Video node."),
                 io.String.Output("audio_source", display_name="Audio Source",
                                  tooltip="'extract_from_visual' | 'file' | 'none'. Determines which audio output pins are populated."),
                 io.String.Output("audio_file", display_name="Audio File",
                                  tooltip="Absolute path to audio file when audio_source is 'file'. Empty otherwise."),
-                io.Int.Output("audio_force_rate", display_name="Aud Force Rate",
-                              tooltip="FPS override for the audio Load Video node (extract_from_visual)."),
-                io.Int.Output("audio_frame_cap",  display_name="Aud Frame Cap",
-                              tooltip="Max frames for the audio Load Video node (extract_from_visual)."),
-                io.Int.Output("audio_skip_first", display_name="Aud Skip First",
-                              tooltip="Skip-first-frames for the audio Load Video node (extract_from_visual)."),
-                io.Int.Output("audio_every_nth",  display_name="Aud Every Nth",
-                              tooltip="Select-every-Nth for the audio Load Video node (extract_from_visual)."),
                 io.Float.Output("audio_start_time", display_name="Aud Start (s)",
                                 tooltip="Start time in seconds for Load Audio node (source='file')."),
                 io.Float.Output("audio_duration",   display_name="Aud Duration (s)",
@@ -14247,7 +14342,7 @@ class PromptCompositionLoader(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, composition_name: str = "", model_type: str = "composition default", scene_cast=None, **_):
+    def fingerprint_inputs(cls, composition_name: str = "", model_type: str = "composition default", filename_prefix: str = "", scene_cast=None, **_):
         comps_dir = os.path.join(user_data_dir(), "prompt_compositions")
         try:
             dir_mtime = os.path.getmtime(comps_dir)
@@ -14284,14 +14379,17 @@ class PromptCompositionLoader(io.ComfyNode):
         cls,
         composition_name: str = "",
         model_type: str = "composition default",
+        filename_prefix: str = "",
         scene_cast=None,
     ) -> io.NodeOutput:
+        filename_prefix_out = f"{filename_prefix}{composition_name}"
+
         items = _list_compositions(user_data_dir())
         matched = next((c for c in items if c["name"] == composition_name), None)
         if matched is None:
             logger.warning("PromptCompositionLoader: composition %r not found", composition_name)
-            return io.NodeOutput("", "", "", composition_name, "", None,
-                                 0, 16, 0, 1, "none", "", 0, 0, 0, 1, 0.0, 0.0, None, None)
+            return io.NodeOutput("", "", "", composition_name, filename_prefix_out, "", None,
+                                 "none", "", 0.0, 0.0, None, None)
 
         composition = _load_composition(user_data_dir(), matched["id"])
 
@@ -14380,21 +14478,17 @@ class PromptCompositionLoader(io.ComfyNode):
             f"Loaded: {composition_name} | {model_type_used} | {len(prompt)} chars{cast_note}",
         )
 
+        comp_name_out = composition.get("name", composition_name)
+        filename_prefix_out = f"{filename_prefix}{comp_name_out}"
+
         return io.NodeOutput(
             prompt, concept_ids, model_type_used,
-            composition.get("name", composition_name),
+            comp_name_out,
+            filename_prefix_out,
             cast_media["reference_video"],
             cast_media["reference_images"],
-            cast_media["video_force_rate"],
-            cast_media["video_frame_cap"],
-            cast_media["video_skip_first"],
-            cast_media["video_every_nth"],
             cast_media["audio_source"],
             cast_media["audio_file"],
-            cast_media["audio_force_rate"],
-            cast_media["audio_frame_cap"],
-            cast_media["audio_skip_first"],
-            cast_media["audio_every_nth"],
             cast_media["audio_start_time"],
             cast_media["audio_duration"],
             lora_stack_data,
@@ -14434,71 +14528,171 @@ def _h3_load_image(path: str):
 
 
 def _h3_load_video_frames(path: str, load_params: dict):
-    """Load video frames using VHS cv_frame_generator → [B,H,W,3] float32."""
+    """Load video frames → [B,H,W,3] float32 in [0,1] (RGB) using cv2.
+
+    VHS (VideoHelperSuite) is intentionally not used here.  VHS loads its own
+    sub-package via relative imports, which caches modules under its parent
+    package key in sys.modules.  An absolute ``from videohelpersuite.load_video_nodes``
+    import looks for a different key and fails because ComfyUI adds
+    ``custom_nodes/`` — not ``custom_nodes/ComfyUI-VideoHelperSuite/`` — to
+    sys.path.  cv2 is always available (it is a direct dependency of both
+    ComfyUI and VHS) and produces identical output.
+    """
     resolved = _h3_resolve_path(path)
     if not os.path.exists(resolved):
         logger.warning("CompositionToH3: video not found: %s", path)
         return None
-    try:
-        from videohelpersuite.load_video_nodes import cv_frame_generator
-        import cv2 as _cv2
-    except ImportError:
-        logger.warning("CompositionToH3: VHS not available — trying cv2 directly")
-        try:
-            import cv2 as _cv2
-        except ImportError:
-            logger.error("CompositionToH3: cv2 not available; cannot load video %s", path)
-            return None
 
     force_rate        = int(load_params.get("force_rate", 0))
     frame_load_cap    = int(load_params.get("frame_load_cap", 0))
     skip_first_frames = int(load_params.get("skip_first_frames", 0))
     select_every_nth  = int(load_params.get("select_every_nth", 1)) or 1
 
+    # H3 reference videos need ≥39 frames to give Qwen useful signal after
+    # the upstream node trims to n%17==5.  Enforce a minimum for generation.
+    if 0 < frame_load_cap < 39:
+        logger.warning(
+            "CompositionToH3: frame_load_cap=%d too low for MiniMax H3 "
+            "(minimum 39 frames needed after trimming). Upgrading to 96. "
+            "Update the bundle's frame_load_cap to suppress this warning.",
+            frame_load_cap,
+        )
+        frame_load_cap = 96
+
     try:
-        gen = cv_frame_generator(resolved, force_rate, frame_load_cap,
-                                 skip_first_frames, select_every_nth)
-        next(gen)   # discard metadata tuple (width, height, fps, duration, ...)
-        frames = []
-        for frame in gen:
-            # VHS cv_frame_generator yields float32 numpy arrays already in [0,1]
-            # (it does torch.from_numpy(frame).div_(255) in-place on the shared buffer)
-            t = torch.from_numpy(np.ascontiguousarray(frame))
-            frames.append(t)
+        import cv2
+    except ImportError:
+        logger.error("CompositionToH3: cv2 not available; cannot load video %s", path)
+        return None
+    try:
+        cap = cv2.VideoCapture(resolved)
+        if not cap.isOpened():
+            logger.warning("CompositionToH3: cv2 cannot open %s", path)
+            return None
+        native_fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+        target_fps = float(force_rate) if force_rate > 0 else native_fps
+        base_frame_time   = 1.0 / native_fps
+        target_frame_time = 1.0 / target_fps
+
+        # Time-accumulator resampling — mirrors VHS cv_frame_generator logic:
+        # read native frames until the virtual clock reaches the next output slot,
+        # then emit the most recently decoded frame for that slot.  Starting
+        # time_offset at target_frame_time means the first native frame is
+        # immediately emitted without needing extra reads.
+        frames: list = []
+        current_bgr = None
+        time_offset = target_frame_time
+        total_count = 0   # virtual frames seen (drives skip_first_frames)
+        evaluated   = -1  # frames after skip (drives select_every_nth)
+        sampled     = 0   # frames actually appended
+
+        # Pre-read the first native frame (VHS does an initial grab() before its loop).
+        ret, current_bgr = cap.read()
+        if not ret:
+            cap.release()
+            logger.warning("CompositionToH3: cv2 loaded no frames from %s", path)
+            return None
+
+        while cap.isOpened():
+            # Advance native frames until the virtual clock reaches the next slot.
+            if time_offset < target_frame_time:
+                ret, bgr = cap.read()
+                if not ret:
+                    break
+                current_bgr = bgr
+                time_offset += base_frame_time
+            if time_offset < target_frame_time:
+                continue
+
+            time_offset -= target_frame_time
+            total_count += 1
+            if total_count <= skip_first_frames:
+                continue
+            evaluated += 1
+            if evaluated % select_every_nth != 0:
+                continue
+
+            rgb = cv2.cvtColor(current_bgr, cv2.COLOR_BGR2RGB)
+            arr = np.array(rgb, dtype=np.float32) / 255.0
+            frames.append(torch.from_numpy(arr))
+            sampled += 1
+            if frame_load_cap > 0 and sampled >= frame_load_cap:
+                break
+
+        cap.release()
         if not frames:
-            logger.warning("CompositionToH3: no frames loaded from %s", path)
+            logger.warning("CompositionToH3: cv2 loaded no frames from %s", path)
             return None
         return torch.stack(frames, dim=0)  # [B,H,W,3]
     except Exception as exc:
-        logger.warning("CompositionToH3: failed to load video %s: %s", path, exc)
+        logger.warning("CompositionToH3: cv2 frame load failed for %s: %s", path, exc)
         return None
 
 
 def _h3_load_audio(path: str, start_time: float = 0.0, duration: float = 0.0):
-    """Load audio using VHS get_audio (ffmpeg) → {'waveform': [B,C,L], 'sample_rate': int}."""
+    """Load audio → {'waveform': [1,C,L] float32, 'sample_rate': int}.
+
+    Uses ffmpeg directly (same approach as VHS get_audio) so video files and all
+    audio codecs are handled correctly with accurate start_time/duration seeking.
+    VHS is intentionally not imported — see _h3_load_video_frames for the reason.
+    """
     resolved = _h3_resolve_path(path)
     if not os.path.exists(resolved):
         logger.warning("CompositionToH3: audio file not found: %s", path)
         return None
+
+    # Prefer imageio_ffmpeg (ships with ComfyUI); fall back to system ffmpeg.
+    ffmpeg_exe = None
     try:
-        from videohelpersuite.utils import get_audio
-        return get_audio(resolved, start_time=start_time,
-                         duration=duration if duration > 0 else 0)
-    except ImportError:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        ffmpeg_exe = get_ffmpeg_exe()
+    except Exception:
         pass
-    # Fallback: torchaudio
-    try:
-        import torchaudio
-        waveform, sr = torchaudio.load(resolved)
-        if start_time > 0 or duration > 0:
-            start_sample = int(start_time * sr)
-            end_sample = (int((start_time + duration) * sr)
-                         if duration > 0 else waveform.shape[-1])
-            waveform = waveform[:, start_sample:end_sample]
-        return {"waveform": waveform.unsqueeze(0), "sample_rate": sr}
-    except Exception as exc:
-        logger.warning("CompositionToH3: failed to load audio %s: %s", path, exc)
+    if not ffmpeg_exe:
+        import shutil as _shutil
+        ffmpeg_exe = _shutil.which("ffmpeg")
+    if not ffmpeg_exe:
+        logger.error(
+            "CompositionToH3: ffmpeg not found; cannot extract audio from %s", path
+        )
         return None
+
+    import re
+    import subprocess
+    args = [ffmpeg_exe, "-i", resolved]
+    if start_time > 0:
+        args += ["-ss", str(start_time)]
+    if duration > 0:
+        args += ["-t", str(duration)]
+    args += ["-f", "f32le", "-"]
+
+    try:
+        res = subprocess.run(args, capture_output=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "CompositionToH3: ffmpeg failed for %s: %s",
+            path,
+            exc.stderr.decode("utf-8", "backslashreplace")[:300],
+        )
+        return None
+
+    stderr_text = res.stderr.decode("utf-8", "backslashreplace")
+    match = re.search(r", (\d+) Hz, (\w+),", stderr_text)
+    if match:
+        ar = int(match.group(1))
+        ac = {"mono": 1, "stereo": 2}.get(match.group(2), 2)
+    else:
+        ar = 44100
+        ac = 2
+        logger.warning(
+            "CompositionToH3: could not parse audio format from ffmpeg stderr for %s; "
+            "assuming 44100 Hz stereo",
+            path,
+        )
+
+    audio = torch.frombuffer(bytearray(res.stdout), dtype=torch.float32)
+    audio = audio.reshape((-1, ac)).transpose(0, 1).unsqueeze(0)
+    return {"waveform": audio, "sample_rate": ar}
 
 
 class CompositionToH3Conditioning(io.ComfyNode):

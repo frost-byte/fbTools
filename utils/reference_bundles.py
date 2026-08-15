@@ -96,7 +96,7 @@ class BundleRegistry:
         visual.setdefault("file", "")
         visual.setdefault("files", [])
         visual.setdefault("force_rate", 0)
-        visual.setdefault("frame_load_cap", 16)
+        visual.setdefault("frame_load_cap", 96)
         visual.setdefault("skip_first_frames", 0)
         visual.setdefault("select_every_nth", 1)
 
