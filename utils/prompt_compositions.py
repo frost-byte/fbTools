@@ -184,9 +184,13 @@ def resolve_subjects(composition: dict, subject_registry=None) -> dict[str, dict
         if subject_registry is not None and hasattr(subject_registry, "get_subject"):
             live = subject_registry.get_subject(sid)
         if live is not None:
-            resolved[slot] = dict(live)
+            d = dict(live)
+            d.setdefault("subject_id", sid)
+            resolved[slot] = d
         elif slot in snapshots:
-            resolved[slot] = dict(snapshots[slot])
+            d = dict(snapshots[slot])
+            d.setdefault("subject_id", sid)
+            resolved[slot] = d
     return resolved
 
 

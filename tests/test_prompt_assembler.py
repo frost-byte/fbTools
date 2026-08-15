@@ -290,10 +290,38 @@ def test_h3_ref2va_subject_definitions_lists_pictures_inline():
     alice = _make_subject("Alice", sheets=["sheet1.png", "sheet2.png"])
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    # Pictures cited as "from <Picture 1> and <Picture 2>" — neutral, no type assumption
     assert "from <Picture 1> and <Picture 2>" in prompt
     assert "Character sheets:" not in prompt
     assert "(primary identity)" not in prompt
+
+
+def test_h3_ref2va_indefinite_article_replaced_with_the_when_ref_present():
+    alice = _make_subject("Alice", summary="a young woman with red hair", sheets=["s.png"])
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "is the young woman with red hair from <Picture 1>" in prompt
+    assert "is a young woman" not in prompt
+
+
+def test_h3_ref2va_an_article_replaced_when_ref_present():
+    alice = _make_subject("Alice", summary="an elegant woman", sheets=["s.png"])
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "is the elegant woman" in prompt
+
+
+def test_h3_ref2va_article_unchanged_when_no_ref():
+    alice = _make_subject("Alice", summary="a young woman with red hair")
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "is a young woman with red hair" in prompt
+
+
+def test_h3_ref2va_the_summary_unchanged_when_ref_present():
+    alice = _make_subject("Alice", summary="the lead character", sheets=["s.png"])
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "is the lead character from <Picture 1>" in prompt
 
 
 def test_h3_ref2va_subject_definitions_lists_audio():
@@ -309,7 +337,50 @@ def test_h3_ref2va_retention_analysis_fully_preserved():
     alice = _make_subject("Alice", summary="a tall woman with red hair")
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "<Subject 1> (Alice): fully_preserved" in prompt
+    # Format: "<Subject 1> (appears in [Shot N]): fully_preserved - ..."
+    assert "<Subject 1> (appears" in prompt
+    assert "): fully_preserved - " in prompt
+    # Must not restate the subject label
+    assert "<Subject 1> must" not in prompt
+
+
+def test_h3_ref2va_retention_analysis_uses_appearance_summary():
+    alice = _make_subject("Alice", summary="the young woman with red hair")
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "): fully_preserved - the young woman with red hair" in prompt
+
+
+def test_h3_ref2va_retention_analysis_includes_detail_fields():
+    alice = _make_subject("Alice", summary="the young woman", hair="long red hair", body="tall slender frame")
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "): fully_preserved - the young woman, with long red hair and tall slender frame" in prompt
+
+
+def test_h3_ref2va_retention_analysis_article_matches_subject_definitions():
+    # With a video reference, "a young female" → "the young female" (mirrors subject_definitions)
+    alice = _make_subject("Alice", summary="a young female", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "): fully_preserved - the young female" in prompt
+
+
+def test_h3_ref2va_retention_analysis_fallback_when_no_summary():
+    alice = _make_subject("Alice")
+    alice["appearance"] = {}
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "): fully_preserved - appearance retained" in prompt
+
+
+def test_h3_ref2va_retention_marker_override():
+    alice = _make_subject("Alice")
+    scene = {**_make_scene(slot_A=alice), "retention_markers": {"A": "partially_preserved"}}
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "<Subject 1> (appears" in prompt
+    assert "): partially_preserved - " in prompt
 
 
 def test_h3_ref2va_retention_analysis_audio_timbre_has_nocopy():
@@ -319,13 +390,25 @@ def test_h3_ref2va_retention_analysis_audio_timbre_has_nocopy():
     assert "without copying the original signal" in prompt
 
 
-def test_h3_ref2va_dialogue_tags():
+def test_h3_ref2va_dialogue_default_quoted():
     alice = _make_subject("Alice", audio="a.wav", language="en-us")
     bob = _make_subject("Bob")
     scene = _make_scene(slot_A=alice, slot_B=bob, dialogue=["Hello.", "Hi there."])
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "<d>[en-us] Hello.</d>" in prompt
-    assert "<d>[en-us] Hi there.</d>" in prompt
+    # Default: quoted text, no <d> tags
+    assert '"[American English] Hello."' in prompt
+    assert '"[American English] Hi there."' in prompt
+    assert "<d>" not in prompt
+
+
+def test_h3_ref2va_dialogue_tags_when_enabled():
+    alice = _make_subject("Alice", audio="a.wav", language="en-us")
+    bob = _make_subject("Bob")
+    scene = _make_scene(slot_A=alice, slot_B=bob, dialogue=["Hello.", "Hi there."])
+    scene["dialogue_tags"] = True
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "<d>[American English] Hello.</d>" in prompt
+    assert "<d>[American English] Hi there.</d>" in prompt
 
 
 def test_h3_ref2va_shot_headers():
@@ -337,13 +420,64 @@ def test_h3_ref2va_shot_headers():
     assert "[Shot 2]" in prompt
 
 
-def test_h3_ref2va_first_appearance_includes_description():
+def test_h3_ref2va_subject_definitions_contains_description():
     alice = _make_subject("Alice", summary="a tall woman with red hair")
     bob = _make_subject("Bob")
     scene = _make_scene(slot_A=alice, slot_B=bob)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    # At first mention of Alice in detailed_description, include appearance
-    assert "Alice — a tall woman with red hair" in prompt
+    assert "a tall woman with red hair" in prompt
+    assert "Alice — a tall woman" not in prompt  # no inline name—description slug
+
+
+def test_h3_ref2va_first_appearance_injects_description_inline():
+    """First mention of a subject in detailed_description gets a comma-appositive."""
+    alice = _make_subject("Alice", summary="a tall woman with red hair")
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    # "a" → "the" because inline is always definite
+    assert "<Subject 1> (S1), the tall woman with red hair" in prompt
+
+
+def test_h3_ref2va_second_appearance_in_same_shot_is_bare():
+    """Second {A} reference within the same camera+action pair is bare — no description."""
+    # Template has both camera ("Close-up of {A}") and action ("{A} speaks.")
+    # Only the first (camera) should get the description.
+    alice = _make_subject("Alice", summary="a tall woman with red hair")
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    dd = prompt.split("detailed_description:")[1]
+    # Description appears exactly once inline (in camera line of Shot 1)
+    assert dd.count("the tall woman with red hair") == 1
+
+
+def test_h3_ref2va_subsequent_shot_appearance_is_bare():
+    """After a subject's first appearance, later shots just use the bare label."""
+    alice = _make_subject("Alice", summary="a tall woman with red hair")
+    bob = _make_subject("Bob", summary="a young man with dark hair")
+    scene = _make_scene(slot_A=alice, slot_B=bob)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    dd = prompt.split("detailed_description:")[1]
+    # Each subject's description appears exactly once inline
+    assert dd.count("the tall woman with red hair") == 1
+    assert dd.count("the young man with dark hair") == 1
+
+
+def test_h3_ref2va_non_speaking_first_appearance_has_no_speaker_id():
+    """Non-speaking first appearance: '<Subject N>, description' — no (SN)."""
+    # Bob is in slot B; Shot 1 speaks slot A, Shot 2 speaks slot B.
+    # Bob first appears in Shot 1 camera/action (where he's non-speaking), then speaks in Shot 2.
+    alice = _make_subject("Alice", summary="a young woman")
+    bob = _make_subject("Bob", summary="a young man")
+    # Custom template: Shot 1 mentions both A and B but only A speaks
+    template = _make_template(n_slots=2, n_shots=2)
+    template["shots"][0]["camera"] = "Close-up of {A} and {B}"
+    template["shots"][0]["action"] = "{A} speaks to {B}."
+    scene = _make_scene(template=template, slot_A=alice, slot_B=bob)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    dd = prompt.split("detailed_description:")[1]
+    # B's first appearance is non-speaking → no (S2)
+    assert "<Subject 2>, the young man" in dd
+    assert "<Subject 2> (S2), the young man" not in dd
 
 
 def test_h3_ref2va_soundscape_from_template():
@@ -396,13 +530,24 @@ def test_h3_fl2va_uses_subject_names():
     assert "<Subject" not in prompt
 
 
-def test_h3_fl2va_dialogue_tags():
+def test_h3_fl2va_dialogue_default_quoted():
     alice = _make_subject("Alice", language="en-us")
     bob = _make_subject("Bob")
     scene = _make_scene(slot_A=alice, slot_B=bob, dialogue=["Good morning.", "Morning."])
     prompt = assemble_prompt(scene, "h3_fl2va")["prompt"]
-    assert "<d>[en-us] Good morning.</d>" in prompt
-    assert "<d>[en-us] Morning.</d>" in prompt
+    assert '"[American English] Good morning."' in prompt
+    assert '"[American English] Morning."' in prompt
+    assert "<d>" not in prompt
+
+
+def test_h3_fl2va_dialogue_tags_when_enabled():
+    alice = _make_subject("Alice", language="en-us")
+    bob = _make_subject("Bob")
+    scene = _make_scene(slot_A=alice, slot_B=bob, dialogue=["Good morning.", "Morning."])
+    scene["dialogue_tags"] = True
+    prompt = assemble_prompt(scene, "h3_fl2va")["prompt"]
+    assert "<d>[American English] Good morning.</d>" in prompt
+    assert "<d>[American English] Morning.</d>" in prompt
 
 
 # ── Wan 2.2 / BerniniR ────────────────────────────────────────────────────────
@@ -619,7 +764,7 @@ def test_video_label_in_subject_definitions():
     scene = _make_scene(slot_A=alice)
     ve = _video_entries(("char_alice", "alice.mp4"))
     prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
-    # Video cited inline in subject line as "from <Video N>"
+    # Video cited inline after description: "is [desc] from <Video N>"
     assert "from <Video 1>" in prompt
     # Plus standalone role line
     assert "<Video 1> is" in prompt
@@ -630,7 +775,8 @@ def test_video_in_retention_analysis():
     scene = _make_scene(slot_A=alice)
     ve = _video_entries(("char_alice", "alice.mp4"))
     prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
-    assert "<Video 1>: reference (visual identity, not fully_copy)" in prompt
+    # Format: "<Video N> (visual identity of <Subject N>): fully_preserved - ..."
+    assert "<Video 1> (visual identity of <Subject 1>): fully_preserved" in prompt
 
 
 def test_video_in_summary_task_str():
@@ -765,6 +911,33 @@ def test_task_flags_multiple_flags_joined_correctly():
     assert "[video continuation + audio reference]" in prompt
 
 
+def test_task_flags_canonical_order_video_continuation_first():
+    """video continuation must appear before reference generation and audio reference."""
+    alice = _make_subject("Alice", sheets=["a.png"])
+    scene = {**_make_scene(slot_A=alice), "task_flags": ["reference generation", "audio reference", "video continuation"]}
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "[video continuation + reference generation + audio reference]" in prompt
+
+
+def test_subject_definitions_video_uses_from_preposition():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    sd = prompt.split("subject_definitions:")[1].split("\n\n")[0]
+    assert "from <Video 1>" in sd
+    assert "in <Video 1>" not in sd
+
+
+def test_subject_definitions_picture_uses_from_preposition():
+    alice = _make_subject("Alice", sheets=["a.png"])
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    sd = prompt.split("subject_definitions:")[1].split("\n\n")[0]
+    assert "from <Picture 1>" in sd
+    assert "in <Picture 1>" not in sd
+
+
 def test_single_picture_uses_from_phrasing():
     alice = _make_subject("Alice", sheets=["sheet.png"])
     scene = _make_scene(slot_A=alice)
@@ -815,6 +988,34 @@ def test_non_editing_tasks_open_with_shows_sentence():
     assert "The target video is an edited version" not in prompt
 
 
+def test_scene_synopsis_replaces_shot_narrative():
+    alice = _make_subject("Alice")
+    bob = _make_subject("Bob")
+    scene = {
+        **_make_scene(slot_A=alice, slot_B=bob),
+        "scene_synopsis": "{A} eating a cookie. {B} enters and lunges towards the cookie.",
+    }
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "The target video shows <Subject 1> eating a cookie." in prompt
+    assert "<Subject 2> enters and lunges towards the cookie." in prompt
+
+
+def test_scene_synopsis_no_double_period():
+    alice = _make_subject("Alice")
+    scene = {**_make_scene(slot_A=alice), "scene_synopsis": "{A} walks into the room."}
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "The target video shows <Subject 1> walks into the room." in prompt
+    assert "room.." not in prompt
+
+
+def test_scene_synopsis_fallback_to_shots_when_empty():
+    alice = _make_subject("Alice")
+    scene = {**_make_scene(slot_A=alice), "scene_synopsis": ""}
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    # falls back to shot-action narrative
+    assert "The target video shows" in prompt
+
+
 def test_audio_reuse_flag_appears_in_bracket():
     alice = _make_subject("Alice", audio="alice.wav")
     scene = {**_make_scene(slot_A=alice), "task_flags": ["video editing", "audio reuse"]}
@@ -829,3 +1030,23 @@ def test_auto_detect_only_audio_gives_audio_reference():
     assert "audio reference" in prompt
     # No pictures or video → no "reference generation"
     assert "reference generation" not in prompt
+
+
+def test_soundtrack_audio_subject_definitions_references_subject():
+    """extract_from_visual audio must cite the subject, not just the video."""
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = [{"subject_id": "char_alice", "video_file": "alice.mp4",
+           "audio_source": "extract_from_visual", "audio_retention": "timbre"}]
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    # Must say "for <Subject 1> (S1)" — not restating the video reference
+    assert "<Audio 1> is the voice-timbre reference for <Subject 1> (S1)" in prompt
+
+
+def test_soundtrack_audio_style_subject_definitions_references_subject():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = [{"subject_id": "char_alice", "video_file": "alice.mp4",
+           "audio_source": "extract_from_visual", "audio_retention": "style"}]
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "audio style and rhythm reference for <Subject 1> (S1)" in prompt

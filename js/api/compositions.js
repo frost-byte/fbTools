@@ -116,8 +116,28 @@ export class CompositionsAPI extends BaseAPI {
         return this.get("/presets/cameras");
     }
 
+    saveCameraPreset(preset) {
+        return this.post("/presets/cameras/save", preset);
+    }
+
+    async deleteCameraPreset(id) {
+        const r = await fetch(`/fbtools/presets/cameras/delete?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+    }
+
     listSoundPresets() {
         return this.get("/presets/sounds");
+    }
+
+    saveSoundPreset(preset) {
+        return this.post("/presets/sounds/save", preset);
+    }
+
+    async deleteSoundPreset(id) {
+        const r = await fetch(`/fbtools/presets/sounds/delete?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
     }
 }
 
