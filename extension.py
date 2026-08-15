@@ -10489,6 +10489,12 @@ class LoraStackBuilder(io.ComfyNode):
                     optional=True,
                     tooltip="Existing LORA_STACK_DATA to merge into (lowest priority).",
                 ),
+                io.Boolean.Input(
+                    "summary_include_prev_stack",
+                    display_name="Summary: Include Prev Stack",
+                    default=False,
+                    tooltip="When off, Enabled Summary only lists LoRAs defined in this node. When on, includes all merged entries from Prev Stack too.",
+                ),
                 io.Autogrow.Input(
                     "entries",
                     template=autogrow_template,
@@ -10498,9 +10504,10 @@ class LoraStackBuilder(io.ComfyNode):
                 *_lora_builder_inline_inputs(_LORA_BUILDER_ROWS),
             ],
             outputs=[
-                LoraStackData.Output("lora_stack_data", display_name="Stack Data"),
-                io.String.Output("stack_json",          display_name="Stack JSON"),
-                io.Int.Output("entry_count",            display_name="Entry Count"),
+                LoraStackData.Output("lora_stack_data",   display_name="Stack Data"),
+                io.String.Output("stack_json",            display_name="Stack JSON"),
+                io.Int.Output("entry_count",              display_name="Entry Count"),
+                io.String.Output("enabled_summary",       display_name="Enabled Summary"),
             ],
         )
 
@@ -10510,6 +10517,7 @@ class LoraStackBuilder(io.ComfyNode):
         model_target: str,
         entries: io.Autogrow.Type,
         prev_stack: Optional[list] = None,
+        summary_include_prev_stack: bool = False,
         **kwargs,
     ) -> io.NodeOutput:
         is_ltx = model_target == "LTX2.3"
@@ -10544,7 +10552,25 @@ class LoraStackBuilder(io.ComfyNode):
         merged = list(seen.values())
 
         stack_json = _lora_stack_to_json(merged)
-        return io.NodeOutput(merged, stack_json, len(merged))
+
+        def _fv(v: float) -> str:
+            return f"{v:.2f}".rstrip("0").rstrip(".")
+
+        summary_source = merged if summary_include_prev_stack else inline + connected
+        summary_lines = []
+        for e in summary_source:
+            if not e.get("enabled", True):
+                continue
+            name = os.path.splitext(os.path.basename(e.get("lora", "")))[0][:48]
+            parts = [_fv(e.get("strength_model", 1.0)), _fv(e.get("strength_clip", 1.0))]
+            if "video_strength" in e:
+                parts.append(_fv(e["video_strength"]))
+            if "audio_strength" in e:
+                parts.append(_fv(e["audio_strength"]))
+            summary_lines.append(f"{name} {'/'.join(parts)}")
+        enabled_summary = "\n".join(summary_lines) + "\n" if summary_lines else ""
+
+        return io.NodeOutput(merged, stack_json, len(merged), enabled_summary)
 
 
 # ── Preset scene-image loader ─────────────────────────────────────────────────
