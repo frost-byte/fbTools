@@ -8,6 +8,7 @@
  */
 
 import { bundlesApi } from "../api/bundles.js";
+import { llmApi }     from "../api/llm.js";
 
 // ── Module state ───────────────────────────────────────────────────────────────
 
@@ -21,6 +22,7 @@ const _S = {
     filterText:    "",
     editing:       null,  // bundle object being edited; null = list view
     isNew:         false,
+    llmVision:    false,  // true when a vision-capable model is loaded
 };
 
 // Key DOM refs
@@ -82,18 +84,20 @@ function _filteredBundles() {
 // ── Data load ─────────────────────────────────────────────────────────────────
 
 async function _loadAll() {
-    const [bundles, subjects, imgs, vids, aud] = await Promise.allSettled([
+    const [bundles, subjects, imgs, vids, aud, llmSt] = await Promise.allSettled([
         bundlesApi.listBundles(),
         bundlesApi.listSubjects(),
         bundlesApi.listMedia("image"),
         bundlesApi.listMedia("video"),
         bundlesApi.listMedia("audio"),
+        llmApi.status(),
     ]);
     _S.bundles     = bundles.value?.bundles   ?? [];
     _S.subjects    = subjects.value?.subjects ?? [];
     _S.mediaImages = imgs.value?.files        ?? [];
     _S.mediaVideos = vids.value?.files        ?? [];
     _S.mediaAudio  = aud.value?.files         ?? [];
+    _S.llmVision   = llmSt.value?.supports_vision ?? false;
 }
 
 // ── List view ─────────────────────────────────────────────────────────────────
@@ -198,7 +202,7 @@ function _startNew(subjectId = "") {
         id:                  "",
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
-        visual:              { type: "images", file: "", files: [], force_rate: 0, frame_load_cap: 16, skip_first_frames: 0, select_every_nth: 1 },
+        visual:              { type: "images", file: "", files: [], force_rate: 0, frame_load_cap: 96, skip_first_frames: 0, select_every_nth: 1 },
         audio:               { source: "none", file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "" },
         appearance_override: "",
         tags:                [],
@@ -385,6 +389,7 @@ function _renderForm() {
     form.appendChild(_formRow("ID",     idEl));
     form.appendChild(_formRow("Subject", subjectEl));
     form.appendChild(_formRow("Appear.", appearEl));
+    if (_S.llmVision) form.appendChild(_buildAppearanceAnalyzer(b, appearEl));
     form.appendChild(visualSec);
     form.appendChild(audioSec);
     form.appendChild(_formRow("Tags",   tagsEl));
@@ -613,6 +618,191 @@ function _buildAudioPicker(wrap, b) {
         wrap.appendChild(sel);
     }
     _buildAudioTimeSection(wrap, b.audio);
+}
+
+const _DEFAULT_APPEARANCE_QUERY =
+    "Describe this person's physical appearance for a video generation prompt. " +
+    "Include hair color and style, eye color (if visible), skin tone, facial structure, " +
+    "build and approximate height, age range, and any distinctive features. " +
+    "Write two to four plain English sentences. Do not use markdown, bullet points, or headings.";
+
+function _buildAppearanceAnalyzer(b, appearEl) {
+    const isVideoMode = b.visual.type === "video" && !!b.visual.file;
+    let _currentTmpFrame = null;  // temp filename on server; replaced on each extraction
+
+    const sec = _mk("div", { cls: "fbt-be-llm-section" });
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    const hdrHint = isVideoMode ? "extract a frame from the video reference"
+        : (b.visual.files?.length ? "" : "no images in bundle — using full media pool");
+    sec.appendChild(_mk("div", { cls: "fbt-be-llm-header" }, [
+        _mk("span", { cls: "fbt-be-llm-title", textContent: "Analyze Appearance" }),
+        ...(hdrHint ? [_mk("span", { cls: "fbt-be-llm-hint", textContent: `(${hdrHint})` })] : []),
+    ]));
+
+    // ── Preview image (shared) ─────────────────────────────────────────────────
+    const previewImg = _mk("img", { cls: "fbt-be-llm-preview", style: { display: "none" } });
+    previewImg.alt = "";
+
+    // ── Source section ────────────────────────────────────────────────────────
+    let getSourceImage;   // () => filename string | null
+
+    if (isVideoMode) {
+        // Video mode: frame extractor
+        const frameInput = _mk("input", {
+            cls: "fbt-ce-input fbt-be-llm-frame-input",
+            type: "number", value: "0", min: "0", step: "1",
+            title: "Frame index (0 = first frame)",
+        });
+        const frameCountEl = _mk("span", { cls: "fbt-be-llm-frame-count", textContent: "" });
+
+        const extractBtn = _mk("button", {
+            cls: "fbt-ce-btn",
+            textContent: "Extract Frame",
+            onclick: async () => {
+                // Replace previous temp frame
+                if (_currentTmpFrame) {
+                    bundlesApi.deleteTmpFrame(_currentTmpFrame).catch(() => {});
+                    _currentTmpFrame = null;
+                }
+                extractBtn.disabled = true;
+                extractBtn.textContent = "Extracting…";
+                previewImg.style.display = "none";
+                try {
+                    const r = await bundlesApi.extractFrame(
+                        b.visual.file, parseInt(frameInput.value, 10) || 0);
+                    _currentTmpFrame = r.tmp_filename;
+                    frameInput.max = r.frame_count - 1;
+                    frameCountEl.textContent = `of ${r.frame_count} frames  (${r.width}×${r.height})`;
+                    previewImg.src = `/view?filename=${encodeURIComponent(r.tmp_filename)}&type=input&subfolder=`;
+                    previewImg.style.display = "";
+                } catch (e) {
+                    _toast("Frame extraction failed: " + e.message, "error");
+                } finally {
+                    extractBtn.disabled = false;
+                    extractBtn.textContent = "Extract Frame";
+                }
+            },
+        });
+
+        getSourceImage = () => _currentTmpFrame;
+
+        sec.appendChild(_mk("div", { cls: "fbt-be-llm-video-row" }, [
+            _mk("span", { cls: "fbt-be-llm-video-name", textContent: b.visual.file }),
+        ]));
+        sec.appendChild(_mk("div", { cls: "fbt-be-llm-top-row" }, [
+            frameInput, frameCountEl, extractBtn,
+        ]));
+
+    } else {
+        // Image mode: dropdown of bundle images or full media pool
+        const imagePool = b.visual.files?.length ? b.visual.files : _S.mediaImages;
+        const imgSel = document.createElement("select");
+        imgSel.className = "fbt-ce-select fbt-be-llm-img-sel";
+        const blankOpt = document.createElement("option");
+        blankOpt.value = "";
+        blankOpt.textContent = "— select image —";
+        imgSel.appendChild(blankOpt);
+        imagePool.forEach(f => {
+            const o = document.createElement("option");
+            o.value = f; o.textContent = f;
+            imgSel.appendChild(o);
+        });
+        if (!imagePool.length) { imgSel.disabled = true; imgSel.title = "No images available"; }
+        imgSel.addEventListener("change", () => {
+            const f = imgSel.value;
+            previewImg.src = f ? `/view?filename=${encodeURIComponent(f)}&type=input&subfolder=` : "";
+            previewImg.style.display = f ? "" : "none";
+        });
+
+        getSourceImage = () => imgSel.value || null;
+
+        sec.appendChild(_mk("div", { cls: "fbt-be-llm-top-row" }, [imgSel]));
+    }
+
+    sec.appendChild(previewImg);
+
+    // ── Query ─────────────────────────────────────────────────────────────────
+    sec.appendChild(_mk("textarea", {
+        cls: "fbt-ce-textarea fbt-be-llm-query",
+        rows: 3,
+        value: _DEFAULT_APPEARANCE_QUERY,
+    }));
+
+    // ── Result ────────────────────────────────────────────────────────────────
+    const resultEl = _mk("textarea", {
+        cls: "fbt-ce-textarea fbt-be-llm-result",
+        rows: 3,
+        placeholder: "Generated description will appear here…",
+        style: { display: "none" },
+    });
+    sec.appendChild(resultEl);
+
+    // ── Apply buttons ─────────────────────────────────────────────────────────
+    const applyRow = _mk("div", { cls: "fbt-be-llm-apply-row", style: { display: "none" } });
+    applyRow.appendChild(_mk("button", {
+        cls: "fbt-ce-btn",
+        textContent: "→ Bundle",
+        title: "Copy to appearance override for this bundle",
+        onclick: () => {
+            appearEl.value = resultEl.value;
+            b.appearance_override = resultEl.value;
+            _toast("Applied to bundle appearance override", "success");
+        },
+    }));
+    applyRow.appendChild(_mk("button", {
+        cls: "fbt-ce-btn",
+        textContent: "→ Subject Profile",
+        title: "Save as appearance summary on the subject profile",
+        onclick: async () => {
+            const sid = b.subject_id;
+            if (!sid) { _toast("No subject selected on this bundle", "warn"); return; }
+            try {
+                await bundlesApi.saveSubjectAppearance(sid, resultEl.value);
+                _toast("Saved to subject profile", "success");
+                const res = await bundlesApi.listSubjects();
+                _S.subjects = res.subjects ?? [];
+            } catch (e) {
+                _toast("Save failed: " + e.message, "error");
+            }
+        },
+    }));
+    sec.appendChild(applyRow);
+
+    // ── Analyze button ────────────────────────────────────────────────────────
+    const queryEl = sec.querySelector("textarea.fbt-be-llm-query");
+    const analyzeBtn = _mk("button", {
+        cls: "fbt-ce-btn fbt-be-llm-analyze-btn",
+        textContent: "🔍 Analyze",
+        onclick: async () => {
+            const img = getSourceImage();
+            if (!img) {
+                _toast(isVideoMode ? "Extract a frame first" : "Select an image to analyze", "warn");
+                return;
+            }
+            analyzeBtn.disabled = true;
+            analyzeBtn.textContent = "Analyzing…";
+            try {
+                const query = sec.querySelector("textarea.fbt-be-llm-query")?.value.trim()
+                    || _DEFAULT_APPEARANCE_QUERY;
+                const r = await llmApi.generate(query, { images: [img], max_tokens: 400 });
+                if (r?.text) {
+                    resultEl.value = r.text.trim();
+                    resultEl.style.display = "";
+                    applyRow.style.display = "";
+                }
+            } catch (e) {
+                _toast("LLM error: " + e.message, "error");
+            } finally {
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = "🔍 Analyze";
+            }
+        },
+    });
+    // Insert analyze button after the query textarea, before the result
+    sec.insertBefore(analyzeBtn, resultEl);
+
+    return sec;
 }
 
 async function _onSave(b, warnEl) {

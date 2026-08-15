@@ -490,7 +490,7 @@ app.extensionManager.registerSidebarTab({
     type: "custom",
     render: (el) => {
         window._fbtApp = app;
-        renderBundleEditor(el);
+        if (!el.querySelector(".fbt-be-panel")) renderBundleEditor(el);
     },
 });
 
@@ -502,7 +502,7 @@ app.extensionManager.registerSidebarTab({
     type: "custom",
     render: (el) => {
         window._fbtApp = app;
-        renderCastEditor(el);
+        if (!el.querySelector(".fbt-be-panel")) renderCastEditor(el);
     },
 });
 

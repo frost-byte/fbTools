@@ -4,6 +4,7 @@ from conftest import import_test_module
 
 pc = import_test_module("utils/prompt_compositions.py")
 apply_cast_to_subjects = pc.apply_cast_to_subjects
+resolve_subjects       = pc.resolve_subjects
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -221,6 +222,38 @@ def test_unmatched_subject_id_skipped():
     reg  = _BundleRegistry({"b1": _bundle(files=["bob.png"])})
     result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
     assert result["S1"]["character_sheet_images"] == []
+
+
+def test_resolve_subjects_injects_subject_id_from_live_registry():
+    """subject_id must be present so _build_ref_map can match video_entries_full."""
+    class _Reg:
+        def get_subject(self, sid):
+            return {"name": sid, "appearance": {"summary": "summary"}, "character_sheet_images": []}
+    comp = {"subjects": {"S1": "alice", "S2": "bob"}, "_subject_snapshots": {}}
+    result = resolve_subjects(comp, _Reg())
+    assert result["S1"]["subject_id"] == "alice"
+    assert result["S2"]["subject_id"] == "bob"
+
+
+def test_resolve_subjects_injects_subject_id_from_snapshot():
+    """Snapshot path must also carry subject_id for video matching."""
+    comp = {
+        "subjects": {"S1": "alice"},
+        "_subject_snapshots": {"S1": {"name": "alice", "appearance": {"summary": "s"}}},
+    }
+    result = resolve_subjects(comp, subject_registry=None)
+    assert result["S1"]["subject_id"] == "alice"
+
+
+def test_resolve_subjects_preserves_existing_subject_id_in_snapshot():
+    """If snapshot already has subject_id (from SubjectProfileLoad), don't overwrite it."""
+    comp = {
+        "subjects": {"S1": "alice"},
+        "_subject_snapshots": {"S1": {"name": "alice", "subject_id": "alice_v2",
+                                      "appearance": {"summary": "s"}}},
+    }
+    result = resolve_subjects(comp, subject_registry=None)
+    assert result["S1"]["subject_id"] == "alice_v2"
 
 
 def test_multiple_subjects_each_enriched_independently():

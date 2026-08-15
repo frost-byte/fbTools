@@ -106,6 +106,56 @@ function _injectCss() {
     line-height: 1;
 }
 .fbt-scb-rm-btn:hover { color: var(--p-red-300, #fca5a5); }
+.fbt-scb-preview-btn {
+    background: transparent;
+    border: none;
+    color: var(--p-surface-400, #888);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    line-height: 1;
+}
+.fbt-scb-preview-btn:hover { color: var(--p-blue-400, #60a5fa); }
+.fbt-scb-preview-btn.active { color: var(--p-blue-400, #60a5fa); }
+.fbt-scb-preview-row td {
+    padding: 4px 6px 8px 22px;
+    background: var(--comfy-menu-bg, #111);
+}
+.fbt-scb-preview-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: flex-start;
+}
+.fbt-scb-thumb {
+    width: 72px;
+    height: 72px;
+    object-fit: cover;
+    border-radius: 3px;
+    border: 1px solid var(--border-color, #333);
+    background: #000;
+    cursor: zoom-in;
+}
+.fbt-scb-preview-video {
+    max-width: 100%;
+    max-height: 120px;
+    border-radius: 3px;
+    border: 1px solid var(--border-color, #333);
+    background: #000;
+    flex-basis: 100%;
+    margin-top: 4px;
+}
+.fbt-scb-preview-audio {
+    width: 100%;
+    height: 28px;
+    margin-top: 4px;
+    flex-basis: 100%;
+}
+.fbt-scb-preview-note {
+    color: var(--p-surface-400, #888);
+    font-size: 10px;
+    font-style: italic;
+}
 .fbt-scb-add-btn {
     margin-top: 5px;
     width: 100%;
@@ -160,6 +210,9 @@ function _buildCastBuildUI(node, app) {
         if (Array.isArray(parsed)) _entries = parsed;
     } catch { /* leave empty */ }
 
+    // tmp frame filenames keyed by bundle_id — cleaned up on collapse/rebuild
+    const _tmpFrames = new Map();
+
     // ── 3. Build DOM structure ────────────────────────────────────────────────
     const wrap = document.createElement("div");
     wrap.className = "fbt-scb-wrap";
@@ -170,11 +223,11 @@ function _buildCastBuildUI(node, app) {
     const thead = document.createElement("thead");
     thead.innerHTML = `<tr>
         <th class="fbt-scb-row-num"></th>
-        <th style="width:28%">Subject</th>
-        <th style="width:32%">Bundle</th>
+        <th style="width:27%">Subject</th>
+        <th style="width:30%">Bundle</th>
         <th class="fbt-scb-c" style="width:50px">Mode</th>
         <th class="fbt-scb-c" style="width:26px">Aud</th>
-        <th style="width:18px"></th>
+        <th style="width:34px"></th>
     </tr>`;
     table.appendChild(thead);
 
@@ -231,9 +284,125 @@ function _buildCastBuildUI(node, app) {
         });
     }
 
-    // ── 5. Build a single table row ───────────────────────────────────────────
+    // ── 5. Preview helpers ────────────────────────────────────────────────────
 
-    function _buildRow(idx) {
+    function _buildPreviewRowEl() {
+        const tr = document.createElement("tr");
+        tr.className = "fbt-scb-preview-row";
+        tr.style.display = "none";
+        const td = document.createElement("td");
+        td.colSpan = 6;
+        tr.appendChild(td);
+        return tr;
+    }
+
+    async function _loadPreviewContent(td, entry) {
+        if (!entry.bundle_id) {
+            td.innerHTML = '<span class="fbt-scb-preview-note">No bundle selected.</span>';
+            return;
+        }
+        td.innerHTML = '<span class="fbt-scb-preview-note">Loading…</span>';
+        try {
+            const bundle = await bundlesApi.getBundle(entry.bundle_id);
+            const strip = document.createElement("div");
+            strip.className = "fbt-scb-preview-strip";
+
+            if (entry.visual_mode === "video") {
+                const file = bundle.visual?.file || "";
+                if (file) {
+                    try {
+                        const frameData = await bundlesApi.extractFrame(file, 0);
+                        const prev = _tmpFrames.get(entry.bundle_id);
+                        if (prev) bundlesApi.deleteTmpFrame(prev);
+                        _tmpFrames.set(entry.bundle_id, frameData.tmp_filename);
+                        const img = document.createElement("img");
+                        img.className = "fbt-scb-thumb";
+                        img.src = `/view?filename=${encodeURIComponent(frameData.tmp_filename)}&type=input`;
+                        img.title = `${file}\n${frameData.width}×${frameData.height}, ${frameData.frame_count} frames`;
+                        strip.appendChild(img);
+                        const note = document.createElement("span");
+                        note.className = "fbt-scb-preview-note";
+                        note.style.alignSelf = "center";
+                        note.textContent = `${file} — ${frameData.width}×${frameData.height}, ${frameData.frame_count} frames`;
+                        strip.appendChild(note);
+                    } catch {
+                        const note = document.createElement("span");
+                        note.className = "fbt-scb-preview-note";
+                        note.textContent = `${file} (frame extract unavailable)`;
+                        strip.appendChild(note);
+                    }
+                } else {
+                    strip.innerHTML = '<span class="fbt-scb-preview-note">No video file in bundle.</span>';
+                }
+            } else {
+                const files = bundle.visual?.files || [];
+                if (files.length) {
+                    files.forEach(f => {
+                        const img = document.createElement("img");
+                        img.className = "fbt-scb-thumb";
+                        img.src = `/view?filename=${encodeURIComponent(f)}&type=input`;
+                        img.title = f;
+                        img.loading = "lazy";
+                        strip.appendChild(img);
+                    });
+                } else {
+                    strip.innerHTML = '<span class="fbt-scb-preview-note">No images in bundle.</span>';
+                }
+            }
+
+            // Audio player — show regardless of use_audio so user can verify the file
+            const audioSrc = bundle.audio?.source;
+            const audioFile = bundle.audio?.file || "";
+            if (audioFile && audioSrc !== "none" && audioSrc !== "extract_from_visual") {
+                const aud = document.createElement("audio");
+                aud.className = "fbt-scb-preview-audio";
+                aud.src = `/view?filename=${encodeURIComponent(audioFile)}&type=input`;
+                aud.controls = true;
+                aud.preload = "none";
+                aud.title = audioFile;
+                strip.appendChild(aud);
+            }
+
+            // When audio is extracted from the video itself, add a video player so the user can hear it
+            if (audioSrc === "extract_from_visual" && entry.visual_mode === "video") {
+                const videoFile = bundle.visual?.file || "";
+                if (videoFile) {
+                    const vid = document.createElement("video");
+                    vid.className = "fbt-scb-preview-video";
+                    vid.src = `/view?filename=${encodeURIComponent(videoFile)}&type=input`;
+                    vid.controls = true;
+                    vid.preload = "none";
+                    vid.title = `${videoFile} — play to hear extracted audio`;
+                    strip.appendChild(vid);
+                }
+            }
+
+            td.innerHTML = "";
+            td.appendChild(strip);
+        } catch (err) {
+            td.innerHTML = `<span class="fbt-scb-preview-note">Error: ${err.message}</span>`;
+        }
+    }
+
+    async function _togglePreview(idx, previewRow, previewBtn) {
+        const entry = _entries[idx];
+        const td = previewRow.querySelector("td");
+        const isOpen = previewRow.style.display !== "none";
+        if (isOpen) {
+            previewRow.style.display = "none";
+            previewBtn.classList.remove("active");
+            const tmp = _tmpFrames.get(entry.bundle_id);
+            if (tmp) { bundlesApi.deleteTmpFrame(tmp); _tmpFrames.delete(entry.bundle_id); }
+        } else {
+            previewRow.style.display = "";
+            previewBtn.classList.add("active");
+            await _loadPreviewContent(td, entry);
+        }
+    }
+
+    // ── 6. Build a single table row ───────────────────────────────────────────
+
+    function _buildRow(idx, previewRow) {
         const entry = _entries[idx];
         const tr = document.createElement("tr");
         tr.classList.toggle("fbt-scb-empty", !entry.subject_id || !entry.bundle_id);
@@ -289,13 +458,25 @@ function _buildCastBuildUI(node, app) {
         audTd.appendChild(audCb);
         tr.appendChild(audTd);
 
-        // Remove button
+        // Preview + Remove buttons
         const rmTd = document.createElement("td");
+        rmTd.style.whiteSpace = "nowrap";
+
+        const previewBtn = document.createElement("button");
+        previewBtn.className = "fbt-scb-preview-btn";
+        previewBtn.textContent = "⊙";
+        previewBtn.title = "Preview media";
+        previewBtn.addEventListener("click", () => _togglePreview(idx, previewRow, previewBtn));
+        rmTd.appendChild(previewBtn);
+
         const rmBtn = document.createElement("button");
         rmBtn.className = "fbt-scb-rm-btn";
         rmBtn.textContent = "✕";
         rmBtn.title = "Remove entry";
         rmBtn.addEventListener("click", () => {
+            // Clean up any open tmp frame for this entry
+            const tmp = _tmpFrames.get(entry.bundle_id);
+            if (tmp) { bundlesApi.deleteTmpFrame(tmp); _tmpFrames.delete(entry.bundle_id); }
             _entries.splice(idx, 1);
             _rebuildTable();
             _syncWidget();
@@ -352,11 +533,20 @@ function _buildCastBuildUI(node, app) {
         return tr;
     }
 
-    // ── 6. Rebuild the whole tbody ────────────────────────────────────────────
+    // ── 7. Rebuild the whole tbody ────────────────────────────────────────────
 
     function _rebuildTable() {
+        // Clean up any extracted video frames still open
+        _tmpFrames.forEach(tmp => bundlesApi.deleteTmpFrame(tmp));
+        _tmpFrames.clear();
+
         tbody.innerHTML = "";
-        _entries.forEach((_, i) => tbody.appendChild(_buildRow(i)));
+        _entries.forEach((_, i) => {
+            const previewRow = _buildPreviewRowEl();
+            const entryRow = _buildRow(i, previewRow);
+            tbody.appendChild(entryRow);
+            tbody.appendChild(previewRow);
+        });
         addBtn.style.display = _entries.length >= MAX_ENTRIES ? "none" : "";
         // Update DOM widget height
         if (displayWidget) {
@@ -369,14 +559,14 @@ function _buildCastBuildUI(node, app) {
         return Math.max(70, 28 + _entries.length * 28 + 26);
     }
 
-    // ── 7. Sync entries → hidden widget ───────────────────────────────────────
+    // ── 8. Sync entries → hidden widget ───────────────────────────────────────
 
     function _syncWidget() {
         if (jsonWidget) jsonWidget.value = JSON.stringify(_entries);
         app?.graph?.setDirtyCanvas?.(true, false);
     }
 
-    // ── 8. Add DOM widget ─────────────────────────────────────────────────────
+    // ── 9. Add DOM widget ─────────────────────────────────────────────────────
     let displayWidget = null;
     displayWidget = node.addDOMWidget("cast_build_table", "preview", wrap, {
         serialize: false,
@@ -386,7 +576,7 @@ function _buildCastBuildUI(node, app) {
     });
     displayWidget.computeSize = () => [0, _tableHeight()];
 
-    // ── 9. Public refresh (called by cast editor "Send to Workflow") ──────────
+    // ── 10. Public refresh (called by cast editor "Send to Workflow") ─────────
 
     node._refreshCastTable = function (newEntries) {
         if (Array.isArray(newEntries)) {
@@ -403,7 +593,7 @@ function _buildCastBuildUI(node, app) {
         _rebuildTable();
     };
 
-    // ── 10. Load subject + bundle lists, then render ──────────────────────────
+    // ── 11. Load subject + bundle lists, then render ─────────────────────────
     Promise.allSettled([
         bundlesApi.listSubjects(),
         bundlesApi.listBundles(),
