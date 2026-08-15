@@ -135,12 +135,26 @@ def _scan_gguf_dir(dirpath: str, name: str) -> dict | None:
         "supports_video": supports_vision,
         "native_video":   False,
         "size_mb":        size_mb,
+        "vision_handler": _gguf_vision_handler(main_file) if supports_vision else None,
     }
 
 
 def _is_mmproj(filename: str) -> bool:
     lower = filename.lower()
     return "mmproj" in lower or "vision" in lower and "proj" in lower
+
+
+def _gguf_vision_handler(main_file: str) -> str:
+    """Return the llama-cpp-python chat handler class name for a GGUF vision model.
+
+    Gemma-4 uses the new MTMD backend (Gemma4ChatHandler) instead of the
+    legacy LLaVA clip handler.  All other vision models use the old approach
+    (clip_model_path kwarg + Llava15ChatHandler-derived handlers).
+    """
+    lower = main_file.lower()
+    if "gemma" in lower:
+        return "Gemma4ChatHandler"
+    return "Llava15ChatHandler"
 
 
 # ── HuggingFace directory scanner ─────────────────────────────────────────────

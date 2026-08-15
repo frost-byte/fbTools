@@ -119,8 +119,9 @@ function _newComp() {
         model_type: "h3_ref2va", style: "",
         concept_id: "",
         task_flags: [],
+        use_dialogue_tags: false,
         subjects: {}, outfit_overrides: {},
-        background: "", shots: [],
+        background: "", scene_synopsis: "", shots: [],
         overall_soundscape: "", non_diegetic_music: "",
         libbers: [],
         loras: [],
@@ -727,8 +728,85 @@ function _refreshSidebar() {
     _populateSavedList();
     _populateSubjectList();
     _populateBgList();
-    _populatePresetList(_dom.camList, _S.cameraPresets, _insertCameraPreset);
-    _populatePresetList(_dom.sndList, _S.soundPresets, _insertSoundPreset);
+    _rebuildPresetList("camera");
+    _rebuildPresetList("sound");
+}
+
+// ── Camera / Sound preset sidebar sections ────────────────────────────────────
+
+function _rebuildPresetList(kind) {
+    const listEl  = kind === "camera" ? _dom.camList : _dom.sndList;
+    const presets = kind === "camera" ? _S.cameraPresets : _S.soundPresets;
+    const insertFn = kind === "camera" ? _insertCameraPreset : _insertSoundPreset;
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    if (!presets.length) {
+        listEl.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No presets saved" }));
+        return;
+    }
+    presets.forEach(p => {
+        const row     = _mk("div", { cls: "fbt-ce-sb-item" });
+        const nameEl  = _mk("span", { cls: "fbt-ce-sb-name fbt-ce-clickable",
+            textContent: p.name || p.id, title: p.description || "",
+            onclick: () => insertFn(p.description || "") });
+        const actions = _mk("span", { cls: "fbt-ce-sb-actions" });
+        const delBtn  = _mk("button", { cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Delete preset", textContent: "✕",
+            onclick: async () => {
+                if (!confirm(`Delete preset "${p.name || p.id}"?`)) return;
+                try {
+                    if (kind === "camera") await compositionsApi.deleteCameraPreset(p.id);
+                    else                  await compositionsApi.deleteSoundPreset(p.id);
+                    const r = kind === "camera"
+                        ? await compositionsApi.listCameraPresets()
+                        : await compositionsApi.listSoundPresets();
+                    if (kind === "camera") _S.cameraPresets = r.camera_presets ?? [];
+                    else                   _S.soundPresets  = r.sound_presets  ?? [];
+                    _rebuildPresetList(kind);
+                    _toast("Preset deleted", "success");
+                } catch (e) { _toast(`Delete failed: ${e.message}`, "error"); }
+            }});
+        actions.appendChild(delBtn);
+        row.appendChild(nameEl);
+        row.appendChild(actions);
+        listEl.appendChild(row);
+    });
+}
+
+function _buildPresetSection(parent, kind) {
+    const title   = kind === "camera" ? "Camera Presets (click to apply)" : "Sound Presets (click to apply)";
+    const body    = _mk("div", { cls: "fbt-ce-sb-body" });
+    const listEl  = _mk("div", { cls: "fbt-ce-sb-list" });
+    if (kind === "camera") _dom.camList = listEl;
+    else                   _dom.sndList = listEl;
+
+    const nameIn  = _mk("input",    { cls: "fbt-ce-input",    placeholder: "Preset name" });
+    const textEl  = _mk("textarea", { cls: "fbt-ce-textarea", rows: 3,
+        placeholder: kind === "camera" ? "Camera movement / framing…" : "Sound / ambience description…" });
+    const saveBtn = _mk("button",   { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "Save",
+        onclick: async () => {
+            const name        = nameIn.value.trim();
+            const description = textEl.value.trim();
+            if (!name || !description) { _toast("Name and text are required", "warn"); return; }
+            try {
+                if (kind === "camera") await compositionsApi.saveCameraPreset({ name, description });
+                else                   await compositionsApi.saveSoundPreset({ name, description });
+                const r = kind === "camera"
+                    ? await compositionsApi.listCameraPresets()
+                    : await compositionsApi.listSoundPresets();
+                if (kind === "camera") _S.cameraPresets = r.camera_presets ?? [];
+                else                   _S.soundPresets  = r.sound_presets  ?? [];
+                _rebuildPresetList(kind);
+                nameIn.value = "";
+                textEl.value = "";
+                _toast("Preset saved", "success");
+            } catch (e) { _toast(`Save failed: ${e.message}`, "error"); }
+        }});
+
+    const form = _mk("div", { cls: "fbt-ce-preset-form" }, [nameIn, textEl, saveBtn]);
+    body.appendChild(listEl);
+    body.appendChild(form);
+    _rebuildPresetList(kind);
+    parent.appendChild(_buildSidebarSection(title, body));
 }
 
 // ── Outfit Registry sidebar section ───────────────────────────────────────────
@@ -763,6 +841,7 @@ function _rebuildOutfitList() {
                     await compositionsApi.deleteOutfit(id);
                     delete _S.outfits[id];
                     _rebuildOutfitList();
+                    _rebuildSlots();
                 } catch (e) { alert(`Delete failed: ${e.message}`); }
             }});
         const ctrl = _mk("div", { cls: "fbt-ce-outfit-ctrl" }, [editBtn, delBtn]);
@@ -840,6 +919,7 @@ function _openOutfitEditor(existingId) {
                 await compositionsApi.saveOutfit(outfit);
                 _S.outfits[id] = { name: outfit.name, description: outfit.description, tags: outfit.tags };
                 _rebuildOutfitList();
+                _rebuildSlots();
                 overlay.remove();
             } catch (e) { alert(`Save failed: ${e.message}`); }
         }});
@@ -1251,14 +1331,11 @@ function _buildSidebar(parent) {
     _dom.savedList  = _mk("div", { cls: "fbt-ce-sb-list" });
     _dom.subjectList = _mk("div", { cls: "fbt-ce-sb-list" });
     _dom.bgList     = _mk("div", { cls: "fbt-ce-sb-list" });
-    _dom.camList    = _mk("div", { cls: "fbt-ce-sb-list" });
-    _dom.sndList    = _mk("div", { cls: "fbt-ce-sb-list" });
-
     sidebar.appendChild(_buildSidebarSection("Saved Compositions", _dom.savedList));
     sidebar.appendChild(_buildSidebarSection("Subjects (click to assign)", _dom.subjectList));
     sidebar.appendChild(_buildSidebarSection("Backgrounds (click to assign)", _dom.bgList));
-    sidebar.appendChild(_buildSidebarSection("Camera Presets (click to apply to shot)", _dom.camList));
-    sidebar.appendChild(_buildSidebarSection("Sound Presets (click to apply to shot)", _dom.sndList));
+    _buildPresetSection(sidebar, "camera");
+    _buildPresetSection(sidebar, "sound");
     _buildOutfitsSection(sidebar);
     _buildLlmSection(sidebar);
     _buildSettingsSection(sidebar);
@@ -1359,16 +1436,26 @@ function _rebuildSlots() {
             _markDirty();
         });
 
-        // Outfit override
-        const outfit = _mk("input", {
-            cls: "fbt-ce-input fbt-ce-outfit",
-            type: "text",
-            placeholder: "Outfit override…",
-            value: comp.outfit_overrides?.[key] || "",
-        });
-        outfit.addEventListener("input", () => {
+        // Outfit override — dropdown from registry
+        const outfitSel = document.createElement("select");
+        outfitSel.className = "fbt-ce-select fbt-ce-outfit";
+        const noneOpt = document.createElement("option");
+        noneOpt.value = "";
+        noneOpt.textContent = "— default outfit —";
+        outfitSel.appendChild(noneOpt);
+        const currentOutfitText = comp.outfit_overrides?.[key] || "";
+        Object.entries(_S.outfits)
+            .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
+            .forEach(([id, entry]) => {
+                const opt = document.createElement("option");
+                opt.value = entry.description || "";
+                opt.textContent = entry.name || id;
+                opt.selected = (entry.description || "") === currentOutfitText && currentOutfitText !== "";
+                outfitSel.appendChild(opt);
+            });
+        outfitSel.addEventListener("change", () => {
             if (!comp.outfit_overrides) comp.outfit_overrides = {};
-            comp.outfit_overrides[key] = outfit.value;
+            comp.outfit_overrides[key] = outfitSel.value;
             _markDirty();
         });
 
@@ -1389,7 +1476,7 @@ function _rebuildSlots() {
 
         row.appendChild(label);
         row.appendChild(subSel);
-        row.appendChild(outfit);
+        row.appendChild(outfitSel);
         row.appendChild(removeBtn);
         card.appendChild(row);
         card.appendChild(infoEl);
@@ -1885,6 +1972,21 @@ function _buildEditor(parent) {
         body.appendChild(_dom.taskFlagsRow);
         _updateTaskFlagsVisibility();
 
+        // Dialogue tags toggle — only relevant for H3 formats
+        _dom.dialogueTagsCb = _mk("input", { type: "checkbox" });
+        _dom.dialogueTagsCb.addEventListener("change", () => {
+            _S.composition.use_dialogue_tags = _dom.dialogueTagsCb.checked;
+            _markDirty();
+        });
+        _dom.dialogueTagsRow = _mk("div", { cls: "fbt-ce-info-row" }, [
+            _mk("span", { cls: "fbt-ce-info-label", textContent: "Dialogue tags" }),
+            _mk("label", { cls: "fbt-ce-task-flag-label" }, [
+                _dom.dialogueTagsCb,
+                document.createTextNode(" use <d></d> tags (off = quoted text)"),
+            ]),
+        ]);
+        body.appendChild(_dom.dialogueTagsRow);
+
         _dom.compConceptInput = _mk("input", {
             cls: "fbt-ce-input",
             type: "text",
@@ -1958,6 +2060,22 @@ function _buildEditor(parent) {
 
         body.appendChild(_dom.bgSel);
         body.appendChild(_dom.bgSoundscapeHint);
+    }));
+
+    // Synopsis — concise scene overview used as the summary body in H3 prompts.
+    // Supports {S1}/{S2}/… shorthand; expanded to <Subject N> labels at assemble time.
+    form.appendChild(_editorSection("Synopsis", body => {
+        _dom.synopsisArea = _mk("textarea", {
+            cls: "fbt-ce-textarea",
+            placeholder: "{S1} eating a cookie in the café. {S2} enters with a dog, which lunges toward the cookie.",
+            rows: 3,
+        });
+        _dom.synopsisArea.addEventListener("input", () => {
+            _S.composition.scene_synopsis = _dom.synopsisArea.value;
+            _markDirty();
+        });
+        _attachCompletion(_dom.synopsisArea);
+        body.appendChild(_dom.synopsisArea);
     }));
 
     // Shots
@@ -2357,7 +2475,9 @@ function _populateEditor() {
         }
     }
     if (_dom.compConceptInput) _dom.compConceptInput.value = comp.concept_id || "";
+    if (_dom.dialogueTagsCb) _dom.dialogueTagsCb.checked = !!(comp.use_dialogue_tags);
     if (_dom.styleInput) _dom.styleInput.value = comp.style || "";
+    if (_dom.synopsisArea) _dom.synopsisArea.value = comp.scene_synopsis || "";
     if (_dom.soundscapeArea) _dom.soundscapeArea.value = comp.overall_soundscape || "";
     if (_dom.musicArea) _dom.musicArea.value = comp.non_diegetic_music || "";
 

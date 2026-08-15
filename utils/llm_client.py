@@ -122,9 +122,24 @@ def _load_gguf(info: dict) -> dict:
             "n_gpu_layers":   -1,   # offload everything to GPU
             "verbose":        False,
         }
+
+        chat_handler = None
         if mmproj_path and os.path.exists(mmproj_path):
-            kwargs["clip_model_path"] = mmproj_path
             logger.info("Vision projector: %s", mmproj_path)
+            # vision_handler is set by the scanner; fall back to filename detection
+            vision_handler = info.get("vision_handler") or (
+                "Gemma4ChatHandler" if "gemma" in info.get("main_file", "").lower() else "Llava15ChatHandler"
+            )
+            if vision_handler == "Gemma4ChatHandler":
+                # Gemma-4 uses the MTMD backend — must be a chat_handler, not clip_model_path
+                from llama_cpp.llama_chat_format import Gemma4ChatHandler
+                chat_handler = Gemma4ChatHandler(clip_model_path=mmproj_path, verbose=False)
+                logger.info("Using Gemma4ChatHandler for vision")
+            else:
+                # LLaVA-style models: pass clip_model_path directly to Llama
+                kwargs["clip_model_path"] = mmproj_path
+        if chat_handler is not None:
+            kwargs["chat_handler"] = chat_handler
 
         model = Llama(**kwargs)
 

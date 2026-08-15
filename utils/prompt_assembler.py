@@ -34,6 +34,30 @@ _SIMPLE_MODELS = {"ltx23", "flux2", "krea2", "qwen"}
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
 
+_LANG_LABELS: dict[str, str] = {
+    "en-us": "American English",
+    "en-gb": "British English",
+    "ja":    "Japanese",
+    "ko":    "Korean",
+    "zh":    "Mandarin Chinese",
+    "zh-tw": "Taiwanese Mandarin",
+    "es":    "Spanish",
+    "fr":    "French",
+    "de":    "German",
+    "it":    "Italian",
+    "pt":    "Portuguese",
+    "ru":    "Russian",
+    "ar":    "Arabic",
+    "hi":    "Hindi",
+    "no":    "Norwegian",
+}
+
+
+def _lang_label(code: str) -> str:
+    """Return a natural-language name for a BCP-47 code, falling back to the code itself."""
+    return _LANG_LABELS.get((code or "").lower().strip(), code or "English")
+
+
 def _join_labels(labels: list[str]) -> str:
     """Oxford-comma join for reference labels: '<Pic 1>, <Pic 2>, and <Pic 3>'."""
     if not labels:
@@ -80,6 +104,7 @@ def _build_ref_map(
     """
     assignments = scene_instance.get("slot_assignments", {})
     outfit_overrides = scene_instance.get("outfit_overrides", {})
+    retention_markers = scene_instance.get("retention_markers", {})
     ordered_slots = sorted(assignments.keys())
 
     # Build subject_id → video_entry lookup (first match wins)
@@ -151,10 +176,25 @@ def _build_ref_map(
         if audio_file:
             audio_num = pre_standalone_nums.get(slot_id)
 
+        # Precompute inline appearance phrase for first-appearance injection in shots.
+        # Always uses the definite article ("the …") since we're always describing a
+        # specific individual, regardless of whether a visual reference is present.
+        _ap_sum = appearance.get("summary", "")
+        _ap_body = (_ap_sum[0].lower() + _ap_sum[1:]).rstrip(". ") if _ap_sum else ""
+        _ap_body = re.sub(r"^an? ", "the ", _ap_body, count=1) if _ap_body else _ap_body
+        _ap_detail = [f for f in (
+            appearance.get("hair", ""), appearance.get("face", ""), appearance.get("body", "")
+        ) if f]
+        if outfit:
+            _ap_detail.append(f"wearing {outfit}")
+        _ap_detail_str = f", with {_join_details(_ap_detail)}" if _ap_detail else ""
+        appearance_phrase = f"{_ap_body}{_ap_detail_str}"
+
         ref_map[slot_id] = {
             "subject_id": subject_id,
             "name": subject.get("name", slot_id),
             "appearance_summary": appearance.get("summary", ""),
+            "appearance_phrase": appearance_phrase,
             "face": appearance.get("face", ""),
             "hair": appearance.get("hair", ""),
             "body": appearance.get("body", ""),
@@ -177,6 +217,7 @@ def _build_ref_map(
             "soundtrack_num": soundtrack_num,
             "soundtrack_retention": soundtrack_retention,
             "soundtrack_role": soundtrack_role,
+            "retention_marker": retention_markers.get(slot_id, "fully_preserved"),
         }
         subject_counter += 1
 
@@ -313,11 +354,23 @@ def _build_h3_refplan(
 
 # ── Placeholder replacement ────────────────────────────────────────────────────
 
-def _replace_h3(text: str, ref_map: dict, seen: set) -> str:
-    """Replace {A}/{B}/{C}/{D} with H3 subject labels, tracking first appearance.
+def _replace_h3(
+    text: str,
+    ref_map: dict,
+    speaking_slots: "set[str] | frozenset[str]" = frozenset(),
+    seen_globally: "set[str] | None" = None,
+) -> str:
+    """Replace {A}/{B}/{C}/{D} with H3 subject labels.
 
-    First appearance: "<Subject 1> (Name — appearance_summary)"
-    Subsequent:       "<Subject 1> (Name)"
+    First appearance (slot_id not yet in seen_globally):
+        "<Subject N>, the appearance phrase…"   — non-speaking
+        "<Subject N> (SN), the appearance phrase…" — speaking
+    Subsequent appearances:
+        "<Subject N>"        — non-speaking
+        "<Subject N> (SN)"  — speaking
+
+    Pass a mutable set as seen_globally and share it across all calls in one shot
+    sequence so first-appearance detection works across camera + action lines.
     """
     def _sub(match: re.Match) -> str:
         slot_id = match.group(1)
@@ -325,14 +378,13 @@ def _replace_h3(text: str, ref_map: dict, seen: set) -> str:
         if not info:
             return match.group(0)
         label = info["subject_label"]
-        name = info["name"]
-        if slot_id not in seen:
-            seen.add(slot_id)
-            appearance = info.get("appearance_summary", "")
-            if appearance:
-                return f"{label} ({name} — {appearance})"
-            return f"{label} ({name})"
-        return f"{label} ({name})"
+        base = f"{label} ({info['speaker_id']})" if slot_id in speaking_slots else label
+        if seen_globally is not None and slot_id not in seen_globally:
+            seen_globally.add(slot_id)
+            ap = info.get("appearance_phrase", "")
+            if ap:
+                return f"{base}, {ap}"
+        return base
 
     return re.sub(r"\{([A-D])\}", _sub, text)
 
@@ -374,23 +426,38 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         label = info["subject_label"]
         summary = info["appearance_summary"] or info["name"]
 
-        # Inline reference phrase — video first ("from <Video N>"), then
-        # character sheets ("from the character sheet(s) contained in <Picture N>")
-        ref_parts: list[str] = []
-        if info["video_num"] is not None:
-            ref_parts.append(f"<Video {info['video_num']}>")
-        if info["picture_nums"]:
-            pics = _join_labels([f"<Picture {p}>" for p in info["picture_nums"]])
-            ref_parts.append(pics)
-        ref_phrase = (" from " + " and ".join(ref_parts)) if ref_parts else ""
+        # Build reference anchor — placed AFTER summary per H3 spec:
+        #   "<Subject N> is [description] in <Video N>, with [details]."
+        #   "<Subject N> is [description] in <Picture N>, with [details]."
+        # Both video and picture references use "in" (per official doc examples).
+        vid_ref = f"<Video {info['video_num']}>" if info["video_num"] is not None else ""
+        pic_ref_str = _join_labels([f"<Picture {p}>" for p in info["picture_nums"]]) if info["picture_nums"] else ""
 
-        # Appearance details as flowing prose
+        if vid_ref and pic_ref_str:
+            ref_anchor = f" from {vid_ref} and {pic_ref_str}"
+        elif vid_ref:
+            ref_anchor = f" from {vid_ref}"
+        elif pic_ref_str:
+            ref_anchor = f" from {pic_ref_str}"
+        else:
+            ref_anchor = ""
+
+        # Appearance details as flowing prose (from separate structured fields)
         detail_parts = [
             info[f] for f in ("hair", "face", "body", "outfit") if info.get(f)
         ]
         detail_phrase = f", with {_join_details(detail_parts)}" if detail_parts else ""
 
-        sd.append(f"{label} is {summary}{ref_phrase}{detail_phrase}.")
+        # Summary starts with lowercase after "is"; trailing period stripped since
+        # detail_phrase or ref_anchor continues the sentence.
+        summary_body = (summary[0].lower() + summary[1:]).rstrip(". ") if summary else ""
+        # When a specific reference is cited, the subject is definite — replace a
+        # leading indefinite article ("a "/"an ") with "the " to match spec examples
+        # ("is the young blonde woman in <Video 1>…").  Leaves "the", names, and
+        # article-free summaries untouched.
+        if ref_anchor and summary_body:
+            summary_body = re.sub(r"^an? ", "the ", summary_body, count=1)
+        sd.append(f"{label} is {summary_body}{ref_anchor}{detail_phrase}.")
 
         # Standalone video role line (task-flag-aware)
         if info["video_num"] is not None:
@@ -409,15 +476,18 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             snd_ret = info["soundtrack_retention"]
             snd_role = info["soundtrack_role"]
             vnum = info["video_num"]
+            voice_desc = info["voice_description"] or f"a spoken {_lang_label(info['language'])} vocal layer"
+            spk = f"{label} ({info['speaker_id']})"
             if snd_role:
-                desc = snd_role
+                desc = f"{snd_role} for {spk}"
             elif snd_ret == "reuse":
                 desc = f"the audio track from <Video {vnum}>, reproduced verbatim"
             elif snd_ret == "style":
-                desc = f"the audio style and rhythm reference from <Video {vnum}>"
+                desc = (f"the audio style and rhythm reference for {spk}, "
+                        f"containing {voice_desc}")
             else:
-                desc = (f"the voice-timbre reference from <Video {vnum}>, "
-                        "without copying the original signal")
+                desc = (f"the voice-timbre reference for {spk}, "
+                        f"containing {voice_desc}, without copying the original signal")
             audio_sd_lines.append(f"<Audio {snd_num}> is {desc}.")
 
         # Standalone audio line (voice.audio_reference_file)
@@ -425,7 +495,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             aud_num = info["audio_num"]
             aud_ret = info["audio_retention"]
             aud_role = info["audio_role"]
-            voice_desc = info["voice_description"] or f"spoken {info['language']} vocal layer"
+            voice_desc = info["voice_description"] or f"a spoken {_lang_label(info['language'])} vocal layer"
             spk = f"{label} ({info['speaker_id']})"
             if aud_role:
                 desc = f"{aud_role} for {spk}"
@@ -455,8 +525,22 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     # both fall under "reference generation".  Intent-based types (video editing,
     # video continuation, keyframe completion, audio reuse) cannot be auto-detected
     # from file presence — users must supply them via task_flags.
+    _TASK_ORDER = [
+        "video continuation",
+        "video editing",
+        "keyframe completion",
+        "reference generation",
+        "audio reference",
+        "audio reuse",
+    ]
+
+    def _sort_tasks(flags: list[str]) -> list[str]:
+        known = [f for f in _TASK_ORDER if f in flags]
+        unknown = [f for f in flags if f not in _TASK_ORDER]
+        return known + unknown
+
     if user_flags:
-        task_tag = "[" + " + ".join(user_flags) + "]"
+        task_tag = "[" + " + ".join(_sort_tasks(user_flags)) + "]"
     else:
         task_parts: list[str] = []
         if has_refs:
@@ -475,6 +559,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         return text
 
     shots = template.get("shots", [])
+    scene_synopsis: str = scene_instance.get("scene_synopsis", "").strip()
     narrative: list[str] = []
 
     # video editing tasks must open with a fixed sentence naming the source video
@@ -485,23 +570,32 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         )
         if first_video is not None:
             narrative.append(f"The target video is an edited version of <Video {first_video}>.")
-    elif shots:
-        # All other tasks: open from the first shot's action
-        first_action = shots[0].get("action", "").strip()
-        if first_action:
-            replaced = _bare(first_action).rstrip(".")
-            narrative.append(f"The target video shows {replaced}.")
 
-    # One sentence per subsequent shot
-    for shot in (shots[1:] if "video editing" not in active_flags else shots):
-        action = shot.get("action", "").strip()
-        if action:
-            replaced = _bare(action)
-            if replaced and not replaced[0].isupper():
-                replaced = replaced[0].upper() + replaced[1:]
-            if not replaced.endswith("."):
-                replaced += "."
-            narrative.append(replaced)
+    if scene_synopsis:
+        # User-supplied synopsis: replace {A}/{B}/… with bare <Subject N> labels.
+        # Prepend "The target video shows" only when not already a video-editing opener.
+        replaced = _bare(scene_synopsis).rstrip(".")
+        if "video editing" not in active_flags:
+            narrative.append(f"The target video shows {replaced}.")
+        else:
+            # video editing already opened above; synopsis is an additional description
+            narrative.append(f"{replaced[0].upper() + replaced[1:]}.")
+    elif shots:
+        # Fallback: build narrative from shot action fields
+        if "video editing" not in active_flags:
+            first_action = shots[0].get("action", "").strip()
+            if first_action:
+                replaced = _bare(first_action).rstrip(".")
+                narrative.append(f"The target video shows {replaced}.")
+        for shot in (shots[1:] if "video editing" not in active_flags else shots):
+            action = shot.get("action", "").strip()
+            if action:
+                replaced = _bare(action)
+                if replaced and not replaced[0].isupper():
+                    replaced = replaced[0].upper() + replaced[1:]
+                if not replaced.endswith("."):
+                    replaced += "."
+                narrative.append(replaced)
 
     # Audio reference closing sentence (soundtracks first, then standalone)
     audio_voice_parts: list[str] = []
@@ -535,45 +629,127 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
 
     # ── retention_analysis ─────────────────────────────────────────────────────
     ra: list[str] = []
+
+    # Determine which shots each subject appears in — check for {slot_id} in
+    # action/camera text and dialogue speaker matching the slot key.
+    shots_list = template.get("shots", [])
+    slot_appearances: dict[str, list[str]] = {slot_id: [] for slot_id in ordered_slots}
+    for shot_idx, shot in enumerate(shots_list):
+        shot_label = f"[Shot {shot_idx + 1}]"
+        action_text = shot.get("action", "")
+        camera_text = shot.get("camera", "")
+        dlg = shot.get("dialogue") or {}
+        dlg_speaker = dlg.get("speaker") or dlg.get("speaker_slot", "")
+        for slot_id in ordered_slots:
+            marker = "{" + slot_id + "}"
+            if (marker in action_text or marker in camera_text
+                    or dlg_speaker == slot_id):
+                if shot_label not in slot_appearances[slot_id]:
+                    slot_appearances[slot_id].append(shot_label)
+
+    # Subject entries: "<Subject N> (appears in [Shot N], [Shot M]): fully_preserved - ..."
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
-        char_parts = [info["appearance_summary"]] if info["appearance_summary"] else []
-        if info["outfit"]:
-            char_parts.append(f"outfit: {info['outfit']}")
-        char_str = ", ".join(char_parts)
-        ra.append(f"{info['subject_label']} ({info['name']}): fully_preserved | {char_str}")
+        label = info["subject_label"]
 
+        appears_list = slot_appearances[slot_id]
+        appears_clause = (
+            "appears in " + ", ".join(appears_list) if appears_list else "appears throughout"
+        )
+
+        # Build the same appearance phrase used in subject_definitions (minus the ref anchor).
+        summary = info["appearance_summary"]
+        summary_body = (summary[0].lower() + summary[1:]).rstrip(". ") if summary else ""
+        # Mirror the definite-article substitution: if the subject has any visual reference
+        # the subject_definitions line already says "the …", so match it here.
+        has_ref = info["video_num"] is not None or bool(info["picture_nums"])
+        if has_ref and summary_body:
+            summary_body = re.sub(r"^an? ", "the ", summary_body, count=1)
+        detail_parts = [f for f in (info.get("hair", ""), info.get("face", ""), info.get("body", "")) if f]
+        if info["outfit"]:
+            detail_parts.append(f"wearing {info['outfit']}")
+        detail_phrase = f", with {_join_details(detail_parts)}" if detail_parts else ""
+        preserve_desc = f"{summary_body}{detail_phrase}" if summary_body else "appearance retained"
+
+        subj_retention = info.get("retention_marker", "fully_preserved")
+        ra.append(f"{label} ({appears_clause}): {subj_retention} - {preserve_desc}.")
+
+    # Video entries: "<Video N> (role): fully_preserved - ..."
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
         if info["video_num"] is not None:
-            ra.append(f"<Video {info['video_num']}>: reference (visual identity, not fully_copy)")
+            vnum = info["video_num"]
+            label = info["subject_label"]
+            if "video continuation" in active_flags:
+                role_clause = "continuation starting point"
+                preserve_desc = (
+                    f"<Video {vnum}> is the continuation starting point; the target video "
+                    f"begins where <Video {vnum}> ends, maintaining consistent motion and scene state"
+                )
+            elif "video editing" in active_flags:
+                role_clause = "source video for editing"
+                preserve_desc = (
+                    f"<Video {vnum}> is the source material being edited; "
+                    f"the cut structure and pacing serve as the primary reference"
+                )
+            else:
+                role_clause = f"visual identity of {label}"
+                preserve_desc = (
+                    f"<Video {vnum}> defines the visual identity of {label}; "
+                    f"the subject's appearance in the target video must fully match "
+                    f"the person shown in <Video {vnum}>"
+                )
+            ra.append(f"<Video {vnum}> ({role_clause}): fully_preserved - {preserve_desc}.")
 
-    def _audio_ra_line(aud_num: int, retention: str, subj_label: str) -> str:
+    # Audio entries — format matches H3 spec: "fully_copy" or "reference - ..."
+    def _audio_ra_line(
+        aud_num: int,
+        retention: str,
+        subj_label: str,
+        is_soundtrack: bool = False,
+        video_num: int | None = None,
+    ) -> str:
+        ref_tag = f"<Audio {aud_num}>"
         if retention == "reuse":
-            return f"<Audio {aud_num}>: fully_copy"
+            if is_soundtrack and video_num is not None:
+                return (
+                    f"{ref_tag}: fully_copy - {ref_tag} is the audio track from "
+                    f"<Video {video_num}>, reproduced verbatim as the target video's "
+                    f"complete final audio track."
+                )
+            return (
+                f"{ref_tag}: fully_copy - {ref_tag} is reused 1:1 as the "
+                f"target video's complete final audio track."
+            )
         if retention == "style":
-            return f"<Audio {aud_num}>: reference (audio style, not fully_copy)"
-        return (f"<Audio {aud_num}>: reference - its vocal timbre guides the "
-                f"dialogue delivery of {subj_label}, without copying the original signal")
+            return (
+                f"{ref_tag}: reference - the target audio follows {ref_tag}'s "
+                f"rhythm, pace, and tonal style without copying the original signal."
+            )
+        return (
+            f"{ref_tag}: reference - the target speaker follows {ref_tag}'s "
+            f"voice timbre and measured delivery without copying the original signal."
+        )
 
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
         if info["soundtrack_num"] is not None:
             ra.append(_audio_ra_line(
-                info["soundtrack_num"], info["soundtrack_retention"], info["subject_label"]
+                info["soundtrack_num"], info["soundtrack_retention"], info["subject_label"],
+                is_soundtrack=True, video_num=info["video_num"],
             ))
 
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
         if info["audio_num"] is not None:
             ra.append(_audio_ra_line(
-                info["audio_num"], info["audio_retention"], info["subject_label"]
+                info["audio_num"], info["audio_retention"], info["subject_label"],
             ))
 
     sections.append("retention_analysis:\n" + "\n".join(ra))
 
     # ── detailed_description ───────────────────────────────────────────────────
-    seen_slots: set[str] = set()
+    use_dialogue_tags: bool = scene_instance.get("dialogue_tags", False)
     dd: list[str] = []
 
     style = template.get("style", "")
@@ -586,6 +762,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     if opening:
         dd.append(". ".join(opening) + ".")
 
+    seen_globally: set[str] = set()
+
     for i, shot in enumerate(template.get("shots", [])):
         shot_id = shot.get("id", f"shot_{i + 1}")
         timestamp = shot.get("timestamp")
@@ -593,23 +771,30 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         dd.append("")
         dd.append(header)
 
-        camera = _replace_h3(shot.get("camera", ""), ref_map, seen_slots)
-        action = _replace_h3(shot.get("action", ""), ref_map, seen_slots)
+        dialogue_entry = shot.get("dialogue")
+        speaker_slot = ""
+        if isinstance(dialogue_entry, dict):
+            speaker_slot = dialogue_entry.get("speaker_slot", "")
+        speaking_slots = frozenset([speaker_slot]) if speaker_slot else frozenset()
+
+        camera = _replace_h3(shot.get("camera", ""), ref_map, speaking_slots, seen_globally)
+        action = _replace_h3(shot.get("action", ""), ref_map, speaking_slots, seen_globally)
         if camera:
             s = camera.rstrip(".")
             dd.append(s + ".")
         if action:
             dd.append(action)
 
-        dialogue_entry = shot.get("dialogue")
         if isinstance(dialogue_entry, dict):
-            speaker_slot = dialogue_entry.get("speaker_slot", "")
             text = dialogue_map.get(shot_id, "")
             if not text and not dialogue_entry.get("placeholder"):
                 text = dialogue_entry.get("default_text") or ""
             if text:
-                lang = ref_map.get(speaker_slot, {}).get("language", "en-us") or "en-us"
-                dd.append(f"<d>[{lang}] {text}</d>")
+                lang = _lang_label(ref_map.get(speaker_slot, {}).get("language", "en-us") or "en-us")
+                if use_dialogue_tags:
+                    dd.append(f"<d>[{lang}] {text}</d>")
+                else:
+                    dd.append(f'"[{lang}] {text}"')
 
         sound_events = shot.get("sound_events")
         if sound_events:
@@ -636,6 +821,7 @@ def _assemble_h3_fl2va(scene_instance: dict, ref_map: dict) -> str:
     template = scene_instance.get("template", {})
     dialogue_map = scene_instance.get("dialogue", {})
     ordered_slots = sorted(ref_map.keys())
+    use_dialogue_tags: bool = scene_instance.get("dialogue_tags", False)
     lines: list[str] = []
 
     # Opening
@@ -679,8 +865,11 @@ def _assemble_h3_fl2va(scene_instance: dict, ref_map: dict) -> str:
             if not text and not dialogue_entry.get("placeholder"):
                 text = dialogue_entry.get("default_text") or ""
             if text:
-                lang = ref_map.get(speaker_slot, {}).get("language", "en-us") or "en-us"
-                lines.append(f"<d>[{lang}] {text}</d>")
+                lang = _lang_label(ref_map.get(speaker_slot, {}).get("language", "en-us") or "en-us")
+                if use_dialogue_tags:
+                    lines.append(f"<d>[{lang}] {text}</d>")
+                else:
+                    lines.append(f'"[{lang}] {text}"')
 
         sound_events = shot.get("sound_events")
         if sound_events:
@@ -1021,6 +1210,8 @@ def assemble_composition(
         "slot_assignments": slot_assignments,
         "dialogue":         dialogue,
         "outfit_overrides": outfit_overrides,
+        "dialogue_tags":    bool(composition.get("use_dialogue_tags", False)),
+        "scene_synopsis":   _remap_slots(composition.get("scene_synopsis", ""), slot_map),
     }
 
     # Pass user-configured task flags into scene_instance for h3_ref2va
@@ -1031,18 +1222,21 @@ def assemble_composition(
     return assemble_prompt(scene_instance, model_type, video_entries)
 
 
+def _remap_slots(text: str, slot_map: dict[str, str]) -> str:
+    """Replace {S1}/{S2}/… composition slot keys with {A}/{B}/… template slot letters."""
+    for sk, letter in slot_map.items():
+        text = text.replace(f"{{{sk}}}", f"{{{letter}}}")
+    return text
+
+
 def _composition_shots_to_template(shots: list[dict], slot_map: dict[str, str]) -> list[dict]:
     """Convert composition shot dicts to the template shot format."""
     result = []
     for i, shot in enumerate(shots, 1):
         dlg = shot.get("dialogue") or {}
         has_dialogue = bool(dlg.get("text"))
-        # Replace {S1}/{S2} placeholders in action/camera with {A}/{B} slot letters
-        action = shot.get("action", "")
-        camera = shot.get("camera", "")
-        for sk, letter in slot_map.items():
-            action = action.replace(f"{{{sk}}}", f"{{{letter}}}")
-            camera = camera.replace(f"{{{sk}}}", f"{{{letter}}}")
+        action = _remap_slots(shot.get("action", ""), slot_map)
+        camera = _remap_slots(shot.get("camera", ""), slot_map)
         # Map the speaker slot key (S1 → A) so the h3 assembler can look up language
         template_dlg = None
         if has_dialogue:
