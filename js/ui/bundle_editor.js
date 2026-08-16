@@ -203,7 +203,7 @@ function _startNew(subjectId = "") {
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
         visual:              { type: "images", file: "", files: [], force_rate: 0, frame_load_cap: 96, skip_first_frames: 0, select_every_nth: 1 },
-        audio:               { source: "none", file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "" },
+        audio:               { source: "none", file: "", video_file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "" },
         appearance_override: "",
         tags:                [],
     };
@@ -323,6 +323,7 @@ function _renderForm() {
     [
         { id: "none",                label: "None" },
         { id: "extract_from_visual", label: "Extract from video" },
+        { id: "extract_from_video",  label: "Separate video file" },
         { id: "file",                label: "Separate audio file" },
     ].forEach(({ id, label }) => {
         const o = document.createElement("option");
@@ -341,6 +342,11 @@ function _renderForm() {
             }));
         } else if (b.audio.source === "extract_from_visual") {
             _buildFrameParamSection(audioPickerWrap, b.audio, "Frame sampling (legacy VHS path)");
+            _buildAudioTimeSection(audioPickerWrap, b.audio);
+            _buildAudioRoleSection(audioPickerWrap, b.audio);
+        } else if (b.audio.source === "extract_from_video") {
+            _buildAudioVideoPicker(audioPickerWrap, b);
+            _buildFrameParamSection(audioPickerWrap, b.audio, "Frame sampling");
             _buildAudioTimeSection(audioPickerWrap, b.audio);
             _buildAudioRoleSection(audioPickerWrap, b.audio);
         } else if (b.audio.source === "file") {
@@ -594,6 +600,29 @@ function _buildImageList(wrap, b) {
     rebuildAddSel();
     wrap.appendChild(listEl);
     wrap.appendChild(addSel);
+}
+
+function _buildAudioVideoPicker(wrap, b) {
+    if (!_S.mediaVideos.length) {
+        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No video files in input directory" }));
+        return;
+    }
+    const sel = document.createElement("select");
+    sel.className = "fbt-ce-select";
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "— select video file —";
+    if (!b.audio.video_file) blank.selected = true;
+    sel.appendChild(blank);
+    _S.mediaVideos.forEach(f => {
+        const o = document.createElement("option");
+        o.value = f;
+        o.textContent = f;
+        if (f === b.audio.video_file) o.selected = true;
+        sel.appendChild(o);
+    });
+    sel.addEventListener("change", () => { b.audio.video_file = sel.value; });
+    wrap.appendChild(sel);
 }
 
 function _buildAudioPicker(wrap, b) {
