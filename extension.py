@@ -14092,6 +14092,8 @@ def _resolve_cast_media(
             if vfile:
                 abs_vfile = os.path.join(input_dir, vfile)
                 entry_load_params = {
+                    "start_time":        float(visual.get("start_time", 0.0)),
+                    "duration":          float(visual.get("duration",   0.0)),
                     "force_rate":        visual.get("force_rate", 0),
                     "frame_load_cap":    visual.get("frame_load_cap", 96),
                     "skip_first_frames": visual.get("skip_first_frames", 0),
@@ -14636,10 +14638,12 @@ def _h3_load_video_frames(path: str, load_params: dict):
         logger.warning("CompositionToH3: video not found: %s", path)
         return None
 
-    force_rate        = int(load_params.get("force_rate", 0))
-    frame_load_cap    = int(load_params.get("frame_load_cap", 0))
-    skip_first_frames = int(load_params.get("skip_first_frames", 0))
-    select_every_nth  = int(load_params.get("select_every_nth", 1)) or 1
+    start_time        = float(load_params.get("start_time",        0.0))
+    duration          = float(load_params.get("duration",          0.0))
+    force_rate        = int(load_params.get("force_rate",          0))
+    frame_load_cap    = int(load_params.get("frame_load_cap",      0))
+    skip_first_frames = int(load_params.get("skip_first_frames",   0))
+    select_every_nth  = int(load_params.get("select_every_nth",    1)) or 1
 
     # H3 reference videos need ≥39 frames to give Qwen useful signal after
     # the upstream node trims to n%17==5.  Enforce a minimum for generation.
@@ -14666,6 +14670,28 @@ def _h3_load_video_frames(path: str, load_params: dict):
         target_fps = float(force_rate) if force_rate > 0 else native_fps
         base_frame_time   = 1.0 / native_fps
         target_frame_time = 1.0 / target_fps
+
+        # Time-based start: seek directly to start_time using cv2.
+        # This is preferred over skip_first_frames for large offsets and is
+        # what users naturally specify (seconds, not frame counts).
+        if start_time > 0.0:
+            cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000.0)
+
+        # Time-based duration: convert to an output-frame cap so the accumulator
+        # loop can stop without tracking wall-clock time on every frame.
+        # `duration` wins over frame_load_cap when both are set.
+        if duration > 0.0:
+            duration_cap = max(1, int(duration * target_fps))
+            frame_load_cap = duration_cap if frame_load_cap == 0 else min(frame_load_cap, duration_cap)
+
+        # Enforce H3 minimum again after duration may have reduced the cap.
+        if 0 < frame_load_cap < 39:
+            logger.warning(
+                "CompositionToH3: computed frame_load_cap=%d (duration=%.2fs at %.0ffps) "
+                "too low for MiniMax H3. Upgrading to 96.",
+                frame_load_cap, duration, target_fps,
+            )
+            frame_load_cap = 96
 
         # Time-accumulator resampling — mirrors VHS cv_frame_generator logic:
         # read native frames until the virtual clock reaches the next output slot,
@@ -14716,6 +14742,10 @@ def _h3_load_video_frames(path: str, load_params: dict):
         if not frames:
             logger.warning("CompositionToH3: cv2 loaded no frames from %s", path)
             return None
+        logger.debug(
+            "CompositionToH3: loaded %d frames from %s (start=%.2fs, dur=%.2fs, cap=%d, skip=%d)",
+            len(frames), path, start_time, duration, frame_load_cap, skip_first_frames,
+        )
         return torch.stack(frames, dim=0)  # [B,H,W,3]
     except Exception as exc:
         logger.warning("CompositionToH3: cv2 frame load failed for %s: %s", path, exc)
