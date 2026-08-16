@@ -202,7 +202,7 @@ function _startNew(subjectId = "") {
         id:                  "",
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
-        visual:              { type: "images", file: "", files: [], force_rate: 0, frame_load_cap: 96, skip_first_frames: 0, select_every_nth: 1 },
+        visual:              { type: "images", file: "", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 96, skip_first_frames: 0, select_every_nth: 1 },
         audio:               { source: "none", file: "", video_file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "" },
         appearance_override: "",
         tags:                [],
@@ -516,6 +516,11 @@ function _buildVideoPicker(wrap, b) {
         sel.addEventListener("change", () => { b.visual.file = sel.value; });
         wrap.appendChild(sel);
     }
+    wrap.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: "Trim" }));
+    const trimGrid = _mk("div", { cls: "fbt-be-param-grid" });
+    trimGrid.appendChild(_buildParamCell("Start (s)",    b.visual, "start_time", { isFloat: true, hint: "Start time in seconds" }));
+    trimGrid.appendChild(_buildParamCell("Duration (s)", b.visual, "duration",   { isFloat: true, hint: "0 = to end of file" }));
+    wrap.appendChild(trimGrid);
     _buildFrameParamSection(wrap, b.visual);
 }
 

@@ -95,6 +95,8 @@ class BundleRegistry:
         visual.setdefault("type", "images")
         visual.setdefault("file", "")
         visual.setdefault("files", [])
+        visual.setdefault("start_time", 0.0)
+        visual.setdefault("duration", 0.0)
         visual.setdefault("force_rate", 0)
         visual.setdefault("frame_load_cap", 96)
         visual.setdefault("skip_first_frames", 0)
