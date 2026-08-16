@@ -174,6 +174,10 @@ _outfit_reload_counter: int = 0
 # Incremented by POST /fbtools/casts/reload so SceneCastLoad nodes re-execute
 _cast_reload_counter: int = 0
 
+# Runtime value store for RunMetaCapture nodes — keyed by prompt_id
+_RUN_CAPTURE_STORE: dict = {}
+_RUN_CAPTURE_MAX: int = 100
+
 def prefixed_node_id(display_name: str) -> str:
     """Construct a globally-unique node_id using the shared extension prefix."""
     return f"{EXTENSION_PREFIX}_{display_name}"
@@ -8114,6 +8118,21 @@ from datetime import datetime, timedelta
 
 routes = PromptServer.instance.routes
 
+
+def _get_current_prompt_id() -> str | None:
+    """Return the prompt_id of the currently executing job, or None."""
+    try:
+        running = PromptServer.instance.prompt_queue.currently_running
+        for item in running.values():
+            if isinstance(item, (list, tuple)) and len(item) > 1:
+                pid = item[1]
+                if isinstance(pid, str) and len(pid) > 4:
+                    return pid
+    except Exception:
+        pass
+    return None
+
+
 class PromptCollectionStateManager:
     """
     Manages server-side PromptCollection instances for REST API operations.
@@ -10489,12 +10508,6 @@ class LoraStackBuilder(io.ComfyNode):
                     optional=True,
                     tooltip="Existing LORA_STACK_DATA to merge into (lowest priority).",
                 ),
-                io.Boolean.Input(
-                    "summary_include_prev_stack",
-                    display_name="Summary: Include Prev Stack",
-                    default=False,
-                    tooltip="When off, Enabled Summary only lists LoRAs defined in this node. When on, includes all merged entries from Prev Stack too.",
-                ),
                 io.Autogrow.Input(
                     "entries",
                     template=autogrow_template,
@@ -10502,6 +10515,12 @@ class LoraStackBuilder(io.ComfyNode):
                     tooltip="Optional LORA_ENTRY connections from LoraEntryDefine nodes (highest priority).",
                 ),
                 *_lora_builder_inline_inputs(_LORA_BUILDER_ROWS),
+                io.Boolean.Input(
+                    "summary_include_prev_stack",
+                    display_name="Summary: Include Prev Stack",
+                    default=False,
+                    tooltip="When off, Enabled Summary only lists LoRAs defined in this node. When on, includes all merged entries from Prev Stack too.",
+                ),
             ],
             outputs=[
                 LoraStackData.Output("lora_stack_data",   display_name="Stack Data"),
@@ -13988,6 +14007,20 @@ async def _presets_sounds_delete(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+# ── Run Tracker endpoints ──────────────────────────────────────────────────────
+
+@routes.get("/fbtools/run_tracker/runs")
+async def _run_tracker_runs(request):
+    runs = sorted(_RUN_CAPTURE_STORE.values(), key=lambda r: r["ts"], reverse=True)
+    return web.json_response({"runs": runs})
+
+
+@routes.delete("/fbtools/run_tracker/clear")
+async def _run_tracker_clear(request):
+    _RUN_CAPTURE_STORE.clear()
+    return web.json_response({"success": True})
+
+
 # ── Node: PromptCompositionLoader ─────────────────────────────────────────────
 
 _COMP_MODEL_TYPE_OPTIONS = ["composition default"] + list(_PROMPT_MODEL_TYPES)
@@ -14078,8 +14111,13 @@ def _resolve_cast_media(
                 if a_src == "extract_from_visual":
                     entry_audio_source = "extract_from_visual"
                     entry_audio_path   = abs_vfile
-                    entry_audio_start  = audio.get("start_time", 0.0)
-                    entry_audio_dur    = audio.get("duration", 0.0)
+                    # Convert frame-based params to time for ffmpeg seeking.
+                    # start_time/duration in the audio bundle are for "file" source only.
+                    a_fps  = audio.get("force_rate", 0) or visual.get("force_rate", 0) or 0
+                    a_skip = audio.get("skip_first_frames", 0)
+                    a_cap  = audio.get("frame_load_cap", 0)
+                    entry_audio_start = (a_skip / a_fps) if (a_fps > 0 and a_skip > 0) else 0.0
+                    entry_audio_dur   = (a_cap  / a_fps) if (a_fps > 0 and a_cap  > 0) else 0.0
                 elif a_src == "file":
                     af = audio.get("file", "")
                     if af:
@@ -14112,6 +14150,13 @@ def _resolve_cast_media(
                     "frame_load_cap":    audio.get("frame_load_cap", 0),
                     "skip_first_frames": audio.get("skip_first_frames", 0),
                     "select_every_nth":  audio.get("select_every_nth", 1),
+                }
+                a_fps  = audio.get("force_rate", 0) or visual.get("force_rate", 0) or 0
+                a_skip = audio.get("skip_first_frames", 0)
+                a_cap  = audio.get("frame_load_cap", 0)
+                audio_time = {
+                    "start_time": (a_skip / a_fps) if (a_fps > 0 and a_skip > 0) else 0.0,
+                    "duration":   (a_cap  / a_fps) if (a_fps > 0 and a_cap  > 0) else 0.0,
                 }
             elif a_src == "file":
                 a_file = audio.get("file", "")
@@ -14852,6 +14897,70 @@ class CompositionToH3Conditioning(io.ComfyNode):
 
 
 # =============================================================================
+# ── Node: RunMetaCapture ───────────────────────────────────────────────────────
+
+
+class RunMetaCapture(io.ComfyNode):
+    """
+    Captures runtime values from wired inputs at execution time and stores them
+    for the Run History sidebar panel.  Wire any STRING output into a value slot;
+    slots grow automatically as you connect them.  Values appear in Run History
+    linked to this job's prompt ID.
+
+    As an output node it supports partial execution: select it and click the
+    play button to run only the upstream subgraph that feeds it.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            input=io.String.Input("value", display_name="Value", default="", optional=True),
+            prefix="value",
+            min=1,
+            max=12,
+        )
+        return io.Schema(
+            node_id=prefixed_node_id("RunMetaCapture"),
+            display_name="Run Meta Capture",
+            category="🧊 frost-byte/Nodes",
+            description="Capture runtime string values for the Run History panel.",
+            is_output_node=True,
+            outputs=[],
+            inputs=[
+                io.String.Input("label", display_name="Label", default="capture"),
+                io.Autogrow.Input("values", template=autogrow_template),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, label: str = "capture", values: io.Autogrow.Type = None):
+        captured: dict = {}
+        if values:
+            for i, v in enumerate(values.values(), 1):
+                if v is not None and str(v).strip():
+                    captured[f"Value {i}"] = str(v)
+
+        prompt_id = _get_current_prompt_id()
+        if prompt_id:
+            if prompt_id not in _RUN_CAPTURE_STORE:
+                _RUN_CAPTURE_STORE[prompt_id] = {
+                    "prompt_id": prompt_id,
+                    "ts": time.time() * 1000,  # ms, consistent with ComfyUI history
+                    "captures": [],
+                }
+                while len(_RUN_CAPTURE_STORE) > _RUN_CAPTURE_MAX:
+                    _RUN_CAPTURE_STORE.pop(next(iter(_RUN_CAPTURE_STORE)))
+            _RUN_CAPTURE_STORE[prompt_id]["captures"].append({
+                "label": label,
+                "values": captured,
+            })
+
+        preview_lines = [f"{k}: {v}" for k, v in captured.items()]
+        preview_text = "\n".join(preview_lines) if preview_lines else "(nothing captured)"
+        return io.NodeOutput(ui={"text": [preview_text]})
+
+
+# =============================================================================
 
 
 class FBToolsExtension(ComfyExtension):
@@ -14935,4 +15044,6 @@ class FBToolsExtension(ComfyExtension):
             # Scene Cast nodes
             SceneCastLoad,
             SceneCastBuild,
+            # Run tracking
+            RunMetaCapture,
         ]

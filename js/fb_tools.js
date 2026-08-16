@@ -468,6 +468,8 @@ import { setupSceneCastBuild } from "./nodes/scene_cast_build.js";
 import { renderCompositionEditor } from "./ui/composition_editor.js";
 import { renderBundleEditor }      from "./ui/bundle_editor.js";
 import { renderCastEditor }        from "./ui/cast_editor.js";
+import { patchNodeForTracking }    from "./utils/run_tracker.js";
+import { renderRunHistory }        from "./ui/run_history.js";
 
 // Store app ref once so all panels can fire toasts via window._fbtApp
 app.extensionManager.registerSidebarTab({
@@ -503,6 +505,17 @@ app.extensionManager.registerSidebarTab({
     render: (el) => {
         window._fbtApp = app;
         if (!el.querySelector(".fbt-be-panel")) renderCastEditor(el);
+    },
+});
+
+app.extensionManager.registerSidebarTab({
+    id: "fbt.run-history",
+    icon: "pi pi-history",
+    title: "Run History",
+    tooltip: "View widget values for tracked nodes across recent runs",
+    type: "custom",
+    render: (el) => {
+        if (!el.querySelector(".fbt-rh-panel")) renderRunHistory(el);
     },
 });
 
@@ -568,6 +581,9 @@ app.registerExtension({
     }],
     getSelectionToolboxCommands: (selectedItem) => {
         return ["fb_tools.extract-node-json"];
+    },
+    nodeCreated(node) {
+        patchNodeForTracking(node, app);
     },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         const isNode = (baseName) => nodeData.name === `${EXT_PREFIX}${baseName}` || nodeData.name === baseName;
