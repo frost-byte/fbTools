@@ -19,6 +19,8 @@ import { libberAPI } from "../api/libber.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
+const SAVED_PAGE_SIZE = 10;
+
 const MODEL_TYPES = [
     { id: "h3_ref2va", label: "MiniMax H3 Ref2VA" },
     { id: "h3_fl2va",  label: "MiniMax H3 FL2VA" },
@@ -47,6 +49,8 @@ const _S = {
     cameraPresets:  [],
     soundPresets:   [],
     savedComps:     [],
+    savedPage:      0,
+    savedQuery:     "",
     dirty:          false,
     shotSeq:        0,
     // Libber state
@@ -458,30 +462,81 @@ function _buildSidebarSection(title, listEl) {
 }
 
 function _populateSavedList() {
-    const list = _dom.savedList;
+    const list       = _dom.savedList;
+    const pagination = _dom.savedPagination;
     if (!list) return;
+
+    const query    = _S.savedQuery.toLowerCase().trim();
+    const filtered = query
+        ? _S.savedComps.filter(c =>
+              (c.name || "").toLowerCase().includes(query) ||
+              (c.id   || "").toLowerCase().includes(query))
+        : _S.savedComps;
+
+    const total      = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / SAVED_PAGE_SIZE));
+    _S.savedPage     = Math.max(0, Math.min(_S.savedPage, totalPages - 1));
+
+    const start     = _S.savedPage * SAVED_PAGE_SIZE;
+    const pageItems = filtered.slice(start, start + SAVED_PAGE_SIZE);
+
     list.innerHTML = "";
-    if (!_S.savedComps.length) {
-        list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No saved compositions" }));
-        return;
+    if (!filtered.length) {
+        list.appendChild(_mk("div", {
+            cls: "fbt-ce-empty",
+            textContent: query ? "No matches" : "No saved compositions",
+        }));
+    } else {
+        const activeId = _S.composition?.id || "";
+        pageItems.forEach(comp => {
+            const isActive = comp.id && comp.id === activeId;
+            const row = _mk("div", {
+                cls: "fbt-ce-sb-item fbt-ce-clickable" + (isActive ? " fbt-ce-sb-item-active" : ""),
+                title: "Load composition",
+                onclick: () => _onLoad(comp.id),
+            });
+            row.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: comp.name || comp.id }));
+            const actions = _mk("span", { cls: "fbt-ce-sb-actions" });
+            actions.appendChild(_mk("button", {
+                cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Delete",
+                textContent: "✕",
+                onclick: (e) => { e.stopPropagation(); _onDeleteComp(comp.id, comp.name); },
+            }));
+            row.appendChild(actions);
+            list.appendChild(row);
+        });
     }
-    _S.savedComps.forEach(comp => {
-        const row = _mk("div", { cls: "fbt-ce-sb-item" });
-        row.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: comp.name || comp.id }));
-        const actions = _mk("span", { cls: "fbt-ce-sb-actions" });
-        actions.appendChild(_mk("button", {
-            cls: "fbt-ce-icon-btn", title: "Load",
-            textContent: "⇩",
-            onclick: () => _onLoad(comp.id),
-        }));
-        actions.appendChild(_mk("button", {
-            cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Delete",
-            textContent: "✕",
-            onclick: () => _onDeleteComp(comp.id, comp.name),
-        }));
-        row.appendChild(actions);
-        list.appendChild(row);
-    });
+
+    // Pagination controls — only shown when more than one page exists
+    if (pagination) {
+        pagination.innerHTML = "";
+        if (totalPages > 1) {
+            const prevBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn",
+                textContent: "‹",
+                title: "Previous page",
+                onclick: () => { _S.savedPage--; _populateSavedList(); },
+            });
+            prevBtn.disabled = _S.savedPage === 0;
+
+            const info = _mk("span", {
+                cls: "fbt-ce-pg-info",
+                textContent: `${_S.savedPage + 1} / ${totalPages}`,
+            });
+
+            const nextBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn",
+                textContent: "›",
+                title: "Next page",
+                onclick: () => { _S.savedPage++; _populateSavedList(); },
+            });
+            nextBtn.disabled = _S.savedPage >= totalPages - 1;
+
+            pagination.appendChild(prevBtn);
+            pagination.appendChild(info);
+            pagination.appendChild(nextBtn);
+        }
+    }
 }
 
 function _populateSubjectList() {
@@ -1325,13 +1380,51 @@ function _buildSettingsSection(parent) {
     parent.appendChild(_buildSidebarSection("⚙ Settings", body));
 }
 
+function _buildSavedSection(parent) {
+    const body = _mk("div", { cls: "fbt-ce-sb-body" });
+
+    // Search row
+    const searchRow = _mk("div", { cls: "fbt-ce-saved-search-row" });
+    _dom.savedSearchInput = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-saved-search",
+        type: "text",
+        placeholder: "Search…",
+    });
+    _dom.savedSearchInput.addEventListener("input", () => {
+        _S.savedQuery = _dom.savedSearchInput.value;
+        _S.savedPage  = 0;
+        _populateSavedList();
+    });
+    const clearBtn = _mk("button", {
+        cls: "fbt-ce-icon-btn fbt-ce-saved-clear",
+        textContent: "✕",
+        title: "Clear search",
+        onclick: () => {
+            _dom.savedSearchInput.value = "";
+            _S.savedQuery = "";
+            _S.savedPage  = 0;
+            _populateSavedList();
+            _dom.savedSearchInput.focus();
+        },
+    });
+    searchRow.appendChild(_dom.savedSearchInput);
+    searchRow.appendChild(clearBtn);
+    body.appendChild(searchRow);
+
+    _dom.savedList       = _mk("div", { cls: "fbt-ce-sb-list" });
+    _dom.savedPagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
+    body.appendChild(_dom.savedList);
+    body.appendChild(_dom.savedPagination);
+
+    parent.appendChild(_buildSidebarSection("Saved Compositions", body));
+}
+
 function _buildSidebar(parent) {
     const sidebar = _mk("div", { cls: "fbt-ce-sidebar" });
 
-    _dom.savedList  = _mk("div", { cls: "fbt-ce-sb-list" });
     _dom.subjectList = _mk("div", { cls: "fbt-ce-sb-list" });
-    _dom.bgList     = _mk("div", { cls: "fbt-ce-sb-list" });
-    sidebar.appendChild(_buildSidebarSection("Saved Compositions", _dom.savedList));
+    _dom.bgList      = _mk("div", { cls: "fbt-ce-sb-list" });
+    _buildSavedSection(sidebar);
     sidebar.appendChild(_buildSidebarSection("Subjects (click to assign)", _dom.subjectList));
     sidebar.appendChild(_buildSidebarSection("Backgrounds (click to assign)", _dom.bgList));
     _buildPresetSection(sidebar, "camera");
@@ -1768,6 +1861,125 @@ function _insertSoundPreset(text) {
 
 // ── LoRAs section ─────────────────────────────────────────────────────────────
 
+/** Basename without extension — what the user sees in the combobox. */
+function _loraDisplayName(val) {
+    return val ? val.replace(/\.[^.]+$/, "").split(/[\\/]/).pop() : "";
+}
+
+/**
+ * Searchable combobox for LoRA selection.
+ * Returns a wrapper div styled to fill the same flex slot as the old <select>.
+ * The dropdown appends to document.body (position:fixed) so it's never clipped
+ * by the sidebar's overflow.
+ */
+function _makeLoraCombobox(currentValue, onSelect) {
+    let selectedValue = currentValue || "";
+    let dropdownEl    = null;
+
+    const wrap  = _mk("div",   { cls: "fbt-ce-lora-combo" });
+    const input = _mk("input", {
+        cls:          "fbt-ce-input fbt-ce-lora-combo-input",
+        type:         "text",
+        placeholder:  "— select LoRA —",
+        value:        _loraDisplayName(selectedValue),
+        autocomplete: "off",
+    });
+    input.setAttribute("spellcheck", "false");
+
+    function _close() {
+        if (dropdownEl) { dropdownEl.remove(); dropdownEl = null; }
+        input.value = _loraDisplayName(selectedValue);
+    }
+
+    function _open(query) {
+        if (dropdownEl) dropdownEl.remove();
+
+        const q       = query.trim().toLowerCase();
+        const matches = q
+            ? _S.lorasList.filter(n => n.toLowerCase().includes(q))
+            : _S.lorasList;
+
+        const list = _mk("div", { cls: "fbt-ce-lora-dropdown" });
+
+        // "— none —" item only shown when not filtering
+        if (!q) {
+            const noneItem = _mk("div", {
+                cls: "fbt-ce-lora-dd-item" + (!selectedValue ? " fbt-ce-lora-dd-active" : ""),
+                textContent: "— none —",
+            });
+            noneItem.addEventListener("mousedown", e => {
+                e.preventDefault();
+                selectedValue = "";
+                _close();
+                onSelect("");
+            });
+            list.appendChild(noneItem);
+        }
+
+        if (!matches.length) {
+            list.appendChild(_mk("div", { cls: "fbt-ce-lora-dd-empty", textContent: "No matches" }));
+        } else {
+            matches.forEach(n => {
+                const item = _mk("div", {
+                    cls:   "fbt-ce-lora-dd-item" + (n === selectedValue ? " fbt-ce-lora-dd-active" : ""),
+                    title: n,
+                    textContent: _loraDisplayName(n),
+                });
+                item.addEventListener("mousedown", e => {
+                    e.preventDefault();
+                    selectedValue = n;
+                    _close();
+                    onSelect(n);
+                });
+                list.appendChild(item);
+            });
+        }
+
+        const rect = input.getBoundingClientRect();
+        Object.assign(list.style, {
+            position: "fixed",
+            left:     `${rect.left}px`,
+            top:      `${rect.bottom + 2}px`,
+            width:    `${Math.max(rect.width, 200)}px`,
+            zIndex:   "9999",
+        });
+        document.body.appendChild(list);
+        dropdownEl = list;
+
+        const active = list.querySelector(".fbt-ce-lora-dd-active");
+        if (active) active.scrollIntoView({ block: "nearest" });
+    }
+
+    input.addEventListener("focus", ()  => _open(""));
+    input.addEventListener("input", ()  => _open(input.value));
+    input.addEventListener("blur",  ()  => setTimeout(_close, 150));
+    input.addEventListener("keydown", e => {
+        if (!dropdownEl) return;
+        const items = Array.from(dropdownEl.querySelectorAll(".fbt-ce-lora-dd-item"));
+        let idx = items.findIndex(el => el.classList.contains("fbt-ce-lora-dd-active"));
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            items[idx]?.classList.remove("fbt-ce-lora-dd-active");
+            items[Math.min(idx + 1, items.length - 1)]?.classList.add("fbt-ce-lora-dd-active");
+            dropdownEl.querySelector(".fbt-ce-lora-dd-active")?.scrollIntoView({ block: "nearest" });
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            items[idx]?.classList.remove("fbt-ce-lora-dd-active");
+            items[Math.max(idx - 1, 0)]?.classList.add("fbt-ce-lora-dd-active");
+            dropdownEl.querySelector(".fbt-ce-lora-dd-active")?.scrollIntoView({ block: "nearest" });
+        } else if (e.key === "Enter") {
+            e.preventDefault();
+            dropdownEl.querySelector(".fbt-ce-lora-dd-active")?.dispatchEvent(new MouseEvent("mousedown"));
+        } else if (e.key === "Escape") {
+            e.stopPropagation();
+            _close();
+        }
+    });
+
+    wrap.appendChild(input);
+    return wrap;
+}
+
 function _rebuildLoras() {
     const c = _dom.lorasContainer;
     if (!c) return;
@@ -1777,16 +1989,8 @@ function _rebuildLoras() {
     loras.forEach((entry, i) => {
         const row = _mk("div", { cls: "fbt-ce-lora-row" });
 
-        // Name dropdown
-        const nameSel = document.createElement("select");
-        nameSel.className = "fbt-ce-select fbt-ce-lora-name";
-        [{ id: "", label: "— select LoRA —" }, ..._S.lorasList.map(n => ({ id: n, label: n }))].forEach(({ id, label }) => {
-            const o = document.createElement("option");
-            o.value = id; o.textContent = label;
-            if (id === entry.name) o.selected = true;
-            nameSel.appendChild(o);
-        });
-        nameSel.addEventListener("change", () => { entry.name = nameSel.value; _markDirty(); });
+        // Searchable name combobox
+        const comboWrap = _makeLoraCombobox(entry.name || "", val => { entry.name = val; _markDirty(); });
 
         // Weight
         const weightInput = _mk("input", {
@@ -1814,7 +2018,7 @@ function _rebuildLoras() {
             onclick: () => { _S.composition.loras.splice(i, 1); _rebuildLoras(); _markDirty(); },
         });
 
-        row.appendChild(nameSel);
+        row.appendChild(comboWrap);
         row.appendChild(weightInput);
         row.appendChild(targetSel);
         row.appendChild(removeBtn);
@@ -2307,6 +2511,7 @@ async function _onLoad(id) {
         _S.composition = comp;
         _populateEditor();
         _markClean();
+        _populateSavedList(); // refresh active indicator
     } catch (e) {
         _setStatus("Load failed: " + e.message, true);
     }
