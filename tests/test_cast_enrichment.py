@@ -215,13 +215,99 @@ def test_missing_bundle_skipped_gracefully():
     assert result["S1"]["character_sheet_images"] == []
 
 
-def test_unmatched_subject_id_skipped():
+def test_positional_different_subject_applies_bundle_to_slot():
+    # "bob" cast at position 0 targets S1 (positional mapping).
+    # Bundle media is applied even though the subject differs from the composition.
     subj = _subject("Alice")
     comp = _composition({"S1": "alice"})
-    cast = _cast([_entry("bob", "b1")])  # "bob" not in composition
+    cast = _cast([_entry("bob", "b1")])
     reg  = _BundleRegistry({"b1": _bundle(files=["bob.png"])})
     result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
+    assert result["S1"]["character_sheet_images"] == ["bob.png"]
+
+
+class _SubjectRegistry:
+    """Minimal duck-typed subject registry for tests."""
+    def __init__(self, subjects):
+        self._s = subjects
+
+    def get_subject(self, subject_id):
+        return self._s.get(subject_id)
+
+
+def test_positional_recast_replaces_subject_when_registry_provided():
+    # When a subject_registry is present, a different-subject entry fully replaces
+    # the slot's subject (name, appearance, etc.) before bundle enrichment.
+    alice = _subject("Alice", summary="a tall woman")
+    angie = _subject("Angie", summary="a short woman with red hair")
+    comp  = _composition({"S1": "alice"})
+    cast  = _cast([_entry("angie", "b1", visual_mode="images")])
+    breg  = _BundleRegistry({"b1": _bundle(files=["angie_ref.png"])})
+    sreg  = _SubjectRegistry({"angie": angie})
+    result = apply_cast_to_subjects({"S1": alice}, comp, cast, breg, sreg)
+    assert result["S1"]["name"] == "Angie"
+    assert result["S1"]["subject_id"] == "angie"
+    assert result["S1"]["appearance"]["summary"] == "a short woman with red hair"
+    assert result["S1"]["character_sheet_images"] == ["angie_ref.png"]
+
+
+def test_blank_entry_is_passthrough():
+    # An entry with no subject_id keeps the composition's original subject unchanged.
+    alice = _subject("Alice")
+    joe   = _subject("Joe")
+    comp  = _composition({"S1": "alice", "S2": "joe"})
+    # Skip S1 (blank), override S2 with Angie's bundle
+    cast  = _cast([
+        {"subject_id": "", "bundle_id": "", "visual_mode": "images", "use_audio": False},
+        _entry("angie", "b2", visual_mode="images"),
+    ])
+    breg  = _BundleRegistry({"b2": _bundle(files=["angie_ref.png"])})
+    sreg  = _SubjectRegistry({"angie": _subject("Angie")})
+    result = apply_cast_to_subjects({"S1": alice, "S2": joe}, comp, cast, breg, sreg)
+    # S1 untouched (blank row)
+    assert result["S1"]["name"] == "Alice"
     assert result["S1"]["character_sheet_images"] == []
+    # S2 replaced with Angie + her bundle image
+    assert result["S2"]["name"] == "Angie"
+    assert result["S2"]["character_sheet_images"] == ["angie_ref.png"]
+
+
+def test_recast_two_subjects_both_replaced():
+    alice = _subject("Alice")
+    bob   = _subject("Bob")
+    angie = _subject("Angie", summary="a short woman with red hair")
+    joe   = _subject("Joe",   summary="a stocky guy with a beard")
+    comp  = _composition({"S1": "alice", "S2": "bob"})
+    cast  = _cast([
+        _entry("angie", "ba", visual_mode="video", use_audio=True),
+        _entry("joe",   "bj", visual_mode="images"),
+    ])
+    breg = _BundleRegistry({
+        "ba": _bundle(video_file="angie.mp4", audio_source="extract_from_visual"),
+        "bj": _bundle(files=["joe_ref.png"], appearance_override="the big guy"),
+    })
+    sreg = _SubjectRegistry({"angie": angie, "joe": joe})
+    result = apply_cast_to_subjects({"S1": alice, "S2": bob}, comp, cast, breg, sreg)
+    assert result["S1"]["name"] == "Angie"
+    assert result["S1"]["subject_id"] == "angie"
+    assert result["S2"]["name"] == "Joe"
+    assert result["S2"]["subject_id"] == "joe"
+    # Joe's appearance override from bundle
+    assert result["S2"]["appearance"]["summary"] == "the big guy"
+    # Angie's video soundtrack does NOT set voice.audio_reference_file
+    assert result["S1"]["voice"]["audio_reference_file"] == ""
+
+
+def test_extra_cast_entries_beyond_slot_count_ignored():
+    subj = _subject("Alice")
+    comp = _composition({"S1": "alice"})
+    cast = _cast([
+        _entry("angie", "ba"),
+        _entry("joe",   "bj"),  # position 1 — no S2 exists
+    ])
+    breg = _BundleRegistry({"ba": _bundle(files=["a.png"]), "bj": _bundle(files=["j.png"])})
+    result = apply_cast_to_subjects({"S1": subj}, comp, cast, breg)
+    assert "S2" not in result
 
 
 def test_resolve_subjects_injects_subject_id_from_live_registry():
