@@ -14510,9 +14510,9 @@ class PromptCompositionLoader(io.ComfyNode):
             bundle_registry = _load_bundle_registry(default_bundle_registry_path())
             cast_media = _resolve_cast_media(scene_cast, bundle_registry)
 
-            # Enrich subjects with bundle image files, standalone audio, and appearance override
+            # Replace/enrich subjects by cast position, then apply bundle media
             resolved_subjects = _apply_cast_to_subjects(
-                resolved_subjects, composition, scene_cast, bundle_registry
+                resolved_subjects, composition, scene_cast, bundle_registry, registry
             )
 
         # video_entries_full carries full descriptors (paths, load params, audio config)

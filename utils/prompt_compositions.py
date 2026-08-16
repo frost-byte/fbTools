@@ -226,37 +226,56 @@ def apply_cast_to_subjects(
     composition: dict,
     scene_cast: dict,
     bundle_registry,
+    subject_registry=None,
 ) -> dict:
-    """Enrich resolved_subjects with per-bundle visual, audio, and appearance data.
+    """Apply a scene cast to resolved_subjects using positional (row-order) mapping.
 
-    For each cast entry that matches a composition slot:
-      - image-mode  visual.files      → appended to character_sheet_images
-      - use_audio=True                → bundle audio set as voice.audio_reference_file
-      - appearance_override (non-empty) → replaces appearance.summary
+    Cast entries are matched to composition slots by position: entry 0 → the
+    first slot (sorted), entry 1 → the second slot, etc.  A blank entry (no
+    subject_id) is a pass-through that preserves the composition's original
+    subject for that position.
+
+    For each non-blank entry:
+      - If subject_id differs from the slot's current subject, the slot is
+        replaced entirely with the new subject loaded from subject_registry.
+      - Bundle enrichment is then applied on top of whoever is in the slot:
+          image-mode visual.files      → appended to character_sheet_images
+          use_audio=True + source=file → bundle audio → voice.audio_reference_file
+          appearance_override          → replaces appearance.summary
 
     bundle_registry must support .get(bundle_id) -> dict | None.
+    subject_registry, if provided, must support .get_subject(subject_id) -> dict | None.
 
-    Returns a new dict of deep-copied, enriched subject dicts so the
-    originals (from the registry) are never mutated.
+    Returns a new dict of deep-copied subject dicts so originals are never mutated.
     """
     import copy as _copy
 
-    # Reverse map: subject_id → slot key (e.g. "char_alice" → "S1")
-    subj_to_slot: dict = {
-        sid: slot
-        for slot, sid in composition.get("subjects", {}).items()
-        if sid
-    }
-
     enriched = {slot: _copy.deepcopy(subj) for slot, subj in resolved_subjects.items()}
+    ordered_slots = sorted(enriched.keys())
 
-    for entry in scene_cast.get("entries", []):
+    for i, entry in enumerate(scene_cast.get("entries", [])):
+        if i >= len(ordered_slots):
+            break
+
         subject_id = entry.get("subject_id", "")
         bundle_id  = entry.get("bundle_id", "")
-        if not subject_id or not bundle_id:
+
+        # Blank row — keep the composition's original subject for this position
+        if not subject_id:
             continue
-        slot = subj_to_slot.get(subject_id)
-        if slot is None or slot not in enriched:
+
+        slot = ordered_slots[i]
+
+        # Replace the slot's subject when it differs from what the composition defined
+        current_sid = enriched.get(slot, {}).get("subject_id", "")
+        if subject_id != current_sid and subject_registry is not None:
+            new_subj = subject_registry.get_subject(subject_id)
+            if new_subj is not None:
+                enriched[slot] = _copy.deepcopy(dict(new_subj))
+                enriched[slot]["subject_id"] = subject_id
+
+        # Bundle enrichment (skip if no bundle selected)
+        if not bundle_id:
             continue
         bundle = bundle_registry.get(bundle_id)
         if bundle is None:
