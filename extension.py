@@ -14049,7 +14049,7 @@ def _resolve_cast_media(
       video_frame_cap    – frame cap for the visual Load Video node.
       video_skip_first   – skip-first-frames for the visual Load Video node.
       video_every_nth    – select-every-nth for the visual Load Video node.
-      audio_source       – "extract_from_visual" | "file" | "none".
+      audio_source       – "extract_from_visual" | "extract_from_video" | "file" | "none".
       audio_file         – absolute path to audio file (source=="file"), or "".
       audio_force_rate   – fps override for the audio Load Video node (extract_from_visual).
       audio_frame_cap    – frame cap for the audio Load Video node.
@@ -14118,6 +14118,13 @@ def _resolve_cast_media(
                     a_cap  = audio.get("frame_load_cap", 0)
                     entry_audio_start = (a_skip / a_fps) if (a_fps > 0 and a_skip > 0) else 0.0
                     entry_audio_dur   = (a_cap  / a_fps) if (a_fps > 0 and a_cap  > 0) else 0.0
+                elif a_src == "extract_from_video":
+                    av_file = audio.get("video_file", "")
+                    if av_file:
+                        entry_audio_source = "extract_from_visual"
+                        entry_audio_path   = os.path.join(input_dir, av_file)
+                        entry_audio_start  = audio.get("start_time", 0.0)
+                        entry_audio_dur    = audio.get("duration",   0.0)
                 elif a_src == "file":
                     af = audio.get("file", "")
                     if af:
@@ -14158,6 +14165,21 @@ def _resolve_cast_media(
                     "start_time": (a_skip / a_fps) if (a_fps > 0 and a_skip > 0) else 0.0,
                     "duration":   (a_cap  / a_fps) if (a_fps > 0 and a_cap  > 0) else 0.0,
                 }
+            elif a_src == "extract_from_video":
+                av_file = audio.get("video_file", "")
+                if av_file:
+                    audio_source = "extract_from_video"
+                    audio_file   = os.path.join(input_dir, av_file)
+                    audio_params = {
+                        "force_rate":        audio.get("force_rate", 0),
+                        "frame_load_cap":    audio.get("frame_load_cap", 0),
+                        "skip_first_frames": audio.get("skip_first_frames", 0),
+                        "select_every_nth":  audio.get("select_every_nth", 1),
+                    }
+                    audio_time = {
+                        "start_time": audio.get("start_time", 0.0),
+                        "duration":   audio.get("duration",   0.0),
+                    }
             elif a_src == "file":
                 a_file = audio.get("file", "")
                 if a_file:
