@@ -1050,3 +1050,164 @@ def test_soundtrack_audio_style_subject_definitions_references_subject():
            "audio_source": "extract_from_visual", "audio_retention": "style"}]
     prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
     assert "audio style and rhythm reference for <Subject 1> (S1)" in prompt
+
+
+# ── estimate_speech_duration ───────────────────────────────────────────────────
+
+estimate_speech_duration = pa.estimate_speech_duration
+
+
+def test_estimate_empty_returns_zero():
+    assert estimate_speech_duration("") == 0.0
+    assert estimate_speech_duration("   ") == 0.0
+
+
+def test_estimate_single_word():
+    dur = estimate_speech_duration("Hello")
+    # 5 chars / 13 + 1 word * 0.07 = 0.455
+    assert 0.4 < dur < 0.6
+
+
+def test_estimate_sentence_with_period():
+    dur = estimate_speech_duration("Hello.")
+    # 5 chars / 13 + 1 * 0.07 + 0.35 ≈ 0.805
+    assert 0.7 < dur < 1.0
+
+
+def test_estimate_slow_pace_longer():
+    text = "How are you today?"
+    slow = estimate_speech_duration(text, chars_per_second=10.0)
+    normal = estimate_speech_duration(text, chars_per_second=13.0)
+    fast = estimate_speech_duration(text, chars_per_second=16.0)
+    assert slow > normal > fast
+
+
+def test_estimate_comma_adds_pause():
+    without = estimate_speech_duration("Hello friend")
+    with_comma = estimate_speech_duration("Hello, friend")
+    assert with_comma > without
+
+
+def test_estimate_proportional_to_length():
+    short = estimate_speech_duration("Hi.")
+    long = estimate_speech_duration("Hello, how are you doing today? I hope everything is well.")
+    assert long > short * 3
+
+
+# ── Speech pace injection in prompts ──────────────────────────────────────────
+
+def _make_template_with_pace(pace="normal"):
+    """Template with a single shot whose dialogue has a given speech_pace."""
+    return {
+        "id": "t1", "name": "Test", "description": "",
+        "slots": {"A": {}},
+        "environment": {"summary": "a room", "lighting": ""},
+        "style": "",
+        "shots": [{
+            "id": "shot_1",
+            "timestamp": None,
+            "camera": "Close-up on {A}.",
+            "action": "{A} turns to face the camera.",
+            "dialogue": {
+                "placeholder": True,
+                "speaker_slot": "A",
+                "speech_pace": pace,
+            },
+            "sound_events": None,
+        }],
+        "overall_soundscape": "",
+        "non_diegetic_music": "",
+    }
+
+
+def _scene_with_dialogue(pace="normal", text="Hello there."):
+    tmpl = _make_template_with_pace(pace)
+    alice = _make_subject("Alice")
+    return {
+        "template_id": "t1",
+        "template_name": "Test",
+        "template": tmpl,
+        "slot_assignments": {"A": alice},
+        "dialogue": {"shot_1": text},
+        "outfit_overrides": {},
+    }
+
+
+def test_normal_pace_no_phrase_injected():
+    scene = _scene_with_dialogue(pace="normal", text="Hello.")
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "speaking slowly" not in prompt
+    assert "speaking quickly" not in prompt
+
+
+def test_slow_pace_injects_phrase_h3ref2va():
+    scene = _scene_with_dialogue(pace="slow", text="Hello.")
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "speaking slowly and deliberately" in prompt
+
+
+def test_fast_pace_injects_phrase_h3ref2va():
+    scene = _scene_with_dialogue(pace="fast", text="Hello.")
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "speaking quickly" in prompt
+
+
+def test_slow_pace_injects_phrase_h3fl2va():
+    scene = _scene_with_dialogue(pace="slow", text="Hello.")
+    prompt = assemble_prompt(scene, "h3_fl2va")["prompt"]
+    assert "speaking slowly and deliberately" in prompt
+
+
+def test_pace_not_injected_when_no_dialogue_text():
+    """Pace phrase must not appear when the shot has no resolved dialogue text."""
+    tmpl = _make_template_with_pace("slow")
+    # Override shot to have no dialogue text placeholder
+    tmpl["shots"][0]["dialogue"] = {
+        "placeholder": True, "speaker_slot": "A", "speech_pace": "slow"
+    }
+    alice = _make_subject("Alice")
+    scene = {
+        "template_id": "t1", "template_name": "Test", "template": tmpl,
+        "slot_assignments": {"A": alice},
+        "dialogue": {},  # no text resolved
+        "outfit_overrides": {},
+    }
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "speaking slowly" not in prompt
+
+
+# ── trim_to in _build_h3_refplan ──────────────────────────────────────────────
+
+_build_h3_refplan = pa._build_h3_refplan
+
+
+def _scene_for_refplan(audio_file="alice.wav"):
+    alice = _make_subject("Alice", subject_id="alice", audio=audio_file)
+    alice["voice"]["audio_start_time"] = 0.0
+    alice["voice"]["audio_duration"] = 10.0
+    alice["voice"]["audio_retention"] = "timbre"
+    alice["voice"]["audio_role"] = ""
+    return {"slot_assignments": {"A": alice}, "outfit_overrides": {}}
+
+
+def test_trim_to_injected_into_standalone_audio():
+    scene = _scene_for_refplan()
+    refplan = _build_h3_refplan(scene, slot_trim_to={"A": 3.5})
+    audio_refs = [r for r in refplan["references"] if r["modality"] == "audio"]
+    assert len(audio_refs) == 1
+    assert audio_refs[0]["trim_to"] == pytest.approx(3.5)
+
+
+def test_trim_to_none_when_no_slot_trim_to():
+    scene = _scene_for_refplan()
+    refplan = _build_h3_refplan(scene)
+    audio_refs = [r for r in refplan["references"] if r["modality"] == "audio"]
+    assert audio_refs[0]["trim_to"] is None
+
+
+def test_trim_to_none_for_unmatched_slot():
+    scene = _scene_for_refplan()
+    # slot_trim_to has B but the audio is in slot A
+    refplan = _build_h3_refplan(scene, slot_trim_to={"B": 2.0})
+    audio_refs = [r for r in refplan["references"] if r["modality"] == "audio"]
+    assert audio_refs[0]["trim_to"] is None
