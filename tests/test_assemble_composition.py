@@ -102,7 +102,8 @@ def test_s1_maps_to_slot_a():
     comp = _comp(subjects={"S1": "alice_id"})
     resolved = {"S1": alice}
     result = assemble_composition(comp, resolved, None, "h3_ref2va")
-    assert "Alice" in result["prompt"]
+    # H3 ref2va uses <Subject N> labels; the appearance summary (not the name) appears
+    assert "tall woman" in result["prompt"]
 
 
 def test_two_subjects_remapped_in_order():
@@ -112,9 +113,9 @@ def test_two_subjects_remapped_in_order():
     resolved = {"S1": alice, "S2": bob}
     result = assemble_composition(comp, resolved, None, "h3_ref2va")
     prompt = result["prompt"]
-    # Both should appear
-    assert "Alice" in prompt
-    assert "Bob" in prompt
+    # H3 ref2va uses <Subject N> labels; appearance summaries appear, not names
+    assert "tall woman" in prompt
+    assert "short man" in prompt
 
 
 def test_subject_1_label_for_s1_in_h3_ref2va():
@@ -223,7 +224,9 @@ def test_shot_without_dialogue_does_not_advance_counter():
 def test_dialogue_tags_use_subject_language():
     alice = _subject("Alice", audio="a.wav", language="ja-jp")
     shots = [_shot(action="Alice speaks.", dialogue_text="こんにちは。")]
+    # use_dialogue_tags must be True for <d>[lang] text</d> wrapping to apply
     comp = _comp(subjects={"S1": "a"}, shots=shots)
+    comp["use_dialogue_tags"] = True
     result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
     assert "<d>[ja-jp] こんにちは。</d>" in result["prompt"]
 
