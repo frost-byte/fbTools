@@ -240,12 +240,12 @@ def test_reuse_retention_analysis_is_fully_copy():
 
 
 def test_style_retention_analysis_line():
-    """retention=style → 'audio style' in retention_analysis."""
+    """retention=style → tonal style phrasing in retention_analysis."""
     scene = _scene({"A": _subject("Alice", audio_file="a.wav", audio_retention="style")})
     prompt = _assembled_ref2va(scene)
     ra = _get_section(prompt, "retention_analysis")
     assert "<Audio 1>" in ra
-    assert "audio style" in ra.lower()
+    assert "tonal style" in ra.lower()
 
 
 def test_mixed_ordinals_appear_correctly_in_assembled_prompt():
