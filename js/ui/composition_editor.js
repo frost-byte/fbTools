@@ -1818,14 +1818,27 @@ function _buildShotCard(shot, index) {
         dlgText.addEventListener("input", () => { if (shot.dialogue) shot.dialogue.text = dlgText.value; _markDirty(); });
         _attachLibberCompletion(dlgText);
 
+        const paceSel = _sel(
+            [
+                { id: "normal", label: "Normal" },
+                { id: "slow",   label: "Slow" },
+                { id: "fast",   label: "Fast" },
+            ],
+            dlg?.speech_pace || "normal"
+        );
+        paceSel.className = "fbt-ce-select";
+        paceSel.title = "Slow (~2 words/sec): adds "speaking slowly and deliberately" to the prompt\nNormal (~2.5 words/sec): default conversational pace\nFast (~3 words/sec): adds "speaking quickly" to the prompt\n\nAlso controls how much voice reference audio is used (trim_to).";
+        paceSel.addEventListener("change", () => { if (shot.dialogue) shot.dialogue.speech_pace = paceSel.value; _markDirty(); });
+
         dlgFields.appendChild(_labeledRow("Speaker", spkSel));
         dlgFields.appendChild(_labeledRow("Language", langSel));
         dlgFields.appendChild(_labeledRow("Text", dlgText));
+        dlgFields.appendChild(_labeledRow("Pace", paceSel, "Affects prompt phrasing and voice reference trim length"));
     };
 
     dlgCheck.addEventListener("change", () => {
         if (dlgCheck.checked) {
-            shot.dialogue = { speaker: _slotKeys()[0] || "S1", language: "English", text: "" };
+            shot.dialogue = { speaker: _slotKeys()[0] || "S1", language: "English", text: "", speech_pace: "normal" };
             buildDlgFields(shot.dialogue);
             dlgFields.style.display = "";
         } else {

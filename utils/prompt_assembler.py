@@ -17,6 +17,45 @@ from __future__ import annotations
 
 import re
 
+# ── Speech duration estimation ─────────────────────────────────────────────────
+
+def estimate_speech_duration(
+    text: str,
+    chars_per_second: float = 13.0,
+    inter_word_pause: float = 0.07,
+) -> float:
+    """Estimate speaking duration of text in seconds.
+
+    Combines character count (phonemic density) with word count (inter-word
+    pauses) and punctuation offsets. chars_per_second maps to pace:
+      slow ≈ 10, normal ≈ 13, fast ≈ 16.
+    """
+    words = text.split()
+    if not words:
+        return 0.0
+    char_count = sum(len(w) for w in words)
+    word_count = len(words)
+    commas = text.count(",") + text.count(";")
+    sentence_ends = len(re.findall(r"[.!?]", text))
+    return (
+        char_count / chars_per_second
+        + word_count * inter_word_pause
+        + commas * 0.20
+        + sentence_ends * 0.35
+    )
+
+
+_PACE_PHRASES: dict[str, str] = {
+    "slow": "speaking slowly and deliberately",
+    "fast": "speaking quickly",
+}
+
+_PACE_CHARS_PER_SEC: dict[str, float] = {
+    "slow": 10.0,
+    "normal": 13.0,
+    "fast": 16.0,
+}
+
 MODEL_TYPES = [
     "h3_ref2va",
     "h3_fl2va",
@@ -229,6 +268,7 @@ def _build_ref_map(
 def _build_h3_refplan(
     scene_instance: dict,
     video_entries: list[dict] | None = None,
+    slot_trim_to: dict[str, float] | None = None,
 ) -> dict:
     """Build the FBTOOLS_H3_REFPLAN ordered reference descriptor bundle.
 
@@ -327,6 +367,7 @@ def _build_h3_refplan(
         video_counter += 1
 
     # Pass 3: standalone audio entries (voice.audio_reference_file)
+    _trim_map = slot_trim_to or {}
     for slot_id in ordered_slots:
         subject = assignments.get(slot_id)
         if subject is None:
@@ -346,6 +387,7 @@ def _build_h3_refplan(
             "duration":      voice.get("audio_duration", 0.0),
             "retention":     voice.get("audio_retention", "timbre"),
             "role":          voice.get("audio_role", ""),
+            "trim_to":       _trim_map.get(slot_id),
         })
         audio_counter += 1
 
@@ -773,28 +815,34 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
 
         dialogue_entry = shot.get("dialogue")
         speaker_slot = ""
+        text = ""
         if isinstance(dialogue_entry, dict):
             speaker_slot = dialogue_entry.get("speaker_slot", "")
+            text = dialogue_map.get(shot_id, "")
+            if not text and not dialogue_entry.get("placeholder"):
+                text = dialogue_entry.get("default_text") or ""
         speaking_slots = frozenset([speaker_slot]) if speaker_slot else frozenset()
 
         camera = _replace_h3(shot.get("camera", ""), ref_map, speaking_slots, seen_globally)
         action = _replace_h3(shot.get("action", ""), ref_map, speaking_slots, seen_globally)
         if camera:
-            s = camera.rstrip(".")
-            dd.append(s + ".")
+            dd.append(camera.rstrip(".") + ".")
         if action:
-            dd.append(action)
+            pace_phrase = ""
+            if text and isinstance(dialogue_entry, dict):
+                pace = (dialogue_entry.get("speech_pace") or "normal").strip()
+                pace_phrase = _PACE_PHRASES.get(pace, "")
+            if pace_phrase:
+                dd.append(action.rstrip(". ") + f", {pace_phrase}.")
+            else:
+                dd.append(action)
 
-        if isinstance(dialogue_entry, dict):
-            text = dialogue_map.get(shot_id, "")
-            if not text and not dialogue_entry.get("placeholder"):
-                text = dialogue_entry.get("default_text") or ""
-            if text:
-                lang = _lang_label(ref_map.get(speaker_slot, {}).get("language", "en-us") or "en-us")
-                if use_dialogue_tags:
-                    dd.append(f"<d>[{lang}] {text}</d>")
-                else:
-                    dd.append(f'"[{lang}] {text}"')
+        if text:
+            lang = _lang_label(ref_map.get(speaker_slot, {}).get("language", "en-us") or "en-us")
+            if use_dialogue_tags:
+                dd.append(f"<d>[{lang}] {text}</d>")
+            else:
+                dd.append(f'"[{lang}] {text}"')
 
         sound_events = shot.get("sound_events")
         if sound_events:
@@ -851,25 +899,35 @@ def _assemble_h3_fl2va(scene_instance: dict, ref_map: dict) -> str:
         lines.append("")
         lines.append(header)
 
-        camera = _replace_named(shot.get("camera", ""), ref_map)
-        action = _replace_named(shot.get("action", ""), ref_map)
-        if camera:
-            lines.append(camera.rstrip(".") + ".")
-        if action:
-            lines.append(action)
-
         dialogue_entry = shot.get("dialogue")
+        speaker_slot = ""
+        text = ""
         if isinstance(dialogue_entry, dict):
             speaker_slot = dialogue_entry.get("speaker_slot", "")
             text = dialogue_map.get(shot_id, "")
             if not text and not dialogue_entry.get("placeholder"):
                 text = dialogue_entry.get("default_text") or ""
-            if text:
-                lang = _lang_label(ref_map.get(speaker_slot, {}).get("language", "en-us") or "en-us")
-                if use_dialogue_tags:
-                    lines.append(f"<d>[{lang}] {text}</d>")
-                else:
-                    lines.append(f'"[{lang}] {text}"')
+
+        camera = _replace_named(shot.get("camera", ""), ref_map)
+        action = _replace_named(shot.get("action", ""), ref_map)
+        if camera:
+            lines.append(camera.rstrip(".") + ".")
+        if action:
+            pace_phrase = ""
+            if text and isinstance(dialogue_entry, dict):
+                pace = (dialogue_entry.get("speech_pace") or "normal").strip()
+                pace_phrase = _PACE_PHRASES.get(pace, "")
+            if pace_phrase:
+                lines.append(action.rstrip(". ") + f", {pace_phrase}.")
+            else:
+                lines.append(action)
+
+        if text:
+            lang = _lang_label(ref_map.get(speaker_slot, {}).get("language", "en-us") or "en-us")
+            if use_dialogue_tags:
+                lines.append(f"<d>[{lang}] {text}</d>")
+            else:
+                lines.append(f'"[{lang}] {text}"')
 
         sound_events = shot.get("sound_events")
         if sound_events:
@@ -1244,6 +1302,7 @@ def _composition_shots_to_template(shots: list[dict], slot_map: dict[str, str]) 
             template_dlg = {
                 "placeholder": True,
                 "speaker_slot": slot_map.get(speaker_sk, ""),
+                "speech_pace": dlg.get("speech_pace") or "normal",
             }
         result.append({
             "id":           shot.get("id", f"shot_{i}"),

@@ -13573,6 +13573,8 @@ from .utils.composition_resources import (
 )
 from .utils.prompt_assembler import assemble_composition as _assemble_composition
 from .utils.prompt_assembler import _build_h3_refplan
+from .utils.prompt_assembler import estimate_speech_duration as _estimate_speech_duration
+from .utils.prompt_assembler import _PACE_CHARS_PER_SEC
 
 
 @routes.get("/fbtools/compositions/list")
@@ -14615,12 +14617,38 @@ class PromptCompositionLoader(io.ComfyNode):
             if e.get("name")
         ] or None
 
+        # Compute per-slot trim_to from shot dialogue durations.
+        # Each shot's dialogue text is resolved through Libbers independently —
+        # a different random pick than what landed in the assembled prompt, but
+        # durations are close enough for trim purposes since Libber values for
+        # the same key are authored in similar length ranges.
+        slot_trim_to: dict[str, float] = {}
+        sk_list = list(composition.get("subjects", {}).keys())
+        sk_to_letter = {sk: chr(ord("A") + i) for i, sk in enumerate(sk_list)}
+        _cs = _read_composition_settings()
+        _libbers_l = composition.get("libbers", [])
+        _delim = _cs.get("libber_delimiter", "%")
+        for _shot in composition.get("shots", []):
+            _dlg = _shot.get("dialogue")
+            if not _dlg or not _dlg.get("text"):
+                continue
+            _raw = _dlg["text"]
+            _resolved = (
+                _apply_composition_libbers(_raw, _libbers_l, _delim, LibberStateManager.instance())
+                if _libbers_l else _raw
+            )
+            _cps = _PACE_CHARS_PER_SEC.get(_dlg.get("speech_pace") or "normal", 13.0)
+            _dur = _estimate_speech_duration(_resolved, _cps)
+            _letter = sk_to_letter.get(_dlg.get("speaker", ""))
+            if _letter:
+                slot_trim_to[_letter] = slot_trim_to.get(_letter, 0.0) + _dur
+
         # Build FBTOOLS_H3_REFPLAN from enriched subjects + full video descriptors
         scene_instance_for_plan = {
             "slot_assignments": resolved_subjects,
             "outfit_overrides": composition.get("outfit_overrides", {}),
         }
-        h3_refplan = _build_h3_refplan(scene_instance_for_plan, video_entries)
+        h3_refplan = _build_h3_refplan(scene_instance_for_plan, video_entries, slot_trim_to or None)
         h3_refplan["prompt"]         = prompt
         h3_refplan["model_type"]     = model_type_used
         h3_refplan["ref_image_size"] = "match"
