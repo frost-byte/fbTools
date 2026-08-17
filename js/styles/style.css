@@ -868,6 +868,33 @@ textarea.prompt-value-input {
     flex-shrink: 0;
 }
 
+.fbt-ce-settings-group-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--p-surface-400, #888);
+    margin: 8px 0 2px;
+}
+
+.fbt-ce-settings-sel {
+    flex-shrink: 0;
+    max-width: 160px;
+}
+
+.fbt-ce-settings-lufs {
+    width: 52px;
+    flex-shrink: 0;
+}
+
+.fbt-ce-settings-row--wide {
+    flex-wrap: wrap;
+}
+.fbt-ce-settings-row--wide .fbt-ce-input {
+    flex: 1;
+    min-width: 0;
+}
+
 /* ── Camera / Sound preset add form ─────────────────────────────────────────── */
 
 .fbt-ce-preset-form {
