@@ -13,6 +13,16 @@ import shutil
 _EMPTY_DATA: dict = {"version": 1, "outfits": {}}
 
 
+def _normalize_outfit_image(entry: "str | dict") -> dict:
+    if isinstance(entry, str):
+        return {"file": entry, "role": "costume detail"}
+    return {"file": str(entry.get("file", "")), "role": str(entry.get("role", "costume detail")) or "costume detail"}
+
+
+def _normalize_outfit_images(entries: list) -> "list[dict]":
+    return [_normalize_outfit_image(e) for e in (entries or []) if e]
+
+
 class OutfitRegistry:
     """In-memory outfit registry.  Wire between Load → Define → (SceneCompose) nodes."""
 
@@ -30,8 +40,12 @@ class OutfitRegistry:
 
     @classmethod
     def from_dict(cls, data: dict, file_path: str | None = None) -> "OutfitRegistry":
+        outfits = copy.deepcopy(data.get("outfits", {}))
+        for entry in outfits.values():
+            if "reference_images" in entry:
+                entry["reference_images"] = _normalize_outfit_images(entry["reference_images"])
         return cls(
-            outfits=copy.deepcopy(data.get("outfits", {})),
+            outfits=outfits,
             file_path=file_path,
             version=data.get("version", 1),
         )
@@ -47,14 +61,21 @@ class OutfitRegistry:
         name: str,
         description: str,
         tags: list[str] | None = None,
+        reference_images: "list | None" = None,
     ) -> "OutfitRegistry":
-        """Return a NEW registry with the outfit entry added or updated."""
+        """Return a NEW registry with the outfit entry added or updated.
+
+        reference_images, if provided, replaces the stored list (normalized to
+        {file, role} dicts).  Pass None to preserve the existing list.
+        """
         new_reg = copy.deepcopy(self)
         entry: dict = new_reg.outfits.get(outfit_id, {})
         entry["name"] = name or outfit_id
         entry["description"] = description
         if tags is not None:
             entry["tags"] = tags
+        if reference_images is not None:
+            entry["reference_images"] = _normalize_outfit_images(reference_images)
         new_reg.outfits[outfit_id] = entry
         return new_reg
 

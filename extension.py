@@ -12849,7 +12849,8 @@ async def _outfits_get_registry(request):
 async def _outfits_save(request):
     """Create or update one outfit entry.
 
-    Body: { id, name, description, tags?: [] }
+    Body: { id, name, description, tags?: [], reference_images?: [{file, role}] }
+    reference_images replaces the stored list when present; omit to preserve existing.
     """
     try:
         data = await request.json()
@@ -12861,15 +12862,102 @@ async def _outfits_save(request):
         tags = data.get("tags", [])
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
+        ref_images = data.get("reference_images")  # None → preserve existing
         updated = registry.define(
             outfit_id,
             data.get("name", ""),
             data.get("description", ""),
             tags,
+            reference_images=ref_images,
         )
         _save_outfit_registry(updated, path, backup=True)
         return web.json_response({"success": True, "id": outfit_id})
     except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/outfits/analyze_media")
+async def _outfits_analyze_media(request):
+    """Analyze an image or video for outfit description using the loaded LLM.
+
+    For images: runs LLM directly on the image.
+    For videos: extracts a frame at frame_time seconds (default 1.0) and runs LLM
+    on that frame.  The extracted frame is saved permanently to the ComfyUI input
+    directory as _outfit_ref_<uuid>.jpg so the caller can add it to reference_images.
+
+    Body: { filename, query?, max_tokens?, frame_time? }
+    Returns: { description, frame_file }  (frame_file is null for images)
+    """
+    _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv"}
+    try:
+        body = await request.json()
+        filename = (body.get("filename") or "").strip()
+        if not filename:
+            return web.json_response({"error": "filename is required"}, status=400)
+        query = body.get("query") or (
+            "Describe the outfit in this image for use in video generation prompts. "
+            "Focus on garment types, colors, materials, textures, patterns, and accessories. "
+            "Do not describe the person's face, hair, or pose."
+        )
+        max_tokens = int(body.get("max_tokens", 400))
+        frame_time  = float(body.get("frame_time", 1.0))
+
+        import folder_paths
+        input_dir = folder_paths.get_input_directory()
+        src_path = os.path.join(input_dir, filename)
+        if not os.path.exists(src_path):
+            return web.json_response({"error": f"File not found: {filename}"}, status=404)
+
+        ext = os.path.splitext(filename)[1].lower()
+        frame_file: str | None = None
+        pil_image = None
+
+        def _prepare():
+            nonlocal frame_file, pil_image
+            from PIL import Image as _PILImage
+            if ext in _VIDEO_EXTS:
+                import cv2
+                cap = cv2.VideoCapture(src_path)
+                try:
+                    fps         = cap.get(cv2.CAP_PROP_FPS) or 24.0
+                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    target      = min(int(frame_time * fps), max(0, frame_count - 1))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+                    ok, frame = cap.read()
+                    if not ok:
+                        raise RuntimeError(f"Could not read frame {target} from {filename}")
+                    ref_name  = f"_outfit_ref_{uuid.uuid4().hex[:12]}.jpg"
+                    ref_path  = os.path.join(input_dir, ref_name)
+                    cv2.imwrite(ref_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                    frame_file = ref_name
+                    pil_image  = _PILImage.open(ref_path).convert("RGB")
+                finally:
+                    cap.release()
+            else:
+                pil_image = _PILImage.open(src_path).convert("RGB")
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _prepare)
+
+        def _generate():
+            return _llm_client.generate(
+                query,
+                images=[pil_image],
+                max_tokens=max_tokens,
+                temperature=0.5,
+            )
+
+        result = await loop.run_in_executor(None, _generate)
+        if not result.get("success"):
+            return web.json_response(
+                {"error": result.get("error", "LLM generate failed")}, status=503
+            )
+        return web.json_response({
+            "description": result.get("text", "").strip(),
+            "frame_file": frame_file,
+        })
+    except Exception as exc:
+        logger.error("outfit analyze_media error: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
 
 

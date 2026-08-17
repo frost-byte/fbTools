@@ -947,8 +947,15 @@ function _buildPresetSection(parent, kind) {
 // ── Outfit Registry sidebar section ───────────────────────────────────────────
 
 const DEFAULT_OUTFIT_QUERY =
-    "Describe this outfit concisely for video generation prompts. " +
-    "Focus on garment types, colors, materials, and notable accessories.";
+    "Describe the outfit in detail for video generation prompts. " +
+    "Focus on garment types, colors, materials, textures, patterns, and accessories. " +
+    "Do not describe the person's face, hair, or pose.";
+
+const _OUTFIT_VIDEO_EXTS = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv"]);
+function _isVideoFile(name) {
+    const dot = name.lastIndexOf(".");
+    return dot >= 0 && _OUTFIT_VIDEO_EXTS.has(name.slice(dot).toLowerCase());
+}
 
 function _outfitIdFromRow(row) { return row?.dataset.outfitId ?? ""; }
 
@@ -990,10 +997,13 @@ function _openOutfitEditor(existingId) {
     const isNew = !existingId;
     const entry = existingId ? (_S.outfits[existingId] || {}) : {};
 
-    // Modal overlay
+    // Local mutable reference images list for this editing session
+    let refImages = (entry.reference_images || []).map(r =>
+        typeof r === "string" ? { file: r, role: "costume detail" } : { ...r }
+    );
+
     const overlay = _mk("div", { cls: "fbt-ce-modal-overlay",
         onclick: e => { if (e.target === overlay) overlay.remove(); } });
-
     const modal = _mk("div", { cls: "fbt-ce-modal" });
     overlay.appendChild(modal);
 
@@ -1009,36 +1019,101 @@ function _openOutfitEditor(existingId) {
     const descArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-desc",
         placeholder: "Outfit description…", value: entry.description || "" });
 
-    // LLM analyze section (shown only when vision model loaded)
+    // ── Reference images list ──────────────────────────────────────────────────
+    const refListEl = _mk("div", { cls: "fbt-ce-outfit-ref-list" });
+
+    function _renderRefList() {
+        refListEl.innerHTML = "";
+        if (!refImages.length) {
+            refListEl.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No reference images." }));
+            return;
+        }
+        refImages.forEach((img, i) => {
+            const row = _mk("div", { cls: "fbt-ce-outfit-ref-row" });
+            const info = _mk("span", { cls: "fbt-ce-outfit-ref-info",
+                textContent: img.file });
+            const roleEl = _mk("select", { cls: "fbt-ce-select fbt-ce-outfit-ref-role" });
+            ["costume detail", "character sheet", "full body", "portrait", "side profile", "reference"].forEach(r => {
+                const opt = _mk("option", { value: r, textContent: r });
+                if (r === img.role) opt.selected = true;
+                roleEl.appendChild(opt);
+            });
+            roleEl.onchange = () => { refImages[i].role = roleEl.value; };
+            const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-danger",
+                textContent: "✕",
+                onclick: () => { refImages.splice(i, 1); _renderRefList(); }
+            });
+            row.append(info, roleEl, delBtn);
+            refListEl.appendChild(row);
+        });
+    }
+    _renderRefList();
+
+    // ── LLM analyze section ────────────────────────────────────────────────────
     const analyzeSection = _mk("div", { cls: "fbt-ce-outfit-analyze" });
     if (_S.llmVision) {
-        const imgInput   = _mk("input", { cls: "fbt-ce-input", placeholder: "Image filename (from ComfyUI input dir)" });
-        const queryArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-query",
+        const mediaInput = _mk("input", { cls: "fbt-ce-input",
+            placeholder: "Image or video filename (from ComfyUI input dir)" });
+        const videoHint = _mk("div", { cls: "fbt-ce-hint fbt-ce-outfit-video-hint",
+            textContent: "Video detected — a frame will be extracted at 1 s and saved as a reference image." });
+        videoHint.style.display = "none";
+        mediaInput.oninput = () => {
+            videoHint.style.display = _isVideoFile(mediaInput.value.trim()) ? "" : "none";
+        };
+
+        const queryArea = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-query",
             placeholder: "Describe what you want from the analysis…",
             value: DEFAULT_OUTFIT_QUERY });
+
+        const saveRefChk = _mk("input", { type: "checkbox", checked: true, id: "fbt-outfit-save-ref" });
+        const saveRefLabel = _mk("label", { htmlFor: "fbt-outfit-save-ref",
+            cls: "fbt-ce-inline-label",
+            textContent: "Add analyzed file to reference images" });
+        const saveRefRow = _mk("div", { cls: "fbt-ce-outfit-ref-chk-row" }, [saveRefChk, saveRefLabel]);
+
         const analyzeBtn = _mk("button", { cls: "fbt-ce-btn",
             textContent: "🔍 Analyze with LLM",
             onclick: async () => {
-                const imgName = imgInput.value.trim();
-                if (!imgName) { alert("Enter an image filename first."); return; }
+                const fname = mediaInput.value.trim();
+                if (!fname) { alert("Enter an image or video filename first."); return; }
                 analyzeBtn.disabled = true;
                 analyzeBtn.textContent = "Analyzing…";
                 try {
-                    const r = await llmApi.generate(queryArea.value.trim() || DEFAULT_OUTFIT_QUERY,
-                        { images: [imgName], max_tokens: 400 });
-                    if (r?.text) descArea.value = r.text.trim();
-                } catch (e) { alert(`LLM error: ${e.message}`); }
+                    const res = await fetch("/fbtools/outfits/analyze_media", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            filename:   fname,
+                            query:      queryArea.value.trim() || DEFAULT_OUTFIT_QUERY,
+                            max_tokens: 400,
+                        }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || res.statusText);
+                    if (data.description) descArea.value = data.description;
+                    if (saveRefChk.checked) {
+                        const refFile = data.frame_file || fname;
+                        if (!refImages.some(r => r.file === refFile)) {
+                            refImages.push({ file: refFile, role: "costume detail" });
+                            _renderRefList();
+                        }
+                    }
+                } catch (e) { alert(`Analyze failed: ${e.message}`); }
                 finally {
                     analyzeBtn.disabled = false;
                     analyzeBtn.textContent = "🔍 Analyze with LLM";
                 }
             }});
-        analyzeSection.appendChild(_mk("div", { cls: "fbt-ce-hint", textContent: "LLM Image Analysis" }));
-        analyzeSection.appendChild(imgInput);
+
+        analyzeSection.appendChild(_mk("div", { cls: "fbt-ce-hint", textContent: "LLM Analysis" }));
+        analyzeSection.appendChild(mediaInput);
+        analyzeSection.appendChild(videoHint);
         analyzeSection.appendChild(queryArea);
+        analyzeSection.appendChild(saveRefRow);
         analyzeSection.appendChild(analyzeBtn);
     }
 
+    // ── Buttons ────────────────────────────────────────────────────────────────
     const saveBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Save",
         onclick: async () => {
             const id = isNew ? idInput.value.trim() : existingId;
@@ -1046,13 +1121,17 @@ function _openOutfitEditor(existingId) {
             if (!/^[a-z0-9_]+$/.test(id)) { alert("ID must be lowercase letters, digits, or underscores."); return; }
             const outfit = {
                 id,
-                name:        nameInput.value.trim(),
-                description: descArea.value.trim(),
-                tags:        tagsInput.value.split(",").map(t => t.trim()).filter(Boolean),
+                name:             nameInput.value.trim(),
+                description:      descArea.value.trim(),
+                tags:             tagsInput.value.split(",").map(t => t.trim()).filter(Boolean),
+                reference_images: refImages,
             };
             try {
                 await compositionsApi.saveOutfit(outfit);
-                _S.outfits[id] = { name: outfit.name, description: outfit.description, tags: outfit.tags };
+                _S.outfits[id] = {
+                    name: outfit.name, description: outfit.description,
+                    tags: outfit.tags, reference_images: refImages,
+                };
                 _rebuildOutfitList();
                 _rebuildSlots();
                 overlay.remove();
@@ -1060,8 +1139,6 @@ function _openOutfitEditor(existingId) {
         }});
     const cancelBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "Cancel",
         onclick: () => overlay.remove() });
-
-    const btnRow = _mk("div", { cls: "fbt-ce-modal-btns" }, [cancelBtn, saveBtn]);
 
     modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "ID" }));
     modal.appendChild(idInput);
@@ -1071,8 +1148,10 @@ function _openOutfitEditor(existingId) {
     modal.appendChild(tagsInput);
     modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Description" }));
     modal.appendChild(descArea);
+    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }));
+    modal.appendChild(refListEl);
     if (_S.llmVision) modal.appendChild(analyzeSection);
-    modal.appendChild(btnRow);
+    modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, [cancelBtn, saveBtn]));
 
     document.body.appendChild(overlay);
     (isNew ? idInput : nameInput).focus();
