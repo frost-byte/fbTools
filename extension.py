@@ -14649,9 +14649,14 @@ class PromptCompositionLoader(io.ComfyNode):
             "outfit_overrides": composition.get("outfit_overrides", {}),
         }
         h3_refplan = _build_h3_refplan(scene_instance_for_plan, video_entries, slot_trim_to or None)
-        h3_refplan["prompt"]         = prompt
-        h3_refplan["model_type"]     = model_type_used
-        h3_refplan["ref_image_size"] = "match"
+        h3_refplan["prompt"]          = prompt
+        h3_refplan["model_type"]      = model_type_used
+        h3_refplan["ref_image_size"]  = "match"
+        h3_refplan["has_turbo_lora"]  = any(
+            "turbo" in (e.get("name", "") or "").lower()
+            for e in composition.get("loras", [])
+            if e.get("name")
+        )
 
         cast_note = f" | cast: {scene_cast.get('name', '?')}" if scene_cast else ""
         send_status_update(
@@ -14976,14 +14981,60 @@ class CompositionToH3Conditioning(io.ComfyNode):
             raise ValueError("h3_refplan is required — wire PromptCompositionLoader's "
                              "'H3 Ref Plan' output into this node.")
 
-        references   = h3_refplan.get("references", [])
-        prompt       = h3_refplan.get("prompt", "")
+        references = h3_refplan.get("references", [])
+        prompt     = h3_refplan.get("prompt", "")
 
-        ref_images        = {}
-        ref_videos        = {}
-        ref_video_audios  = {}
-        ref_audios        = {}
-        standalone_idx    = 0
+        standalone_audio_refs = [r for r in references if r.get("modality") == "audio"]
+        visual_refs           = [r for r in references if r.get("modality") in ("image", "video")]
+        all_counted_refs      = [r for r in references
+                                 if r.get("modality") in ("image", "video", "audio", "soundtrack_audio")]
+
+        # ── §1 pre-load validation (MiniMax H3 Ref2VA hard limits) ─────────────
+        pre_errors: list[str] = []
+        if len(standalone_audio_refs) > 3:
+            pre_errors.append(
+                f"{len(standalone_audio_refs)} standalone audio references exceed the limit of 3."
+            )
+        if standalone_audio_refs and not visual_refs:
+            pre_errors.append(
+                "Audio references must accompany at least one image or video "
+                "(H3 Ref2VA requires audio to be paired with a visual reference)."
+            )
+        if len(all_counted_refs) > 12:
+            pre_errors.append(
+                f"{len(all_counted_refs)} total reference files exceed the combined limit of 12."
+            )
+        for ref in standalone_audio_refs:
+            trim = ref.get("trim_to")
+            if trim is not None and trim < 2.0:
+                aord = ref.get("audio_ordinal", "?")
+                pre_errors.append(
+                    f"<Audio {aord}>: computed trim_to={trim:.2f}s is below the 2s minimum. "
+                    f"The dialogue line is too short — lengthen it or set a manual minimum."
+                )
+        if pre_errors:
+            raise ValueError(
+                "H3 Ref2VA validation failed:\n"
+                + "\n".join(f"  • {e}" for e in pre_errors)
+            )
+
+        # ── Turbo LoRA warning ──────────────────────────────────────────────────
+        if h3_refplan.get("has_turbo_lora") and standalone_audio_refs:
+            _turbo_msg = (
+                "Turbo LoRA detected with audio references. "
+                "Turbo LoRA is known to degrade audio quality badly — "
+                "disable it for voice/dialogue generation."
+            )
+            logger.warning("CompositionToH3: %s", _turbo_msg)
+            send_status_update(cls.node_id, f"⚠️ {_turbo_msg}")
+
+        # ── Load references ─────────────────────────────────────────────────────
+        ref_images       = {}
+        ref_videos       = {}
+        ref_video_audios = {}
+        ref_audios       = {}
+        standalone_idx   = 0
+        loaded_audio_durations: list[float] = []
 
         for ref in references:
             modality = ref.get("modality", "")
@@ -15002,7 +15053,6 @@ class CompositionToH3Conditioning(io.ComfyNode):
                     ref_videos[f"ref_video_{n}"] = frames
 
             elif modality == "soundtrack_audio":
-                # Key suffix must match the paired ref_video_N (same video_ordinal)
                 audio = _h3_load_audio(path, ref.get("start_time", 0.0),
                                        ref.get("duration", 0.0))
                 if audio is not None:
@@ -15012,16 +15062,54 @@ class CompositionToH3Conditioning(io.ComfyNode):
             elif modality == "audio":
                 audio = _h3_load_audio(path, ref.get("start_time", 0.0),
                                        ref.get("duration", 0.0))
-                if audio is not None:
-                    ref_audios[f"ref_audio_{standalone_idx}"] = audio
-                    standalone_idx += 1
+                if audio is None:
+                    continue
 
+                # Apply trim_to: shorten waveform to estimated dialogue line duration
+                trim_to = ref.get("trim_to")
+                if trim_to is not None and trim_to > 0:
+                    sr = audio["sample_rate"]
+                    target_samples = int(trim_to * sr)
+                    audio["waveform"] = audio["waveform"][:, :, :target_samples]
+
+                # Per-clip duration validation (post-trim, actual samples)
+                actual_samples = audio["waveform"].shape[-1]
+                sr = audio["sample_rate"]
+                actual_dur = actual_samples / sr if sr > 0 else 0.0
+                aord = ref.get("audio_ordinal", "?")
+                basename = os.path.basename(path)
+                if actual_dur < 2.0:
+                    raise ValueError(
+                        f"<Audio {aord}> ({basename}): loaded duration {actual_dur:.2f}s "
+                        f"is below the 2s minimum required by H3 Ref2VA. "
+                        f"Use a longer source clip or reduce start_time/trim."
+                    )
+                if actual_dur > 15.0:
+                    raise ValueError(
+                        f"<Audio {aord}> ({basename}): loaded duration {actual_dur:.2f}s "
+                        f"exceeds the 15s maximum. Set a shorter duration or trim_to."
+                    )
+
+                loaded_audio_durations.append(actual_dur)
+                ref_audios[f"ref_audio_{standalone_idx}"] = audio
+                standalone_idx += 1
+
+        # Total audio duration check (uses actual loaded/trimmed durations)
+        total_audio = sum(loaded_audio_durations)
+        if total_audio > 15.0:
+            raise ValueError(
+                f"Total audio duration {total_audio:.2f}s across "
+                f"{len(loaded_audio_durations)} audio reference(s) "
+                f"exceeds the 15s limit."
+            )
+
+        audio_note = f" | audio {total_audio:.1f}s total" if loaded_audio_durations else ""
         send_status_update(
             cls.node_id,
             f"H3 conditioning: {len(ref_images)} image(s), "
             f"{len(ref_videos)} video(s), "
             f"{len(ref_video_audios)} soundtrack(s), "
-            f"{len(ref_audios)} standalone audio(s)",
+            f"{len(ref_audios)} standalone audio(s){audio_note}",
         )
 
         return MiniMaxH3ReferenceToVideo.execute(
