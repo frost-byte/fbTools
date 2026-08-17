@@ -15013,6 +15013,19 @@ def _h3_load_video_frames(path: str, load_params: dict):
     skip_first_frames = int(load_params.get("skip_first_frames",   0))
     select_every_nth  = int(load_params.get("select_every_nth",    1)) or 1
 
+    # start_time (time-based seek) and skip_first_frames (legacy frame-count seek)
+    # are two alternative mechanisms for the same purpose.  When start_time is set,
+    # suppress skip_first_frames to avoid double-offsetting into old bundles that
+    # had skip_first_frames set before the trim slider was introduced.
+    if start_time > 0.0 and skip_first_frames > 0:
+        logger.warning(
+            "CompositionToH3: both start_time=%.2fs and skip_first_frames=%d are set "
+            "for %s — skip_first_frames ignored when start_time is used. "
+            "Clear skip_first_frames in the bundle to suppress this warning.",
+            start_time, skip_first_frames, os.path.basename(path),
+        )
+        skip_first_frames = 0
+
     # H3 reference videos need ≥39 frames to give Qwen useful signal after
     # the upstream node trims to n%17==5.  Enforce a minimum for generation.
     if 0 < frame_load_cap < 39:
