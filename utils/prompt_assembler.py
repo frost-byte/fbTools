@@ -353,6 +353,7 @@ def _build_h3_refplan(
                 "duration":      ve.get("audio_duration", 0.0),
                 "retention":     ve.get("audio_retention", "timbre"),
                 "role":          ve.get("audio_role", ""),
+                "audio_cache":   ve.get("audio_cache", ""),
             })
             audio_counter += 1
 
@@ -388,6 +389,7 @@ def _build_h3_refplan(
             "retention":     voice.get("audio_retention", "timbre"),
             "role":          voice.get("audio_role", ""),
             "trim_to":       _trim_map.get(slot_id),
+            "audio_cache":   voice.get("audio_cache", ""),
         })
         audio_counter += 1
 

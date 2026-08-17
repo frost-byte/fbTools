@@ -310,6 +310,7 @@ def apply_cast_to_subjects(
                 v["audio_duration"]       = audio.get("duration", 0.0)
                 v["audio_retention"]      = audio.get("retention", "timbre")
                 v["audio_role"]           = audio.get("role", "")
+                v["audio_cache"]          = audio.get("audio_cache", "")
 
         # 3. Appearance override → appearance.summary
         override = bundle.get("appearance_override", "").strip()

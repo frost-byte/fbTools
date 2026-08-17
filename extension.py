@@ -13424,6 +13424,112 @@ async def _bundles_preview_sampled(request):
     )
 
 
+@routes.post("/fbtools/bundles/preprocess_audio")
+async def _bundles_preprocess_audio(request):
+    """Apply the audio preprocessing pipeline to a bundle's audio source and cache the result.
+
+    Body JSON:
+        bundle_id       str      — used for the cache directory name
+        filename        str      — audio/video file in the ComfyUI input directory
+        start_time      float    — trim start (seconds); ignored if audio_source == "extract_from_visual"
+        duration        float    — trim duration; 0 = to end
+        audio_processing dict:
+            noise_removal     bool   — spectral denoising (scipy)
+            normalize_lufs    bool   — LUFS normalize (pyloudnorm)
+            target_lufs       float  — target integrated loudness (default -14)
+
+    Response: {cache_path, duration, lufs_before, lufs_after, fingerprint}
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    bundle_id = (data.get("bundle_id") or "default").strip()
+    filename  = (data.get("filename") or "").strip()
+    if not filename:
+        return web.json_response({"error": "filename required"}, status=400)
+
+    input_dir = get_input_directory()
+    src_path = os.path.realpath(os.path.join(input_dir, filename))
+    if not src_path.startswith(os.path.realpath(input_dir)):
+        return web.json_response({"error": "Forbidden"}, status=403)
+    if not os.path.isfile(src_path):
+        return web.json_response({"error": f"Not found: {filename}"}, status=404)
+
+    start_time = float(data.get("start_time", 0.0))
+    duration   = float(data.get("duration",   0.0))
+    proc_cfg   = data.get("audio_processing", {})
+    noise_removal  = bool(proc_cfg.get("noise_removal",  False))
+    normalize_lufs = bool(proc_cfg.get("normalize_lufs", True))
+    target_lufs    = float(proc_cfg.get("target_lufs",  -14.0))
+
+    from .utils.audio_preprocess import preprocess_audio, cache_fingerprint, measure_lufs
+
+    fp = cache_fingerprint(src_path, start_time, duration, {
+        "noise_removal":  noise_removal,
+        "normalize_lufs": normalize_lufs,
+        "target_lufs":    target_lufs,
+    })
+
+    # Cache dir: user_data_dir/bundles_cache/<bundle_id>/
+    safe_bid  = "".join(c if c.isalnum() or c in "-_" else "_" for c in bundle_id)[:64]
+    cache_dir = os.path.join(user_data_dir(), "bundles_cache", safe_bid)
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"audio_{fp}.wav")
+
+    if os.path.isfile(cache_path):
+        # Re-measure from cached file for the response metrics
+        def _measure_cached():
+            import torchaudio
+            wf, sr = torchaudio.load(cache_path)
+            import numpy as np
+            audio_np = wf.numpy()
+            lufs = measure_lufs(audio_np, sr)
+            dur = audio_np.shape[-1] / sr if sr > 0 else 0.0
+            return {"duration": round(dur, 2), "lufs_before": None,
+                    "lufs_after": round(lufs, 1) if np.isfinite(lufs) else None}
+        loop = asyncio.get_event_loop()
+        metrics = await loop.run_in_executor(None, _measure_cached)
+        return web.json_response({
+            "cache_path": cache_path,
+            "fingerprint": fp,
+            "from_cache": True,
+            **metrics,
+        })
+
+    def _run_pipeline():
+        raw = _h3_load_audio(src_path, start_time, duration)
+        if raw is None:
+            return None, None
+        wf_out, sr_out, metrics = preprocess_audio(
+            raw["waveform"], raw["sample_rate"],
+            noise_removal=noise_removal,
+            normalize_lufs=normalize_lufs,
+            target_lufs=target_lufs,
+        )
+        import torchaudio
+        torchaudio.save(cache_path, wf_out.squeeze(0), sr_out)
+        return metrics, cache_path
+
+    loop = asyncio.get_event_loop()
+    try:
+        metrics, out_path = await loop.run_in_executor(None, _run_pipeline)
+    except Exception as exc:
+        logger.error("preprocess_audio: pipeline error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+    if out_path is None:
+        return web.json_response({"error": "audio load failed — check ffmpeg and filename"}, status=500)
+
+    return web.json_response({
+        "cache_path":  cache_path,
+        "fingerprint": fp,
+        "from_cache":  False,
+        **(metrics or {}),
+    })
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Scene Cast nodes  (Reference Bundle & Scene Cast system)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -14340,6 +14446,7 @@ def _resolve_cast_media(
                     "audio_duration":   entry_audio_dur,
                     "audio_retention":  audio.get("retention", "timbre"),
                     "audio_role":       audio.get("role", ""),
+                    "audio_cache":      audio.get("audio_cache", ""),
                 })
         else:
             image_files.extend(visual.get("files", []))
@@ -15188,15 +15295,23 @@ class CompositionToH3Conditioning(io.ComfyNode):
                     ref_videos[f"ref_video_{n}"] = frames
 
             elif modality == "soundtrack_audio":
-                audio = _h3_load_audio(path, ref.get("start_time", 0.0),
-                                       ref.get("duration", 0.0))
+                _cache = ref.get("audio_cache", "")
+                if _cache and os.path.isfile(_cache):
+                    audio = _h3_load_audio(_cache, 0.0, 0.0)
+                else:
+                    audio = _h3_load_audio(path, ref.get("start_time", 0.0),
+                                           ref.get("duration", 0.0))
                 if audio is not None:
                     n = ref["video_ordinal"] - 1
                     ref_video_audios[f"ref_video_audio_{n}"] = audio
 
             elif modality == "audio":
-                audio = _h3_load_audio(path, ref.get("start_time", 0.0),
-                                       ref.get("duration", 0.0))
+                _cache = ref.get("audio_cache", "")
+                if _cache and os.path.isfile(_cache):
+                    audio = _h3_load_audio(_cache, 0.0, 0.0)
+                else:
+                    audio = _h3_load_audio(path, ref.get("start_time", 0.0),
+                                           ref.get("duration", 0.0))
                 if audio is None:
                     continue
 
