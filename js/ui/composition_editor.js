@@ -19,7 +19,9 @@ import { libberAPI } from "../api/libber.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-const SAVED_PAGE_SIZE = 10;
+const SAVED_PAGE_SIZE   = 10;
+const SUBJECT_PAGE_SIZE = 10;
+const BG_PAGE_SIZE      = 10;
 
 const MODEL_TYPES = [
     { id: "h3_ref2va", label: "MiniMax H3 Ref2VA" },
@@ -51,6 +53,8 @@ const _S = {
     savedComps:     [],
     savedPage:      0,
     savedQuery:     "",
+    subjectPage:    0,
+    bgPage:         0,
     dirty:          false,
     shotSeq:        0,
     // Libber state
@@ -540,11 +544,12 @@ function _populateSavedList() {
 }
 
 function _populateSubjectList() {
-    const list = _dom.subjectList;
+    const list       = _dom.subjectList;
+    const pagination = _dom.subjectPagination;
     if (!list) return;
     list.innerHTML = "";
 
-    // "New Subject" quick-add button
+    // "New Subject" quick-add button — always shown, not paginated
     list.appendChild(_mk("div", {
         cls: "fbt-ce-sb-item fbt-ce-sb-new",
         textContent: "+ New Subject…",
@@ -553,10 +558,22 @@ function _populateSubjectList() {
 
     if (!_S.subjects.length) {
         list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No subjects defined" }));
+        if (pagination) pagination.innerHTML = "";
         return;
     }
-    _S.subjects.forEach(s => {
-        const item = _mk("div", { cls: "fbt-ce-sb-item fbt-ce-clickable" });
+
+    const assignedIds = new Set(Object.values(_S.composition?.subjects || {}));
+    const total       = _S.subjects.length;
+    const totalPages  = Math.max(1, Math.ceil(total / SUBJECT_PAGE_SIZE));
+    _S.subjectPage    = Math.max(0, Math.min(_S.subjectPage, totalPages - 1));
+    const start       = _S.subjectPage * SUBJECT_PAGE_SIZE;
+    const pageItems   = _S.subjects.slice(start, start + SUBJECT_PAGE_SIZE);
+
+    pageItems.forEach(s => {
+        const isActive = assignedIds.has(s.id);
+        const item = _mk("div", {
+            cls: "fbt-ce-sb-item fbt-ce-clickable" + (isActive ? " fbt-ce-sb-item-active" : ""),
+        });
         const nameEl = _mk("span", { cls: "fbt-ce-sb-name", textContent: s.name || s.id });
         const hint   = _mk("span", {
             cls: "fbt-ce-sb-hint",
@@ -569,6 +586,29 @@ function _populateSubjectList() {
         item.addEventListener("click", () => _assignNextSlot(s.id));
         list.appendChild(item);
     });
+
+    if (pagination) {
+        pagination.innerHTML = "";
+        if (totalPages > 1) {
+            const prevBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn", textContent: "‹", title: "Previous page",
+                onclick: () => { _S.subjectPage--; _populateSubjectList(); },
+            });
+            prevBtn.disabled = _S.subjectPage === 0;
+            const info = _mk("span", {
+                cls: "fbt-ce-pg-info",
+                textContent: `${_S.subjectPage + 1} / ${totalPages}`,
+            });
+            const nextBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn", textContent: "›", title: "Next page",
+                onclick: () => { _S.subjectPage++; _populateSubjectList(); },
+            });
+            nextBtn.disabled = _S.subjectPage >= totalPages - 1;
+            pagination.appendChild(prevBtn);
+            pagination.appendChild(info);
+            pagination.appendChild(nextBtn);
+        }
+    }
 }
 
 function _showNewSubjectForm() {
@@ -637,11 +677,12 @@ async function _refreshBgDropdown(selectId) {
 }
 
 function _populateBgList() {
-    const list = _dom.bgList;
+    const list       = _dom.bgList;
+    const pagination = _dom.bgPagination;
     if (!list) return;
     list.innerHTML = "";
 
-    // "New Background" quick-add button
+    // "New Background" quick-add button — always shown, not paginated
     list.appendChild(_mk("div", {
         cls: "fbt-ce-sb-item fbt-ce-sb-new",
         textContent: "+ New Background…",
@@ -650,13 +691,23 @@ function _populateBgList() {
 
     if (!_S.backgrounds.length) {
         list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No backgrounds defined" }));
+        if (pagination) pagination.innerHTML = "";
         return;
     }
-    _S.backgrounds.forEach(b => {
+
+    const activeBgId = _S.composition?.background || "";
+    const total      = _S.backgrounds.length;
+    const totalPages = Math.max(1, Math.ceil(total / BG_PAGE_SIZE));
+    _S.bgPage        = Math.max(0, Math.min(_S.bgPage, totalPages - 1));
+    const start      = _S.bgPage * BG_PAGE_SIZE;
+    const pageItems  = _S.backgrounds.slice(start, start + BG_PAGE_SIZE);
+
+    pageItems.forEach(b => {
+        const isActive = b.id === activeBgId;
         const row = _mk("div", { cls: "fbt-ce-sb-item-row" });
 
         const nameEl = _mk("div", {
-            cls: "fbt-ce-sb-item fbt-ce-clickable fbt-ce-sb-item-flex",
+            cls: "fbt-ce-sb-item fbt-ce-clickable fbt-ce-sb-item-flex" + (isActive ? " fbt-ce-sb-item-active" : ""),
             title: b.description || "",
             onclick: () => _assignBg(b.id),
         });
@@ -673,6 +724,29 @@ function _populateBgList() {
         row.appendChild(editBtn);
         list.appendChild(row);
     });
+
+    if (pagination) {
+        pagination.innerHTML = "";
+        if (totalPages > 1) {
+            const prevBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn", textContent: "‹", title: "Previous page",
+                onclick: () => { _S.bgPage--; _populateBgList(); },
+            });
+            prevBtn.disabled = _S.bgPage === 0;
+            const info = _mk("span", {
+                cls: "fbt-ce-pg-info",
+                textContent: `${_S.bgPage + 1} / ${totalPages}`,
+            });
+            const nextBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn", textContent: "›", title: "Next page",
+                onclick: () => { _S.bgPage++; _populateBgList(); },
+            });
+            nextBtn.disabled = _S.bgPage >= totalPages - 1;
+            pagination.appendChild(prevBtn);
+            pagination.appendChild(info);
+            pagination.appendChild(nextBtn);
+        }
+    }
 }
 
 function _showBgForm(existing) {
@@ -1422,11 +1496,21 @@ function _buildSavedSection(parent) {
 function _buildSidebar(parent) {
     const sidebar = _mk("div", { cls: "fbt-ce-sidebar" });
 
-    _dom.subjectList = _mk("div", { cls: "fbt-ce-sb-list" });
-    _dom.bgList      = _mk("div", { cls: "fbt-ce-sb-list" });
+    _dom.subjectList       = _mk("div", { cls: "fbt-ce-sb-list" });
+    _dom.subjectPagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
+    const subjectBody = _mk("div", { cls: "fbt-ce-sb-body" });
+    subjectBody.appendChild(_dom.subjectList);
+    subjectBody.appendChild(_dom.subjectPagination);
+
+    _dom.bgList       = _mk("div", { cls: "fbt-ce-sb-list" });
+    _dom.bgPagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
+    const bgBody = _mk("div", { cls: "fbt-ce-sb-body" });
+    bgBody.appendChild(_dom.bgList);
+    bgBody.appendChild(_dom.bgPagination);
+
     _buildSavedSection(sidebar);
-    sidebar.appendChild(_buildSidebarSection("Subjects (click to assign)", _dom.subjectList));
-    sidebar.appendChild(_buildSidebarSection("Backgrounds (click to assign)", _dom.bgList));
+    sidebar.appendChild(_buildSidebarSection("Subjects (click to assign)", subjectBody));
+    sidebar.appendChild(_buildSidebarSection("Backgrounds (click to assign)", bgBody));
     _buildPresetSection(sidebar, "camera");
     _buildPresetSection(sidebar, "sound");
     _buildOutfitsSection(sidebar);

@@ -1361,6 +1361,18 @@ textarea.prompt-value-input {
     color: var(--p-surface-300, #aaa);
 }
 
+.fbt-be-card-clickable {
+    cursor: pointer;
+}
+
+.fbt-be-card-clickable:hover {
+    background: var(--comfy-input-bg, #2a2a2a);
+}
+
+.fbt-be-card-active {
+    border-bottom: 3px solid #4ade80;
+}
+
 .fbt-be-card-actions {
     display: flex;
     gap: 2px;
