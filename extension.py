@@ -13289,6 +13289,141 @@ async def _media_list(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@routes.post("/fbtools/bundles/preview_sampled")
+async def _bundles_preview_sampled(request):
+    """Extract sampled video frames and encode as a fragmented MP4 for browser preview.
+
+    Body JSON: {filename, start_time, duration, force_rate, select_every_nth}
+    Response: video/mp4 (fragmented) or {"error": "ffmpeg_unavailable"} 503.
+    Applies the same time-accumulator resampling as CompositionToH3Conditioning so the
+    user sees exactly the frames the model will receive.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    filename = (data.get("filename") or "").strip()
+    if not filename:
+        return web.json_response({"error": "filename required"}, status=400)
+
+    input_dir = get_input_directory()
+    path = os.path.realpath(os.path.join(input_dir, filename))
+    if not path.startswith(os.path.realpath(input_dir)):
+        return web.json_response({"error": "Forbidden"}, status=403)
+    if not os.path.isfile(path):
+        return web.json_response({"error": f"Not found: {filename}"}, status=404)
+
+    start_time       = float(data.get("start_time",        0.0))
+    duration         = float(data.get("duration",          0.0))
+    force_rate       = int(data.get("force_rate",          0))
+    select_every_nth = max(1, int(data.get("select_every_nth", 1)))
+
+    try:
+        import cv2  # noqa: F401
+    except ImportError:
+        return web.json_response({"error": "ffmpeg_unavailable"}, status=503)
+
+    import shutil as _shutil
+    if not _shutil.which("ffmpeg"):
+        return web.json_response({"error": "ffmpeg_unavailable"}, status=503)
+
+    def _extract_and_encode():
+        import cv2
+        import subprocess
+
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return None
+
+        native_fps        = cap.get(cv2.CAP_PROP_FPS) or 24.0
+        target_fps        = float(force_rate) if force_rate > 0 else native_fps
+        width             = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height            = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        base_frame_time   = 1.0 / native_fps
+        target_frame_time = 1.0 / target_fps
+
+        if start_time > 0.0:
+            cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000.0)
+
+        # Cap at 120 output frames to keep the preview response small
+        PREVIEW_CAP = 120
+        frame_cap = PREVIEW_CAP
+        if duration > 0.0:
+            output_approx = max(1, int(duration * target_fps / select_every_nth))
+            frame_cap = min(frame_cap, output_approx)
+
+        frames_raw: list = []
+        time_offset = target_frame_time   # mirrors VHS cv_frame_generator init
+        evaluated   = -1
+        sampled     = 0
+
+        ret, current_bgr = cap.read()
+        if not ret:
+            cap.release()
+            return None
+
+        while cap.isOpened():
+            if time_offset < target_frame_time:
+                ret, bgr = cap.read()
+                if not ret:
+                    break
+                current_bgr = bgr
+                time_offset += base_frame_time
+            if time_offset < target_frame_time:
+                continue
+            time_offset -= target_frame_time
+            evaluated += 1
+            if evaluated % select_every_nth != 0:
+                continue
+            frames_raw.append(current_bgr.tobytes())
+            sampled += 1
+            if sampled >= frame_cap:
+                break
+
+        cap.release()
+        if not frames_raw:
+            return None
+
+        effective_fps = target_fps / select_every_nth
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "rawvideo", "-vcodec", "rawvideo",
+            "-s", f"{width}x{height}",
+            "-pix_fmt", "bgr24",
+            "-r", str(effective_fps),
+            "-i", "pipe:0",
+            "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast",
+            "-movflags", "frag_keyframe+empty_moov+faststart",
+            "-f", "mp4", "pipe:1",
+        ]
+        proc = subprocess.run(
+            cmd,
+            input=b"".join(frames_raw),
+            capture_output=True,
+            timeout=60,
+        )
+        if proc.returncode != 0:
+            logger.warning(
+                "preview_sampled: ffmpeg error: %s",
+                proc.stderr.decode(errors="replace")[:500],
+            )
+            return None
+        return proc.stdout
+
+    loop = asyncio.get_event_loop()
+    mp4_bytes = await loop.run_in_executor(None, _extract_and_encode)
+
+    if mp4_bytes is None:
+        return web.json_response({"error": "extraction failed"}, status=500)
+
+    return web.Response(
+        body=mp4_bytes,
+        content_type="video/mp4",
+        headers={"Content-Disposition": "inline"},
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Scene Cast nodes  (Reference Bundle & Scene Cast system)
 # ══════════════════════════════════════════════════════════════════════════════
