@@ -1186,8 +1186,8 @@ function _buildAudioProcessingSection(wrap, b) {
                 const result = await bundlesApi.preprocessAudio({
                     bundle_id:   b.id || "default",
                     filename,
-                    start_time:  ["file", "extract_from_video"].includes(src) ? (b.audio.start_time || 0) : 0,
-                    duration:    ["file", "extract_from_video"].includes(src) ? (b.audio.duration   || 0) : 0,
+                    start_time:  b.audio.start_time || 0,
+                    duration:    b.audio.duration   || 0,
                     audio_processing: {
                         noise_removal:  !!proc.noise_removal,
                         normalize_lufs: proc.normalize_lufs !== false,
