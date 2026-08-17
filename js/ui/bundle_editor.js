@@ -338,12 +338,16 @@ function _renderForm() {
         }
     );
 
+    // _llmEl is set below after the analyzer is built; the closure captures it by reference
+    // so _rebuildVisualPicker can pass the refresh callback even though _llmEl is null now.
+    let _llmEl = null;
+
     const _rebuildVisualPicker = () => {
         visualPickerWrap.innerHTML = "";
         if (b.visual.type === "video") {
             _buildVideoPicker(visualPickerWrap, b);
         } else {
-            _buildImageList(visualPickerWrap, b);
+            _buildImageList(visualPickerWrap, b, () => _llmEl?._refreshPool?.());
         }
     };
     _rebuildVisualPicker();
@@ -435,7 +439,10 @@ function _renderForm() {
     form.appendChild(_formRow("ID",     idEl));
     form.appendChild(_formRow("Subject", subjectEl));
     form.appendChild(_formRow("Appear.", appearEl));
-    if (_S.llmVision) form.appendChild(_buildAppearanceAnalyzer(b, appearEl));
+    if (_S.llmVision) {
+        _llmEl = _buildAppearanceAnalyzer(b, appearEl);
+        form.appendChild(_llmEl);
+    }
     form.appendChild(visualSec);
     form.appendChild(audioSec);
     form.appendChild(_formRow("Tags",   tagsEl));
@@ -763,7 +770,7 @@ function _buildVideoPicker(wrap, b) {
     _buildFrameParamSection(wrap, b.visual);
 }
 
-function _buildImageList(wrap, b) {
+function _buildImageList(wrap, b, onFilesChange = null) {
     if (!_S.mediaImages.length) {
         wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No image files in input directory" }));
         return;
@@ -820,6 +827,7 @@ function _buildImageList(wrap, b) {
                         b.visual.files.splice(i, 1);
                         rebuildList();
                         rebuildAddSel();
+                        onFilesChange?.();
                     },
                 }));
                 row.appendChild(btns);
@@ -854,6 +862,7 @@ function _buildImageList(wrap, b) {
             rebuildList();
             rebuildAddSel();
             _showPreview(f);
+            onFilesChange?.();
         }
         addSel.value = "";
     });
@@ -1009,29 +1018,42 @@ function _buildAppearanceAnalyzer(b, appearEl) {
         ]));
 
     } else {
-        // Image mode: dropdown of bundle images or full media pool
-        const imagePool = b.visual.files?.length ? b.visual.files : _S.mediaImages;
+        // Image mode: dropdown rebuilt dynamically from bundle's file list (falls back to full media pool)
         const imgSel = document.createElement("select");
         imgSel.className = "fbt-ce-select fbt-be-llm-img-sel";
-        const blankOpt = document.createElement("option");
-        blankOpt.value = "";
-        blankOpt.textContent = "— select image —";
-        imgSel.appendChild(blankOpt);
-        imagePool.forEach(f => {
-            const o = document.createElement("option");
-            o.value = f; o.textContent = f;
-            imgSel.appendChild(o);
-        });
-        if (!imagePool.length) { imgSel.disabled = true; imgSel.title = "No images available"; }
-        imgSel.addEventListener("change", () => {
-            const f = imgSel.value;
+
+        const _setPreview = f => {
             previewImg.src = f ? `/view?filename=${encodeURIComponent(f)}&type=input&subfolder=` : "";
             previewImg.style.display = f ? "" : "none";
-        });
+        };
 
+        const rebuildPool = () => {
+            const pool = b.visual.files?.length ? b.visual.files : _S.mediaImages;
+            const prev = imgSel.value;
+            imgSel.innerHTML = "";
+            const blank = document.createElement("option");
+            blank.value = "";
+            blank.textContent = pool.length ? "— select image —" : "No images available";
+            imgSel.appendChild(blank);
+            pool.forEach(f => {
+                const o = document.createElement("option");
+                o.value = f; o.textContent = f;
+                imgSel.appendChild(o);
+            });
+            imgSel.disabled = !pool.length;
+            // Restore previous selection or auto-select when there's exactly one option
+            if (pool.includes(prev)) imgSel.value = prev;
+            else if (pool.length === 1) imgSel.value = pool[0];
+            _setPreview(imgSel.value);
+        };
+
+        imgSel.addEventListener("change", () => _setPreview(imgSel.value));
         getSourceImage = () => imgSel.value || null;
 
+        rebuildPool();
         sec.appendChild(_mk("div", { cls: "fbt-be-llm-top-row" }, [imgSel]));
+        // Expose for external refresh (called when bundle images change)
+        sec._refreshPool = rebuildPool;
     }
 
     sec.appendChild(previewImg);
