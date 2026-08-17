@@ -13620,6 +13620,25 @@ async def _bundles_preprocess_audio(request):
     })
 
 
+@routes.get("/fbtools/bundles/audio_cache/stream")
+async def _bundles_audio_cache_stream(request):
+    """Stream a processed audio cache file.
+
+    ?path=<absolute_path>  — must be inside user_data_dir()/bundles_cache/.
+    Supports HTTP Range requests so browsers can seek.
+    """
+    path = request.rel_url.query.get("path", "").strip()
+    if not path:
+        return web.Response(status=400, text="path required")
+    allowed_root = os.path.realpath(os.path.join(user_data_dir(), "bundles_cache"))
+    real_path = os.path.realpath(path)
+    if not real_path.startswith(allowed_root + os.sep):
+        return web.Response(status=403, text="Forbidden")
+    if not os.path.isfile(real_path):
+        return web.Response(status=404, text="Not found")
+    return web.FileResponse(real_path)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Scene Cast nodes  (Reference Bundle & Scene Cast system)
 # ══════════════════════════════════════════════════════════════════════════════

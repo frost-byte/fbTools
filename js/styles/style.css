@@ -1623,6 +1623,9 @@ textarea.prompt-value-input {
 }
 .fbt-be-proc-ok  { color: var(--comfy-menu-bg-secondary, #4a4); }
 .fbt-be-proc-err { color: #c66; }
+.fbt-be-proc-preview {
+    margin-top: 6px;
+}
 .fbt-be-proc-btn {
     margin-top: 4px;
     width: 100%;

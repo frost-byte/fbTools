@@ -1125,21 +1125,44 @@ function _buildAudioProcessingSection(wrap, b) {
     _syncLufsVisibility();
     sec.appendChild(lufsRow);
 
-    // Cache status
-    const statusEl = _mk("div", { cls: "fbt-be-proc-status" });
-    _updateStatus = () => {
+    // Cache status + preview player
+    const statusEl  = _mk("div", { cls: "fbt-be-proc-status" });
+    const previewEl = document.createElement("audio");
+    previewEl.className = "fbt-be-audio-preview fbt-be-proc-preview";
+    previewEl.controls  = true;
+    previewEl.preload   = "none";
+    previewEl.style.display = "none";
+
+    _updateStatus = (overrideText) => {
         const cache = b.audio.audio_cache;
-        if (cache) {
-            const base = (cache.split("/").pop() || cache.split("\\").pop() || cache);
+        if (overrideText !== undefined) {
+            statusEl.textContent = overrideText;
+            statusEl.className   = "fbt-be-proc-status fbt-be-proc-ok";
+        } else if (cache) {
+            const base = cache.split(/[/\\]/).pop() || cache;
             statusEl.textContent = `✓ Cached · ${base}`;
             statusEl.className   = "fbt-be-proc-status fbt-be-proc-ok";
         } else {
             statusEl.textContent = "Not processed";
             statusEl.className   = "fbt-be-proc-status";
         }
+        if (cache) {
+            const url = `/fbtools/bundles/audio_cache/stream?path=${encodeURIComponent(cache)}`;
+            if (previewEl.dataset.cachePath !== cache) {
+                previewEl.src = url;
+                previewEl.load();
+                previewEl.dataset.cachePath = cache;
+            }
+            previewEl.style.display = "";
+        } else {
+            previewEl.src = "";
+            previewEl.style.display = "none";
+            delete previewEl.dataset.cachePath;
+        }
     };
     _updateStatus();
     sec.appendChild(statusEl);
+    sec.appendChild(previewEl);
 
     sec.appendChild(_mk("button", {
         cls: "fbt-ce-btn fbt-be-proc-btn",
@@ -1174,12 +1197,13 @@ function _buildAudioProcessingSection(wrap, b) {
                 b.audio.audio_cache = result.cache_path;
                 const durStr  = result.duration  != null ? `${result.duration}s`    : "";
                 const lufsStr = result.lufs_after != null ? ` · ${result.lufs_after} LUFS` : "";
-                statusEl.textContent = `✓ ${result.from_cache ? "Cached" : "Processed"} · ${durStr}${lufsStr}`;
-                statusEl.className   = "fbt-be-proc-status fbt-be-proc-ok";
+                const label   = result.from_cache ? "Cached" : "Processed";
+                _updateStatus(`✓ ${label} · ${durStr}${lufsStr}`);
                 _toast("Audio processed — click Save to persist the cache reference", "success");
             } catch (err) {
                 statusEl.textContent = "Failed: " + err.message;
                 statusEl.className   = "fbt-be-proc-status fbt-be-proc-err";
+                previewEl.style.display = "none";
                 _toast("Processing failed: " + err.message, "error");
             } finally {
                 btn.disabled    = false;
