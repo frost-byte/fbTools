@@ -58,7 +58,10 @@ def test_define_preserves_character_sheet_images():
         }
     })
     new_reg = reg.define("char_c", name="Carol Updated", appearance_summary="updated summary")
-    assert new_reg.subjects["char_c"]["character_sheet_images"] == ["carol1.png", "carol2.png"]
+    # Legacy plain strings are normalized to {file, role} dicts on define
+    sheets = new_reg.subjects["char_c"]["character_sheet_images"]
+    assert [s["file"] for s in sheets] == ["carol1.png", "carol2.png"]
+    assert all(s["role"] == "character sheet" for s in sheets)
 
 
 def test_define_defaults_name_to_subject_id():

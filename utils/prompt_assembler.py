@@ -266,12 +266,22 @@ def _build_ref_map(
             continue
         appearance = subject.get("appearance", {})
         voice = subject.get("voice", {})
-        sheets = subject.get("character_sheet_images", [])
+        raw_sheets = subject.get("character_sheet_images", [])
+        # Normalize to {file, role} dicts (supports legacy plain strings)
+        sheets: list[dict] = [
+            e if isinstance(e, dict) else {"file": e, "role": "character sheet"}
+            for e in raw_sheets if e
+        ]
         audio_file = voice.get("audio_reference_file", "")
         outfit = outfit_overrides.get(slot_id) or appearance.get("default_outfit", "")
         subject_id = subject.get("subject_id", "")
 
         picture_nums = list(range(picture_counter, picture_counter + len(sheets)))
+        # Per-image entries carry (picture_num, file, role) for role-line emission
+        character_sheet_entries = [
+            {"picture_num": picture_counter + i, "file": s["file"], "role": s.get("role", "character sheet")}
+            for i, s in enumerate(sheets)
+        ]
         picture_counter += len(sheets)
 
         ve = video_lookup.get(subject_id) if subject_id else None
@@ -322,7 +332,8 @@ def _build_ref_map(
             "audio_retention": voice.get("audio_retention", "timbre"),
             "audio_role": voice.get("audio_role", ""),
             "language": voice.get("language", "en-us") or "en-us",
-            "character_sheet_images": list(sheets),
+            "character_sheet_images": [s["file"] for s in sheets],
+            "character_sheet_entries": character_sheet_entries,
             "concept_id": subject.get("concept_id", ""),
             "subject_num": subject_counter,
             "speaker_id": f"S{subject_counter}",
@@ -523,6 +534,19 @@ def _replace_named(text: str, ref_map: dict) -> str:
 
 # ── H3 Ref2VA ─────────────────────────────────────────────────────────────────
 
+# Human-readable descriptions for each character sheet role used in <Picture N> lines.
+# All descriptions end with "do not use as scene composition" so H3 treats them as
+# appearance-only references rather than spatial layout anchors.
+_SHEET_ROLE_H3: dict[str, str] = {
+    "character sheet":  "a character reference sheet (appearance reference; do not use as scene composition)",
+    "portrait":         "a frontal portrait (facial likeness reference only; do not use as scene composition)",
+    "side profile":     "a side-profile view (silhouette and facial structure reference; do not use as scene composition)",
+    "full body":        "a full-body reference (costume and proportion reference; do not use as scene composition)",
+    "costume detail":   "a costume detail reference (texture and accessory reference; do not use as scene composition)",
+    "reference":        "an appearance reference image (do not use as scene composition)",
+}
+
+
 def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     template = scene_instance.get("template", {})
     dialogue_map = scene_instance.get("dialogue", {})
@@ -631,6 +655,19 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                         f"containing {voice_desc}, without copying the original signal")
             audio_sd_lines.append(f"<Audio {aud_num}> is {desc}.")
 
+    # Picture role lines — tell H3 each <Picture N> is an appearance reference,
+    # not a scene composition template (prevents spatial bleed from portrait framing).
+    picture_sd_lines: list[str] = []
+    for slot_id in ordered_slots:
+        info = ref_map[slot_id]
+        label = info["subject_label"]
+        for entry in info.get("character_sheet_entries", []):
+            pnum = entry["picture_num"]
+            role = entry.get("role") or "character sheet"
+            desc = _SHEET_ROLE_H3.get(role, f"{role} (appearance reference; do not use as scene composition)")
+            picture_sd_lines.append(f"<Picture {pnum}> is {desc} for {label}.")
+
+    sd.extend(picture_sd_lines)
     sd.extend(video_sd_lines)
     sd.extend(audio_sd_lines)
     sections.append("subject_definitions:\n" + "\n".join(sd))

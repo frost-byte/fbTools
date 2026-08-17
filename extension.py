@@ -11578,9 +11578,10 @@ def _audio_get_list() -> list[str]:
         return ["None"]
 
 
-def _load_subject_images(filenames: list[str]) -> "torch.Tensor | None":
+def _load_subject_images(filenames: "list[str | dict]") -> "torch.Tensor | None":
     """Load character sheet images from the ComfyUI input directory.
 
+    Accepts both legacy list[str] and new list[{file, role}] formats.
     Returns a [N, H, W, 3] float32 tensor (batch), or None if no images load.
     Images that fail to load are silently skipped.
     Images with different sizes are resized to match the first loaded image.
@@ -11588,7 +11589,8 @@ def _load_subject_images(filenames: list[str]) -> "torch.Tensor | None":
     tensors: list = []
     target_h = target_w = None
     input_dir = get_input_directory()
-    for fname in filenames:
+    for entry in filenames:
+        fname = entry["file"] if isinstance(entry, dict) else entry
         if not fname:
             continue
         path = os.path.join(input_dir, fname)

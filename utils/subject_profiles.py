@@ -12,12 +12,39 @@ import shutil
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
+# Valid role labels for character_sheet_images entries.
+# Free-form strings are also accepted; these are the canonical values.
+SHEET_ROLES: list[str] = [
+    "character sheet",
+    "portrait",
+    "side profile",
+    "full body",
+    "costume detail",
+    "reference",
+]
+
 SUPPORTED_LANGUAGES = [
     "en-us", "en-gb", "ja", "ko", "zh", "zh-tw",
     "es", "fr", "de", "it", "pt", "ru", "ar", "hi",
 ]
 
 _EMPTY_DATA: dict = {"version": 1, "subjects": {}}
+
+
+def _normalize_sheet_entry(entry: str | dict) -> dict:
+    """Coerce a character_sheet_images entry to {file, role} form.
+
+    Accepts either a bare filename string (legacy) or a dict.
+    Falls back to role "character sheet" for any entry that lacks one.
+    """
+    if isinstance(entry, str):
+        return {"file": entry, "role": "character sheet"}
+    return {"file": str(entry.get("file", "")), "role": str(entry.get("role", "character sheet")) or "character sheet"}
+
+
+def normalize_sheet_images(entries: list) -> list[dict]:
+    """Normalize a character_sheet_images list to list[{file, role}]."""
+    return [_normalize_sheet_entry(e) for e in (entries or []) if e]
 
 
 # ── SubjectRegistry ────────────────────────────────────────────────────────────
@@ -39,8 +66,14 @@ class SubjectRegistry:
 
     @classmethod
     def from_dict(cls, data: dict, file_path: str | None = None) -> "SubjectRegistry":
+        subjects = copy.deepcopy(data.get("subjects", {}))
+        for subj in subjects.values():
+            if "character_sheet_images" in subj:
+                subj["character_sheet_images"] = normalize_sheet_images(
+                    subj["character_sheet_images"]
+                )
         return cls(
-            subjects=copy.deepcopy(data.get("subjects", {})),
+            subjects=subjects,
             file_path=file_path,
             version=data.get("version", 1),
         )
@@ -85,8 +118,10 @@ class SubjectRegistry:
                 "audio_reference_file": audio_reference_file,
                 "language": language or "en-us",
             },
-            # Preserve existing character_sheet_images list; don't wipe on re-define
-            "character_sheet_images": existing.get("character_sheet_images", []),
+            # Preserve existing character_sheet_images; normalize to {file, role} dicts
+            "character_sheet_images": normalize_sheet_images(
+                existing.get("character_sheet_images", [])
+            ),
             "concept_id": concept_id,
         }
         return new_reg
