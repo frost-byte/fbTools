@@ -13198,6 +13198,61 @@ async def _media_delete_tmp_frame(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@routes.get("/fbtools/media/info")
+async def _media_info(request):
+    """Return metadata for a video or audio file in the ComfyUI input directory.
+
+    ?filename=<name>
+    Response: {duration, fps, frame_count, width, height}
+    """
+    filename = request.rel_url.query.get("filename", "").strip()
+    if not filename:
+        return web.json_response({"error": "filename required"}, status=400)
+    input_dir = get_input_directory()
+    path = os.path.realpath(os.path.join(input_dir, filename))
+    if not path.startswith(os.path.realpath(input_dir)):
+        return web.json_response({"error": "Forbidden"}, status=403)
+    if not os.path.isfile(path):
+        return web.json_response({"error": f"Not found: {filename}"}, status=404)
+
+    def _get_info():
+        import cv2
+        cap = cv2.VideoCapture(path)
+        try:
+            fps         = cap.get(cv2.CAP_PROP_FPS) or 0.0
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            width       = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height      = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            duration    = (frame_count / fps) if fps > 0 else 0.0
+            return {"duration": round(duration, 4), "fps": round(fps, 4),
+                    "frame_count": frame_count, "width": width, "height": height}
+        finally:
+            cap.release()
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _get_info)
+    return web.json_response(result)
+
+
+@routes.get("/fbtools/media/stream")
+async def _media_stream(request):
+    """Stream a media file from the ComfyUI input directory.
+
+    ?filename=<name>
+    Supports HTTP Range requests so browsers can seek into video/audio.
+    """
+    filename = request.rel_url.query.get("filename", "").strip()
+    if not filename:
+        return web.Response(status=400, text="filename required")
+    input_dir = get_input_directory()
+    path = os.path.realpath(os.path.join(input_dir, filename))
+    if not path.startswith(os.path.realpath(input_dir)):
+        return web.Response(status=403, text="Forbidden")
+    if not os.path.isfile(path):
+        return web.Response(status=404, text="Not found")
+    return web.FileResponse(path)
+
+
 @routes.get("/fbtools/media/list")
 async def _media_list(request):
     """Return filenames from the ComfyUI input directory filtered by ?type=.
