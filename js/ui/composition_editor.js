@@ -444,7 +444,13 @@ async function _loadResources() {
         _S.llmVision     = st?.supports_vision ?? false;
         if (settingsRes.value) {
             _S.settings = settingsRes.value;
-            if (_dom.delimInput) _dom.delimInput.value = _S.settings.libber_delimiter ?? "%";
+            const st = _S.settings;
+            if (_dom.delimInput)              _dom.delimInput.value            = st.libber_delimiter           ?? "%";
+            if (_dom.settingsPaceSel)         _dom.settingsPaceSel.value       = st.default_speech_pace        ?? "normal";
+            if (_dom.settingsNoiseRemovalCb)  _dom.settingsNoiseRemovalCb.checked  = !!st.default_audio_noise_removal;
+            if (_dom.settingsNormalizeLufsCb) _dom.settingsNormalizeLufsCb.checked = st.default_audio_normalize_lufs !== false;
+            if (_dom.settingsTargetLufsInp)   _dom.settingsTargetLufsInp.value = st.default_audio_target_lufs  ?? -14.0;
+            if (_dom.settingsMelbandInp)      _dom.settingsMelbandInp.value    = st.melband_model_path         ?? "";
         }
         _S.libbers    = libbersRes.value?.files    ?? [];
         _S.lorasList  = lorasRes.value?.loras     ?? [];
@@ -1430,26 +1436,121 @@ function _buildLlmSection(parent) {
 
 function _buildSettingsSection(parent) {
     const body = _mk("div", { cls: "fbt-ce-sb-body" });
+    const s    = _S.settings ?? {};
 
-    const row = _mk("div", { cls: "fbt-ce-settings-row" });
-    row.appendChild(_mk("span", { cls: "fbt-ce-settings-label", textContent: "Libber delimiter" }));
+    const _saveSettings = async () => {
+        try { await compositionsApi.saveSettings(_S.settings); } catch (_) {}
+    };
 
+    // ── Libber delimiter ─────────────────────────────────────────────────────
+    const delimRow = _mk("div", { cls: "fbt-ce-settings-row" });
+    delimRow.appendChild(_mk("span", { cls: "fbt-ce-settings-label", textContent: "Libber delimiter" }));
     _dom.delimInput = _mk("input", {
         cls: "fbt-ce-delimiter-input",
         type: "text",
         maxLength: 1,
-        value: _S.settings?.libber_delimiter ?? "%",
+        value: s.libber_delimiter ?? "%",
         title: "Single character used to wrap libber keys (e.g. %key%)",
     });
     _dom.delimInput.addEventListener("change", async () => {
         const d = _dom.delimInput.value;
         if (!d.length) { _dom.delimInput.value = _S.settings.libber_delimiter; return; }
         _S.settings.libber_delimiter = d;
-        try { await compositionsApi.saveSettings(_S.settings); } catch (_) {}
-        _rebuildLibbers(); // refresh key chips to show updated delimiter
+        await _saveSettings();
+        _rebuildLibbers();
     });
-    row.appendChild(_dom.delimInput);
-    body.appendChild(row);
+    delimRow.appendChild(_dom.delimInput);
+    body.appendChild(delimRow);
+
+    // ── Default speech pace ──────────────────────────────────────────────────
+    const paceRow = _mk("div", { cls: "fbt-ce-settings-row" });
+    paceRow.appendChild(_mk("span", {
+        cls: "fbt-ce-settings-label",
+        textContent: "Default speech pace",
+        title: "Pre-selected pace for new shots' dialogue. Affects how much voice audio is trimmed.",
+    }));
+    _dom.settingsPaceSel = document.createElement("select");
+    _dom.settingsPaceSel.className = "fbt-ce-select fbt-ce-settings-sel";
+    [
+        { id: "slow",   label: "Slow (~2 words/sec)" },
+        { id: "normal", label: "Normal (~2.5 words/sec)" },
+        { id: "fast",   label: "Fast (~3 words/sec)" },
+    ].forEach(({ id, label }) => {
+        const o = document.createElement("option");
+        o.value = id; o.textContent = label;
+        if (id === (s.default_speech_pace ?? "normal")) o.selected = true;
+        _dom.settingsPaceSel.appendChild(o);
+    });
+    _dom.settingsPaceSel.addEventListener("change", async () => {
+        _S.settings.default_speech_pace = _dom.settingsPaceSel.value;
+        await _saveSettings();
+    });
+    paceRow.appendChild(_dom.settingsPaceSel);
+    body.appendChild(paceRow);
+
+    // ── Default audio processing ─────────────────────────────────────────────
+    body.appendChild(_mk("div", { cls: "fbt-ce-settings-group-label", textContent: "Default audio processing" }));
+
+    const _cb = (label, domKey, settingsKey, hint) => {
+        const row = _mk("div", { cls: "fbt-ce-settings-row" });
+        row.appendChild(_mk("span", { cls: "fbt-ce-settings-label", textContent: label, title: hint || "" }));
+        const cb = _mk("input", { type: "checkbox" });
+        cb.checked = !!(s[settingsKey] ?? false);
+        cb.addEventListener("change", async () => {
+            _S.settings[settingsKey] = cb.checked;
+            await _saveSettings();
+        });
+        _dom[domKey] = cb;
+        row.appendChild(cb);
+        return row;
+    };
+
+    body.appendChild(_cb("Noise removal", "settingsNoiseRemovalCb", "default_audio_noise_removal",
+        "Spectral subtraction applied to new bundles by default"));
+    body.appendChild(_cb("LUFS normalize", "settingsNormalizeLufsCb", "default_audio_normalize_lufs",
+        "Normalize to target loudness for new bundles by default"));
+
+    const lufsRow = _mk("div", { cls: "fbt-ce-settings-row" });
+    lufsRow.appendChild(_mk("span", { cls: "fbt-ce-settings-label", textContent: "Target LUFS" }));
+    _dom.settingsTargetLufsInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "-36", max: "-6", step: "0.5",
+        value: s.default_audio_target_lufs ?? -14.0,
+        title: "Target integrated loudness in LUFS (−14 = streaming standard)",
+    });
+    _dom.settingsTargetLufsInp.addEventListener("change", async () => {
+        const v = parseFloat(_dom.settingsTargetLufsInp.value);
+        if (!isNaN(v)) {
+            _S.settings.default_audio_target_lufs = Math.max(-36, Math.min(-6, v));
+            _dom.settingsTargetLufsInp.value = _S.settings.default_audio_target_lufs;
+            await _saveSettings();
+        }
+    });
+    lufsRow.appendChild(_dom.settingsTargetLufsInp);
+    lufsRow.appendChild(_mk("span", { cls: "fbt-be-proc-unit", textContent: "LUFS" }));
+    body.appendChild(lufsRow);
+
+    // ── Melband model path ───────────────────────────────────────────────────
+    body.appendChild(_mk("div", { cls: "fbt-ce-settings-group-label", textContent: "Vocal isolation" }));
+    const mbRow = _mk("div", { cls: "fbt-ce-settings-row fbt-ce-settings-row--wide" });
+    mbRow.appendChild(_mk("span", {
+        cls: "fbt-ce-settings-label",
+        textContent: "MelBand model path",
+        title: "Path to MelBand Roformer model weights — used for vocal isolation (future feature)",
+    }));
+    _dom.settingsMelbandInp = _mk("input", {
+        cls: "fbt-ce-input",
+        type: "text",
+        placeholder: "models/melband/model.pth",
+        value: s.melband_model_path ?? "",
+        title: "Absolute path or ComfyUI-relative path to a MelBand Roformer .pth checkpoint",
+    });
+    _dom.settingsMelbandInp.addEventListener("change", async () => {
+        _S.settings.melband_model_path = _dom.settingsMelbandInp.value.trim();
+        await _saveSettings();
+    });
+    mbRow.appendChild(_dom.settingsMelbandInp);
+    body.appendChild(mbRow);
 
     parent.appendChild(_buildSidebarSection("⚙ Settings", body));
 }
@@ -1838,7 +1939,7 @@ function _buildShotCard(shot, index) {
 
     dlgCheck.addEventListener("change", () => {
         if (dlgCheck.checked) {
-            shot.dialogue = { speaker: _slotKeys()[0] || "S1", language: "English", text: "", speech_pace: "normal" };
+            shot.dialogue = { speaker: _slotKeys()[0] || "S1", language: "English", text: "", speech_pace: _S.settings?.default_speech_pace ?? "normal" };
             buildDlgFields(shot.dialogue);
             dlgFields.style.display = "";
         } else {

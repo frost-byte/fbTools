@@ -7,8 +7,9 @@
  * Registered as a ComfyUI sidebar tab via app.extensionManager.registerSidebarTab.
  */
 
-import { bundlesApi } from "../api/bundles.js";
-import { llmApi }     from "../api/llm.js";
+import { bundlesApi }    from "../api/bundles.js";
+import { llmApi }        from "../api/llm.js";
+import { compositionsApi } from "../api/compositions.js";
 
 const BUNDLE_PAGE_SIZE = 10;
 
@@ -20,6 +21,7 @@ const _S = {
     mediaImages:  [],   // filenames from /fbtools/media/list?type=image
     mediaVideos:  [],   // filenames from /fbtools/media/list?type=video
     mediaAudio:   [],   // filenames from /fbtools/media/list?type=audio
+    settings:     {},   // global composition settings (audio processing defaults, etc.)
     filterSubject: "",
     filterText:    "",
     listPage:      0,
@@ -88,13 +90,14 @@ function _filteredBundles() {
 // ── Data load ─────────────────────────────────────────────────────────────────
 
 async function _loadAll() {
-    const [bundles, subjects, imgs, vids, aud, llmSt] = await Promise.allSettled([
+    const [bundles, subjects, imgs, vids, aud, llmSt, settingsRes] = await Promise.allSettled([
         bundlesApi.listBundles(),
         bundlesApi.listSubjects(),
         bundlesApi.listMedia("image"),
         bundlesApi.listMedia("video"),
         bundlesApi.listMedia("audio"),
         llmApi.status(),
+        compositionsApi.getSettings(),
     ]);
     _S.bundles     = bundles.value?.bundles   ?? [];
     _S.subjects    = subjects.value?.subjects ?? [];
@@ -102,6 +105,7 @@ async function _loadAll() {
     _S.mediaVideos = vids.value?.files        ?? [];
     _S.mediaAudio  = aud.value?.files         ?? [];
     _S.llmVision   = llmSt.value?.supports_vision ?? false;
+    if (settingsRes.value) _S.settings = settingsRes.value;
 }
 
 // ── List view ─────────────────────────────────────────────────────────────────
@@ -242,7 +246,7 @@ function _startNew(subjectId = "") {
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
         visual:              { type: "images", file: "", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1 },
-        audio:               { source: "none", file: "", video_file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "", audio_processing: { noise_removal: false, normalize_lufs: true, target_lufs: -14.0 }, audio_cache: "" },
+        audio:               { source: "none", file: "", video_file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "", audio_processing: { noise_removal: !!(_S.settings.default_audio_noise_removal), normalize_lufs: _S.settings.default_audio_normalize_lufs !== false, target_lufs: _S.settings.default_audio_target_lufs ?? -14.0 }, audio_cache: "" },
         appearance_override: "",
         tags:                [],
     };

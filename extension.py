@@ -13922,8 +13922,18 @@ def _composition_settings_path() -> str:
     return os.path.join(user_data_dir(), "composition_settings.json")
 
 
+_COMPOSITION_SETTINGS_DEFAULTS: dict = {
+    "libber_delimiter":           "%",
+    "default_speech_pace":        "normal",
+    "default_audio_noise_removal":  False,
+    "default_audio_normalize_lufs": True,
+    "default_audio_target_lufs":   -14.0,
+    "melband_model_path":          "",
+}
+
+
 def _read_composition_settings() -> dict:
-    defaults: dict = {"libber_delimiter": "%"}
+    defaults = dict(_COMPOSITION_SETTINGS_DEFAULTS)
     path = _composition_settings_path()
     if not os.path.exists(path):
         return defaults
@@ -13953,10 +13963,30 @@ async def _compositions_settings_post(request):
     try:
         body = await request.json()
         settings = _read_composition_settings()
+
         if "libber_delimiter" in body:
             d = str(body["libber_delimiter"])
             if len(d) == 1:
                 settings["libber_delimiter"] = d
+
+        if "default_speech_pace" in body:
+            pace = str(body["default_speech_pace"])
+            if pace in ("slow", "normal", "fast"):
+                settings["default_speech_pace"] = pace
+
+        if "default_audio_noise_removal" in body:
+            settings["default_audio_noise_removal"] = bool(body["default_audio_noise_removal"])
+
+        if "default_audio_normalize_lufs" in body:
+            settings["default_audio_normalize_lufs"] = bool(body["default_audio_normalize_lufs"])
+
+        if "default_audio_target_lufs" in body:
+            v = float(body["default_audio_target_lufs"])
+            settings["default_audio_target_lufs"] = max(-36.0, min(-6.0, v))
+
+        if "melband_model_path" in body:
+            settings["melband_model_path"] = str(body["melband_model_path"]).strip()
+
         _write_composition_settings(settings)
         return web.json_response(settings)
     except Exception as exc:
