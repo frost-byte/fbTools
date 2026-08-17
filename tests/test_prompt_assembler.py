@@ -179,6 +179,56 @@ def test_no_sheets_no_picture_labels():
     assert "<Picture" not in result["prompt"]
 
 
+def test_picture_role_lines_emitted_for_default_role():
+    alice = _make_subject("Alice", sheets=["alice.png"])
+    scene = _make_scene(slot_A=alice)
+    result = assemble_prompt(scene, "h3_ref2va")
+    # A <Picture N> role line must appear so H3 knows not to use it as scene composition
+    assert "<Picture 1> is a character reference sheet" in result["prompt"]
+    assert "do not use as scene composition" in result["prompt"]
+
+
+def test_picture_role_lines_portrait_phrasing():
+    alice = _make_subject("Alice", sheets=[{"file": "alice_portrait.png", "role": "portrait"}])
+    scene = _make_scene(slot_A=alice)
+    result = assemble_prompt(scene, "h3_ref2va")
+    assert "<Picture 1> is a frontal portrait" in result["prompt"]
+    assert "facial likeness reference only" in result["prompt"]
+    assert "do not use as scene composition" in result["prompt"]
+
+
+def test_picture_role_lines_multiple_roles():
+    alice = _make_subject("Alice", sheets=[
+        {"file": "alice_portrait.png", "role": "portrait"},
+        {"file": "alice_body.png", "role": "full body"},
+    ])
+    scene = _make_scene(slot_A=alice)
+    result = assemble_prompt(scene, "h3_ref2va")
+    assert "<Picture 1> is a frontal portrait" in result["prompt"]
+    assert "<Picture 2> is a full-body reference" in result["prompt"]
+
+
+def test_picture_role_lines_mixed_legacy_and_dict():
+    # Legacy plain string alongside new dict format in the same list
+    alice = _make_subject("Alice", sheets=[
+        "alice_sheet.png",
+        {"file": "alice_portrait.png", "role": "portrait"},
+    ])
+    scene = _make_scene(slot_A=alice)
+    result = assemble_prompt(scene, "h3_ref2va")
+    assert "<Picture 1> is a character reference sheet" in result["prompt"]
+    assert "<Picture 2> is a frontal portrait" in result["prompt"]
+
+
+def test_picture_role_lines_custom_role():
+    alice = _make_subject("Alice", sheets=[{"file": "alice.png", "role": "3/4 view"}])
+    scene = _make_scene(slot_A=alice)
+    result = assemble_prompt(scene, "h3_ref2va")
+    # Unknown role gets a generic fallback that still includes the warning
+    assert "<Picture 1> is 3/4 view" in result["prompt"]
+    assert "do not use as scene composition" in result["prompt"]
+
+
 def test_no_audio_no_audio_labels():
     alice = _make_subject("Alice")  # no audio
     scene = _make_scene(slot_A=alice)
