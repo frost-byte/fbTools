@@ -85,6 +85,20 @@ export class BundlesAPI extends BaseAPI {
     streamUrl(filename) {
         return `/fbtools/media/stream?filename=${encodeURIComponent(filename)}`;
     }
+
+    async previewSampled({ filename, start_time, duration, force_rate, select_every_nth }) {
+        const r = await fetch("/fbtools/bundles/preview_sampled", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename, start_time, duration, force_rate, select_every_nth }),
+        });
+        if (!r.ok) {
+            const data = await r.json().catch(() => ({}));
+            return { blob: null, error: data.error || r.statusText };
+        }
+        const blob = await r.blob();
+        return { blob, error: null };
+    }
 }
 
 export const bundlesApi = new BundlesAPI();

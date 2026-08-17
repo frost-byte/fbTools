@@ -241,7 +241,7 @@ function _startNew(subjectId = "") {
         id:                  "",
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
-        visual:              { type: "images", file: "", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 96, skip_first_frames: 0, select_every_nth: 1 },
+        visual:              { type: "images", file: "", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1 },
         audio:               { source: "none", file: "", video_file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "" },
         appearance_override: "",
         tags:                [],
@@ -385,12 +385,12 @@ function _renderForm() {
                 textContent: "Switch visual to Video first, or choose a separate audio file.",
             }));
         } else if (b.audio.source === "extract_from_visual") {
-            _buildFrameParamSection(audioPickerWrap, b.audio, "Frame sampling (legacy VHS path)");
+            _buildFrameParamSection(audioPickerWrap, b.audio, { title: "Frame sampling (legacy VHS path)" });
             _buildAudioTimeSection(audioPickerWrap, b.audio);
             _buildAudioRoleSection(audioPickerWrap, b.audio);
         } else if (b.audio.source === "extract_from_video") {
             _buildAudioVideoPicker(audioPickerWrap, b);
-            _buildFrameParamSection(audioPickerWrap, b.audio, "Frame sampling");
+            _buildFrameParamSection(audioPickerWrap, b.audio, { title: "Frame sampling" });
             _buildAudioTimeSection(audioPickerWrap, b.audio);
             _buildAudioRoleSection(audioPickerWrap, b.audio);
         } else if (b.audio.source === "file") {
@@ -460,7 +460,7 @@ function _formRow(label, fieldEl) {
     ]);
 }
 
-function _buildParamCell(labelText, obj, key, { isFloat = false, hint = "" } = {}) {
+function _buildParamCell(labelText, obj, key, { isFloat = false, hint = "", onchange } = {}) {
     const cell = _mk("div", { cls: "fbt-be-param-cell" });
     const lbl = _mk("span", { cls: "fbt-be-param-label", textContent: labelText });
     if (hint) lbl.title = hint;
@@ -472,19 +472,18 @@ function _buildParamCell(labelText, obj, key, { isFloat = false, hint = "" } = {
     });
     inp.addEventListener("input", () => {
         obj[key] = isFloat ? parseFloat(inp.value) || 0 : parseInt(inp.value) || 0;
+        onchange?.();
     });
     cell.appendChild(lbl);
     cell.appendChild(inp);
     return cell;
 }
 
-function _buildFrameParamSection(wrap, obj, title = "Frame sampling") {
+function _buildFrameParamSection(wrap, obj, { title = "Frame sampling", onchange } = {}) {
     wrap.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: title }));
     const grid = _mk("div", { cls: "fbt-be-param-grid" });
-    grid.appendChild(_buildParamCell("FPS override", obj, "force_rate",       { hint: "0 = use native fps" }));
-    grid.appendChild(_buildParamCell("Frame cap",    obj, "frame_load_cap",   { hint: "0 = no cap" }));
-    grid.appendChild(_buildParamCell("Skip first",   obj, "skip_first_frames"));
-    grid.appendChild(_buildParamCell("Every Nth",    obj, "select_every_nth", { hint: "1 = every frame" }));
+    grid.appendChild(_buildParamCell("FPS override", obj, "force_rate",       { hint: "0 = use native fps", onchange }));
+    grid.appendChild(_buildParamCell("Every Nth",    obj, "select_every_nth", { hint: "1 = every frame, 2 = half frames (saves VRAM)", onchange }));
     wrap.appendChild(grid);
 }
 
@@ -655,6 +654,13 @@ function _buildVideoPicker(wrap, b) {
 
     const trimGrid = _mk("div", { cls: "fbt-be-param-grid" });
 
+    // Declare early so trim input listeners can reference these via closure
+    let _updateFrameCount = () => {};
+    const frameCountReadout = _mk("div", { cls: "fbt-be-frame-count-readout" });
+    let _previewBlobUrl  = null;
+    let _previewVideoEl  = null;
+    let _previewWrap     = null;
+
     // Build cells manually so we hold the <input> refs for two-way sync
     const _makeCell = (label, key, hint) => {
         const cell = _mk("div", { cls: "fbt-be-param-cell" });
@@ -667,6 +673,7 @@ function _buildVideoPicker(wrap, b) {
         inp.addEventListener("input", () => {
             b.visual[key] = parseFloat(inp.value) || 0;
             _syncSlider();
+            _updateFrameCount();
         });
         cell.appendChild(lbl); cell.appendChild(inp);
         return { cell, inp };
@@ -683,6 +690,20 @@ function _buildVideoPicker(wrap, b) {
     let _onMeta    = null;
     let _onErr     = null;
     let _vidInfo   = null;  // last mediaInfo response; available to error handler
+
+    // Frame-count readout — updated whenever clip range or sampling params change
+    _updateFrameCount = () => {
+        const dur = _vidDur || 0;
+        if (!dur) { frameCountReadout.textContent = ""; return; }
+        const nativeFps = _vidInfo?.fps || 24;
+        const targetFps = b.visual.force_rate > 0 ? b.visual.force_rate : nativeFps;
+        const every     = Math.max(1, b.visual.select_every_nth || 1);
+        const startT    = b.visual.start_time || 0;
+        const clipDur   = b.visual.duration > 0 ? b.visual.duration : Math.max(0, dur - startT);
+        const outFrames = Math.floor(Math.floor(clipDur * targetFps) / every);
+        const effFps    = (targetFps / every).toFixed(1);
+        frameCountReadout.textContent = `~${outFrames} frames · ${effFps} fps effective`;
+    };
 
     const _syncSlider = () => {
         if (!_slider || _vidDur <= 0) return;
@@ -709,6 +730,7 @@ function _buildVideoPicker(wrap, b) {
                 b.visual.duration   = hi >= _vidDur - step ? 0 : parseFloat((hi - lo).toFixed(2));
                 startInp.value = b.visual.start_time;
                 durInp.value   = b.visual.duration;
+                _updateFrameCount();
             },
         });
         sliderWrap.appendChild(_slider.el);
@@ -723,6 +745,7 @@ function _buildVideoPicker(wrap, b) {
                 _slider.setValues(t, parseFloat(_slider.hi.value));
                 b.visual.start_time = parseFloat(t.toFixed(2));
                 startInp.value = b.visual.start_time;
+                _updateFrameCount();
             },
         }));
         markRow.appendChild(_mk("button", {
@@ -735,6 +758,7 @@ function _buildVideoPicker(wrap, b) {
                 _slider.setValues(parseFloat(_slider.lo.value), t);
                 b.visual.duration = dur;
                 durInp.value = dur;
+                _updateFrameCount();
             },
         }));
         markRow.style.display = "";
@@ -757,6 +781,12 @@ function _buildVideoPicker(wrap, b) {
         errorEl.style.display    = "none";
         _slider = null; _vidDur = 0; _vidInfo = null;
 
+        // Clear any sampled preview
+        if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
+        if (_previewVideoEl) { _previewVideoEl.src = ""; }
+        if (_previewWrap)    { _previewWrap.style.display = "none"; }
+        frameCountReadout.textContent = "";
+
         if (!filename) { videoEl.style.display = "none"; videoEl.src = ""; return; }
 
         videoEl.src = bundlesApi.streamUrl(filename);
@@ -769,6 +799,7 @@ function _buildVideoPicker(wrap, b) {
             if (!_vidDur && isFinite(videoEl.duration) && videoEl.duration > 0) {
                 _vidDur = videoEl.duration;
                 _buildSlider();
+                _updateFrameCount();
             }
         };
         videoEl.addEventListener("loadedmetadata", _onMeta, { once: true });
@@ -822,6 +853,7 @@ function _buildVideoPicker(wrap, b) {
                 infoEl.textContent = `${durStr}  •  ${info.fps.toFixed(2)} fps  •  ${info.width}×${info.height}  •  ${info.frame_count} frames${codecPart}`;
                 infoEl.style.display = "";
                 _buildSlider();
+                _updateFrameCount();
             }
         } catch (_) { /* loadedmetadata will build the slider if mediaInfo is unavailable */ }
     };
@@ -829,7 +861,97 @@ function _buildVideoPicker(wrap, b) {
     sel.addEventListener("change", () => { b.visual.file = sel.value; _loadFile(sel.value); });
     if (b.visual.file) _loadFile(b.visual.file);
 
-    _buildFrameParamSection(wrap, b.visual);
+    _buildFrameParamSection(wrap, b.visual, { onchange: _updateFrameCount });
+    wrap.appendChild(frameCountReadout);
+
+    // ── Sampled preview ────────────────────────────────────────────────────────
+    _previewWrap = _mk("div", { cls: "fbt-be-preview-wrap", style: { display: "none" } });
+    _previewVideoEl = document.createElement("video");
+    _previewVideoEl.className = "fbt-be-video-preview fbt-be-preview-video";
+    _previewVideoEl.controls = true;
+    _previewVideoEl.loop = true;
+    _previewWrap.appendChild(_mk("div", { cls: "fbt-be-preview-header" }, [
+        _mk("span", { cls: "fbt-be-param-section-label", style: { padding: "0" }, textContent: "Sampled Preview" }),
+        _mk("button", {
+            cls: "fbt-ce-icon-btn", textContent: "✕", title: "Close preview",
+            onclick: () => {
+                if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
+                _previewVideoEl.src = "";
+                _previewWrap.style.display = "none";
+            },
+        }),
+    ]));
+    _previewWrap.appendChild(_previewVideoEl);
+    wrap.appendChild(_previewWrap);
+
+    const previewFallback = _mk("div", { cls: "fbt-be-warn", style: { display: "none" } });
+    wrap.appendChild(previewFallback);
+
+    wrap.appendChild(_mk("button", {
+        cls: "fbt-ce-btn fbt-be-preview-btn",
+        textContent: "▶ Preview Sampled",
+        title: "Preview the exact frames the model will see, played at the effective sampling rate",
+        onclick: async (e) => {
+            if (!b.visual.file) { _toast("Select a video file first", "warn"); return; }
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            btn.textContent = "Extracting…";
+            previewFallback.style.display = "none";
+
+            // Revoke any existing preview
+            if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
+            _previewVideoEl.src = "";
+            _previewWrap.style.display = "none";
+
+            try {
+                const resp = await fetch("/fbtools/bundles/preview_sampled", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        filename:         b.visual.file,
+                        start_time:       b.visual.start_time       || 0,
+                        duration:         b.visual.duration         || 0,
+                        force_rate:       b.visual.force_rate       || 0,
+                        select_every_nth: b.visual.select_every_nth || 1,
+                    }),
+                });
+
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    if (data.error === "ffmpeg_unavailable") {
+                        previewFallback.textContent =
+                            "ffmpeg not found — the main player will loop between your marked points at the native rate. " +
+                            "Install ffmpeg to enable sampled frame preview.";
+                        previewFallback.style.display = "";
+                        const lo = b.visual.start_time || 0;
+                        const hi = b.visual.duration > 0 ? lo + b.visual.duration : _vidDur;
+                        if (_vidDur > 0 && hi > lo) {
+                            videoEl.currentTime = lo;
+                            const _loopFn = () => {
+                                if (videoEl.currentTime >= hi - 0.15) videoEl.currentTime = lo;
+                            };
+                            videoEl.addEventListener("timeupdate", _loopFn);
+                            videoEl.play().catch(() => {});
+                        }
+                        return;
+                    }
+                    _toast("Preview failed: " + (data.error || resp.statusText), "error");
+                    return;
+                }
+
+                const blob = await resp.blob();
+                _previewBlobUrl = URL.createObjectURL(blob);
+                _previewVideoEl.src = _previewBlobUrl;
+                _previewWrap.style.display = "";
+                _previewVideoEl.play().catch(() => {});
+            } catch (err) {
+                _toast("Preview failed: " + err.message, "error");
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "▶ Preview Sampled";
+            }
+        },
+    }));
 }
 
 function _buildImageList(wrap, b, onFilesChange = null) {
