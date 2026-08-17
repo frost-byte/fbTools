@@ -11,12 +11,16 @@
 
 import { bundlesApi } from "../api/bundles.js";
 
+const CAST_PAGE_SIZE = 10;
+
 // ── Module state ───────────────────────────────────────────────────────────────
 
 const _S = {
     casts:    [],  // [{id, name, entries, created, modified}]
     bundles:  [],  // [{id, name, subject_id, visual, audio, ...}]
     subjects: [],  // [{id, name, ...}]
+    listPage: 0,
+    lastId:   "",
     editing:  null, // cast dict being edited; null = list view
     isNew:    false,
 };
@@ -91,19 +95,48 @@ function _renderList() {
     if (!c) return;
     c.innerHTML = "";
 
-    if (!_S.casts.length) {
+    const total      = _S.casts.length;
+    const totalPages = Math.max(1, Math.ceil(total / CAST_PAGE_SIZE));
+    _S.listPage      = Math.max(0, Math.min(_S.listPage, totalPages - 1));
+    const start      = _S.listPage * CAST_PAGE_SIZE;
+    const pageItems  = _S.casts.slice(start, start + CAST_PAGE_SIZE);
+
+    if (!total) {
         c.appendChild(_mk("div", {
             cls: "fbt-be-empty",
             textContent: "No casts saved. Click + New Cast to create one.",
         }));
-        return;
+    } else {
+        pageItems.forEach(cast => c.appendChild(_buildCastCard(cast)));
     }
 
-    _S.casts.forEach(cast => c.appendChild(_buildCastCard(cast)));
+    if (_dom.pagination) {
+        _dom.pagination.innerHTML = "";
+        if (totalPages > 1) {
+            const prevBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn", textContent: "‹", title: "Previous page",
+                onclick: () => { _S.listPage--; _renderList(); },
+            });
+            prevBtn.disabled = _S.listPage === 0;
+            const info = _mk("span", {
+                cls: "fbt-ce-pg-info",
+                textContent: `${_S.listPage + 1} / ${totalPages}`,
+            });
+            const nextBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn", textContent: "›", title: "Next page",
+                onclick: () => { _S.listPage++; _renderList(); },
+            });
+            nextBtn.disabled = _S.listPage >= totalPages - 1;
+            _dom.pagination.appendChild(prevBtn);
+            _dom.pagination.appendChild(info);
+            _dom.pagination.appendChild(nextBtn);
+        }
+    }
 }
 
 function _buildCastCard(cast) {
-    const card = _mk("div", { cls: "fbt-be-card fbt-cast-card" });
+    const isActive = cast.id && cast.id === _S.lastId;
+    const card = _mk("div", { cls: "fbt-be-card fbt-cast-card fbt-be-card-clickable" + (isActive ? " fbt-be-card-active" : "") });
 
     // Top row: name + meta
     const top = _mk("div", { cls: "fbt-be-card-top" });
@@ -175,6 +208,7 @@ function _startNew() {
 }
 
 function _cancelEdit() {
+    _S.lastId  = _S.editing?.id || _S.lastId;
     _S.editing = null;
     _S.isNew   = false;
     _renderList();
@@ -476,6 +510,7 @@ async function _onSave(cast, warnEl) {
         await bundlesApi.saveCast({ ...cast, id, name });
         const res = await bundlesApi.listCasts();
         _S.casts   = res.casts ?? [];
+        _S.lastId  = id;
         _S.editing = null;
         _S.isNew   = false;
         _renderList();
@@ -640,12 +675,14 @@ export async function renderCastEditor(el) {
     el.innerHTML = "";
 
     const panel = _mk("div", { cls: "fbt-be-panel" });
-    _dom.content = _mk("div", { cls: "fbt-be-content" });
+    _dom.content    = _mk("div", { cls: "fbt-be-content" });
+    _dom.pagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
 
     _dom.content.appendChild(_mk("div", { cls: "fbt-be-empty", textContent: "Loading…" }));
 
     panel.appendChild(_buildTopBar());
     panel.appendChild(_dom.content);
+    panel.appendChild(_dom.pagination);
     el.appendChild(panel);
 
     try {

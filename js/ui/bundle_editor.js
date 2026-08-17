@@ -10,6 +10,8 @@
 import { bundlesApi } from "../api/bundles.js";
 import { llmApi }     from "../api/llm.js";
 
+const BUNDLE_PAGE_SIZE = 10;
+
 // ── Module state ───────────────────────────────────────────────────────────────
 
 const _S = {
@@ -20,6 +22,8 @@ const _S = {
     mediaAudio:   [],   // filenames from /fbtools/media/list?type=audio
     filterSubject: "",
     filterText:    "",
+    listPage:      0,
+    lastId:        "",
     editing:       null,  // bundle object being edited; null = list view
     isNew:         false,
     llmVision:    false,  // true when a vision-capable model is loaded
@@ -108,12 +112,8 @@ function _renderList() {
     c.innerHTML = "";
 
     const filtered = _filteredBundles();
-    if (!filtered.length) {
-        c.appendChild(_mk("div", { cls: "fbt-be-empty", textContent: "No bundles found. Click + New to create one." }));
-        return;
-    }
 
-    // Group by subject_id in subject-list order, unknowns last
+    // Build flat ordered list, preserving subject grouping order
     const subjectOrder = _S.subjects.map(s => s.id);
     const grouped = new Map();
     filtered.forEach(b => {
@@ -121,7 +121,6 @@ function _renderList() {
         if (!grouped.has(k)) grouped.set(k, []);
         grouped.get(k).push(b);
     });
-
     const sortedKeys = [...grouped.keys()].sort((a, b) => {
         const ia = subjectOrder.indexOf(a);
         const ib = subjectOrder.indexOf(b);
@@ -130,18 +129,58 @@ function _renderList() {
         if (ib === -1) return -1;
         return ia - ib;
     });
+    const flat = [];
+    sortedKeys.forEach(sid => grouped.get(sid).forEach(b => flat.push({ sid, b })));
 
-    sortedKeys.forEach(subjectId => {
-        c.appendChild(_mk("div", {
-            cls: "fbt-be-group-header",
-            textContent: _subjectName(subjectId),
-        }));
-        grouped.get(subjectId).forEach(b => c.appendChild(_buildCard(b)));
-    });
+    const total      = flat.length;
+    const totalPages = Math.max(1, Math.ceil(total / BUNDLE_PAGE_SIZE));
+    _S.listPage      = Math.max(0, Math.min(_S.listPage, totalPages - 1));
+    const start      = _S.listPage * BUNDLE_PAGE_SIZE;
+    const pageItems  = flat.slice(start, start + BUNDLE_PAGE_SIZE);
+
+    if (!pageItems.length) {
+        c.appendChild(_mk("div", { cls: "fbt-be-empty", textContent: "No bundles found. Click + New to create one." }));
+    } else {
+        let lastSid = null;
+        pageItems.forEach(({ sid, b }) => {
+            if (sid !== lastSid) {
+                c.appendChild(_mk("div", { cls: "fbt-be-group-header", textContent: _subjectName(sid) }));
+                lastSid = sid;
+            }
+            c.appendChild(_buildCard(b));
+        });
+    }
+
+    if (_dom.pagination) {
+        _dom.pagination.innerHTML = "";
+        if (totalPages > 1) {
+            const prevBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn", textContent: "‹", title: "Previous page",
+                onclick: () => { _S.listPage--; _renderList(); },
+            });
+            prevBtn.disabled = _S.listPage === 0;
+            const info = _mk("span", {
+                cls: "fbt-ce-pg-info",
+                textContent: `${_S.listPage + 1} / ${totalPages}`,
+            });
+            const nextBtn = _mk("button", {
+                cls: "fbt-ce-pg-btn", textContent: "›", title: "Next page",
+                onclick: () => { _S.listPage++; _renderList(); },
+            });
+            nextBtn.disabled = _S.listPage >= totalPages - 1;
+            _dom.pagination.appendChild(prevBtn);
+            _dom.pagination.appendChild(info);
+            _dom.pagination.appendChild(nextBtn);
+        }
+    }
 }
 
 function _buildCard(b) {
-    const card = _mk("div", { cls: "fbt-be-card" });
+    const isActive = b.id && b.id === _S.lastId;
+    const card = _mk("div", {
+        cls: "fbt-be-card fbt-be-card-clickable" + (isActive ? " fbt-be-card-active" : ""),
+    });
+    card.addEventListener("click", () => _startEdit(b));
 
     const top = _mk("div", { cls: "fbt-be-card-top" });
     top.appendChild(_mk("span", { cls: "fbt-be-card-name", textContent: b.name || b.id }));
@@ -167,11 +206,11 @@ function _buildCard(b) {
     const actions = _mk("div", { cls: "fbt-be-card-actions" });
     actions.appendChild(_mk("button", {
         cls: "fbt-ce-icon-btn", title: "Edit", textContent: "✎",
-        onclick: () => _startEdit(b),
+        onclick: (e) => { e.stopPropagation(); _startEdit(b); },
     }));
     actions.appendChild(_mk("button", {
         cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Delete", textContent: "✕",
-        onclick: () => _onDelete(b.id, b.name),
+        onclick: (e) => { e.stopPropagation(); _onDelete(b.id, b.name); },
     }));
     card.appendChild(actions);
     return card;
@@ -212,6 +251,7 @@ function _startNew(subjectId = "") {
 }
 
 function _cancelEdit() {
+    _S.lastId  = _S.editing?.id || _S.lastId;
     _S.editing = null;
     _S.isNew   = false;
     _renderList();
@@ -850,6 +890,7 @@ async function _onSave(b, warnEl) {
         await bundlesApi.saveBundle({ ...b, id, name });
         const res = await bundlesApi.listBundles();
         _S.bundles = res.bundles ?? [];
+        _S.lastId  = id;
         _S.editing = null;
         _S.isNew   = false;
         _renderList();
@@ -882,6 +923,7 @@ function _buildTopBar() {
     });
     subjSel.addEventListener("change", () => {
         _S.filterSubject = subjSel.value;
+        _S.listPage = 0;
         if (!_S.editing) _renderList();
     });
     _dom.subjSel = subjSel;
@@ -894,6 +936,7 @@ function _buildTopBar() {
     });
     searchEl.addEventListener("input", () => {
         _S.filterText = searchEl.value;
+        _S.listPage = 0;
         if (!_S.editing) _renderList();
     });
 
@@ -951,13 +994,15 @@ export async function renderBundleEditor(el) {
     el.innerHTML = "";
 
     const panel = _mk("div", { cls: "fbt-be-panel" });
-    _dom.content = _mk("div", { cls: "fbt-be-content" });
+    _dom.content    = _mk("div", { cls: "fbt-be-content" });
+    _dom.pagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
 
     // Show loading state while fetching
     _dom.content.appendChild(_mk("div", { cls: "fbt-be-empty", textContent: "Loading…" }));
 
     panel.appendChild(_buildTopBar());
     panel.appendChild(_dom.content);
+    panel.appendChild(_dom.pagination);
     el.appendChild(panel);
 
     try {
