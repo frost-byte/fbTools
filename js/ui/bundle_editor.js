@@ -733,8 +733,9 @@ function _buildVideoPicker(wrap, b) {
         _slider = _buildRangeSlider(0, _vidDur, lo0, Math.min(hi0, _vidDur), {
             step,
             onchange: (lo, hi) => {
-                b.visual.start_time = parseFloat(lo.toFixed(2));
-                b.visual.duration   = hi >= _vidDur - step ? 0 : parseFloat((hi - lo).toFixed(2));
+                b.visual.start_time        = parseFloat(lo.toFixed(2));
+                b.visual.duration          = hi >= _vidDur - step ? 0 : parseFloat((hi - lo).toFixed(2));
+                b.visual.skip_first_frames = 0;
                 startInp.value = b.visual.start_time;
                 durInp.value   = b.visual.duration;
                 _updateFrameCount();
@@ -750,7 +751,8 @@ function _buildVideoPicker(wrap, b) {
                 if (!_slider) return;
                 const t = Math.min(videoEl.currentTime, parseFloat(_slider.hi.value));
                 _slider.setValues(t, parseFloat(_slider.hi.value));
-                b.visual.start_time = parseFloat(t.toFixed(2));
+                b.visual.start_time        = parseFloat(t.toFixed(2));
+                b.visual.skip_first_frames = 0;
                 startInp.value = b.visual.start_time;
                 _updateFrameCount();
             },
