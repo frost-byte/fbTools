@@ -242,7 +242,7 @@ function _startNew(subjectId = "") {
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
         visual:              { type: "images", file: "", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1 },
-        audio:               { source: "none", file: "", video_file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "" },
+        audio:               { source: "none", file: "", video_file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "", audio_processing: { noise_removal: false, normalize_lufs: true, target_lufs: -14.0 }, audio_cache: "" },
         appearance_override: "",
         tags:                [],
     };
@@ -388,14 +388,17 @@ function _renderForm() {
             _buildFrameParamSection(audioPickerWrap, b.audio, { title: "Frame sampling (legacy VHS path)" });
             _buildAudioTimeSection(audioPickerWrap, b.audio);
             _buildAudioRoleSection(audioPickerWrap, b.audio);
+            _buildAudioProcessingSection(audioPickerWrap, b);
         } else if (b.audio.source === "extract_from_video") {
             _buildAudioVideoPicker(audioPickerWrap, b);
             _buildFrameParamSection(audioPickerWrap, b.audio, { title: "Frame sampling" });
             _buildAudioTimeSection(audioPickerWrap, b.audio);
             _buildAudioRoleSection(audioPickerWrap, b.audio);
+            _buildAudioProcessingSection(audioPickerWrap, b);
         } else if (b.audio.source === "file") {
             _buildAudioPicker(audioPickerWrap, b);
             _buildAudioRoleSection(audioPickerWrap, b.audio);
+            _buildAudioProcessingSection(audioPickerWrap, b);
         }
     };
     audioSourceEl.addEventListener("change", () => {
@@ -1056,6 +1059,130 @@ function _buildImageList(wrap, b, onFilesChange = null) {
     wrap.appendChild(previewImg);
     wrap.appendChild(listEl);
     wrap.appendChild(addSel);
+}
+
+function _buildAudioProcessingSection(wrap, b) {
+    // Ensure schema fields exist on older bundles
+    if (!b.audio.audio_processing) {
+        b.audio.audio_processing = { noise_removal: false, normalize_lufs: true, target_lufs: -14.0 };
+    }
+    const proc = b.audio.audio_processing;
+    if (proc.target_lufs == null) proc.target_lufs = -14.0;
+    if (!("audio_cache" in b.audio)) b.audio.audio_cache = "";
+
+    let _updateStatus = () => {};
+
+    const sec = _mk("div", { cls: "fbt-be-proc-section" });
+    sec.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: "Processing" }));
+
+    const _checkRow = (label, key, hint, extras = []) => {
+        const row = _mk("div", { cls: "fbt-be-proc-row" });
+        const cb  = _mk("input", { type: "checkbox" });
+        cb.className = "fbt-be-proc-cb";
+        cb.checked   = !!proc[key];
+        if (hint) cb.title = hint;
+        cb.addEventListener("change", () => {
+            proc[key] = cb.checked;
+            b.audio.audio_cache = "";
+            _updateStatus();
+        });
+        row.appendChild(cb);
+        row.appendChild(_mk("span", { cls: "fbt-be-proc-label", textContent: label }));
+        extras.forEach(el => row.appendChild(el));
+        return { row, cb };
+    };
+
+    const { row: noiseRow } = _checkRow("Noise removal", "noise_removal",
+        "Spectral subtraction — removes background hiss and room noise");
+    sec.appendChild(noiseRow);
+
+    // LUFS normalize row with inline target input
+    const lufsInp = _mk("input", {
+        cls: "fbt-be-param-input", type: "number",
+        min: "-36", max: "-6", step: "0.5",
+        value: proc.target_lufs ?? -14.0,
+        title: "Target integrated loudness — streaming standard is −14 LUFS",
+    });
+    const lufsUnit = _mk("span", { cls: "fbt-be-proc-unit", textContent: "LUFS" });
+    lufsInp.addEventListener("input", () => {
+        proc.target_lufs = parseFloat(lufsInp.value) || -14.0;
+        b.audio.audio_cache = "";
+        _updateStatus();
+    });
+    const { row: lufsRow, cb: lfsCb } = _checkRow("LUFS normalize", "normalize_lufs",
+        "Normalize to target integrated loudness (ITU BS.1770 / EBU R128)", [lufsInp, lufsUnit]);
+    const _syncLufsVisibility = () => {
+        lufsInp.style.display  = lfsCb.checked ? "" : "none";
+        lufsUnit.style.display = lfsCb.checked ? "" : "none";
+    };
+    lfsCb.addEventListener("change", _syncLufsVisibility);
+    _syncLufsVisibility();
+    sec.appendChild(lufsRow);
+
+    // Cache status
+    const statusEl = _mk("div", { cls: "fbt-be-proc-status" });
+    _updateStatus = () => {
+        const cache = b.audio.audio_cache;
+        if (cache) {
+            const base = (cache.split("/").pop() || cache.split("\\").pop() || cache);
+            statusEl.textContent = `✓ Cached · ${base}`;
+            statusEl.className   = "fbt-be-proc-status fbt-be-proc-ok";
+        } else {
+            statusEl.textContent = "Not processed";
+            statusEl.className   = "fbt-be-proc-status";
+        }
+    };
+    _updateStatus();
+    sec.appendChild(statusEl);
+
+    sec.appendChild(_mk("button", {
+        cls: "fbt-ce-btn fbt-be-proc-btn",
+        textContent: "⚙ Process Audio",
+        title: "Run denoising / LUFS normalization and cache the result on disk",
+        onclick: async (e) => {
+            const btn = e.currentTarget;
+            const src = b.audio.source;
+            let filename = "";
+            if (src === "file")                filename = b.audio.file;
+            else if (src === "extract_from_video") filename = b.audio.video_file;
+            else if (src === "extract_from_visual") filename = b.visual.file;
+            if (!filename) { _toast("No audio source selected", "warn"); return; }
+
+            btn.disabled     = true;
+            btn.textContent  = "Processing…";
+            statusEl.textContent = "Processing…";
+            statusEl.className   = "fbt-be-proc-status";
+
+            try {
+                const result = await bundlesApi.preprocessAudio({
+                    bundle_id:   b.id || "default",
+                    filename,
+                    start_time:  ["file", "extract_from_video"].includes(src) ? (b.audio.start_time || 0) : 0,
+                    duration:    ["file", "extract_from_video"].includes(src) ? (b.audio.duration   || 0) : 0,
+                    audio_processing: {
+                        noise_removal:  !!proc.noise_removal,
+                        normalize_lufs: proc.normalize_lufs !== false,
+                        target_lufs:    proc.target_lufs ?? -14.0,
+                    },
+                });
+                b.audio.audio_cache = result.cache_path;
+                const durStr  = result.duration  != null ? `${result.duration}s`    : "";
+                const lufsStr = result.lufs_after != null ? ` · ${result.lufs_after} LUFS` : "";
+                statusEl.textContent = `✓ ${result.from_cache ? "Cached" : "Processed"} · ${durStr}${lufsStr}`;
+                statusEl.className   = "fbt-be-proc-status fbt-be-proc-ok";
+                _toast("Audio processed — click Save to persist the cache reference", "success");
+            } catch (err) {
+                statusEl.textContent = "Failed: " + err.message;
+                statusEl.className   = "fbt-be-proc-status fbt-be-proc-err";
+                _toast("Processing failed: " + err.message, "error");
+            } finally {
+                btn.disabled    = false;
+                btn.textContent = "⚙ Process Audio";
+            }
+        },
+    }));
+
+    wrap.appendChild(sec);
 }
 
 function _buildAudioPlayer(filename) {

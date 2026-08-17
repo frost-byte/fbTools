@@ -86,6 +86,10 @@ export class BundlesAPI extends BaseAPI {
         return `/fbtools/media/stream?filename=${encodeURIComponent(filename)}`;
     }
 
+    preprocessAudio({ bundle_id, filename, start_time, duration, audio_processing }) {
+        return this.post("/bundles/preprocess_audio", { bundle_id, filename, start_time, duration, audio_processing });
+    }
+
     async previewSampled({ filename, start_time, duration, force_rate, select_every_nth }) {
         const r = await fetch("/fbtools/bundles/preview_sampled", {
             method: "POST",
