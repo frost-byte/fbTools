@@ -1536,14 +1536,14 @@ function _buildSettingsSection(parent) {
     mbRow.appendChild(_mk("span", {
         cls: "fbt-ce-settings-label",
         textContent: "MelBand model path",
-        title: "Path to MelBand Roformer model weights — used for vocal isolation (future feature)",
+        title: "Path to a MelBand Roformer .safetensors checkpoint — used for vocal isolation (future feature). Kijai/MelBandRoFormer_comfy on HuggingFace has fp16 (456 MB) and fp32 (913 MB) builds.",
     }));
     _dom.settingsMelbandInp = _mk("input", {
         cls: "fbt-ce-input",
         type: "text",
-        placeholder: "models/melband/model.pth",
+        placeholder: "MelBandRoformer_fp16.safetensors",
         value: s.melband_model_path ?? "",
-        title: "Absolute path or ComfyUI-relative path to a MelBand Roformer .pth checkpoint",
+        title: "Filename or path to a MelBand Roformer .safetensors checkpoint (Kijai/MelBandRoFormer_comfy — fp16 or fp32)",
     });
     _dom.settingsMelbandInp.addEventListener("change", async () => {
         _S.settings.melband_model_path = _dom.settingsMelbandInp.value.trim();

@@ -13928,7 +13928,7 @@ _COMPOSITION_SETTINGS_DEFAULTS: dict = {
     "default_audio_noise_removal":  False,
     "default_audio_normalize_lufs": True,
     "default_audio_target_lufs":   -14.0,
-    "melband_model_path":          "",
+    "melband_model_path":          "",  # Kijai/MelBandRoFormer_comfy — fp16 or fp32 .safetensors
 }
 
 
