@@ -13224,8 +13224,11 @@ async def _media_info(request):
             width       = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height      = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             duration    = (frame_count / fps) if fps > 0 else 0.0
+            fourcc_int  = int(cap.get(cv2.CAP_PROP_FOURCC))
+            codec       = "".join(chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4)).strip("\x00").strip()
             return {"duration": round(duration, 4), "fps": round(fps, 4),
-                    "frame_count": frame_count, "width": width, "height": height}
+                    "frame_count": frame_count, "width": width, "height": height,
+                    "codec": codec or "unknown"}
         finally:
             cap.release()
 
