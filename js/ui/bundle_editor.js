@@ -678,10 +678,11 @@ function _buildVideoPicker(wrap, b) {
     wrap.appendChild(trimGrid);
 
     // ── Slider / mark logic ────────────────────────────────────────────────────
-    let _slider  = null;
-    let _vidDur  = 0;
-    let _onMeta  = null;
-    let _onErr   = null;
+    let _slider    = null;
+    let _vidDur    = 0;
+    let _onMeta    = null;
+    let _onErr     = null;
+    let _vidInfo   = null;  // last mediaInfo response; available to error handler
 
     const _syncSlider = () => {
         if (!_slider || _vidDur <= 0) return;
@@ -754,7 +755,7 @@ function _buildVideoPicker(wrap, b) {
         markRow.style.display    = "none";
         infoEl.style.display     = "none";
         errorEl.style.display    = "none";
-        _slider = null; _vidDur = 0;
+        _slider = null; _vidDur = 0; _vidInfo = null;
 
         if (!filename) { videoEl.style.display = "none"; videoEl.src = ""; return; }
 
@@ -774,14 +775,36 @@ function _buildVideoPicker(wrap, b) {
 
         _onErr = () => {
             _onErr = null;
-            const code = videoEl.error?.code;
-            const msgs = {
-                1: "Loading aborted.",
-                2: "Network error — check the server log.",
-                3: "Format not supported by browser (try an .mp4 encoded with H.264).",
-                4: "File not found or codec unsupported.",
-            };
-            errorEl.textContent = msgs[code] ?? "Video could not be loaded.";
+            const code  = videoEl.error?.code;
+            const ext   = filename.split(".").pop().toLowerCase();
+            const codec = _vidInfo?.codec ?? "";
+            // Map known codec strings to friendly names
+            const codecLabel = { avc1: "H.264", h264: "H.264", "h.264": "H.264",
+                hev1: "H.265/HEVC", hevc: "H.265/HEVC", "h.265": "H.265/HEVC",
+                hvc1: "H.265/HEVC", av01: "AV1", vp09: "VP9", vp08: "VP8",
+                xvid: "XVID", divx: "DIVX", mp4v: "MPEG-4 Part 2",
+                theo: "Theora", "": "" }[codec.toLowerCase()] ?? codec;
+            const codecStr = codecLabel ? ` (codec: ${codecLabel})` : (codec ? ` (codec: ${codec})` : "");
+            let msg = "";
+            if (code === 2) {
+                msg = "Network error loading video — check the server log.";
+            } else if (code === 1) {
+                msg = "Video load aborted.";
+            } else if (["mkv", "avi"].includes(ext)) {
+                msg = `${ext.toUpperCase()} files cannot be played in the browser${codecStr}. Convert to H.264 MP4:\n` +
+                    `ffmpeg -i "${filename}" -c:v libx264 -c:a aac -map_metadata 0 -pix_fmt yuv420p output.mp4`;
+            } else if (codec && ["hev1","hevc","hvc1","h.265"].includes(codec.toLowerCase())) {
+                msg = `H.265/HEVC is not supported in Chrome. Re-encode as H.264:\n` +
+                    `ffmpeg -i "${filename}" -c:v libx264 -c:a aac -map_metadata 0 -pix_fmt yuv420p output.mp4`;
+            } else if (["mov","mp4"].includes(ext)) {
+                msg = `Video could not be played${codecStr}. If encoded with H.265/HEVC or ProRes, re-encode:\n` +
+                    `ffmpeg -i "${filename}" -c:v libx264 -c:a aac -map_metadata 0 -pix_fmt yuv420p output.mp4`;
+            } else {
+                msg = `Video could not be played${codecStr}. Try converting to H.264 MP4:\n` +
+                    `ffmpeg -i "${filename}" -c:v libx264 -c:a aac -map_metadata 0 -pix_fmt yuv420p output.mp4`;
+            }
+            errorEl.textContent = msg;
+            errorEl.style.whiteSpace = "pre-wrap";
             errorEl.style.display = "";
             videoEl.style.display = "none";
         };
@@ -789,12 +812,14 @@ function _buildVideoPicker(wrap, b) {
 
         try {
             const info = await bundlesApi.mediaInfo(filename);
+            _vidInfo = info;
             if (info.duration > 0) {
                 _vidDur = info.duration;
                 const m = Math.floor(_vidDur / 60);
                 const s = (_vidDur % 60).toFixed(2);
                 const durStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
-                infoEl.textContent = `${durStr}  •  ${info.fps.toFixed(2)} fps  •  ${info.width}×${info.height}  •  ${info.frame_count} frames`;
+                const codecPart = info.codec && info.codec !== "unknown" ? `  •  ${info.codec}` : "";
+                infoEl.textContent = `${durStr}  •  ${info.fps.toFixed(2)} fps  •  ${info.width}×${info.height}  •  ${info.frame_count} frames${codecPart}`;
                 infoEl.style.display = "";
                 _buildSlider();
             }
