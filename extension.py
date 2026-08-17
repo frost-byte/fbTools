@@ -13816,6 +13816,11 @@ from .utils.prompt_assembler import assemble_composition as _assemble_compositio
 from .utils.prompt_assembler import _build_h3_refplan
 from .utils.prompt_assembler import estimate_speech_duration as _estimate_speech_duration
 from .utils.prompt_assembler import _PACE_CHARS_PER_SEC
+from .utils.prompt_assembler import (
+    validate_h3_refs_pre     as _validate_h3_refs_pre,
+    validate_h3_audio_clip   as _validate_h3_audio_clip,
+    validate_h3_audio_total  as _validate_h3_audio_total,
+)
 
 
 @routes.get("/fbtools/compositions/list")
@@ -15226,34 +15231,8 @@ class CompositionToH3Conditioning(io.ComfyNode):
         references = h3_refplan.get("references", [])
         prompt     = h3_refplan.get("prompt", "")
 
-        standalone_audio_refs = [r for r in references if r.get("modality") == "audio"]
-        visual_refs           = [r for r in references if r.get("modality") in ("image", "video")]
-        all_counted_refs      = [r for r in references
-                                 if r.get("modality") in ("image", "video", "audio", "soundtrack_audio")]
-
         # ── §1 pre-load validation (MiniMax H3 Ref2VA hard limits) ─────────────
-        pre_errors: list[str] = []
-        if len(standalone_audio_refs) > 3:
-            pre_errors.append(
-                f"{len(standalone_audio_refs)} standalone audio references exceed the limit of 3."
-            )
-        if standalone_audio_refs and not visual_refs:
-            pre_errors.append(
-                "Audio references must accompany at least one image or video "
-                "(H3 Ref2VA requires audio to be paired with a visual reference)."
-            )
-        if len(all_counted_refs) > 12:
-            pre_errors.append(
-                f"{len(all_counted_refs)} total reference files exceed the combined limit of 12."
-            )
-        for ref in standalone_audio_refs:
-            trim = ref.get("trim_to")
-            if trim is not None and trim < 2.0:
-                aord = ref.get("audio_ordinal", "?")
-                pre_errors.append(
-                    f"<Audio {aord}>: computed trim_to={trim:.2f}s is below the 2s minimum. "
-                    f"The dialogue line is too short — lengthen it or set a manual minimum."
-                )
+        pre_errors = _validate_h3_refs_pre(references)
         if pre_errors:
             raise ValueError(
                 "H3 Ref2VA validation failed:\n"
@@ -15326,19 +15305,11 @@ class CompositionToH3Conditioning(io.ComfyNode):
                 actual_samples = audio["waveform"].shape[-1]
                 sr = audio["sample_rate"]
                 actual_dur = actual_samples / sr if sr > 0 else 0.0
-                aord = ref.get("audio_ordinal", "?")
-                basename = os.path.basename(path)
-                if actual_dur < 2.0:
-                    raise ValueError(
-                        f"<Audio {aord}> ({basename}): loaded duration {actual_dur:.2f}s "
-                        f"is below the 2s minimum required by H3 Ref2VA. "
-                        f"Use a longer source clip or reduce start_time/trim."
-                    )
-                if actual_dur > 15.0:
-                    raise ValueError(
-                        f"<Audio {aord}> ({basename}): loaded duration {actual_dur:.2f}s "
-                        f"exceeds the 15s maximum. Set a shorter duration or trim_to."
-                    )
+                clip_err = _validate_h3_audio_clip(
+                    actual_dur, ref.get("audio_ordinal", "?"), os.path.basename(path)
+                )
+                if clip_err:
+                    raise ValueError(clip_err)
 
                 loaded_audio_durations.append(actual_dur)
                 ref_audios[f"ref_audio_{standalone_idx}"] = audio
@@ -15346,12 +15317,9 @@ class CompositionToH3Conditioning(io.ComfyNode):
 
         # Total audio duration check (uses actual loaded/trimmed durations)
         total_audio = sum(loaded_audio_durations)
-        if total_audio > 15.0:
-            raise ValueError(
-                f"Total audio duration {total_audio:.2f}s across "
-                f"{len(loaded_audio_durations)} audio reference(s) "
-                f"exceeds the 15s limit."
-            )
+        total_err = _validate_h3_audio_total(loaded_audio_durations)
+        if total_err:
+            raise ValueError(total_err)
 
         audio_note = f" | audio {total_audio:.1f}s total" if loaded_audio_durations else ""
         send_status_update(

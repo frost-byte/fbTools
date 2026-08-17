@@ -71,6 +71,84 @@ _PRODUCTION_MODELS = {"wan22", "bernini"}
 _SIMPLE_MODELS = {"ltx23", "flux2", "krea2", "qwen"}
 
 
+# ── H3 Ref2VA validation helpers ───────────────────────────────────────────────
+
+def validate_h3_refs_pre(references: list) -> list:
+    """Check H3 Ref2VA structural invariants before any media is loaded.
+
+    Returns a list of error strings (empty list = all OK).  Called by
+    CompositionToH3Conditioning.execute() before touching the filesystem.
+
+    Rules (§1 of the H3 Ref2VA spec):
+      • ≤ 3 standalone audio references
+      • audio must be paired with at least one image or video
+      • ≤ 12 total counted references (image + video + audio + soundtrack_audio)
+      • computed trim_to must be ≥ 2 s when present
+    """
+    standalone_audio = [r for r in references if r.get("modality") == "audio"]
+    visual           = [r for r in references if r.get("modality") in ("image", "video")]
+    all_counted      = [r for r in references
+                        if r.get("modality") in ("image", "video", "audio", "soundtrack_audio")]
+
+    errors = []
+    if len(standalone_audio) > 3:
+        errors.append(
+            f"{len(standalone_audio)} standalone audio references exceed the limit of 3."
+        )
+    if standalone_audio and not visual:
+        errors.append(
+            "Audio references must accompany at least one image or video "
+            "(H3 Ref2VA requires audio to be paired with a visual reference)."
+        )
+    if len(all_counted) > 12:
+        errors.append(
+            f"{len(all_counted)} total reference files exceed the combined limit of 12."
+        )
+    for ref in standalone_audio:
+        trim = ref.get("trim_to")
+        if trim is not None and trim < 2.0:
+            aord = ref.get("audio_ordinal", "?")
+            errors.append(
+                f"<Audio {aord}>: computed trim_to={trim:.2f}s is below the 2s minimum. "
+                f"The dialogue line is too short — lengthen it or set a manual minimum."
+            )
+    return errors
+
+
+def validate_h3_audio_clip(actual_dur: float, aord, basename: str) -> str | None:
+    """Validate a single loaded audio clip's duration after trimming.
+
+    Returns an error string, or None if the clip is within the 2–15 s range.
+    """
+    if actual_dur < 2.0:
+        return (
+            f"<Audio {aord}> ({basename}): loaded duration {actual_dur:.2f}s "
+            f"is below the 2s minimum required by H3 Ref2VA. "
+            f"Use a longer source clip or reduce start_time/trim."
+        )
+    if actual_dur > 15.0:
+        return (
+            f"<Audio {aord}> ({basename}): loaded duration {actual_dur:.2f}s "
+            f"exceeds the 15s maximum. Set a shorter duration or trim_to."
+        )
+    return None
+
+
+def validate_h3_audio_total(durations: list) -> str | None:
+    """Validate the sum of all loaded audio clip durations.
+
+    Returns an error string if the total exceeds 15 s, otherwise None.
+    """
+    total = sum(durations)
+    if total > 15.0:
+        return (
+            f"Total audio duration {total:.2f}s across "
+            f"{len(durations)} audio reference(s) "
+            f"exceeds the 15s limit."
+        )
+    return None
+
+
 # ── Formatting helpers ─────────────────────────────────────────────────────────
 
 _LANG_LABELS: dict[str, str] = {

@@ -1211,3 +1211,152 @@ def test_trim_to_none_for_unmatched_slot():
     refplan = _build_h3_refplan(scene, slot_trim_to={"B": 2.0})
     audio_refs = [r for r in refplan["references"] if r["modality"] == "audio"]
     assert audio_refs[0]["trim_to"] is None
+
+
+# ── H3 Ref2VA validation helpers ───────────────────────────────────────────────
+
+validate_h3_refs_pre    = pa.validate_h3_refs_pre
+validate_h3_audio_clip  = pa.validate_h3_audio_clip
+validate_h3_audio_total = pa.validate_h3_audio_total
+
+
+def _ref(modality, *, aord=1, trim_to=None):
+    """Minimal reference dict for validation tests."""
+    r = {"modality": modality, "audio_ordinal": aord, "path": f"file.{modality}"}
+    if trim_to is not None:
+        r["trim_to"] = trim_to
+    return r
+
+
+# ── validate_h3_refs_pre ────────────────────────────────────────────────────────
+
+class TestValidateH3RefsPre:
+    def test_empty_refs_ok(self):
+        assert validate_h3_refs_pre([]) == []
+
+    def test_image_only_ok(self):
+        assert validate_h3_refs_pre([_ref("image")]) == []
+
+    def test_video_only_ok(self):
+        assert validate_h3_refs_pre([_ref("video")]) == []
+
+    def test_audio_with_image_ok(self):
+        assert validate_h3_refs_pre([_ref("image"), _ref("audio")]) == []
+
+    def test_audio_with_video_ok(self):
+        assert validate_h3_refs_pre([_ref("video"), _ref("audio")]) == []
+
+    def test_audio_without_visual_fails(self):
+        errors = validate_h3_refs_pre([_ref("audio")])
+        assert len(errors) == 1
+        assert "paired" in errors[0].lower() or "visual" in errors[0].lower()
+
+    def test_soundtrack_audio_alone_does_not_trigger_pairing_error(self):
+        # soundtrack_audio is attached to a video — it is not a standalone audio ref
+        errors = validate_h3_refs_pre([_ref("soundtrack_audio")])
+        assert errors == []
+
+    def test_four_audio_refs_fails(self):
+        refs = [_ref("image")] + [_ref("audio", aord=i) for i in range(1, 5)]
+        errors = validate_h3_refs_pre(refs)
+        assert any("3" in e for e in errors)
+
+    def test_exactly_three_audio_refs_ok(self):
+        refs = [_ref("image")] + [_ref("audio", aord=i) for i in range(1, 4)]
+        assert validate_h3_refs_pre(refs) == []
+
+    def test_thirteen_counted_refs_fails(self):
+        refs = [_ref("image")] * 13
+        errors = validate_h3_refs_pre(refs)
+        assert any("12" in e for e in errors)
+
+    def test_twelve_counted_refs_ok(self):
+        refs = [_ref("image")] * 12
+        assert validate_h3_refs_pre(refs) == []
+
+    def test_trim_to_below_2s_fails(self):
+        refs = [_ref("image"), _ref("audio", aord=1, trim_to=1.5)]
+        errors = validate_h3_refs_pre(refs)
+        assert any("1.50" in e for e in errors)
+
+    def test_trim_to_exactly_2s_ok(self):
+        refs = [_ref("image"), _ref("audio", aord=1, trim_to=2.0)]
+        assert validate_h3_refs_pre(refs) == []
+
+    def test_trim_to_none_skipped(self):
+        refs = [_ref("image"), _ref("audio", aord=1, trim_to=None)]
+        assert validate_h3_refs_pre(refs) == []
+
+    def test_multiple_errors_all_returned(self):
+        # No visual + 4 audio refs → 2 errors
+        refs = [_ref("audio", aord=i) for i in range(1, 5)]
+        errors = validate_h3_refs_pre(refs)
+        assert len(errors) >= 2
+
+    def test_soundtrack_audio_counts_toward_12_limit(self):
+        # 11 images + 1 soundtrack_audio = 12 counted → OK
+        refs = [_ref("image")] * 11 + [_ref("soundtrack_audio")]
+        assert validate_h3_refs_pre(refs) == []
+        # add one more → 13 → fail
+        refs.append(_ref("image"))
+        errors = validate_h3_refs_pre(refs)
+        assert any("12" in e for e in errors)
+
+
+# ── validate_h3_audio_clip ──────────────────────────────────────────────────────
+
+class TestValidateH3AudioClip:
+    def test_in_range_ok(self):
+        assert validate_h3_audio_clip(5.0, 1, "clip.wav") is None
+
+    def test_exactly_2s_ok(self):
+        assert validate_h3_audio_clip(2.0, 1, "clip.wav") is None
+
+    def test_exactly_15s_ok(self):
+        assert validate_h3_audio_clip(15.0, 1, "clip.wav") is None
+
+    def test_below_2s_fails(self):
+        err = validate_h3_audio_clip(1.8, 1, "clip.wav")
+        assert err is not None
+        assert "1.80" in err
+        assert "minimum" in err.lower()
+
+    def test_above_15s_fails(self):
+        err = validate_h3_audio_clip(16.0, 2, "long.wav")
+        assert err is not None
+        assert "16.00" in err
+        assert "maximum" in err.lower()
+
+    def test_basename_in_error(self):
+        err = validate_h3_audio_clip(0.5, 1, "myfile.wav")
+        assert "myfile.wav" in err
+
+    def test_ordinal_in_error(self):
+        err = validate_h3_audio_clip(20.0, 3, "f.wav")
+        assert "<Audio 3>" in err
+
+
+# ── validate_h3_audio_total ─────────────────────────────────────────────────────
+
+class TestValidateH3AudioTotal:
+    def test_empty_ok(self):
+        assert validate_h3_audio_total([]) is None
+
+    def test_single_ok(self):
+        assert validate_h3_audio_total([10.0]) is None
+
+    def test_sum_exactly_15s_ok(self):
+        assert validate_h3_audio_total([5.0, 5.0, 5.0]) is None
+
+    def test_sum_above_15s_fails(self):
+        err = validate_h3_audio_total([8.0, 8.0])
+        assert err is not None
+        assert "16.00" in err
+
+    def test_count_in_error(self):
+        err = validate_h3_audio_total([8.0, 8.0])
+        assert "2" in err
+
+    def test_just_over_15s_fails(self):
+        err = validate_h3_audio_total([15.001])
+        assert err is not None
