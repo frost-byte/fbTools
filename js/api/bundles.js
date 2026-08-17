@@ -77,6 +77,14 @@ export class BundlesAPI extends BaseAPI {
     listMedia(type) {
         return this.get("/media/list", { type });
     }
+
+    mediaInfo(filename) {
+        return this.get("/media/info", { filename });
+    }
+
+    streamUrl(filename) {
+        return `/fbtools/media/stream?filename=${encodeURIComponent(filename)}`;
+    }
 }
 
 export const bundlesApi = new BundlesAPI();

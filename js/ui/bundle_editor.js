@@ -535,36 +535,257 @@ function _buildToggle(values, labels, current, onChange) {
     return wrap;
 }
 
+function _buildRangeSlider(minVal, maxVal, loVal, hiVal, { step = 0.1, onchange } = {}) {
+    loVal = Math.max(minVal, Math.min(loVal, maxVal));
+    hiVal = Math.max(loVal,  Math.min(hiVal, maxVal));
+
+    const wrap = _mk("div", { cls: "fbt-range-wrap" });
+    const track = _mk("div", { cls: "fbt-range-track" });
+    const fill  = _mk("div", { cls: "fbt-range-fill" });
+    track.appendChild(fill);
+    wrap.appendChild(track);
+
+    const lo = _mk("input", { cls: "fbt-range-input fbt-range-lo",
+        type: "range", min: minVal, max: maxVal, step, value: loVal });
+    const hi = _mk("input", { cls: "fbt-range-input fbt-range-hi",
+        type: "range", min: minVal, max: maxVal, step, value: hiVal });
+
+    const loLabel = _mk("span", { cls: "fbt-range-lo-label" });
+    const hiLabel = _mk("span", { cls: "fbt-range-hi-label" });
+    wrap.appendChild(lo);
+    wrap.appendChild(hi);
+    wrap.appendChild(_mk("div", { cls: "fbt-range-labels" }, [loLabel, hiLabel]));
+
+    const range = maxVal - minVal;
+    const fmt = v => {
+        const m = Math.floor(v / 60);
+        const s = (v % 60).toFixed(1);
+        return m > 0 ? `${m}:${s.padStart(4, "0")}` : `${s}s`;
+    };
+
+    const updateFill = () => {
+        if (range <= 0) return;
+        const loV = parseFloat(lo.value);
+        const hiV = parseFloat(hi.value);
+        const loP = ((loV - minVal) / range) * 100;
+        const hiP = ((hiV - minVal) / range) * 100;
+        fill.style.left  = loP + "%";
+        fill.style.width = (hiP - loP) + "%";
+        loLabel.textContent = fmt(loV);
+        hiLabel.textContent = fmt(hiV);
+        lo.style.zIndex = loV >= hiV - range * 0.02 ? 5 : 2;
+    };
+
+    lo.addEventListener("input", () => {
+        if (parseFloat(lo.value) > parseFloat(hi.value)) lo.value = hi.value;
+        updateFill();
+        onchange && onchange(parseFloat(lo.value), parseFloat(hi.value));
+    });
+    hi.addEventListener("input", () => {
+        if (parseFloat(hi.value) < parseFloat(lo.value)) hi.value = lo.value;
+        updateFill();
+        onchange && onchange(parseFloat(lo.value), parseFloat(hi.value));
+    });
+
+    updateFill();
+
+    return {
+        el: wrap, lo, hi, updateFill,
+        setValues(newLo, newHi) {
+            lo.value = Math.max(minVal, Math.min(newLo, maxVal));
+            hi.value = Math.max(parseFloat(lo.value), Math.min(newHi, maxVal));
+            updateFill();
+        },
+    };
+}
+
 function _buildVideoPicker(wrap, b) {
     if (!_S.mediaVideos.length) {
         wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No video files in input directory" }));
-    } else {
-        const sel = document.createElement("select");
-        sel.className = "fbt-ce-select";
-        const blank = document.createElement("option");
-        blank.value = "";
-        blank.textContent = "— select video file —";
-        if (!b.visual.file) blank.selected = true;
-        sel.appendChild(blank);
-        _S.mediaVideos.forEach(f => {
-            const o = document.createElement("option");
-            o.value = f;
-            o.textContent = f;
-            if (f === b.visual.file) o.selected = true;
-            sel.appendChild(o);
-        });
-        sel.addEventListener("change", () => { b.visual.file = sel.value; });
-        wrap.appendChild(sel);
+        _buildFrameParamSection(wrap, b.visual);
+        return;
     }
+
+    // ── File selector ──────────────────────────────────────────────────────────
+    const sel = document.createElement("select");
+    sel.className = "fbt-ce-select";
+    const blank = document.createElement("option");
+    blank.value = ""; blank.textContent = "— select video file —";
+    if (!b.visual.file) blank.selected = true;
+    sel.appendChild(blank);
+    _S.mediaVideos.forEach(f => {
+        const o = document.createElement("option");
+        o.value = f; o.textContent = f;
+        if (f === b.visual.file) o.selected = true;
+        sel.appendChild(o);
+    });
+
+    // ── Preview ────────────────────────────────────────────────────────────────
+    const videoEl = document.createElement("video");
+    videoEl.className = "fbt-be-video-preview";
+    videoEl.controls = true;
+    videoEl.preload = "metadata";
+    videoEl.style.display = "none";
+
+    const infoEl = _mk("div", { cls: "fbt-be-video-info" });
+    infoEl.style.display = "none";
+
+    // ── Slider container ───────────────────────────────────────────────────────
+    const sliderWrap = _mk("div");
+    sliderWrap.style.display = "none";
+
+    // ── Mark start/end buttons ─────────────────────────────────────────────────
+    const markRow = _mk("div", { cls: "fbt-be-mark-row" });
+    markRow.style.display = "none";
+
+    // ── Trim number inputs (always visible; synced with slider) ───────────────
+    wrap.appendChild(sel);
+    wrap.appendChild(videoEl);
+    wrap.appendChild(infoEl);
+    wrap.appendChild(sliderWrap);
+    wrap.appendChild(markRow);
     wrap.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: "Trim" }));
+
     const trimGrid = _mk("div", { cls: "fbt-be-param-grid" });
-    trimGrid.appendChild(_buildParamCell("Start (s)",    b.visual, "start_time", { isFloat: true, hint: "Start time in seconds" }));
-    trimGrid.appendChild(_buildParamCell("Duration (s)", b.visual, "duration",   { isFloat: true, hint: "0 = to end of file" }));
+
+    // Build cells manually so we hold the <input> refs for two-way sync
+    const _makeCell = (label, key, hint) => {
+        const cell = _mk("div", { cls: "fbt-be-param-cell" });
+        const lbl  = _mk("span", { cls: "fbt-be-param-label", textContent: label });
+        if (hint) lbl.title = hint;
+        const inp  = _mk("input", {
+            cls: "fbt-be-param-input", type: "number", min: 0, step: 0.1,
+            value: (b.visual[key] ?? 0.0),
+        });
+        inp.addEventListener("input", () => {
+            b.visual[key] = parseFloat(inp.value) || 0;
+            _syncSlider();
+        });
+        cell.appendChild(lbl); cell.appendChild(inp);
+        return { cell, inp };
+    };
+    const { cell: startCell, inp: startInp } = _makeCell("Start (s)",    "start_time", "Start time in seconds");
+    const { cell: durCell,   inp: durInp   } = _makeCell("Duration (s)", "duration",   "0 = to end of file");
+    trimGrid.appendChild(startCell);
+    trimGrid.appendChild(durCell);
     wrap.appendChild(trimGrid);
+
+    // ── Slider / mark logic ────────────────────────────────────────────────────
+    let _slider  = null;
+    let _vidDur  = 0;
+
+    const _syncSlider = () => {
+        if (!_slider || _vidDur <= 0) return;
+        const lo  = Math.max(0, parseFloat(b.visual.start_time) || 0);
+        const dur = parseFloat(b.visual.duration) || 0;
+        const hi  = dur > 0 ? lo + dur : _vidDur;
+        _slider.setValues(lo, Math.min(hi, _vidDur));
+    };
+
+    const _buildSlider = () => {
+        sliderWrap.innerHTML = "";
+        markRow.innerHTML    = "";
+        if (_vidDur <= 0) { sliderWrap.style.display = "none"; markRow.style.display = "none"; return; }
+
+        const step = Math.max(0.05, _vidDur / 2000);
+        const lo0  = parseFloat(b.visual.start_time) || 0;
+        const dur0 = parseFloat(b.visual.duration) || 0;
+        const hi0  = dur0 > 0 ? lo0 + dur0 : _vidDur;
+
+        _slider = _buildRangeSlider(0, _vidDur, lo0, Math.min(hi0, _vidDur), {
+            step,
+            onchange: (lo, hi) => {
+                b.visual.start_time = parseFloat(lo.toFixed(2));
+                b.visual.duration   = hi >= _vidDur - step ? 0 : parseFloat((hi - lo).toFixed(2));
+                startInp.value = b.visual.start_time;
+                durInp.value   = b.visual.duration;
+            },
+        });
+        sliderWrap.appendChild(_slider.el);
+        sliderWrap.style.display = "";
+
+        markRow.appendChild(_mk("button", {
+            cls: "fbt-ce-btn", textContent: "◁ Mark Start",
+            title: "Set start time to current video position",
+            onclick: () => {
+                if (!_slider) return;
+                const t = Math.min(videoEl.currentTime, parseFloat(_slider.hi.value));
+                _slider.setValues(t, parseFloat(_slider.hi.value));
+                b.visual.start_time = parseFloat(t.toFixed(2));
+                startInp.value = b.visual.start_time;
+            },
+        }));
+        markRow.appendChild(_mk("button", {
+            cls: "fbt-ce-btn", textContent: "Mark End ▷",
+            title: "Set end time to current video position",
+            onclick: () => {
+                if (!_slider) return;
+                const t   = Math.max(videoEl.currentTime, parseFloat(_slider.lo.value));
+                const dur = t >= _vidDur - step ? 0 : parseFloat((t - parseFloat(_slider.lo.value)).toFixed(2));
+                _slider.setValues(parseFloat(_slider.lo.value), t);
+                b.visual.duration = dur;
+                durInp.value = dur;
+            },
+        }));
+        markRow.style.display = "";
+    };
+
+    const _loadFile = async filename => {
+        sliderWrap.innerHTML    = "";
+        markRow.innerHTML       = "";
+        sliderWrap.style.display = "none";
+        markRow.style.display    = "none";
+        infoEl.style.display     = "none";
+        _slider = null; _vidDur = 0;
+
+        if (!filename) { videoEl.style.display = "none"; videoEl.src = ""; return; }
+
+        videoEl.src = bundlesApi.streamUrl(filename);
+        videoEl.style.display = "";
+
+        try {
+            const info = await bundlesApi.mediaInfo(filename);
+            _vidDur = info.duration || 0;
+            if (_vidDur > 0) {
+                const m = Math.floor(_vidDur / 60);
+                const s = (_vidDur % 60).toFixed(2);
+                const durStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
+                infoEl.textContent = `${durStr}  •  ${info.fps.toFixed(2)} fps  •  ${info.width}×${info.height}  •  ${info.frame_count} frames`;
+                infoEl.style.display = "";
+                _buildSlider();
+            }
+        } catch (_) { /* skip slider if info unavailable */ }
+    };
+
+    sel.addEventListener("change", () => { b.visual.file = sel.value; _loadFile(sel.value); });
+    if (b.visual.file) _loadFile(b.visual.file);
+
     _buildFrameParamSection(wrap, b.visual);
 }
 
 function _buildImageList(wrap, b) {
+    if (!_S.mediaImages.length) {
+        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No image files in input directory" }));
+        return;
+    }
+
+    // Hover preview image
+    const previewImg = _mk("img", { cls: "fbt-be-img-preview", alt: "" });
+    let _hideTimer = null;
+
+    const _showPreview = filename => {
+        clearTimeout(_hideTimer);
+        previewImg.src = `/view?filename=${encodeURIComponent(filename)}&type=input&subfolder=`;
+        previewImg.style.display = "";
+    };
+    const _scheduleHide = () => {
+        _hideTimer = setTimeout(() => { previewImg.style.display = "none"; }, 150);
+    };
+
+    const listEl = _mk("div", { cls: "fbt-be-img-list" });
+    listEl.addEventListener("mouseenter", () => clearTimeout(_hideTimer));
+    listEl.addEventListener("mouseleave", _scheduleHide);
+
     const rebuildList = () => {
         listEl.innerHTML = "";
         if (!b.visual.files.length) {
@@ -572,6 +793,7 @@ function _buildImageList(wrap, b) {
         } else {
             b.visual.files.forEach((f, i) => {
                 const row = _mk("div", { cls: "fbt-be-img-row" });
+                row.addEventListener("mouseenter", () => _showPreview(f));
                 row.appendChild(_mk("span", { cls: "fbt-be-img-name", textContent: f, title: f }));
                 const btns = _mk("span", { cls: "fbt-be-img-btns" });
                 if (i > 0) {
@@ -606,6 +828,10 @@ function _buildImageList(wrap, b) {
         }
     };
 
+    const addSel = document.createElement("select");
+    addSel.className = "fbt-ce-select";
+    addSel.style.marginTop = "4px";
+
     const rebuildAddSel = () => {
         addSel.innerHTML = "";
         const available = _S.mediaImages.filter(f => !b.visual.files.includes(f));
@@ -615,36 +841,38 @@ function _buildImageList(wrap, b) {
         addSel.appendChild(placeholder);
         available.forEach(f => {
             const o = document.createElement("option");
-            o.value = f;
-            o.textContent = f;
+            o.value = f; o.textContent = f;
             addSel.appendChild(o);
         });
-        addSel.style.display = _S.mediaImages.length ? "" : "none";
     };
 
-    const listEl = _mk("div", { cls: "fbt-be-img-list" });
-    const addSel = document.createElement("select");
-    addSel.className = "fbt-ce-select";
-    addSel.style.marginTop = "4px";
     addSel.addEventListener("change", () => {
         if (!addSel.value) return;
-        if (!b.visual.files.includes(addSel.value)) {
-            b.visual.files.push(addSel.value);
+        const f = addSel.value;
+        if (!b.visual.files.includes(f)) {
+            b.visual.files.push(f);
             rebuildList();
             rebuildAddSel();
+            _showPreview(f);
         }
         addSel.value = "";
     });
 
-    if (!_S.mediaImages.length) {
-        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No image files in input directory" }));
-        return;
-    }
-
     rebuildList();
     rebuildAddSel();
+    wrap.appendChild(previewImg);
     wrap.appendChild(listEl);
     wrap.appendChild(addSel);
+}
+
+function _buildAudioPlayer(filename) {
+    const el = document.createElement("audio");
+    el.className = "fbt-be-audio-preview";
+    el.controls = true;
+    el.preload = "none";
+    if (filename) el.src = bundlesApi.streamUrl(filename);
+    else el.style.display = "none";
+    return el;
 }
 
 function _buildAudioVideoPicker(wrap, b) {
@@ -655,19 +883,25 @@ function _buildAudioVideoPicker(wrap, b) {
     const sel = document.createElement("select");
     sel.className = "fbt-ce-select";
     const blank = document.createElement("option");
-    blank.value = "";
-    blank.textContent = "— select video file —";
+    blank.value = ""; blank.textContent = "— select video file —";
     if (!b.audio.video_file) blank.selected = true;
     sel.appendChild(blank);
     _S.mediaVideos.forEach(f => {
         const o = document.createElement("option");
-        o.value = f;
-        o.textContent = f;
+        o.value = f; o.textContent = f;
         if (f === b.audio.video_file) o.selected = true;
         sel.appendChild(o);
     });
-    sel.addEventListener("change", () => { b.audio.video_file = sel.value; });
+
+    const audioEl = _buildAudioPlayer(b.audio.video_file);
+    sel.addEventListener("change", () => {
+        b.audio.video_file = sel.value;
+        if (sel.value) { audioEl.src = bundlesApi.streamUrl(sel.value); audioEl.style.display = ""; }
+        else { audioEl.src = ""; audioEl.style.display = "none"; }
+    });
+
     wrap.appendChild(sel);
+    wrap.appendChild(audioEl);
 }
 
 function _buildAudioPicker(wrap, b) {
@@ -677,19 +911,25 @@ function _buildAudioPicker(wrap, b) {
         const sel = document.createElement("select");
         sel.className = "fbt-ce-select";
         const blank = document.createElement("option");
-        blank.value = "";
-        blank.textContent = "— select audio file —";
+        blank.value = ""; blank.textContent = "— select audio file —";
         if (!b.audio.file) blank.selected = true;
         sel.appendChild(blank);
         _S.mediaAudio.forEach(f => {
             const o = document.createElement("option");
-            o.value = f;
-            o.textContent = f;
+            o.value = f; o.textContent = f;
             if (f === b.audio.file) o.selected = true;
             sel.appendChild(o);
         });
-        sel.addEventListener("change", () => { b.audio.file = sel.value; });
+
+        const audioEl = _buildAudioPlayer(b.audio.file);
+        sel.addEventListener("change", () => {
+            b.audio.file = sel.value;
+            if (sel.value) { audioEl.src = bundlesApi.streamUrl(sel.value); audioEl.style.display = ""; }
+            else { audioEl.src = ""; audioEl.style.display = "none"; }
+        });
+
         wrap.appendChild(sel);
+        wrap.appendChild(audioEl);
     }
     _buildAudioTimeSection(wrap, b.audio);
 }
