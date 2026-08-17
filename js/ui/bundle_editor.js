@@ -680,6 +680,8 @@ function _buildVideoPicker(wrap, b) {
     // ── Slider / mark logic ────────────────────────────────────────────────────
     let _slider  = null;
     let _vidDur  = 0;
+    let _onMeta  = null;
+    let _onErr   = null;
 
     const _syncSlider = () => {
         if (!_slider || _vidDur <= 0) return;
@@ -737,12 +739,21 @@ function _buildVideoPicker(wrap, b) {
         markRow.style.display = "";
     };
 
+    const errorEl = _mk("div", { cls: "fbt-be-warn" });
+    errorEl.style.display = "none";
+    wrap.insertBefore(errorEl, sliderWrap);
+
     const _loadFile = async filename => {
+        // Remove stale listeners from a previous load
+        if (_onMeta) { videoEl.removeEventListener("loadedmetadata", _onMeta); _onMeta = null; }
+        if (_onErr)  { videoEl.removeEventListener("error",           _onErr);  _onErr  = null; }
+
         sliderWrap.innerHTML    = "";
         markRow.innerHTML       = "";
         sliderWrap.style.display = "none";
         markRow.style.display    = "none";
         infoEl.style.display     = "none";
+        errorEl.style.display    = "none";
         _slider = null; _vidDur = 0;
 
         if (!filename) { videoEl.style.display = "none"; videoEl.src = ""; return; }
@@ -750,10 +761,36 @@ function _buildVideoPicker(wrap, b) {
         videoEl.src = bundlesApi.streamUrl(filename);
         videoEl.style.display = "";
 
+        // loadedmetadata fires when the browser can decode the video header —
+        // use it as the primary slider trigger so it works even if mediaInfo is slow.
+        _onMeta = () => {
+            _onMeta = null;
+            if (!_vidDur && isFinite(videoEl.duration) && videoEl.duration > 0) {
+                _vidDur = videoEl.duration;
+                _buildSlider();
+            }
+        };
+        videoEl.addEventListener("loadedmetadata", _onMeta, { once: true });
+
+        _onErr = () => {
+            _onErr = null;
+            const code = videoEl.error?.code;
+            const msgs = {
+                1: "Loading aborted.",
+                2: "Network error — check the server log.",
+                3: "Format not supported by browser (try an .mp4 encoded with H.264).",
+                4: "File not found or codec unsupported.",
+            };
+            errorEl.textContent = msgs[code] ?? "Video could not be loaded.";
+            errorEl.style.display = "";
+            videoEl.style.display = "none";
+        };
+        videoEl.addEventListener("error", _onErr, { once: true });
+
         try {
             const info = await bundlesApi.mediaInfo(filename);
-            _vidDur = info.duration || 0;
-            if (_vidDur > 0) {
+            if (info.duration > 0) {
+                _vidDur = info.duration;
                 const m = Math.floor(_vidDur / 60);
                 const s = (_vidDur % 60).toFixed(2);
                 const durStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
@@ -761,7 +798,7 @@ function _buildVideoPicker(wrap, b) {
                 infoEl.style.display = "";
                 _buildSlider();
             }
-        } catch (_) { /* skip slider if info unavailable */ }
+        } catch (_) { /* loadedmetadata will build the slider if mediaInfo is unavailable */ }
     };
 
     sel.addEventListener("change", () => { b.visual.file = sel.value; _loadFile(sel.value); });
