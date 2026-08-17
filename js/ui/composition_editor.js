@@ -1928,7 +1928,7 @@ function _buildShotCard(shot, index) {
             dlg?.speech_pace || "normal"
         );
         paceSel.className = "fbt-ce-select";
-        paceSel.title = "Slow (~2 words/sec): adds "speaking slowly and deliberately" to the prompt\nNormal (~2.5 words/sec): default conversational pace\nFast (~3 words/sec): adds "speaking quickly" to the prompt\n\nAlso controls how much voice reference audio is used (trim_to).";
+        paceSel.title = "Slow (~2 words/sec): adds “speaking slowly and deliberately” to the prompt\nNormal (~2.5 words/sec): default conversational pace\nFast (~3 words/sec): adds “speaking quickly” to the prompt\n\nAlso controls how much voice reference audio is used (trim_to).";
         paceSel.addEventListener("change", () => { if (shot.dialogue) shot.dialogue.speech_pace = paceSel.value; _markDirty(); });
 
         dlgFields.appendChild(_labeledRow("Speaker", spkSel));
