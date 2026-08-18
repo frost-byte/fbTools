@@ -20,9 +20,10 @@ const SHEET_ROLES = ["character sheet", "portrait", "side profile", "full body",
 const _S = {
     bundles:      [],   // [{id, name, subject_id, visual, audio, tags, ...}]
     subjects:     [],   // [{id, name, appearance_summary}]
-    mediaImages:  [],   // filenames from /fbtools/media/list?type=image
-    mediaVideos:  [],   // filenames from /fbtools/media/list?type=video
-    mediaAudio:   [],   // filenames from /fbtools/media/list?type=audio
+    mediaImages:       [],   // input dir images (recursive)
+    mediaImagesOutput: [],   // output dir images (recursive)
+    mediaVideos:       [],   // filenames from /fbtools/media/list?type=video
+    mediaAudio:        [],   // filenames from /fbtools/media/list?type=audio
     settings:     {},   // global composition settings (audio processing defaults, etc.)
     filterSubject:  "",
     filterText:     "",
@@ -97,18 +98,20 @@ function _filteredBundles() {
 // ── Data load ─────────────────────────────────────────────────────────────────
 
 async function _loadAll() {
-    const [bundles, subjects, imgs, vids, aud, llmSt, settingsRes] = await Promise.allSettled([
+    const [bundles, subjects, imgs, imgsOut, vids, aud, llmSt, settingsRes] = await Promise.allSettled([
         bundlesApi.listBundles(),
         bundlesApi.listSubjects(),
-        bundlesApi.listMedia("image", true),  // recursive — includes subdirectories
+        bundlesApi.listMedia("image", true),              // input dir, recursive
+        bundlesApi.listMedia("image", true, "output"),    // output dir, recursive
         bundlesApi.listMedia("video"),
         bundlesApi.listMedia("audio"),
         llmApi.status(),
         compositionsApi.getSettings(),
     ]);
-    _S.bundles     = bundles.value?.bundles   ?? [];
-    _S.subjects    = subjects.value?.subjects ?? [];
-    _S.mediaImages = imgs.value?.files        ?? [];
+    _S.bundles            = bundles.value?.bundles   ?? [];
+    _S.subjects           = subjects.value?.subjects ?? [];
+    _S.mediaImages        = imgs.value?.files        ?? [];
+    _S.mediaImagesOutput  = imgsOut.value?.files     ?? [];
     _S.mediaVideos = vids.value?.files        ?? [];
     _S.mediaAudio  = aud.value?.files         ?? [];
     _S.llmVision   = llmSt.value?.supports_vision ?? false;
@@ -970,31 +973,47 @@ function _buildVideoPicker(wrap, b) {
     }));
 }
 
-function _viewUrl(relPath) {
+function _viewUrl(relPath, folder = "input") {
     const slash = relPath.lastIndexOf("/");
     const name  = slash === -1 ? relPath        : relPath.slice(slash + 1);
     const sub   = slash === -1 ? ""             : relPath.slice(0, slash);
-    return `/view?filename=${encodeURIComponent(name)}&type=input&subfolder=${encodeURIComponent(sub)}`;
+    return `/view?filename=${encodeURIComponent(name)}&type=${folder}&subfolder=${encodeURIComponent(sub)}`;
 }
 
 function _buildImageList(wrap, b, onFilesChange = null) {
-    if (!_S.mediaImages.length) {
-        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No image files in input directory" }));
+    if (!_S.mediaImages.length && !_S.mediaImagesOutput.length) {
+        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No image files found" }));
         return;
     }
 
-    // ── Preview (shown on hover; hides only when mouse leaves the whole section) ─
-    const previewImg = _mk("img", { cls: "fbt-be-img-preview", alt: "" });
-    previewImg.style.display = "none";
-    let _hideTimer = null;
+    // ── Selected-image preview ─────────────────────────────────────────────────
+    // Stable pane below the assigned list; defaults to first image, click to change.
+    const selPreviewImg = _mk("img", { cls: "fbt-be-img-preview", alt: "" });
+    selPreviewImg.style.display = "none";
+    let selIdx = 0;
 
-    const _showPreview = path => {
-        clearTimeout(_hideTimer);
-        previewImg.src = _viewUrl(path);
-        previewImg.style.display = "";
+    const _showSelPreview = (path, folder = "input") => {
+        selPreviewImg.src = _viewUrl(path, folder);
+        selPreviewImg.style.display = "";
     };
-    const _scheduleHide = () => {
-        _hideTimer = setTimeout(() => { previewImg.style.display = "none"; }, 300);
+    const _hideSelPreview = () => {
+        selPreviewImg.style.display = "none";
+        selPreviewImg.src = "";
+    };
+
+    // ── Browse preview ─────────────────────────────────────────────────────────
+    // Updates dynamically as the user hovers items in the tree browser.
+    const browsePreviewImg = _mk("img", { cls: "fbt-be-img-preview", alt: "" });
+    browsePreviewImg.style.display = "none";
+    let _browseHideTimer = null;
+
+    const _showBrowsePreview = (path, folder = "input") => {
+        clearTimeout(_browseHideTimer);
+        browsePreviewImg.src = _viewUrl(path, folder);
+        browsePreviewImg.style.display = "";
+    };
+    const _scheduleBrowseHide = () => {
+        _browseHideTimer = setTimeout(() => { browsePreviewImg.style.display = "none"; }, 300);
     };
 
     // ── Tree builder ───────────────────────────────────────────────────────────
@@ -1010,16 +1029,13 @@ function _buildImageList(wrap, b, onFilesChange = null) {
         }
     };
 
-    const rootNode = { dirs: new Map(), files: [] };
-    _S.mediaImages.forEach(p => _insertPath(rootNode, p.split("/"), p));
-
     const _syncTree = () => {
         treeEl.querySelectorAll("[data-path]").forEach(el => {
             el.classList.toggle("fbt-be-tree-file-sel", b.visual.files.includes(el.dataset.path));
         });
     };
 
-    const renderNode = (node, depth) => {
+    const renderNode = (node, depth, folder) => {
         const el = _mk("div", { cls: "fbt-be-tree-node" });
         const indent = depth * 14;
 
@@ -1039,7 +1055,7 @@ function _buildImageList(wrap, b, onFilesChange = null) {
                 childWrap.style.display = opening ? "" : "none";
                 arrow.textContent = opening ? "▼" : "▶";
                 if (opening && !childWrap.firstChild) {
-                    childWrap.appendChild(renderNode(child, depth + 1));
+                    childWrap.appendChild(renderNode(child, depth + 1, folder));
                 }
             });
 
@@ -1055,12 +1071,12 @@ function _buildImageList(wrap, b, onFilesChange = null) {
             fileEl.classList.toggle("fbt-be-tree-file-sel", b.visual.files.includes(path));
             fileEl.appendChild(_mk("span", { cls: "fbt-be-tree-file-name", textContent: name, title: path }));
 
-            fileEl.addEventListener("mouseenter", () => _showPreview(path));
+            fileEl.addEventListener("mouseenter", () => _showBrowsePreview(path, folder));
             fileEl.addEventListener("click", () => {
                 if (!b.visual.files.includes(path)) {
                     b.visual.files.push(path);
+                    selIdx = b.visual.files.length - 1;
                     rebuildList();
-                    _showPreview(path);
                     onFilesChange?.();
                 }
             });
@@ -1070,28 +1086,84 @@ function _buildImageList(wrap, b, onFilesChange = null) {
         return el;
     };
 
-    treeEl.appendChild(renderNode(rootNode, 0));
+    // ── Folder tabs ────────────────────────────────────────────────────────────
+    let activeFolder = "input";
+
+    const rebuildTree = () => {
+        treeEl.innerHTML = "";
+        const images = activeFolder === "output" ? _S.mediaImagesOutput : _S.mediaImages;
+        if (!images.length) {
+            treeEl.appendChild(_mk("div", { cls: "fbt-be-media-empty",
+                textContent: `No images in ${activeFolder} directory.` }));
+            return;
+        }
+        const rootNode = { dirs: new Map(), files: [] };
+        images.forEach(p => _insertPath(rootNode, p.split("/"), p));
+        treeEl.appendChild(renderNode(rootNode, 0, activeFolder));
+        _syncTree();
+    };
+
+    const tabRow    = _mk("div", { cls: "fbt-be-tree-tab-row" });
+    const tabInput  = _mk("button", { cls: "fbt-be-tree-tab active", textContent: "Input" });
+    const tabOutput = _mk("button", { cls: "fbt-be-tree-tab",        textContent: "Output" });
+    tabRow.append(tabInput, tabOutput);
+
+    tabInput.addEventListener("click", () => {
+        if (activeFolder === "input") return;
+        activeFolder = "input";
+        tabInput.classList.add("active");
+        tabOutput.classList.remove("active");
+        rebuildTree();
+    });
+    tabOutput.addEventListener("click", () => {
+        if (activeFolder === "output") return;
+        activeFolder = "output";
+        tabOutput.classList.add("active");
+        tabInput.classList.remove("active");
+        rebuildTree();
+    });
+
+    rebuildTree();
 
     // ── Selected-files list ────────────────────────────────────────────────────
     const listEl = _mk("div", { cls: "fbt-be-img-list" });
+
+    const _syncSelHighlight = () => {
+        listEl.querySelectorAll(".fbt-be-img-row").forEach((row, i) => {
+            row.classList.toggle("fbt-be-img-row-active", i === selIdx);
+        });
+    };
 
     const rebuildList = () => {
         listEl.innerHTML = "";
         if (!b.visual.files.length) {
             listEl.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No images selected" }));
+            _hideSelPreview();
         } else {
+            selIdx = Math.max(0, Math.min(selIdx, b.visual.files.length - 1));
             b.visual.files.forEach((f, i) => {
                 const row = _mk("div", { cls: "fbt-be-img-row" });
-                row.addEventListener("mouseenter", () => _showPreview(f));
+                if (i === selIdx) row.classList.add("fbt-be-img-row-active");
+
+                const fileFolder = _S.mediaImagesOutput.includes(f) ? "output" : "input";
 
                 const namePart = f.split("/").pop();
-                row.appendChild(_mk("span", { cls: "fbt-be-img-name", textContent: namePart, title: f }));
+                const nameEl = _mk("span", { cls: "fbt-be-img-name fbt-be-img-name-click",
+                    textContent: namePart, title: f });
+                nameEl.addEventListener("click", () => {
+                    selIdx = i;
+                    _syncSelHighlight();
+                    _showSelPreview(f, fileFolder);
+                });
+                row.appendChild(nameEl);
 
                 const btns = _mk("span", { cls: "fbt-be-img-btns" });
                 if (i > 0) {
                     btns.appendChild(_mk("button", {
                         cls: "fbt-ce-icon-btn", textContent: "↑", title: "Move up",
                         onclick: () => {
+                            if (selIdx === i)        selIdx = i - 1;
+                            else if (selIdx === i - 1) selIdx = i;
                             [b.visual.files[i - 1], b.visual.files[i]] = [b.visual.files[i], b.visual.files[i - 1]];
                             rebuildList();
                         },
@@ -1101,6 +1173,8 @@ function _buildImageList(wrap, b, onFilesChange = null) {
                     btns.appendChild(_mk("button", {
                         cls: "fbt-ce-icon-btn", textContent: "↓", title: "Move down",
                         onclick: () => {
+                            if (selIdx === i)        selIdx = i + 1;
+                            else if (selIdx === i + 1) selIdx = i;
                             [b.visual.files[i], b.visual.files[i + 1]] = [b.visual.files[i + 1], b.visual.files[i]];
                             rebuildList();
                         },
@@ -1110,6 +1184,7 @@ function _buildImageList(wrap, b, onFilesChange = null) {
                     cls: "fbt-ce-icon-btn fbt-ce-danger", textContent: "✕", title: "Remove",
                     onclick: () => {
                         b.visual.files.splice(i, 1);
+                        if (selIdx >= b.visual.files.length) selIdx = Math.max(0, b.visual.files.length - 1);
                         rebuildList();
                         onFilesChange?.();
                     },
@@ -1117,23 +1192,32 @@ function _buildImageList(wrap, b, onFilesChange = null) {
                 row.appendChild(btns);
                 listEl.appendChild(row);
             });
+
+            // Keep selected preview in sync with selIdx
+            const selFile   = b.visual.files[selIdx];
+            const selFolder = _S.mediaImagesOutput.includes(selFile) ? "output" : "input";
+            _showSelPreview(selFile, selFolder);
         }
         _syncTree();
     };
 
     rebuildList();
 
-    // ── Hover container — wraps list + tree + preview so mouse can move freely ─
-    const hoverWrap = _mk("div", { cls: "fbt-be-img-hover-wrap" });
-    hoverWrap.addEventListener("mouseenter", () => clearTimeout(_hideTimer));
-    hoverWrap.addEventListener("mouseleave", _scheduleHide);
+    // ── Browse hover wrapper — covers tree + browse preview so mouse moves freely ─
+    const browseHoverWrap = _mk("div", { cls: "fbt-be-browse-hover-wrap" });
+    browseHoverWrap.addEventListener("mouseenter", () => clearTimeout(_browseHideTimer));
+    browseHoverWrap.addEventListener("mouseleave", _scheduleBrowseHide);
+    browseHoverWrap.appendChild(treeEl);
+    browseHoverWrap.appendChild(browsePreviewImg);
 
-    const treeLabel = _mk("div", { cls: "fbt-be-param-section-label", textContent: "Browse library" });
-    hoverWrap.appendChild(listEl);
-    hoverWrap.appendChild(treeLabel);
-    hoverWrap.appendChild(treeEl);
-    hoverWrap.appendChild(previewImg);
-    wrap.appendChild(hoverWrap);
+    // ── Outer layout ───────────────────────────────────────────────────────────
+    const outer = _mk("div", { cls: "fbt-be-img-section" });
+    outer.appendChild(listEl);
+    outer.appendChild(selPreviewImg);
+    outer.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: "Browse library" }));
+    outer.appendChild(tabRow);
+    outer.appendChild(browseHoverWrap);
+    wrap.appendChild(outer);
 }
 
 function _buildAudioProcessingSection(wrap, b, sourceAudioEl = null) {

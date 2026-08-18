@@ -71,6 +71,8 @@ const _S = {
     llmLoaded:      null,  // currently loaded model name (string) or null
     llmVision:      false, // does loaded model support vision?
     llmBusy:        false, // in-flight load or generate
+    // SAM2 segmentation state
+    sam2:           null,  // null=unchecked; {available, packages_ok, model_file, install_hint, model_hint}
 };
 
 // Key DOM refs rebuilt on each panel render
@@ -419,7 +421,7 @@ function _attachLibberCompletion(el) {
 
 async function _loadResources() {
     try {
-        const [subj, bg, cam, snd, comps, llmData, llmStatus, settingsRes, libbersRes, lorasRes, outfitsRes] = await Promise.allSettled([
+        const [subj, bg, cam, snd, comps, llmData, llmStatus, settingsRes, libbersRes, lorasRes, outfitsRes, sam2Res] = await Promise.allSettled([
             compositionsApi.listSubjects(),
             compositionsApi.listBackgrounds(),
             compositionsApi.listCameraPresets(),
@@ -431,6 +433,7 @@ async function _loadResources() {
             libberAPI.listLibbers(),
             compositionsApi.listLoras(),
             compositionsApi.getOutfitRegistry(),
+            fetch("/fbtools/outfits/sam2_status").then(r => r.json()),
         ]);
         _S.subjects      = subj.value?.subjects      ?? [];
         _S.backgrounds   = bg.value?.backgrounds     ?? [];
@@ -455,6 +458,7 @@ async function _loadResources() {
         _S.libbers    = libbersRes.value?.files    ?? [];
         _S.lorasList  = lorasRes.value?.loras     ?? [];
         _S.outfits    = outfitsRes.value?.outfits ?? {};
+        _S.sam2       = sam2Res.status === "fulfilled" ? sam2Res.value : null;
     } catch (e) {
         console.error("fbt CompositionEditor: resource load error", e);
     }
@@ -1113,6 +1117,141 @@ function _openOutfitEditor(existingId) {
         analyzeSection.appendChild(analyzeBtn);
     }
 
+    // ── SAM2 outfit extraction section ─────────────────────────────────────────
+    const sam2Section = _mk("div", { cls: "fbt-ce-outfit-sam2" });
+    (function _buildSam2Section() {
+        const s = _S.sam2;
+        if (!s) return; // status unknown — skip silently
+
+        if (!s.packages_ok) {
+            // Packages not installed — show setup hint
+            sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint fbt-ce-hint-warn",
+                textContent: "SAM2 Outfit Extraction unavailable." }));
+            sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint",
+                textContent: `To enable: ${s.install_hint}` }));
+            return;
+        }
+
+        if (!s.available) {
+            // Packages ok but no model file
+            sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint",
+                textContent: "SAM2 model not found." }));
+            sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint fbt-ce-hint-warn",
+                textContent: s.model_hint || "Download a SAM2 safetensors model and place in models/sams/" }));
+            return;
+        }
+
+        // ── Full extraction UI ────────────────────────────────────────────────
+        let extractPoint = { x: 0.5, y: 0.5 };  // normalized
+        let lastResultFile = null;
+
+        const srcInput = _mk("input", {
+            cls:         "fbt-ce-input",
+            placeholder: "Source image filename (from ComfyUI input dir)",
+        });
+
+        // Image preview with click-to-point
+        const previewWrap = _mk("div", { cls: "fbt-ce-sam2-preview-wrap" });
+        const previewImg  = _mk("img",  { cls: "fbt-ce-sam2-preview-img", alt: "" });
+        const pointDot    = _mk("div",  { cls: "fbt-ce-sam2-point-dot" });
+        const hintText    = _mk("div",  { cls: "fbt-ce-hint",
+            textContent: "Click the image to set the segmentation focus point." });
+        const pointLabel  = _mk("div",  { cls: "fbt-ce-hint fbt-ce-sam2-coords",
+            textContent: "Point: (0.50, 0.50)" });
+        previewWrap.append(previewImg, pointDot);
+        previewImg.style.display = "none";
+
+        function _updateDot() {
+            pointDot.style.left = `${extractPoint.x * 100}%`;
+            pointDot.style.top  = `${extractPoint.y * 100}%`;
+            pointLabel.textContent = `Point: (${extractPoint.x.toFixed(2)}, ${extractPoint.y.toFixed(2)})`;
+        }
+        _updateDot();
+
+        previewWrap.addEventListener("click", e => {
+            if (!previewImg.naturalWidth) return;
+            const rect = previewWrap.getBoundingClientRect();
+            extractPoint = {
+                x: Math.max(0, Math.min(1, (e.clientX - rect.left)  / rect.width)),
+                y: Math.max(0, Math.min(1, (e.clientY - rect.top)   / rect.height)),
+            };
+            _updateDot();
+        });
+
+        srcInput.addEventListener("change", () => {
+            const fname = srcInput.value.trim();
+            if (fname) {
+                previewImg.src = `/view?filename=${encodeURIComponent(fname)}&type=input`;
+                previewImg.style.display = "";
+            } else {
+                previewImg.style.display = "none";
+            }
+        });
+
+        // Result preview
+        const resultWrap = _mk("div",  { cls: "fbt-ce-sam2-result-wrap" });
+        const resultImg  = _mk("img",  { cls: "fbt-ce-sam2-result-img", alt: "Extracted outfit" });
+        resultWrap.style.display = "none";
+        resultWrap.appendChild(resultImg);
+
+        const addResultBtn = _mk("button", {
+            cls:         "fbt-ce-btn fbt-ce-btn-sm",
+            textContent: "Add to References",
+            onclick: () => {
+                if (lastResultFile && !refImages.some(r => r.file === lastResultFile)) {
+                    refImages.push({ file: lastResultFile, role: "costume detail" });
+                    _renderRefList();
+                }
+            },
+        });
+        addResultBtn.style.display = "none";
+
+        // Extract button
+        const extractBtn = _mk("button", {
+            cls:         "fbt-ce-btn",
+            textContent: "✂ Extract Outfit",
+            onclick: async () => {
+                const fname = srcInput.value.trim();
+                if (!fname) { alert("Enter a source image filename first."); return; }
+                extractBtn.disabled   = true;
+                extractBtn.textContent = "Extracting…";
+                resultWrap.style.display = "none";
+                addResultBtn.style.display = "none";
+                try {
+                    const res = await fetch("/fbtools/outfits/extract_outfit", {
+                        method:  "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body:    JSON.stringify({
+                            filename:    fname,
+                            point_x:     extractPoint.x,
+                            point_y:     extractPoint.y,
+                            point_label: 1,
+                        }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || res.statusText);
+                    lastResultFile = data.result_file;
+                    resultImg.src  = `/view?filename=${encodeURIComponent(lastResultFile)}&type=input`;
+                    resultWrap.style.display   = "";
+                    addResultBtn.style.display = "";
+                } catch (e) { alert(`Extraction failed: ${e.message}`); }
+                finally {
+                    extractBtn.disabled    = false;
+                    extractBtn.textContent = "✂ Extract Outfit";
+                }
+            },
+        });
+
+        sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint", textContent: "SAM2 Outfit Extraction" }));
+        sam2Section.appendChild(srcInput);
+        sam2Section.appendChild(hintText);
+        sam2Section.appendChild(previewWrap);
+        sam2Section.appendChild(pointLabel);
+        sam2Section.appendChild(extractBtn);
+        sam2Section.appendChild(resultWrap);
+        sam2Section.appendChild(addResultBtn);
+    }());
+
     // ── Buttons ────────────────────────────────────────────────────────────────
     const saveBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Save",
         onclick: async () => {
@@ -1151,6 +1290,7 @@ function _openOutfitEditor(existingId) {
     modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }));
     modal.appendChild(refListEl);
     if (_S.llmVision) modal.appendChild(analyzeSection);
+    if (_S.sam2) modal.appendChild(sam2Section);
     modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, [cancelBtn, saveBtn]));
 
     document.body.appendChild(overlay);
