@@ -11588,12 +11588,17 @@ def _load_subject_images(filenames: "list[str | dict]") -> "torch.Tensor | None"
     """
     tensors: list = []
     target_h = target_w = None
-    input_dir = get_input_directory()
+    input_dir  = get_input_directory()
+    output_dir = get_output_directory()
     for entry in filenames:
         fname = entry["file"] if isinstance(entry, dict) else entry
         if not fname:
             continue
         path = os.path.join(input_dir, fname)
+        if not os.path.exists(path):
+            alt = os.path.join(output_dir, fname)
+            if os.path.exists(alt):
+                path = alt
         if not os.path.exists(path):
             logger.debug("Subject image not found: %s", path)
             continue
@@ -13470,21 +13475,28 @@ async def _media_list(request):
                 {"error": f"Invalid type {media_type!r}. Use image, video, audio, or all."},
                 status=400,
             )
-        input_dir = get_input_directory()
+        folder_param = request.rel_url.query.get("folder", "input").lower()
+        if folder_param == "output":
+            base_dir = get_output_directory()
+        elif folder_param == "input":
+            base_dir = get_input_directory()
+        else:
+            return web.json_response({"error": f"Invalid folder {folder_param!r}. Use input or output."}, status=400)
+
         recursive = request.rel_url.query.get("recursive", "false").lower() == "true"
 
         if recursive:
             files = []
-            for dirpath, dirnames, filenames in os.walk(input_dir):
+            for dirpath, dirnames, filenames in os.walk(base_dir):
                 # skip hidden dirs (e.g. .cache, .tmp)
                 dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
                 for f in filenames:
                     if os.path.splitext(f)[1].lower() in exts:
-                        rel = os.path.relpath(os.path.join(dirpath, f), input_dir)
+                        rel = os.path.relpath(os.path.join(dirpath, f), base_dir)
                         files.append(rel.replace(os.sep, "/"))
         else:
             files = [
-                f for f in os.listdir(input_dir)
+                f for f in os.listdir(base_dir)
                 if os.path.splitext(f)[1].lower() in exts
             ]
 
@@ -14316,9 +14328,14 @@ async def _llm_generate(request):
             try:
                 from PIL import Image
                 import folder_paths
-                input_dir = folder_paths.get_input_directory()
+                input_dir  = folder_paths.get_input_directory()
+                output_dir = folder_paths.get_output_directory()
                 for fname in image_filenames:
                     fpath = os.path.join(input_dir, fname)
+                    if not os.path.exists(fpath):
+                        alt = os.path.join(output_dir, fname)
+                        if os.path.exists(alt):
+                            fpath = alt
                     if os.path.exists(fpath):
                         pil_images.append(Image.open(fpath).convert("RGB"))
                     else:

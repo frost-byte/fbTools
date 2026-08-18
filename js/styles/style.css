@@ -1652,7 +1652,13 @@ textarea.prompt-value-input {
     accent-color: #4ade80;
 }
 
-.fbt-be-img-hover-wrap {
+.fbt-be-img-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.fbt-be-browse-hover-wrap {
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -1668,7 +1674,51 @@ textarea.prompt-value-input {
     border: 1px solid var(--border-color, #333);
 }
 
+.fbt-be-img-row-active {
+    background: var(--comfy-menu-bg-secondary, #2a2a2a);
+    border-color: var(--p-primary-400, #4af);
+}
+
+.fbt-be-img-name-click {
+    cursor: pointer;
+}
+
+.fbt-be-img-name-click:hover {
+    color: var(--fg-color, #eee);
+    text-decoration: underline;
+}
+
 /* ── Image tree browser ─────────────────────────────────────────────────────── */
+
+.fbt-be-tree-tab-row {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border-color, #333);
+    margin-top: 2px;
+}
+
+.fbt-be-tree-tab {
+    flex: 1;
+    padding: 3px 6px;
+    font-size: 11px;
+    font-weight: 500;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--p-surface-400, #888);
+    cursor: pointer;
+    text-align: center;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.fbt-be-tree-tab:hover:not(.active) {
+    color: var(--fg-color, #ddd);
+}
+
+.fbt-be-tree-tab.active {
+    color: var(--p-primary-400, #4af);
+    border-bottom-color: var(--p-primary-400, #4af);
+}
 
 .fbt-be-tree {
     max-height: 180px;
