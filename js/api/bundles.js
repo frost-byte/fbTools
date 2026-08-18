@@ -65,6 +65,20 @@ export class BundlesAPI extends BaseAPI {
         return this.post("/subjects/save", { id, appearance: { summary } });
     }
 
+    getSubject(id) {
+        return this.get("/subjects/get", { id });
+    }
+
+    saveSubject(subject) {
+        return this.post("/subjects/save", subject);
+    }
+
+    async deleteSubject(id) {
+        const r = await fetch(`/fbtools/subjects/delete?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!r.ok) throw new Error(`Delete failed: ${r.statusText}`);
+        return r.json();
+    }
+
     extractFrame(filename, frameIndex) {
         return this.post("/media/extract_frame", { filename, frame_index: frameIndex });
     }

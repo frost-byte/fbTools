@@ -1016,6 +1016,73 @@ textarea.prompt-value-input {
     font-size: 11px;
 }
 
+/* ── SAM2 Outfit Extraction ─────────────────────────────────────────────────── */
+
+.fbt-ce-outfit-sam2 {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+    background: color-mix(in srgb, var(--p-teal-400, #2dd4bf) 6%, transparent);
+    border: 1px solid color-mix(in srgb, var(--p-teal-400, #2dd4bf) 25%, transparent);
+    border-radius: 5px;
+}
+
+.fbt-ce-sam2-preview-wrap {
+    position: relative;
+    cursor: crosshair;
+    display: inline-block;
+    width: 100%;
+    overflow: hidden;
+    border-radius: 4px;
+    background: var(--comfy-input-bg, #2a2a2a);
+}
+
+.fbt-ce-sam2-preview-img {
+    display: block;
+    max-width: 100%;
+    max-height: 280px;
+    object-fit: contain;
+    pointer-events: none;
+    border-radius: 4px;
+}
+
+.fbt-ce-sam2-point-dot {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--p-teal-400, #2dd4bf);
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.4);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    top: 50%;
+    left: 50%;
+}
+
+.fbt-ce-sam2-coords {
+    font-variant-numeric: tabular-nums;
+}
+
+.fbt-ce-sam2-result-wrap {
+    margin-top: 4px;
+}
+
+.fbt-ce-sam2-result-img {
+    max-width: 100%;
+    max-height: 280px;
+    object-fit: contain;
+    border-radius: 4px;
+    border: 1px solid var(--border-color, #444);
+    background: repeating-conic-gradient(#888 0% 25%, #555 0% 50%)
+                0 0 / 12px 12px;   /* checkerboard for transparency */
+}
+
+.fbt-ce-hint-warn {
+    color: var(--p-amber-400, #fbbf24);
+}
+
 /* ── Phase 3: Inline new-resource forms in sidebar ─────────────────────────── */
 
 .fbt-ce-sb-new {
@@ -1267,6 +1334,37 @@ textarea.prompt-value-input {
     flex-wrap: wrap;
 }
 
+.fbt-be-tab-row {
+    width: 100%;
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border-color, #333);
+    margin-bottom: 2px;
+}
+
+.fbt-be-tab {
+    flex: 1;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-weight: 500;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--p-surface-400, #888);
+    cursor: pointer;
+    text-align: center;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.fbt-be-tab:hover:not(.active) {
+    color: var(--fg-color, #ddd);
+}
+
+.fbt-be-tab.active {
+    color: var(--p-primary-400, #4af);
+    border-bottom-color: var(--p-primary-400, #4af);
+}
+
 .fbt-be-filter-sel {
     flex: 0 0 auto;
     min-width: 0;
@@ -1337,6 +1435,25 @@ textarea.prompt-value-input {
     white-space: nowrap;
     font-size: 12px;
     font-weight: 500;
+}
+
+.fbt-be-card-meta {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-family: monospace;
+    color: var(--p-surface-400, #888);
+    background: var(--comfy-input-bg, #2a2a2a);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 3px;
+    padding: 1px 4px;
+}
+
+.fbt-be-card-summary {
+    font-size: 11px;
+    color: var(--p-surface-400, #888);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .fbt-be-badges {
@@ -1731,6 +1848,90 @@ textarea.prompt-value-input {
     display: flex;
     gap: 6px;
     padding: 8px 10px 4px;
+}
+
+/* ── Subject form: details/subfields ────────────────────────────────────────── */
+
+.fbt-be-details {
+    margin: 4px 0;
+}
+
+.fbt-be-details-summary {
+    font-size: 11px;
+    color: var(--p-surface-400, #888);
+    cursor: pointer;
+    padding: 3px 0;
+    user-select: none;
+}
+
+.fbt-be-details-summary:hover {
+    color: var(--fg-color, #ddd);
+}
+
+.fbt-be-subfield-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 6px 0 2px;
+}
+
+.fbt-be-subfield-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.fbt-be-subfield-label {
+    font-size: 10px;
+    color: var(--p-surface-400, #888);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* ── Subject form: character sheet images ────────────────────────────────────── */
+
+.fbt-be-sheet-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 6px;
+}
+
+.fbt-be-sheet-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 4px;
+    background: var(--comfy-input-bg, #2a2a2a);
+    border: 1px solid var(--border-color, #333);
+    border-radius: 3px;
+}
+
+.fbt-be-sheet-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+}
+
+.fbt-be-sheet-role-sel {
+    flex: 0 0 auto;
+    font-size: 11px;
+    padding: 2px 4px;
+}
+
+.fbt-be-sheet-add-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.fbt-be-sheet-add-input {
+    flex: 1 1 120px;
+    min-width: 0;
 }
 
 /* ── Bundle editor LLM appearance analyzer ─────────────────────────────────── */

@@ -13,6 +13,8 @@ import { compositionsApi } from "../api/compositions.js";
 
 const BUNDLE_PAGE_SIZE = 10;
 
+const SHEET_ROLES = ["character sheet", "portrait", "side profile", "full body", "costume detail", "reference"];
+
 // ── Module state ───────────────────────────────────────────────────────────────
 
 const _S = {
@@ -22,13 +24,18 @@ const _S = {
     mediaVideos:  [],   // filenames from /fbtools/media/list?type=video
     mediaAudio:   [],   // filenames from /fbtools/media/list?type=audio
     settings:     {},   // global composition settings (audio processing defaults, etc.)
-    filterSubject: "",
-    filterText:    "",
-    listPage:      0,
-    lastId:        "",
-    editing:       null,  // bundle object being edited; null = list view
-    isNew:         false,
-    llmVision:    false,  // true when a vision-capable model is loaded
+    filterSubject:  "",
+    filterText:     "",
+    listPage:       0,
+    lastId:         "",
+    editing:        null,  // bundle object being edited; null = list view
+    isNew:          false,
+    llmVision:      false,  // true when a vision-capable model is loaded
+    // Subject editor state
+    viewMode:       "bundles",  // "bundles" | "subjects"
+    subjectEditing: null,       // full subject dict being edited; null = list view
+    subjectIsNew:   false,
+    subjectFilter:  "",
 };
 
 // Key DOM refs
@@ -392,17 +399,17 @@ function _renderForm() {
             _buildFrameParamSection(audioPickerWrap, b.audio, { title: "Frame sampling (legacy VHS path)" });
             _buildAudioTimeSection(audioPickerWrap, b.audio);
             _buildAudioRoleSection(audioPickerWrap, b.audio);
-            _buildAudioProcessingSection(audioPickerWrap, b);
+            _buildAudioProcessingSection(audioPickerWrap, b, null);
         } else if (b.audio.source === "extract_from_video") {
-            _buildAudioVideoPicker(audioPickerWrap, b);
+            const srcPlayerA = _buildAudioVideoPicker(audioPickerWrap, b);
             _buildFrameParamSection(audioPickerWrap, b.audio, { title: "Frame sampling" });
             _buildAudioTimeSection(audioPickerWrap, b.audio);
             _buildAudioRoleSection(audioPickerWrap, b.audio);
-            _buildAudioProcessingSection(audioPickerWrap, b);
+            _buildAudioProcessingSection(audioPickerWrap, b, srcPlayerA);
         } else if (b.audio.source === "file") {
-            _buildAudioPicker(audioPickerWrap, b);
+            const srcPlayerB = _buildAudioPicker(audioPickerWrap, b);
             _buildAudioRoleSection(audioPickerWrap, b.audio);
-            _buildAudioProcessingSection(audioPickerWrap, b);
+            _buildAudioProcessingSection(audioPickerWrap, b, srcPlayerB);
         }
     };
     audioSourceEl.addEventListener("change", () => {
@@ -969,8 +976,9 @@ function _buildImageList(wrap, b, onFilesChange = null) {
         return;
     }
 
-    // Hover preview image
+    // Hover preview image — appended after listEl/addSel so it never shifts the list on show
     const previewImg = _mk("img", { cls: "fbt-be-img-preview", alt: "" });
+    previewImg.style.display = "none";
     let _hideTimer = null;
 
     const _showPreview = filename => {
@@ -979,8 +987,12 @@ function _buildImageList(wrap, b, onFilesChange = null) {
         previewImg.style.display = "";
     };
     const _scheduleHide = () => {
-        _hideTimer = setTimeout(() => { previewImg.style.display = "none"; }, 150);
+        _hideTimer = setTimeout(() => { previewImg.style.display = "none"; }, 200);
     };
+
+    // Hovering onto the preview itself cancels the hide timer
+    previewImg.addEventListener("mouseenter", () => clearTimeout(_hideTimer));
+    previewImg.addEventListener("mouseleave", _scheduleHide);
 
     const listEl = _mk("div", { cls: "fbt-be-img-list" });
     listEl.addEventListener("mouseenter", () => clearTimeout(_hideTimer));
@@ -1062,12 +1074,12 @@ function _buildImageList(wrap, b, onFilesChange = null) {
 
     rebuildList();
     rebuildAddSel();
-    wrap.appendChild(previewImg);
     wrap.appendChild(listEl);
     wrap.appendChild(addSel);
+    wrap.appendChild(previewImg);
 }
 
-function _buildAudioProcessingSection(wrap, b) {
+function _buildAudioProcessingSection(wrap, b, sourceAudioEl = null) {
     // Ensure schema fields exist on older bundles
     if (!b.audio.audio_processing) {
         b.audio.audio_processing = { noise_removal: false, normalize_lufs: true, target_lufs: -14.0 };
@@ -1098,8 +1110,12 @@ function _buildAudioProcessingSection(wrap, b) {
         return { row, cb };
     };
 
-    const { row: noiseRow } = _checkRow("Noise removal", "noise_removal",
-        "Spectral subtraction — removes background hiss and room noise");
+    const _hasMelband = !!(_S.settings?.melband_model_path?.trim());
+    const _noiseLabel = _hasMelband ? "Vocal extraction" : "Noise reduction";
+    const _noiseHint  = _hasMelband
+        ? "Isolate the vocal stem using MelBand Roformer source separation"
+        : "Spectral subtraction — removes background hiss. For better results, set a MelBand Roformer model path in Settings.";
+    const { row: noiseRow } = _checkRow(_noiseLabel, "noise_removal", _noiseHint);
     sec.appendChild(noiseRow);
 
     // LUFS normalize row with inline target input
@@ -1154,10 +1170,16 @@ function _buildAudioProcessingSection(wrap, b) {
                 previewEl.dataset.cachePath = cache;
             }
             previewEl.style.display = "";
+            // Hide the original source player — processed audio is now the one to hear
+            if (sourceAudioEl) sourceAudioEl.style.display = "none";
         } else {
             previewEl.src = "";
             previewEl.style.display = "none";
             delete previewEl.dataset.cachePath;
+            // Restore the original source player when cache is cleared
+            if (sourceAudioEl) {
+                sourceAudioEl.style.display = sourceAudioEl.src ? "" : "none";
+            }
         }
     };
     _updateStatus();
@@ -1228,7 +1250,7 @@ function _buildAudioPlayer(filename) {
 function _buildAudioVideoPicker(wrap, b) {
     if (!_S.mediaVideos.length) {
         wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No video files in input directory" }));
-        return;
+        return null;
     }
     const sel = document.createElement("select");
     sel.className = "fbt-ce-select";
@@ -1244,6 +1266,7 @@ function _buildAudioVideoPicker(wrap, b) {
     });
 
     const audioEl = _buildAudioPlayer(b.audio.video_file);
+    audioEl.title = "Original source audio";
     sel.addEventListener("change", () => {
         b.audio.video_file = sel.value;
         if (sel.value) { audioEl.src = bundlesApi.streamUrl(sel.value); audioEl.style.display = ""; }
@@ -1252,9 +1275,11 @@ function _buildAudioVideoPicker(wrap, b) {
 
     wrap.appendChild(sel);
     wrap.appendChild(audioEl);
+    return audioEl;
 }
 
 function _buildAudioPicker(wrap, b) {
+    let audioEl = null;
     if (!_S.mediaAudio.length) {
         wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No audio files in input directory" }));
     } else {
@@ -1271,7 +1296,8 @@ function _buildAudioPicker(wrap, b) {
             sel.appendChild(o);
         });
 
-        const audioEl = _buildAudioPlayer(b.audio.file);
+        audioEl = _buildAudioPlayer(b.audio.file);
+        audioEl.title = "Original source audio";
         sel.addEventListener("change", () => {
             b.audio.file = sel.value;
             if (sel.value) { audioEl.src = bundlesApi.streamUrl(sel.value); audioEl.style.display = ""; }
@@ -1282,6 +1308,7 @@ function _buildAudioPicker(wrap, b) {
         wrap.appendChild(audioEl);
     }
     _buildAudioTimeSection(wrap, b.audio);
+    return audioEl;
 }
 
 const _DEFAULT_APPEARANCE_QUERY =
@@ -1505,12 +1532,383 @@ async function _onSave(b, warnEl) {
     }
 }
 
+// ── Subject management ────────────────────────────────────────────────────────
+
+function _startNewSubject() {
+    _S.subjectEditing = {
+        id: "", name: "",
+        appearance: { summary: "", face: "", hair: "", body: "", default_outfit: "" },
+        voice: { description: "", language: "English", audio_reference_file: "" },
+        character_sheet_images: [],
+        concept_id: "",
+    };
+    _S.subjectIsNew = true;
+    _renderSubjectForm();
+}
+
+async function _startEditSubject(id) {
+    try {
+        const data = await bundlesApi.getSubject(id);
+        _S.subjectEditing = data;
+        _S.subjectEditing.id = id;
+        if (!_S.subjectEditing.appearance) _S.subjectEditing.appearance = {};
+        if (!_S.subjectEditing.voice)      _S.subjectEditing.voice = {};
+        if (!_S.subjectEditing.character_sheet_images) _S.subjectEditing.character_sheet_images = [];
+        _S.subjectIsNew = false;
+        _renderSubjectForm();
+    } catch (e) {
+        _toast("Failed to load subject: " + e.message, "error");
+    }
+}
+
+function _cancelSubjectEdit() {
+    _S.subjectEditing = null;
+    _S.subjectIsNew = false;
+    _renderSubjectList();
+}
+
+async function _onDeleteSubject(id, name) {
+    if (!confirm(`Delete subject "${name || id}"? This cannot be undone.`)) return;
+    try {
+        await bundlesApi.deleteSubject(id);
+        _S.subjects = _S.subjects.filter(s => s.id !== id);
+        _repopulateSubjectFilter();
+        _S.subjectEditing = null;
+        _S.subjectIsNew = false;
+        _renderSubjectList();
+        _toast(`Deleted "${name || id}"`, "success");
+    } catch (e) {
+        _toast("Delete failed: " + e.message, "error");
+    }
+}
+
+async function _onSaveSubject(s, warnEl) {
+    const name = (s.name || "").trim();
+    const id   = (s.id   || "").trim();
+    if (!name) { _toast("Subject name is required", "warn"); return; }
+    if (!id)   { _toast("Subject ID is required", "warn"); return; }
+
+    warnEl.style.display = "none";
+    try {
+        await bundlesApi.saveSubject({ ...s, id, name });
+        const res = await bundlesApi.listSubjects();
+        _S.subjects = res.subjects ?? [];
+        _repopulateSubjectFilter();
+        _S.subjectEditing = null;
+        _S.subjectIsNew = false;
+        _renderSubjectList();
+        _toast(`Saved "${name}"`, "success");
+    } catch (e) {
+        warnEl.textContent = e.message;
+        warnEl.style.display = "";
+        _toast("Save failed", "error");
+    }
+}
+
+function _renderSubjectList() {
+    const c = _dom.content;
+    if (!c) return;
+    c.innerHTML = "";
+
+    let items = _S.subjects;
+    if (_S.subjectFilter) {
+        const q = _S.subjectFilter.toLowerCase();
+        items = items.filter(s =>
+            (s.name || "").toLowerCase().includes(q) ||
+            (s.id   || "").toLowerCase().includes(q)
+        );
+    }
+
+    if (!items.length) {
+        c.appendChild(_mk("div", { cls: "fbt-be-empty",
+            textContent: _S.subjects.length
+                ? "No subjects match the search."
+                : "No subjects defined. Click + New Subject to create one." }));
+        return;
+    }
+
+    items.forEach(s => {
+        const card = _mk("div", { cls: "fbt-be-card fbt-be-card-clickable" });
+        const top  = _mk("div", { cls: "fbt-be-card-top" });
+        top.appendChild(_mk("span", { cls: "fbt-be-card-name", textContent: s.name || s.id }));
+        if (s.concept_id) {
+            top.appendChild(_mk("span", { cls: "fbt-be-card-meta", textContent: s.concept_id, title: "Concept ID" }));
+        }
+        card.appendChild(top);
+
+        if (s.appearance_summary) {
+            card.appendChild(_mk("div", { cls: "fbt-be-card-summary", textContent: s.appearance_summary }));
+        }
+
+        const actions = _mk("div", { cls: "fbt-be-card-actions" });
+        actions.appendChild(_mk("button", {
+            cls: "fbt-ce-icon-btn", title: "Edit", textContent: "✎",
+            onclick: e => { e.stopPropagation(); _startEditSubject(s.id); },
+        }));
+        actions.appendChild(_mk("button", {
+            cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Delete", textContent: "✕",
+            onclick: e => { e.stopPropagation(); _onDeleteSubject(s.id, s.name); },
+        }));
+        card.appendChild(actions);
+        card.addEventListener("click", () => _startEditSubject(s.id));
+        c.appendChild(card);
+    });
+}
+
+function _renderSubjectForm() {
+    const c = _dom.content;
+    if (!c) return;
+    c.innerHTML = "";
+
+    const s = _S.subjectEditing;
+    let idManuallyEdited = !_S.subjectIsNew;
+
+    const form = _mk("div", { cls: "fbt-be-form" });
+
+    // ── Basic fields ───────────────────────────────────────────────────────────
+    const nameEl = _mk("input", { cls: "fbt-ce-input", type: "text",
+        placeholder: "Subject name *", value: s.name || "" });
+    const idEl   = _mk("input", { cls: "fbt-ce-input", type: "text",
+        placeholder: "subject_id (auto-generated)", value: s.id || "" });
+
+    nameEl.addEventListener("input", () => {
+        s.name = nameEl.value;
+        if (!idManuallyEdited) { idEl.value = _slugify(s.name); s.id = idEl.value; }
+    });
+    idEl.addEventListener("input", () => { s.id = idEl.value.trim(); idManuallyEdited = true; });
+
+    const conceptEl = _mk("input", { cls: "fbt-ce-input", type: "text",
+        placeholder: "Concept ID (optional)", value: s.concept_id || "" });
+    conceptEl.addEventListener("input", () => { s.concept_id = conceptEl.value.trim(); });
+
+    form.appendChild(_formRow("Name",    nameEl));
+    form.appendChild(_formRow("ID",      idEl));
+    form.appendChild(_formRow("Concept", conceptEl));
+
+    // ── Appearance section ─────────────────────────────────────────────────────
+    const appearSec = _mk("div", { cls: "fbt-be-section" });
+    appearSec.appendChild(_mk("div", { cls: "fbt-be-sec-label", textContent: "Appearance" }));
+
+    if (!s.appearance) s.appearance = {};
+    const summaryEl = _mk("textarea", { cls: "fbt-ce-textarea", rows: 2,
+        placeholder: "Appearance summary used in prompts…",
+        value: s.appearance.summary || "" });
+    summaryEl.addEventListener("input", () => { s.appearance.summary = summaryEl.value; });
+    appearSec.appendChild(_formRow("Summary", summaryEl));
+
+    const detailsEl = document.createElement("details");
+    detailsEl.className = "fbt-be-details";
+    const detailsSummary = document.createElement("summary");
+    detailsSummary.className = "fbt-be-details-summary";
+    detailsSummary.textContent = "Details (face, hair, body, outfit)";
+    detailsEl.appendChild(detailsSummary);
+
+    const subGrid = _mk("div", { cls: "fbt-be-subfield-grid" });
+    [["face", "Face", "Facial features, eyes, nose, expression…"],
+     ["hair", "Hair", "Hair color, style, length…"],
+     ["body", "Body", "Body type, height, build…"],
+     ["default_outfit", "Outfit", "Default outfit description…"]].forEach(([key, label, ph]) => {
+        const inp = _mk("input", { cls: "fbt-ce-input", type: "text",
+            placeholder: ph, value: s.appearance[key] || "" });
+        inp.addEventListener("input", () => { s.appearance[key] = inp.value; });
+        subGrid.appendChild(_mk("div", { cls: "fbt-be-subfield-cell" }, [
+            _mk("span", { cls: "fbt-be-subfield-label", textContent: label }),
+            inp,
+        ]));
+    });
+    detailsEl.appendChild(subGrid);
+    appearSec.appendChild(detailsEl);
+    form.appendChild(appearSec);
+
+    // ── Character Sheet Images section ─────────────────────────────────────────
+    const sheetSec = _mk("div", { cls: "fbt-be-section" });
+    sheetSec.appendChild(_mk("div", { cls: "fbt-be-sec-label", textContent: "Character Sheet Images" }));
+
+    if (!s.character_sheet_images) s.character_sheet_images = [];
+    const sheetListEl = _mk("div", { cls: "fbt-be-sheet-list" });
+
+    const _renderSheetList = () => {
+        sheetListEl.innerHTML = "";
+        if (!s.character_sheet_images.length) {
+            sheetListEl.appendChild(_mk("div", { cls: "fbt-be-empty",
+                textContent: "No images added yet." }));
+            return;
+        }
+        s.character_sheet_images.forEach((img, i) => {
+            const row     = _mk("div", { cls: "fbt-be-sheet-row" });
+            const nameEl2 = _mk("span", { cls: "fbt-be-sheet-name",
+                textContent: img.file, title: img.file });
+            const roleSel = document.createElement("select");
+            roleSel.className = "fbt-ce-select fbt-be-sheet-role-sel";
+            SHEET_ROLES.forEach(r => {
+                const o = document.createElement("option");
+                o.value = r; o.textContent = r;
+                if (r === (img.role || "character sheet")) o.selected = true;
+                roleSel.appendChild(o);
+            });
+            roleSel.onchange = () => { s.character_sheet_images[i].role = roleSel.value; };
+            const delBtn = _mk("button", { cls: "fbt-ce-icon-btn fbt-ce-danger", textContent: "✕",
+                onclick: () => { s.character_sheet_images.splice(i, 1); _renderSheetList(); } });
+            row.append(nameEl2, roleSel, delBtn);
+            sheetListEl.appendChild(row);
+        });
+    };
+    _renderSheetList();
+
+    // Add image row
+    const sheetUid   = Math.random().toString(36).slice(2, 8);
+    const addInput   = _mk("input", { cls: "fbt-ce-input fbt-be-sheet-add-input", type: "text",
+        placeholder: "Image filename…", list: `fbt-sht-dl-${sheetUid}` });
+    const addDl      = _mk("datalist", { id: `fbt-sht-dl-${sheetUid}` });
+    _S.mediaImages.forEach(f => { const o = document.createElement("option"); o.value = f; addDl.appendChild(o); });
+
+    const addRoleSel = document.createElement("select");
+    addRoleSel.className = "fbt-ce-select fbt-be-sheet-role-sel";
+    SHEET_ROLES.forEach(r => {
+        const o = document.createElement("option"); o.value = r; o.textContent = r; addRoleSel.appendChild(o);
+    });
+    const addBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "+ Add",
+        onclick: () => {
+            const fname = addInput.value.trim();
+            if (!fname) return;
+            s.character_sheet_images.push({ file: fname, role: addRoleSel.value });
+            addInput.value = "";
+            _renderSheetList();
+        },
+    });
+    sheetSec.appendChild(sheetListEl);
+    sheetSec.appendChild(_mk("div", { cls: "fbt-be-sheet-add-row" }, [addInput, addDl, addRoleSel, addBtn]));
+    form.appendChild(sheetSec);
+
+    // ── Voice section ──────────────────────────────────────────────────────────
+    const voiceSec = _mk("div", { cls: "fbt-be-section" });
+    voiceSec.appendChild(_mk("div", { cls: "fbt-be-sec-label", textContent: "Voice" }));
+
+    if (!s.voice) s.voice = {};
+    const voiceDescEl = _mk("textarea", { cls: "fbt-ce-textarea", rows: 2,
+        placeholder: "Tone, accent, style…", value: s.voice.description || "" });
+    voiceDescEl.addEventListener("input", () => { s.voice.description = voiceDescEl.value; });
+
+    const voiceLangEl = _mk("input", { cls: "fbt-ce-input", type: "text",
+        placeholder: "Language (e.g. English)", value: s.voice.language || "" });
+    voiceLangEl.addEventListener("input", () => { s.voice.language = voiceLangEl.value.trim(); });
+
+    const voiceAudioSel = document.createElement("select");
+    voiceAudioSel.className = "fbt-ce-select";
+    [{ v: "", l: "— no audio reference —" }, ..._S.mediaAudio.map(f => ({ v: f, l: f }))].forEach(({ v, l }) => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = l;
+        if (v === (s.voice.audio_reference_file || "")) o.selected = true;
+        voiceAudioSel.appendChild(o);
+    });
+    voiceAudioSel.addEventListener("change", () => { s.voice.audio_reference_file = voiceAudioSel.value; });
+
+    voiceSec.appendChild(_formRow("Description", voiceDescEl));
+    voiceSec.appendChild(_formRow("Language",    voiceLangEl));
+    voiceSec.appendChild(_formRow("Audio ref.",  voiceAudioSel));
+    form.appendChild(voiceSec);
+
+    // ── LLM Appearance Analysis (optional) ─────────────────────────────────────
+    if (_S.llmVision) {
+        const llmSec = _mk("div", { cls: "fbt-be-section" });
+        llmSec.appendChild(_mk("div", { cls: "fbt-be-sec-label", textContent: "LLM Appearance Analysis" }));
+
+        const llmUid   = Math.random().toString(36).slice(2, 8);
+        const imgInput = _mk("input", { cls: "fbt-ce-input", type: "text",
+            placeholder: "Image filename to analyze…", list: `fbt-sht-llm-${llmUid}` });
+        const imgDl    = _mk("datalist", { id: `fbt-sht-llm-${llmUid}` });
+        _S.mediaImages.forEach(f => { const o = document.createElement("option"); o.value = f; imgDl.appendChild(o); });
+
+        const queryEl  = _mk("textarea", { cls: "fbt-ce-textarea", rows: 2,
+            value: "Describe this character's appearance in detail: face, hair, body type, and clothing." });
+        const resultEl = _mk("textarea", { cls: "fbt-ce-textarea", rows: 2,
+            placeholder: "Analysis result…", style: { display: "none" } });
+        const applyBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
+            textContent: "→ Appearance Summary", style: { display: "none" },
+            onclick: () => {
+                summaryEl.value = resultEl.value.trim();
+                s.appearance.summary = summaryEl.value;
+            },
+        });
+        const analyzeBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "🔍 Analyze",
+            onclick: async () => {
+                const fname = imgInput.value.trim();
+                if (!fname) { _toast("Enter an image filename first", "warn"); return; }
+                analyzeBtn.disabled = true;
+                analyzeBtn.textContent = "Analyzing…";
+                try {
+                    const r = await llmApi.generate(queryEl.value.trim(), { images: [fname], max_tokens: 400 });
+                    if (r?.text) {
+                        resultEl.value = r.text.trim();
+                        resultEl.style.display = "";
+                        applyBtn.style.display = "";
+                    }
+                } catch (e) { _toast("LLM error: " + e.message, "error"); }
+                finally {
+                    analyzeBtn.disabled = false;
+                    analyzeBtn.textContent = "🔍 Analyze";
+                }
+            },
+        });
+        llmSec.append(imgInput, imgDl, queryEl, analyzeBtn, resultEl, applyBtn);
+        form.appendChild(llmSec);
+    }
+
+    // ── Buttons ────────────────────────────────────────────────────────────────
+    const warnEl = _mk("div", { cls: "fbt-be-warn", style: { display: "none" } });
+    const btnRow = _mk("div", { cls: "fbt-be-btn-row" });
+    btnRow.appendChild(_mk("button", { cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Save",
+        onclick: () => _onSaveSubject(s, warnEl) }));
+    btnRow.appendChild(_mk("button", { cls: "fbt-ce-btn", textContent: "Cancel",
+        onclick: () => _cancelSubjectEdit() }));
+    if (!_S.subjectIsNew) {
+        btnRow.appendChild(_mk("button", { cls: "fbt-ce-btn fbt-ce-danger", textContent: "Delete",
+            onclick: () => _onDeleteSubject(s.id, s.name) }));
+    }
+    form.appendChild(warnEl);
+    form.appendChild(btnRow);
+    c.appendChild(form);
+    nameEl.focus();
+}
+
 // ── Top bar ───────────────────────────────────────────────────────────────────
+
+function _switchView(mode) {
+    _S.viewMode = mode;
+    if (_dom.tabBundles)  _dom.tabBundles.classList.toggle("active",  mode === "bundles");
+    if (_dom.tabSubjects) _dom.tabSubjects.classList.toggle("active", mode === "subjects");
+    if (_dom.subjSel) _dom.subjSel.style.display = mode === "bundles" ? "" : "none";
+    if (_dom.newBtn)  _dom.newBtn.textContent = mode === "bundles" ? "+ New Bundle" : "+ New Subject";
+    if (_dom.searchEl) {
+        _dom.searchEl.value       = mode === "bundles" ? _S.filterText : _S.subjectFilter;
+        _dom.searchEl.placeholder = mode === "bundles" ? "Search bundles…" : "Search subjects…";
+    }
+    _render();
+}
+
+function _render() {
+    if (_S.viewMode === "subjects") {
+        if (_S.subjectEditing !== null) _renderSubjectForm();
+        else                            _renderSubjectList();
+    } else {
+        if (_S.editing !== null) _renderForm();
+        else                     _renderList();
+    }
+}
 
 function _buildTopBar() {
     const bar = _mk("div", { cls: "fbt-be-top-bar" });
 
-    // Subject filter
+    // Tab switcher
+    const tabBundles  = _mk("button", { cls: "fbt-be-tab active", textContent: "Bundles",
+        onclick: () => _switchView("bundles") });
+    const tabSubjects = _mk("button", { cls: "fbt-be-tab", textContent: "Subjects",
+        onclick: () => _switchView("subjects") });
+    _dom.tabBundles  = tabBundles;
+    _dom.tabSubjects = tabSubjects;
+    bar.appendChild(_mk("div", { cls: "fbt-be-tab-row" }, [tabBundles, tabSubjects]));
+
+    // Subject filter (bundles view only)
     const subjSel = document.createElement("select");
     subjSel.className = "fbt-ce-select fbt-be-filter-sel";
     const allOpt = document.createElement("option");
@@ -1531,34 +1929,43 @@ function _buildTopBar() {
     });
     _dom.subjSel = subjSel;
 
-    // Search
+    // Search (serves both modes)
     const searchEl = _mk("input", {
         cls: "fbt-ce-input fbt-be-search",
-        type: "text", placeholder: "Search…",
+        type: "text", placeholder: "Search bundles…",
         value: _S.filterText,
     });
     searchEl.addEventListener("input", () => {
-        _S.filterText = searchEl.value;
-        _S.listPage = 0;
-        if (!_S.editing) _renderList();
+        if (_S.viewMode === "subjects") {
+            _S.subjectFilter = searchEl.value;
+        } else {
+            _S.filterText = searchEl.value;
+            _S.listPage = 0;
+        }
+        if (!_S.editing && !_S.subjectEditing) _render();
     });
+    _dom.searchEl = searchEl;
 
-    // New bundle
+    // New button (mode-aware)
     const newBtn = _mk("button", {
         cls: "fbt-ce-btn fbt-ce-btn-primary fbt-be-new-btn",
-        textContent: "+ New",
-        onclick: () => _startNew(_S.filterSubject),
+        textContent: "+ New Bundle",
+        onclick: () => {
+            if (_S.viewMode === "subjects") _startNewSubject();
+            else _startNew(_S.filterSubject);
+        },
     });
+    _dom.newBtn = newBtn;
 
     // Refresh
     const refreshBtn = _mk("button", {
         cls: "fbt-ce-icon-btn fbt-be-refresh-btn",
-        textContent: "↺", title: "Refresh media and bundle list",
+        textContent: "↺", title: "Refresh",
         onclick: async () => {
             try {
                 await _loadAll();
                 _repopulateSubjectFilter();
-                if (!_S.editing) _renderList();
+                if (!_S.editing && !_S.subjectEditing) _render();
                 _toast("Refreshed", "success");
             } catch (e) {
                 _toast("Refresh failed: " + e.message, "error");
@@ -1615,5 +2022,5 @@ export async function renderBundleEditor(el) {
     }
 
     _repopulateSubjectFilter();
-    _renderList();
+    _render();
 }
