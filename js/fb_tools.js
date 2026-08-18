@@ -480,7 +480,7 @@ app.extensionManager.registerSidebarTab({
     type: "custom",
     render: (el) => {
         window._fbtApp = app;
-        renderCompositionEditor(el);
+        if (!el.querySelector(".fbt-ce-panel")) renderCompositionEditor(el);
     },
 });
 
@@ -492,7 +492,7 @@ app.extensionManager.registerSidebarTab({
     type: "custom",
     render: (el) => {
         window._fbtApp = app;
-        if (!el.querySelector(".fbt-be-panel")) renderBundleEditor(el);
+        if (!el.querySelector('[data-fbt-editor="bundle"]')) renderBundleEditor(el);
     },
 });
 
@@ -504,7 +504,7 @@ app.extensionManager.registerSidebarTab({
     type: "custom",
     render: (el) => {
         window._fbtApp = app;
-        if (!el.querySelector(".fbt-be-panel")) renderCastEditor(el);
+        if (!el.querySelector('[data-fbt-editor="cast"]')) renderCastEditor(el);
     },
 });
 
