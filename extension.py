@@ -12961,6 +12961,108 @@ async def _outfits_analyze_media(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+_sam2_segmenter = None  # lazy singleton; reset if model_path changes
+
+
+@routes.get("/fbtools/outfits/sam2_status")
+async def _outfits_sam2_status(request):
+    """Return SAM2 availability: packages present and model file found."""
+    try:
+        from .utils.sam2_segmenter import check_dependencies, find_sam2_model
+        sams_dirs = [
+            os.path.join(folder_paths.models_dir, "sams"),
+            os.path.join(folder_paths.models_dir, "sam2"),
+        ]
+        deps = check_dependencies()
+        model_file = find_sam2_model(sams_dirs) if deps["available"] else None
+        install_hint = (
+            "pip install git+https://github.com/facebookresearch/sam2.git"
+            if not deps["available"] else None
+        )
+        model_hint = (
+            "Download sam2_hiera_tiny.safetensors from "
+            "https://huggingface.co/Kijai/sam2-safetensors "
+            f"and place in {sams_dirs[0]}"
+            if not model_file else None
+        )
+        return web.json_response({
+            "available":        deps["available"] and model_file is not None,
+            "packages_ok":      deps["available"],
+            "missing_packages": deps["missing"],
+            "model_file":       model_file,
+            "model_dirs":       sams_dirs,
+            "install_hint":     install_hint,
+            "model_hint":       model_hint,
+        })
+    except Exception as exc:
+        logger.error("sam2_status error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/outfits/extract_outfit")
+async def _outfits_extract_outfit(request):
+    """Run SAM2 point-prompt segmentation on an input image.
+
+    Body: {filename, point_x, point_y, point_label}
+    Returns: {result_file} — basename of the saved RGBA PNG in the input dir.
+    """
+    global _sam2_segmenter
+    try:
+        body = await request.json()
+        filename    = (body.get("filename") or "").strip()
+        point_x     = float(body.get("point_x", 0.5))
+        point_y     = float(body.get("point_y", 0.5))
+        point_label = int(body.get("point_label", 1))
+
+        if not filename:
+            return web.json_response({"error": "filename required"}, status=400)
+
+        image_dir  = folder_paths.get_input_directory()
+        image_path = os.path.join(image_dir, os.path.basename(filename))
+        if not os.path.isfile(image_path):
+            return web.json_response({"error": f"File not found: {filename}"}, status=404)
+
+        from .utils.sam2_segmenter import (
+            SAM2Segmenter,
+            check_dependencies,
+            find_sam2_model,
+        )
+
+        deps = check_dependencies()
+        if not deps["available"]:
+            return web.json_response(
+                {"error": f"SAM2 packages missing: {', '.join(deps['missing'])}"},
+                status=503,
+            )
+
+        sams_dirs  = [
+            os.path.join(folder_paths.models_dir, "sams"),
+            os.path.join(folder_paths.models_dir, "sam2"),
+        ]
+        model_file = find_sam2_model(sams_dirs)
+        if not model_file:
+            return web.json_response(
+                {"error": "No SAM2 safetensors model found in models/sams/ or models/sam2/"},
+                status=503,
+            )
+
+        if _sam2_segmenter is None or _sam2_segmenter._model_path != model_file:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            _sam2_segmenter = SAM2Segmenter(model_file, device=device)
+
+        import asyncio
+        out_path = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: _sam2_segmenter.segment(image_path, point_x, point_y, point_label),
+        )
+        return web.json_response({"result_file": os.path.basename(out_path)})
+
+    except Exception as exc:
+        logger.error("outfit extract_outfit error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 @routes.delete("/fbtools/outfits/delete")
 async def _outfits_delete(request):
     """Delete an outfit entry by ?id=<outfit_id>."""
@@ -13369,10 +13471,23 @@ async def _media_list(request):
                 status=400,
             )
         input_dir = get_input_directory()
-        files = [
-            f for f in os.listdir(input_dir)
-            if os.path.splitext(f)[1].lower() in exts
-        ]
+        recursive = request.rel_url.query.get("recursive", "false").lower() == "true"
+
+        if recursive:
+            files = []
+            for dirpath, dirnames, filenames in os.walk(input_dir):
+                # skip hidden dirs (e.g. .cache, .tmp)
+                dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+                for f in filenames:
+                    if os.path.splitext(f)[1].lower() in exts:
+                        rel = os.path.relpath(os.path.join(dirpath, f), input_dir)
+                        files.append(rel.replace(os.sep, "/"))
+        else:
+            files = [
+                f for f in os.listdir(input_dir)
+                if os.path.splitext(f)[1].lower() in exts
+            ]
+
         files.sort(key=str.lower)
         return web.json_response({"files": files})
     except Exception as exc:
@@ -13554,12 +13669,26 @@ async def _bundles_preprocess_audio(request):
     normalize_lufs = bool(proc_cfg.get("normalize_lufs", True))
     target_lufs    = float(proc_cfg.get("target_lufs",  -14.0))
 
+    # Resolve MelBand Roformer model path from saved settings
+    melband_path: str | None = None
+    if noise_removal:
+        settings     = _read_composition_settings()
+        melband_raw  = settings.get("melband_model_path", "").strip()
+        if melband_raw:
+            if os.path.isabs(melband_raw) and os.path.isfile(melband_raw):
+                melband_path = melband_raw
+            else:
+                resolved = folder_paths.get_full_path("diffusion_models", melband_raw)
+                if resolved and os.path.isfile(resolved):
+                    melband_path = resolved
+
     from .utils.audio_preprocess import preprocess_audio, cache_fingerprint, measure_lufs
 
     fp = cache_fingerprint(src_path, start_time, duration, {
         "noise_removal":  noise_removal,
         "normalize_lufs": normalize_lufs,
         "target_lufs":    target_lufs,
+        "melband_path":   melband_path or "",
     })
 
     # Cache dir: user_data_dir/bundles_cache/<bundle_id>/
@@ -13597,6 +13726,7 @@ async def _bundles_preprocess_audio(request):
             noise_removal=noise_removal,
             normalize_lufs=normalize_lufs,
             target_lufs=target_lufs,
+            melband_model_path=melband_path,
         )
         import torchaudio
         torchaudio.save(cache_path, wf_out.squeeze(0), sr_out)
