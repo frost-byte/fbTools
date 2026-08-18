@@ -100,7 +100,7 @@ async function _loadAll() {
     const [bundles, subjects, imgs, vids, aud, llmSt, settingsRes] = await Promise.allSettled([
         bundlesApi.listBundles(),
         bundlesApi.listSubjects(),
-        bundlesApi.listMedia("image"),
+        bundlesApi.listMedia("image", true),  // recursive — includes subdirectories
         bundlesApi.listMedia("video"),
         bundlesApi.listMedia("audio"),
         llmApi.status(),
@@ -970,33 +970,110 @@ function _buildVideoPicker(wrap, b) {
     }));
 }
 
+function _viewUrl(relPath) {
+    const slash = relPath.lastIndexOf("/");
+    const name  = slash === -1 ? relPath        : relPath.slice(slash + 1);
+    const sub   = slash === -1 ? ""             : relPath.slice(0, slash);
+    return `/view?filename=${encodeURIComponent(name)}&type=input&subfolder=${encodeURIComponent(sub)}`;
+}
+
 function _buildImageList(wrap, b, onFilesChange = null) {
     if (!_S.mediaImages.length) {
         wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No image files in input directory" }));
         return;
     }
 
-    // Hover preview image — appended after listEl/addSel so it never shifts the list on show
+    // ── Preview (shown on hover; hides only when mouse leaves the whole section) ─
     const previewImg = _mk("img", { cls: "fbt-be-img-preview", alt: "" });
     previewImg.style.display = "none";
     let _hideTimer = null;
 
-    const _showPreview = filename => {
+    const _showPreview = path => {
         clearTimeout(_hideTimer);
-        previewImg.src = `/view?filename=${encodeURIComponent(filename)}&type=input&subfolder=`;
+        previewImg.src = _viewUrl(path);
         previewImg.style.display = "";
     };
     const _scheduleHide = () => {
-        _hideTimer = setTimeout(() => { previewImg.style.display = "none"; }, 200);
+        _hideTimer = setTimeout(() => { previewImg.style.display = "none"; }, 300);
     };
 
-    // Hovering onto the preview itself cancels the hide timer
-    previewImg.addEventListener("mouseenter", () => clearTimeout(_hideTimer));
-    previewImg.addEventListener("mouseleave", _scheduleHide);
+    // ── Tree builder ───────────────────────────────────────────────────────────
+    const treeEl = _mk("div", { cls: "fbt-be-tree" });
 
+    const _insertPath = (node, parts, fullPath) => {
+        if (parts.length === 1) {
+            node.files.push({ name: parts[0], path: fullPath });
+        } else {
+            const dir = parts[0];
+            if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: [] });
+            _insertPath(node.dirs.get(dir), parts.slice(1), fullPath);
+        }
+    };
+
+    const rootNode = { dirs: new Map(), files: [] };
+    _S.mediaImages.forEach(p => _insertPath(rootNode, p.split("/"), p));
+
+    const _syncTree = () => {
+        treeEl.querySelectorAll("[data-path]").forEach(el => {
+            el.classList.toggle("fbt-be-tree-file-sel", b.visual.files.includes(el.dataset.path));
+        });
+    };
+
+    const renderNode = (node, depth) => {
+        const el = _mk("div", { cls: "fbt-be-tree-node" });
+        const indent = depth * 14;
+
+        // Directories (lazy — children rendered on first expand)
+        [...node.dirs.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([dirName, child]) => {
+            const childWrap = _mk("div", { cls: "fbt-be-tree-children" });
+            childWrap.style.display = "none";
+
+            const arrow  = _mk("span", { cls: "fbt-be-tree-arrow", textContent: "▶" });
+            const toggle = _mk("button", { cls: "fbt-be-tree-toggle" });
+            toggle.style.paddingLeft = (indent + 2) + "px";
+            toggle.appendChild(arrow);
+            toggle.appendChild(document.createTextNode(" " + dirName + "/"));
+
+            toggle.addEventListener("click", () => {
+                const opening = childWrap.style.display === "none";
+                childWrap.style.display = opening ? "" : "none";
+                arrow.textContent = opening ? "▼" : "▶";
+                if (opening && !childWrap.firstChild) {
+                    childWrap.appendChild(renderNode(child, depth + 1));
+                }
+            });
+
+            const dirWrap = _mk("div", {}, [toggle, childWrap]);
+            el.appendChild(dirWrap);
+        });
+
+        // Files
+        [...node.files].sort((a, z) => a.name.localeCompare(z.name)).forEach(({ name, path }) => {
+            const fileEl = _mk("div", { cls: "fbt-be-tree-file" });
+            fileEl.dataset.path = path;
+            fileEl.style.paddingLeft = (indent + 16) + "px";
+            fileEl.classList.toggle("fbt-be-tree-file-sel", b.visual.files.includes(path));
+            fileEl.appendChild(_mk("span", { cls: "fbt-be-tree-file-name", textContent: name, title: path }));
+
+            fileEl.addEventListener("mouseenter", () => _showPreview(path));
+            fileEl.addEventListener("click", () => {
+                if (!b.visual.files.includes(path)) {
+                    b.visual.files.push(path);
+                    rebuildList();
+                    _showPreview(path);
+                    onFilesChange?.();
+                }
+            });
+            el.appendChild(fileEl);
+        });
+
+        return el;
+    };
+
+    treeEl.appendChild(renderNode(rootNode, 0));
+
+    // ── Selected-files list ────────────────────────────────────────────────────
     const listEl = _mk("div", { cls: "fbt-be-img-list" });
-    listEl.addEventListener("mouseenter", () => clearTimeout(_hideTimer));
-    listEl.addEventListener("mouseleave", _scheduleHide);
 
     const rebuildList = () => {
         listEl.innerHTML = "";
@@ -1006,7 +1083,10 @@ function _buildImageList(wrap, b, onFilesChange = null) {
             b.visual.files.forEach((f, i) => {
                 const row = _mk("div", { cls: "fbt-be-img-row" });
                 row.addEventListener("mouseenter", () => _showPreview(f));
-                row.appendChild(_mk("span", { cls: "fbt-be-img-name", textContent: f, title: f }));
+
+                const namePart = f.split("/").pop();
+                row.appendChild(_mk("span", { cls: "fbt-be-img-name", textContent: namePart, title: f }));
+
                 const btns = _mk("span", { cls: "fbt-be-img-btns" });
                 if (i > 0) {
                     btns.appendChild(_mk("button", {
@@ -1031,7 +1111,6 @@ function _buildImageList(wrap, b, onFilesChange = null) {
                     onclick: () => {
                         b.visual.files.splice(i, 1);
                         rebuildList();
-                        rebuildAddSel();
                         onFilesChange?.();
                     },
                 }));
@@ -1039,44 +1118,22 @@ function _buildImageList(wrap, b, onFilesChange = null) {
                 listEl.appendChild(row);
             });
         }
+        _syncTree();
     };
-
-    const addSel = document.createElement("select");
-    addSel.className = "fbt-ce-select";
-    addSel.style.marginTop = "4px";
-
-    const rebuildAddSel = () => {
-        addSel.innerHTML = "";
-        const available = _S.mediaImages.filter(f => !b.visual.files.includes(f));
-        const placeholder = document.createElement("option");
-        placeholder.value = "";
-        placeholder.textContent = available.length ? "Add image…" : "All available images selected";
-        addSel.appendChild(placeholder);
-        available.forEach(f => {
-            const o = document.createElement("option");
-            o.value = f; o.textContent = f;
-            addSel.appendChild(o);
-        });
-    };
-
-    addSel.addEventListener("change", () => {
-        if (!addSel.value) return;
-        const f = addSel.value;
-        if (!b.visual.files.includes(f)) {
-            b.visual.files.push(f);
-            rebuildList();
-            rebuildAddSel();
-            _showPreview(f);
-            onFilesChange?.();
-        }
-        addSel.value = "";
-    });
 
     rebuildList();
-    rebuildAddSel();
-    wrap.appendChild(listEl);
-    wrap.appendChild(addSel);
-    wrap.appendChild(previewImg);
+
+    // ── Hover container — wraps list + tree + preview so mouse can move freely ─
+    const hoverWrap = _mk("div", { cls: "fbt-be-img-hover-wrap" });
+    hoverWrap.addEventListener("mouseenter", () => clearTimeout(_hideTimer));
+    hoverWrap.addEventListener("mouseleave", _scheduleHide);
+
+    const treeLabel = _mk("div", { cls: "fbt-be-param-section-label", textContent: "Browse library" });
+    hoverWrap.appendChild(listEl);
+    hoverWrap.appendChild(treeLabel);
+    hoverWrap.appendChild(treeEl);
+    hoverWrap.appendChild(previewImg);
+    wrap.appendChild(hoverWrap);
 }
 
 function _buildAudioProcessingSection(wrap, b, sourceAudioEl = null) {
@@ -1391,7 +1448,7 @@ function _buildAppearanceAnalyzer(b, appearEl) {
         imgSel.className = "fbt-ce-select fbt-be-llm-img-sel";
 
         const _setPreview = f => {
-            previewImg.src = f ? `/view?filename=${encodeURIComponent(f)}&type=input&subfolder=` : "";
+            previewImg.src = f ? _viewUrl(f) : "";
             previewImg.style.display = f ? "" : "none";
         };
 

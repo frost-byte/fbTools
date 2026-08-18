@@ -88,8 +88,10 @@ export class BundlesAPI extends BaseAPI {
         return r.ok;
     }
 
-    listMedia(type) {
-        return this.get("/media/list", { type });
+    listMedia(type, recursive = false) {
+        const params = { type };
+        if (recursive) params.recursive = "true";
+        return this.get("/media/list", params);
     }
 
     mediaInfo(filename) {

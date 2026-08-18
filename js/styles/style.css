@@ -1652,6 +1652,12 @@ textarea.prompt-value-input {
     accent-color: #4ade80;
 }
 
+.fbt-be-img-hover-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .fbt-be-img-preview {
     width: 100%;
     max-height: 150px;
@@ -1660,6 +1666,82 @@ textarea.prompt-value-input {
     margin: 2px 0 6px;
     background: var(--comfy-input-bg, #1a1a1a);
     border: 1px solid var(--border-color, #333);
+}
+
+/* ── Image tree browser ─────────────────────────────────────────────────────── */
+
+.fbt-be-tree {
+    max-height: 180px;
+    overflow-y: auto;
+    background: var(--comfy-input-bg, #1a1a1a);
+    border: 1px solid var(--border-color, #333);
+    border-radius: 4px;
+    font-size: 11px;
+}
+
+.fbt-be-tree-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    padding: 3px 4px;
+    background: transparent;
+    border: none;
+    color: var(--fg-color, #ddd);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.fbt-be-tree-toggle:hover {
+    background: var(--comfy-menu-bg-secondary, #2a2a2a);
+}
+
+.fbt-be-tree-arrow {
+    font-size: 8px;
+    flex-shrink: 0;
+    color: var(--p-surface-400, #888);
+    display: inline-block;
+    width: 10px;
+    text-align: center;
+}
+
+.fbt-be-tree-children {
+    /* Children indented via paddingLeft on each child element */
+}
+
+.fbt-be-tree-file {
+    display: flex;
+    align-items: center;
+    padding: 2px 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    color: var(--p-surface-300, #bbb);
+    user-select: none;
+}
+
+.fbt-be-tree-file:hover:not(.fbt-be-tree-file-sel) {
+    background: var(--comfy-menu-bg-secondary, #2a2a2a);
+    color: var(--fg-color, #ddd);
+}
+
+.fbt-be-tree-file-sel {
+    color: var(--p-surface-500, #555);
+    cursor: default;
+}
+
+.fbt-be-tree-file-sel::before {
+    content: "✓";
+    font-size: 9px;
+    margin-right: 4px;
+    color: var(--p-primary-400, #4af);
+    flex-shrink: 0;
+}
+
+.fbt-be-tree-file-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .fbt-be-mark-row {
