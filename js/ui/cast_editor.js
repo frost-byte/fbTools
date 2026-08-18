@@ -675,6 +675,7 @@ export async function renderCastEditor(el) {
     el.innerHTML = "";
 
     const panel = _mk("div", { cls: "fbt-be-panel" });
+    panel.dataset.fbtEditor = "cast";
     _dom.content    = _mk("div", { cls: "fbt-be-content" });
     _dom.pagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
 
