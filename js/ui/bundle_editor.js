@@ -50,6 +50,7 @@ function _mk(tag, props = {}, children = []) {
         if (k === "cls") el.className = v;
         else if (k === "style") Object.assign(el.style, v);
         else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+        else if (k === "list") el.setAttribute("list", v);
         else el[k] = v;
     });
     children.forEach(c => c && el.appendChild(c));
