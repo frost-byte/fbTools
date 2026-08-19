@@ -112,6 +112,15 @@ export class CompositionsAPI extends BaseAPI {
         return this.post("/outfits/reload", {});
     }
 
+    analyzeBackground(filename, { folder = "input", frameTime = 1.0, maxTokens = 500 } = {}) {
+        return this.post("/backgrounds/analyze_media", {
+            filename,
+            folder,
+            frame_time:  frameTime,
+            max_tokens:  maxTokens,
+        });
+    }
+
     listMedia(type, recursive = false, folder = "input") {
         const params = { type };
         if (recursive)          params.recursive = "true";

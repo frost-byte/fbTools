@@ -14539,6 +14539,126 @@ async def _backgrounds_delete(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@routes.post("/fbtools/backgrounds/analyze_media")
+async def _backgrounds_analyze_media(request):
+    """Analyze an image or video for background scene description.
+
+    Asks the loaded LLM to return structured JSON with three fields:
+      description — environment / setting, no people
+      lighting    — lighting conditions and quality
+      soundscape  — expected ambient audio
+
+    For videos, extracts a frame at frame_time seconds and saves it to the
+    ComfyUI input directory as _bg_ref_<uuid>.jpg.
+
+    Body: { filename, folder?, frame_time?, max_tokens? }
+    Returns: { description, lighting, soundscape, frame_file }
+    """
+    _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv"}
+    _DEFAULT_QUERY = (
+        "Analyze this scene for use in video production. "
+        "Return ONLY a JSON object with exactly these three keys — no other text:\n"
+        '{\n'
+        '  "description": "2-3 sentences describing the environment, setting, and atmosphere. '
+        'Do not mention any people or characters.",\n'
+        '  "lighting": "1 sentence describing the lighting quality, direction, and mood.",\n'
+        '  "soundscape": "1-2 sentences describing what you would expect to hear in this scene."\n'
+        '}'
+    )
+    try:
+        body = await request.json()
+        filename = (body.get("filename") or "").strip()
+        if not filename:
+            return web.json_response({"error": "filename is required"}, status=400)
+        folder     = (body.get("folder") or "input").strip()
+        max_tokens = int(body.get("max_tokens", 500))
+        frame_time = float(body.get("frame_time", 1.0))
+
+        import folder_paths
+        if folder == "output":
+            src_dir = folder_paths.get_output_directory()
+        else:
+            src_dir = folder_paths.get_input_directory()
+        src_path = os.path.join(src_dir, filename)
+        if not os.path.exists(src_path):
+            return web.json_response({"error": f"File not found: {filename}"}, status=404)
+
+        ext = os.path.splitext(filename)[1].lower()
+        frame_file: str | None = None
+        pil_image = None
+
+        def _prepare():
+            nonlocal frame_file, pil_image
+            from PIL import Image as _PILImage
+            input_dir = folder_paths.get_input_directory()
+            if ext in _VIDEO_EXTS:
+                import cv2
+                cap = cv2.VideoCapture(src_path)
+                try:
+                    fps         = cap.get(cv2.CAP_PROP_FPS) or 24.0
+                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    target      = min(int(frame_time * fps), max(0, frame_count - 1))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+                    ok, frame = cap.read()
+                    if not ok:
+                        raise RuntimeError(f"Could not read frame {target} from {filename}")
+                    ref_name  = f"_bg_ref_{uuid.uuid4().hex[:12]}.jpg"
+                    ref_path  = os.path.join(input_dir, ref_name)
+                    cv2.imwrite(ref_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                    frame_file = ref_name
+                    pil_image  = _PILImage.open(ref_path).convert("RGB")
+                finally:
+                    cap.release()
+            else:
+                pil_image = _PILImage.open(src_path).convert("RGB")
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _prepare)
+
+        def _generate():
+            return _llm_client.generate(
+                _DEFAULT_QUERY,
+                images=[pil_image],
+                max_tokens=max_tokens,
+                temperature=0.4,
+            )
+
+        result = await loop.run_in_executor(None, _generate)
+        if not result.get("success"):
+            return web.json_response(
+                {"error": result.get("error", "LLM generate failed")}, status=503
+            )
+
+        raw = result.get("text", "").strip()
+
+        # Parse structured JSON from LLM response; strip markdown fences if present
+        import re as _re
+        json_text = raw
+        fence_match = _re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+        if fence_match:
+            json_text = fence_match.group(1).strip()
+        try:
+            parsed = json.loads(json_text)
+            description = str(parsed.get("description", "")).strip()
+            lighting    = str(parsed.get("lighting",    "")).strip()
+            soundscape  = str(parsed.get("soundscape",  "")).strip()
+        except (json.JSONDecodeError, AttributeError):
+            # Fall back: use raw text as description
+            description = raw
+            lighting    = ""
+            soundscape  = ""
+
+        return web.json_response({
+            "description": description,
+            "lighting":    lighting,
+            "soundscape":  soundscape,
+            "frame_file":  frame_file,
+        })
+    except Exception as exc:
+        logger.error("background analyze_media error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 # ── Preset routes ─────────────────────────────────────────────────────────────
 
 @routes.get("/fbtools/presets/cameras")
