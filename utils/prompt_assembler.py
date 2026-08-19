@@ -1314,6 +1314,7 @@ def assemble_composition(
     resolved_background: dict | None,
     model_type: str,
     video_entries: list[dict] | None = None,
+    resolved_outfits: dict[str, dict] | None = None,
 ) -> dict:
     """Assemble a prompt from a PromptComposition dict.
 
@@ -1339,6 +1340,70 @@ def assemble_composition(
         if letter:
             slot_assignments[letter] = subject
 
+    # Running letter index for extra slots (background + outfit references).
+    _next_letter_idx = len(slot_keys)
+
+    # Background as visual reference: inject as an additional <Subject N> slot.
+    # Uses {BG} shortcut in shot action/camera fields.
+    bg_letter = None
+    if composition.get("background_as_reference") and resolved_background:
+        ref_images = resolved_background.get("reference_images", [])
+        if ref_images:
+            bg_letter = chr(ord("A") + _next_letter_idx)
+            _next_letter_idx += 1
+            slot_map["BG"] = bg_letter
+            bg_desc = resolved_background.get("description", "")
+            bg_lighting = resolved_background.get("lighting", "")
+            bg_appearance = (bg_desc.rstrip(". ") + ". " + bg_lighting).strip(". ") if bg_lighting else bg_desc
+            slot_assignments[bg_letter] = {
+                "name": resolved_background.get("name", "Background"),
+                "appearance": {"summary": bg_appearance},
+                "voice": {},
+                "character_sheet_images": [
+                    r if isinstance(r, dict) else {"file": r, "role": "scene reference"}
+                    for r in ref_images
+                ],
+                "concept_id": "",
+                "subject_id": "",
+            }
+
+    # Outfit reference subjects: each assigned outfit whose reference_images contain
+    # at least one entry with use_as_reference=True becomes its own <Subject N> slot.
+    # Slots iterate in subject order (S1 → S2 …) so Fit_1 always maps to the
+    # earliest slot that has a reference outfit.  Text-only outfits (no flagged
+    # images) contribute their description to outfit_overrides instead.
+    fit_counter = 1
+    if resolved_outfits:
+        for sk in slot_keys:
+            outfit = resolved_outfits.get(sk)
+            if not outfit:
+                continue
+            ref_images = [
+                r if isinstance(r, dict) else {"file": r, "role": "costume detail"}
+                for r in outfit.get("reference_images", [])
+                if isinstance(r, dict) and r.get("use_as_reference")
+            ]
+            if not ref_images:
+                # Text-only: feed description into outfit_overrides unless a manual
+                # override already exists for this slot.
+                letter = slot_map.get(sk)
+                if letter and outfit.get("description") and letter not in outfit_overrides:
+                    outfit_overrides[letter] = outfit["description"]
+                continue
+            fit_key = f"Fit_{fit_counter}"
+            fit_letter = chr(ord("A") + _next_letter_idx)
+            _next_letter_idx += 1
+            slot_map[fit_key] = fit_letter
+            slot_assignments[fit_letter] = {
+                "name": outfit.get("name", fit_key),
+                "appearance": {"summary": outfit.get("description", "")},
+                "voice": {},
+                "character_sheet_images": ref_images,
+                "concept_id": "",
+                "subject_id": "",
+            }
+            fit_counter += 1
+
     outfit_overrides = {}
     for sk, override in composition.get("outfit_overrides", {}).items():
         letter = slot_map.get(sk)
@@ -1362,8 +1427,18 @@ def assemble_composition(
         "name":        composition.get("name", ""),
         "description": "",
         "slots": {
-            slot_map[sk]: {"role": sk, "needs_voice": True, "needs_character_sheet": True}
-            for sk in slot_keys if sk in slot_map
+            **{
+                slot_map[sk]: {"role": sk, "needs_voice": True, "needs_character_sheet": True}
+                for sk in slot_keys if sk in slot_map
+            },
+            **(
+                {bg_letter: {"role": "background", "needs_voice": False, "needs_character_sheet": True}}
+                if bg_letter else {}
+            ),
+            **{
+                slot_map[fk]: {"role": fk, "needs_voice": False, "needs_character_sheet": True}
+                for fk in slot_map if fk.startswith("Fit_")
+            },
         },
         "environment": {
             "summary":  background.get("description", ""),

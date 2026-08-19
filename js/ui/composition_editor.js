@@ -135,7 +135,7 @@ function _newComp() {
         concept_id: "",
         task_flags: [],
         use_dialogue_tags: false,
-        subjects: {}, outfit_overrides: {},
+        subjects: {}, outfit_overrides: {}, outfit_ids: {},
         background: "", scene_synopsis: "", shots: [],
         overall_soundscape: "", non_diegetic_music: "",
         libbers: [],
@@ -1285,7 +1285,7 @@ function _openOutfitEditor(existingId) {
     function _addFileToRefs(filePath, folder = "input") {
         if (!filePath) return;
         if (!refImages.some(r => r.file === filePath)) {
-            refImages.push({ file: filePath, role: "costume detail", folder });
+            refImages.push({ file: filePath, role: "costume detail", folder, use_as_reference: false });
             _renderRefList();
         }
     }
@@ -1630,11 +1630,19 @@ function _openOutfitEditor(existingId) {
                 roleEl.appendChild(opt);
             });
             roleEl.onchange = () => { refImages[i].role = roleEl.value; };
+            // "Use as <Subject N> reference" toggle
+            const refCb = _mk("input", { type: "checkbox" });
+            refCb.checked = !!img.use_as_reference;
+            refCb.onchange = () => { refImages[i].use_as_reference = refCb.checked; };
+            const refCbWrap = _mk("label", { cls: "fbt-ce-outfit-ref-use-label",
+                title: "Include as <Subject N> visual reference in assembled prompt" });
+            refCbWrap.appendChild(refCb);
+            refCbWrap.appendChild(document.createTextNode(" Ref"));
             const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-danger",
                 textContent: "✕",
                 onclick: () => { refImages.splice(i, 1); _renderRefList(); }
             });
-            row.append(thumb, info, roleEl, delBtn);
+            row.append(thumb, info, roleEl, refCbWrap, delBtn);
             refListEl.appendChild(row);
         });
     }
@@ -2324,26 +2332,37 @@ function _rebuildSlots() {
             _markDirty();
         });
 
-        // Outfit override — dropdown from registry
+        // Outfit — dropdown from registry, stores outfit ID in outfit_ids[key]
         const outfitSel = document.createElement("select");
         outfitSel.className = "fbt-ce-select fbt-ce-outfit";
         const noneOpt = document.createElement("option");
         noneOpt.value = "";
-        noneOpt.textContent = "— default outfit —";
+        noneOpt.textContent = "— no outfit —";
         outfitSel.appendChild(noneOpt);
-        const currentOutfitText = comp.outfit_overrides?.[key] || "";
+        const currentOutfitId = comp.outfit_ids?.[key] || "";
         Object.entries(_S.outfits)
             .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
             .forEach(([id, entry]) => {
                 const opt = document.createElement("option");
-                opt.value = entry.description || "";
+                opt.value = id;
                 opt.textContent = entry.name || id;
-                opt.selected = (entry.description || "") === currentOutfitText && currentOutfitText !== "";
+                opt.selected = id === currentOutfitId;
                 outfitSel.appendChild(opt);
             });
+        // Info line: shows outfit description + reference image count
+        const outfitInfoEl = _mk("div", { cls: "fbt-ce-slot-outfit-info" });
+        const _updateOutfitInfo = (oid) => {
+            const entry = _S.outfits[oid];
+            if (!entry) { outfitInfoEl.textContent = ""; return; }
+            const refCount = (entry.reference_images || []).filter(r => r?.use_as_reference).length;
+            const hint = refCount ? ` · ${refCount} ref${refCount > 1 ? "s" : ""} → {Fit_N}` : "";
+            outfitInfoEl.textContent = (entry.description || "").slice(0, 80) + hint;
+        };
+        _updateOutfitInfo(currentOutfitId);
         outfitSel.addEventListener("change", () => {
-            if (!comp.outfit_overrides) comp.outfit_overrides = {};
-            comp.outfit_overrides[key] = outfitSel.value;
+            if (!comp.outfit_ids) comp.outfit_ids = {};
+            comp.outfit_ids[key] = outfitSel.value;
+            _updateOutfitInfo(outfitSel.value);
             _markDirty();
         });
 
@@ -2355,6 +2374,7 @@ function _rebuildSlots() {
             onclick: () => {
                 delete comp.subjects[key];
                 delete comp.outfit_overrides?.[key];
+                delete comp.outfit_ids?.[key];
                 _renumberSlots();
                 _rebuildSlots();
                 _refreshShotDialogueSpeakers();
@@ -2368,6 +2388,7 @@ function _rebuildSlots() {
         row.appendChild(removeBtn);
         card.appendChild(row);
         card.appendChild(infoEl);
+        card.appendChild(outfitInfoEl);
         card.appendChild(conceptRow);
         container.appendChild(card);
     });
@@ -2381,13 +2402,16 @@ function _renumberSlots() {
     const oldKeys = Object.keys(comp.subjects || {}).sort();
     const newSubjects = {};
     const newOutfits = {};
+    const newOutfitIds = {};
     oldKeys.forEach((k, i) => {
         const newKey = `S${i + 1}`;
         newSubjects[newKey] = comp.subjects[k];
         if (comp.outfit_overrides?.[k]) newOutfits[newKey] = comp.outfit_overrides[k];
+        if (comp.outfit_ids?.[k]) newOutfitIds[newKey] = comp.outfit_ids[k];
     });
     comp.subjects = newSubjects;
     comp.outfit_overrides = newOutfits;
+    comp.outfit_ids = newOutfitIds;
     // Update shot dialogue speaker keys
     (comp.shots || []).forEach(shot => {
         if (shot.dialogue?.speaker) {
@@ -3072,6 +3096,24 @@ function _buildEditor(parent) {
 
         body.appendChild(_dom.bgSel);
         body.appendChild(_dom.bgSoundscapeHint);
+
+        // "Include as <Subject N>" — background reference images become a visual reference slot
+        const bgRefRow = _mk("div", { cls: "fbt-ce-info-row", style: { marginTop: "8px" } });
+        _dom.bgAsRefCb = _mk("input", { type: "checkbox" });
+        _dom.bgAsRefCb.id = "fbt-bg-as-ref";
+        _dom.bgAsRefCb.addEventListener("change", () => {
+            _S.composition.background_as_reference = _dom.bgAsRefCb.checked;
+            _markDirty();
+        });
+        const bgRefLabel = _mk("label", {
+            cls: "fbt-ce-info-label",
+            htmlFor: "fbt-bg-as-ref",
+            title: "Treat this background's reference images as a <Subject N> visual reference in H3 Ref2VA prompts. Use {BG} in shot action/camera fields to reference it.",
+        });
+        bgRefLabel.textContent = "Include as <Subject N>";
+        bgRefRow.appendChild(_dom.bgAsRefCb);
+        bgRefRow.appendChild(bgRefLabel);
+        body.appendChild(bgRefRow);
     }));
 
     // Synopsis — concise scene overview used as the summary body in H3 prompts.
@@ -3519,6 +3561,7 @@ function _populateEditor() {
             _dom.bgSel.appendChild(opt);
         });
     }
+    if (_dom.bgAsRefCb) _dom.bgAsRefCb.checked = !!(comp.background_as_reference);
 }
 
 // ── Panel construction ─────────────────────────────────────────────────────────

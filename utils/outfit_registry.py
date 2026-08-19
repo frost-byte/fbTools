@@ -15,8 +15,12 @@ _EMPTY_DATA: dict = {"version": 1, "outfits": {}}
 
 def _normalize_outfit_image(entry: "str | dict") -> dict:
     if isinstance(entry, str):
-        return {"file": entry, "role": "costume detail"}
-    return {"file": str(entry.get("file", "")), "role": str(entry.get("role", "costume detail")) or "costume detail"}
+        return {"file": entry, "role": "costume detail", "use_as_reference": False}
+    return {
+        "file": str(entry.get("file", "")),
+        "role": str(entry.get("role", "costume detail")) or "costume detail",
+        "use_as_reference": bool(entry.get("use_as_reference", False)),
+    }
 
 
 def _normalize_outfit_images(entries: list) -> "list[dict]":
