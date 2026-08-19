@@ -14149,12 +14149,23 @@ async def _compositions_assemble(request):
 
         registry = _load_subject_registry(default_subject_profiles_path())
         backgrounds = _load_backgrounds_dict(user_data_dir())
+        outfit_reg = _load_outfit_registry(default_outfit_registry_path())
 
         resolved_subjects = _resolve_composition_subjects(composition, registry)
         resolved_background = _resolve_composition_background(composition, backgrounds)
 
+        outfit_ids = composition.get("outfit_ids", {})
+        resolved_outfits = {
+            sk: outfit_reg.get_outfit(oid)
+            for sk, oid in outfit_ids.items()
+            if oid and outfit_reg.get_outfit(oid)
+        }
+
         warnings = _validate_composition(composition)
-        result = _assemble_composition(composition, resolved_subjects, resolved_background, model_type)
+        result = _assemble_composition(
+            composition, resolved_subjects, resolved_background, model_type,
+            resolved_outfits=resolved_outfits,
+        )
         result["warnings"] = warnings
         return web.json_response(result)
     except FileNotFoundError as exc:
@@ -15215,8 +15226,16 @@ class PromptCompositionLoader(io.ComfyNode):
 
         registry = _load_subject_registry(default_subject_profiles_path())
         backgrounds = _load_backgrounds_dict(user_data_dir())
+        outfit_reg = _load_outfit_registry(default_outfit_registry_path())
         resolved_subjects = _resolve_composition_subjects(composition, registry)
         resolved_background = _resolve_composition_background(composition, backgrounds)
+
+        outfit_ids = composition.get("outfit_ids", {})
+        resolved_outfits_node = {
+            sk: outfit_reg.get_outfit(oid)
+            for sk, oid in outfit_ids.items()
+            if oid and outfit_reg.get_outfit(oid)
+        }
 
         # Resolve cast: build video_entries for assembler + reference media tensors
         cast_media: dict = {
@@ -15242,7 +15261,8 @@ class PromptCompositionLoader(io.ComfyNode):
         video_entries: list[dict] = cast_media["video_entries_full"]
 
         result = _assemble_composition(
-            composition, resolved_subjects, resolved_background, model_type_used, video_entries
+            composition, resolved_subjects, resolved_background, model_type_used,
+            video_entries, resolved_outfits=resolved_outfits_node,
         )
 
         prompt = result.get("prompt", "")
