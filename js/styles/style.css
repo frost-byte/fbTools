@@ -1148,6 +1148,38 @@ textarea.prompt-value-input {
     color: var(--p-amber-400, #fbbf24);
 }
 
+.fbt-ce-outfit-ref-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-color, #333);
+}
+
+.fbt-ce-outfit-ref-row:last-child {
+    border-bottom: none;
+}
+
+.fbt-ce-outfit-ref-thumb {
+    flex: 0 0 48px;
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 3px;
+    border: 1px solid var(--border-color, #444);
+    background: var(--comfy-input-bg, #2a2a2a);
+}
+
+.fbt-ce-outfit-ref-info {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.8em;
+    color: var(--fg-muted, #aaa);
+}
+
 /* ── Phase 3: Inline new-resource forms in sidebar ─────────────────────────── */
 
 .fbt-ce-sb-new {

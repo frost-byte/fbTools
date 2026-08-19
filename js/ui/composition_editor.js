@@ -1025,7 +1025,9 @@ function _openOutfitEditor(existingId) {
     const entry = existingId ? (_S.outfits[existingId] || {}) : {};
 
     let refImages = (entry.reference_images || []).map(r =>
-        typeof r === "string" ? { file: r, role: "costume detail" } : { ...r }
+        typeof r === "string"
+            ? { file: r, role: "costume detail", folder: "input" }
+            : { folder: "input", ...r }
     );
 
     const overlay = _mk("div", { cls: "fbt-ce-modal-overlay",
@@ -1050,10 +1052,10 @@ function _openOutfitEditor(existingId) {
     let frameTime = 1.0;
     let _onSelectionForSam2 = null;  // set by SAM2 section once built
 
-    function _addFileToRefs(filePath) {
+    function _addFileToRefs(filePath, folder = "input") {
         if (!filePath) return;
         if (!refImages.some(r => r.file === filePath)) {
-            refImages.push({ file: filePath, role: "costume detail" });
+            refImages.push({ file: filePath, role: "costume detail", folder });
             _renderRefList();
         }
     }
@@ -1202,7 +1204,7 @@ function _openOutfitEditor(existingId) {
     // action buttons
     const addRefBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "+ Add as Reference",
         disabled: true,
-        onclick: () => { if (selFile && !selFile.isVideo) _addFileToRefs(selFile.path); } });
+        onclick: () => { if (selFile && !selFile.isVideo) _addFileToRefs(selFile.path, selFile.folder); } });
 
     let analyzeBtn = null;
     let queryArea  = null;
@@ -1231,7 +1233,7 @@ function _openOutfitEditor(existingId) {
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || res.statusText);
                     if (data.description) descArea.value = data.description;
-                    _addFileToRefs(data.frame_file || selFile.path);
+                    _addFileToRefs(data.frame_file || selFile.path, selFile.folder || "input");
                 } catch (e) { alert(`Analyze failed: ${e.message}`); }
                 finally {
                     analyzeBtn.disabled    = false;
@@ -1314,7 +1316,7 @@ function _openOutfitEditor(existingId) {
 
         const addResultBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
             textContent: "Add to References",
-            onclick: () => { if (lastResultFile) _addFileToRefs(lastResultFile); } });
+            onclick: () => { if (lastResultFile) _addFileToRefs(lastResultFile, "input"); } });
         addResultBtn.style.display = "none";
 
         const extractBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "✂ Extract Outfit",
@@ -1386,6 +1388,9 @@ function _openOutfitEditor(existingId) {
         }
         refImages.forEach((img, i) => {
             const row    = _mk("div", { cls: "fbt-ce-outfit-ref-row" });
+            const thumb  = _mk("img", { cls: "fbt-ce-outfit-ref-thumb" });
+            thumb.src    = _ceViewUrl(img.file, img.folder || "input");
+            thumb.title  = img.file;
             const info   = _mk("span", { cls: "fbt-ce-outfit-ref-info", textContent: img.file });
             const roleEl = _mk("select", { cls: "fbt-ce-select fbt-ce-outfit-ref-role" });
             ["costume detail", "character sheet", "full body", "portrait", "side profile", "reference"].forEach(r => {
@@ -1398,7 +1403,7 @@ function _openOutfitEditor(existingId) {
                 textContent: "✕",
                 onclick: () => { refImages.splice(i, 1); _renderRefList(); }
             });
-            row.append(info, roleEl, delBtn);
+            row.append(thumb, info, roleEl, delBtn);
             refListEl.appendChild(row);
         });
     }
@@ -1432,17 +1437,19 @@ function _openOutfitEditor(existingId) {
         onclick: () => overlay.remove() });
 
     // ── Modal assembly ─────────────────────────────────────────────────────────
-    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "ID" }));
-    modal.appendChild(idInput);
-    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Name" }));
-    modal.appendChild(nameInput);
-    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Tags" }));
-    modal.appendChild(tagsInput);
-    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Description" }));
-    modal.appendChild(descArea);
+    const _row = (label, el) => _mk("div", { cls: "fbt-ce-row" }, [
+        _mk("label", { cls: "fbt-ce-label", textContent: label }),
+        _mk("div",   { cls: "fbt-ce-input-wrap" }, [el]),
+    ]);
+    modal.appendChild(_row("ID",          idInput));
+    modal.appendChild(_row("Name",        nameInput));
+    modal.appendChild(_row("Tags",        tagsInput));
+    modal.appendChild(_row("Description", descArea));
     modal.appendChild(browserSection);
     modal.appendChild(sam2Section);
-    modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }));
+    modal.appendChild(_mk("div", { cls: "fbt-ce-row" }, [
+        _mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }),
+    ]));
     modal.appendChild(refListEl);
     modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, [cancelBtn, saveBtn]));
 
