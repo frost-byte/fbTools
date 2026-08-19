@@ -1054,10 +1054,10 @@ function _openBgEditor(existing) {
     }
 
     // ── Modal assembly ─────────────────────────────────────────────────────────
-    const overlay = _mk("div", { cls: "fbt-ce-overlay" });
+    const overlay = _mk("div", { cls: "fbt-ce-modal-overlay",
+        onclick: e => { if (e.target === overlay) overlay.remove(); } });
     const modal   = _mk("div", { cls: "fbt-ce-modal" });
     overlay.appendChild(modal);
-    overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
 
     modal.appendChild(_mk("div", { cls: "fbt-ce-modal-title",
         textContent: isNew ? "New Background" : `Edit: ${existing.name}` }));
