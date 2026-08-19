@@ -1168,6 +1168,12 @@ textarea.prompt-value-input {
     border-radius: 3px;
     border: 1px solid var(--border-color, #444);
     background: var(--comfy-input-bg, #2a2a2a);
+    cursor: pointer;
+}
+
+.fbt-ce-outfit-ref-thumb:hover {
+    border-color: var(--p-teal-400, #2dd4bf);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--p-teal-400, #2dd4bf) 30%, transparent);
 }
 
 .fbt-ce-outfit-ref-info {
