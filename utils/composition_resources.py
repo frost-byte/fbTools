@@ -88,11 +88,10 @@ def load_backgrounds(data_dir: str) -> dict[str, dict]:
 
 
 def list_backgrounds(data_dir: str) -> list[dict]:
-    """Return sorted [{id, name, description}] summaries."""
+    """Return sorted full background dicts (id injected)."""
     bgs = load_backgrounds(data_dir)
-    items = [{"id": k, "name": v.get("name", k), "description": v.get("description", "")}
-             for k, v in bgs.items()]
-    items.sort(key=lambda x: x["name"].lower())
+    items = [{"id": k, **v} for k, v in bgs.items()]
+    items.sort(key=lambda x: x.get("name", x["id"]).lower())
     return items
 
 
