@@ -1024,7 +1024,6 @@ function _openOutfitEditor(existingId) {
     const isNew = !existingId;
     const entry = existingId ? (_S.outfits[existingId] || {}) : {};
 
-    // Local mutable reference images list for this editing session
     let refImages = (entry.reference_images || []).map(r =>
         typeof r === "string" ? { file: r, role: "costume detail" } : { ...r }
     );
@@ -1046,194 +1045,176 @@ function _openOutfitEditor(existingId) {
     const descArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-desc",
         placeholder: "Outfit description…", value: entry.description || "" });
 
-    // ── Reference images list ──────────────────────────────────────────────────
-    const refListEl = _mk("div", { cls: "fbt-ce-outfit-ref-list" });
+    // ── Shared browser state ────────────────────────────────────────────────────
+    let selFile   = null;   // {path, folder, isVideo}
+    let frameTime = 1.0;
+    let _onSelectionForSam2 = null;  // set by SAM2 section once built
 
-    function _renderRefList() {
-        refListEl.innerHTML = "";
-        if (!refImages.length) {
-            refListEl.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No reference images." }));
+    function _addFileToRefs(filePath) {
+        if (!filePath) return;
+        if (!refImages.some(r => r.file === filePath)) {
+            refImages.push({ file: filePath, role: "costume detail" });
+            _renderRefList();
+        }
+    }
+
+    // ── File Browser section ────────────────────────────────────────────────────
+    const browserSection = _mk("div", { cls: "fbt-ce-outfit-browser" });
+    browserSection.appendChild(_mk("div", { cls: "fbt-ce-label", textContent: "File Browser" }));
+
+    // preview
+    const previewWrap = _mk("div", { cls: "fbt-ce-outfit-preview-wrap" });
+    const previewImg  = _mk("img",   { cls: "fbt-be-img-preview fbt-ce-outfit-preview", alt: "" });
+    const previewVid  = _mk("video", { cls: "fbt-ce-outfit-video-preview" });
+    previewVid.controls = true;
+    previewVid.preload  = "metadata";
+    previewImg.style.display = "none";
+    previewVid.style.display = "none";
+    previewWrap.append(previewImg, previewVid);
+
+    // frame-time row (video only)
+    const frameRow   = _mk("div", { cls: "fbt-ce-outfit-frame-row" });
+    const frameLabel = _mk("label", { cls: "fbt-ce-outfit-frame-label", textContent: "Frame (s):" });
+    const frameInput = _mk("input", { type: "number", cls: "fbt-ce-input fbt-ce-outfit-frame-input",
+        min: "0", step: "0.1", value: String(frameTime) });
+    const syncBtn    = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-secondary",
+        title: "Capture current video position", textContent: "↺ Use current",
+        onclick: () => {
+            frameTime = Math.max(0, previewVid.currentTime);
+            frameInput.value = frameTime.toFixed(2);
+        } });
+    frameInput.addEventListener("change", () => {
+        frameTime = Math.max(0, parseFloat(frameInput.value) || 0);
+        frameInput.value = frameTime.toFixed(2);
+        if (previewVid.readyState >= 1) previewVid.currentTime = frameTime;
+    });
+    previewVid.addEventListener("loadedmetadata", () => { previewVid.currentTime = frameTime; });
+    frameRow.append(frameLabel, frameInput, syncBtn);
+    frameRow.style.display = "none";
+
+    // selected-file label
+    const selFileEl = _mk("div", { cls: "fbt-ce-outfit-sel-file", textContent: "— no file selected —" });
+
+    const _applySelection = (path, folder) => {
+        const isVideo = _isVideoFile(path);
+        selFile = { path, folder, isVideo };
+        selFileEl.textContent = path.split("/").pop();
+        selFileEl.title = path;
+        if (isVideo) {
+            previewImg.style.display = "none";
+            previewVid.style.display = "";
+            previewVid.src = _ceViewUrl(path, folder);
+            frameRow.style.display   = "";
+        } else {
+            previewVid.style.display = "none";
+            previewImg.style.display = "";
+            previewImg.src = _ceViewUrl(path, folder);
+            frameRow.style.display   = "none";
+        }
+        addRefBtn.disabled = isVideo;
+        addRefBtn.title    = isVideo ? "Videos cannot be added directly — use Analyze with LLM" : "";
+        if (analyzeBtn) analyzeBtn.disabled = false;
+        if (_onSelectionForSam2) _onSelectionForSam2(selFile);
+    };
+
+    // tree
+    const treeEl = _mk("div", { cls: "fbt-be-tree fbt-ce-outfit-tree" });
+
+    const _insertPath = (node, parts, fullPath) => {
+        if (parts.length === 1) {
+            node.files.push({ name: parts[0], path: fullPath });
+        } else {
+            const dir = parts[0];
+            if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: [] });
+            _insertPath(node.dirs.get(dir), parts.slice(1), fullPath);
+        }
+    };
+
+    const _renderTreeNode = (node, depth, folder) => {
+        const el = _mk("div", { cls: "fbt-be-tree-node" });
+        const indent = depth * 14;
+        [...node.dirs.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([dirName, child]) => {
+            const childWrap = _mk("div", { cls: "fbt-be-tree-children" });
+            childWrap.style.display = "none";
+            const arrow  = _mk("span", { cls: "fbt-be-tree-arrow", textContent: "▶" });
+            const toggle = _mk("button", { cls: "fbt-be-tree-toggle" });
+            toggle.style.paddingLeft = (indent + 2) + "px";
+            toggle.append(arrow, document.createTextNode(" " + dirName + "/"));
+            toggle.addEventListener("click", () => {
+                const opening = childWrap.style.display === "none";
+                childWrap.style.display = opening ? "" : "none";
+                arrow.textContent = opening ? "▼" : "▶";
+                if (opening && !childWrap.firstChild)
+                    childWrap.appendChild(_renderTreeNode(child, depth + 1, folder));
+            });
+            el.appendChild(_mk("div", {}, [toggle, childWrap]));
+        });
+        [...node.files].sort((a, z) => a.name.localeCompare(z.name)).forEach(({ name, path }) => {
+            const fileEl = _mk("div", { cls: "fbt-be-tree-file" });
+            fileEl.style.paddingLeft = (indent + 16) + "px";
+            if (selFile?.path === path && selFile?.folder === folder)
+                fileEl.classList.add("fbt-be-tree-file-sel");
+            fileEl.appendChild(_mk("span", { cls: "fbt-be-tree-file-name", textContent: name, title: path }));
+            fileEl.addEventListener("click", () => {
+                treeEl.querySelectorAll(".fbt-be-tree-file-sel").forEach(el => el.classList.remove("fbt-be-tree-file-sel"));
+                fileEl.classList.add("fbt-be-tree-file-sel");
+                _applySelection(path, folder);
+            });
+            el.appendChild(fileEl);
+        });
+        return el;
+    };
+
+    let activeFolder = "input";
+    const _rebuildTree = () => {
+        treeEl.innerHTML = "";
+        const imgs  = activeFolder === "output" ? _S.mediaOutImages : _S.mediaInImages;
+        const vids  = activeFolder === "output" ? _S.mediaOutVideos : _S.mediaInVideos;
+        const files = [...imgs, ...vids];
+        if (!files.length) {
+            treeEl.appendChild(_mk("div", { cls: "fbt-be-media-empty",
+                textContent: `No media in ${activeFolder} directory.` }));
             return;
         }
-        refImages.forEach((img, i) => {
-            const row = _mk("div", { cls: "fbt-ce-outfit-ref-row" });
-            const info = _mk("span", { cls: "fbt-ce-outfit-ref-info",
-                textContent: img.file });
-            const roleEl = _mk("select", { cls: "fbt-ce-select fbt-ce-outfit-ref-role" });
-            ["costume detail", "character sheet", "full body", "portrait", "side profile", "reference"].forEach(r => {
-                const opt = _mk("option", { value: r, textContent: r });
-                if (r === img.role) opt.selected = true;
-                roleEl.appendChild(opt);
-            });
-            roleEl.onchange = () => { refImages[i].role = roleEl.value; };
-            const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-danger",
-                textContent: "✕",
-                onclick: () => { refImages.splice(i, 1); _renderRefList(); }
-            });
-            row.append(info, roleEl, delBtn);
-            refListEl.appendChild(row);
-        });
-    }
-    _renderRefList();
+        const root = { dirs: new Map(), files: [] };
+        files.forEach(p => _insertPath(root, p.split("/"), p));
+        treeEl.appendChild(_renderTreeNode(root, 0, activeFolder));
+    };
 
-    // ── LLM analyze section ────────────────────────────────────────────────────
-    const analyzeSection = _mk("div", { cls: "fbt-ce-outfit-analyze" });
-    if (_S.llmVision) {
-        // ── shared state ───────────────────────────────────────────────────────
-        let selFile   = null;   // {path, folder, isVideo}
-        let frameTime = 1.0;
-
-        // ── preview elements ───────────────────────────────────────────────────
-        const previewWrap = _mk("div", { cls: "fbt-ce-outfit-preview-wrap" });
-        const previewImg  = _mk("img",   { cls: "fbt-be-img-preview fbt-ce-outfit-preview", alt: "" });
-        const previewVid  = _mk("video", { cls: "fbt-ce-outfit-video-preview" });
-        previewVid.controls = true;
-        previewVid.preload  = "metadata";
-        previewImg.style.display = "none";
-        previewVid.style.display = "none";
-        previewWrap.append(previewImg, previewVid);
-
-        // ── frame-time row (video only) ────────────────────────────────────────
-        const frameRow     = _mk("div", { cls: "fbt-ce-outfit-frame-row" });
-        const frameLabel   = _mk("label", { cls: "fbt-ce-outfit-frame-label", textContent: "Frame (s):" });
-        const frameInput   = _mk("input", { type: "number", cls: "fbt-ce-input fbt-ce-outfit-frame-input",
-            min: "0", step: "0.1", value: String(frameTime) });
-        const syncBtn      = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-secondary",
-            title: "Capture current video position",
-            textContent: "↺ Use current",
-            onclick: () => {
-                frameTime = Math.max(0, previewVid.currentTime);
-                frameInput.value = frameTime.toFixed(2);
-            } });
-        frameInput.addEventListener("change", () => {
-            frameTime = Math.max(0, parseFloat(frameInput.value) || 0);
-            frameInput.value = frameTime.toFixed(2);
-            if (previewVid.readyState >= 1) previewVid.currentTime = frameTime;
-        });
-        previewVid.addEventListener("loadedmetadata", () => { previewVid.currentTime = frameTime; });
-        frameRow.append(frameLabel, frameInput, syncBtn);
-        frameRow.style.display = "none";
-
-        // ── selected-file display ──────────────────────────────────────────────
-        const selFileEl = _mk("div", { cls: "fbt-ce-outfit-sel-file",
-            textContent: "— no file selected —" });
-
-        const _applySelection = (path, folder) => {
-            const isVideo = _isVideoFile(path);
-            selFile = { path, folder, isVideo };
-            selFileEl.textContent = path.split("/").pop();
-            selFileEl.title = path;
-            if (isVideo) {
-                previewImg.style.display = "none";
-                previewVid.style.display = "";
-                previewVid.src = _ceViewUrl(path, folder);
-                frameRow.style.display   = "";
-            } else {
-                previewVid.style.display = "none";
-                previewImg.style.display = "";
-                previewImg.src = _ceViewUrl(path, folder);
-                frameRow.style.display   = "none";
-            }
-        };
-
-        // ── tree builder ───────────────────────────────────────────────────────
-        const treeEl = _mk("div", { cls: "fbt-be-tree fbt-ce-outfit-tree" });
-
-        const _insertPath = (node, parts, fullPath) => {
-            if (parts.length === 1) {
-                node.files.push({ name: parts[0], path: fullPath });
-            } else {
-                const dir = parts[0];
-                if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: [] });
-                _insertPath(node.dirs.get(dir), parts.slice(1), fullPath);
-            }
-        };
-
-        const _renderTreeNode = (node, depth, folder) => {
-            const el = _mk("div", { cls: "fbt-be-tree-node" });
-            const indent = depth * 14;
-            [...node.dirs.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([dirName, child]) => {
-                const childWrap = _mk("div", { cls: "fbt-be-tree-children" });
-                childWrap.style.display = "none";
-                const arrow  = _mk("span", { cls: "fbt-be-tree-arrow", textContent: "▶" });
-                const toggle = _mk("button", { cls: "fbt-be-tree-toggle" });
-                toggle.style.paddingLeft = (indent + 2) + "px";
-                toggle.append(arrow, document.createTextNode(" " + dirName + "/"));
-                toggle.addEventListener("click", () => {
-                    const opening = childWrap.style.display === "none";
-                    childWrap.style.display = opening ? "" : "none";
-                    arrow.textContent = opening ? "▼" : "▶";
-                    if (opening && !childWrap.firstChild)
-                        childWrap.appendChild(_renderTreeNode(child, depth + 1, folder));
-                });
-                el.appendChild(_mk("div", {}, [toggle, childWrap]));
-            });
-            [...node.files].sort((a, z) => a.name.localeCompare(z.name)).forEach(({ name, path }) => {
-                const fileEl = _mk("div", { cls: "fbt-be-tree-file" });
-                fileEl.dataset.path = path;
-                fileEl.style.paddingLeft = (indent + 16) + "px";
-                if (selFile?.path === path && selFile?.folder === folder)
-                    fileEl.classList.add("fbt-be-tree-file-sel");
-                fileEl.appendChild(_mk("span", { cls: "fbt-be-tree-file-name", textContent: name, title: path }));
-                fileEl.addEventListener("click", () => {
-                    treeEl.querySelectorAll(".fbt-be-tree-file-sel").forEach(el => el.classList.remove("fbt-be-tree-file-sel"));
-                    fileEl.classList.add("fbt-be-tree-file-sel");
-                    _applySelection(path, folder);
-                });
-                el.appendChild(fileEl);
-            });
-            return el;
-        };
-
-        // ── folder tabs ────────────────────────────────────────────────────────
-        let activeFolder = "input";
-
-        const _rebuildTree = () => {
-            treeEl.innerHTML = "";
-            const imgs  = activeFolder === "output" ? _S.mediaOutImages : _S.mediaInImages;
-            const vids  = activeFolder === "output" ? _S.mediaOutVideos : _S.mediaInVideos;
-            const files = [...imgs, ...vids];
-            if (!files.length) {
-                treeEl.appendChild(_mk("div", { cls: "fbt-be-media-empty",
-                    textContent: `No media in ${activeFolder} directory.` }));
-                return;
-            }
-            const root = { dirs: new Map(), files: [] };
-            files.forEach(p => _insertPath(root, p.split("/"), p));
-            treeEl.appendChild(_renderTreeNode(root, 0, activeFolder));
-        };
-
-        const tabRow    = _mk("div", { cls: "fbt-be-tree-tab-row" });
-        const tabInput  = _mk("button", { cls: "fbt-be-tree-tab active", textContent: "Input" });
-        const tabOutput = _mk("button", { cls: "fbt-be-tree-tab",        textContent: "Output" });
-        tabRow.append(tabInput, tabOutput);
-        tabInput.addEventListener("click", () => {
-            if (activeFolder === "input") return;
-            activeFolder = "input";
-            tabInput.classList.add("active"); tabOutput.classList.remove("active");
-            _rebuildTree();
-        });
-        tabOutput.addEventListener("click", () => {
-            if (activeFolder === "output") return;
-            activeFolder = "output";
-            tabOutput.classList.add("active"); tabInput.classList.remove("active");
-            _rebuildTree();
-        });
+    const tabRow    = _mk("div", { cls: "fbt-be-tree-tab-row" });
+    const tabInput  = _mk("button", { cls: "fbt-be-tree-tab active", textContent: "Input" });
+    const tabOutput = _mk("button", { cls: "fbt-be-tree-tab",        textContent: "Output" });
+    tabRow.append(tabInput, tabOutput);
+    tabInput.addEventListener("click", () => {
+        if (activeFolder === "input") return;
+        activeFolder = "input";
+        tabInput.classList.add("active"); tabOutput.classList.remove("active");
         _rebuildTree();
+    });
+    tabOutput.addEventListener("click", () => {
+        if (activeFolder === "output") return;
+        activeFolder = "output";
+        tabOutput.classList.add("active"); tabInput.classList.remove("active");
+        _rebuildTree();
+    });
+    _rebuildTree();
 
-        // ── query + save-ref + analyze button ──────────────────────────────────
-        const queryArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-query",
+    // action buttons
+    const addRefBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "+ Add as Reference",
+        disabled: true,
+        onclick: () => { if (selFile && !selFile.isVideo) _addFileToRefs(selFile.path); } });
+
+    let analyzeBtn = null;
+    let queryArea  = null;
+    if (_S.llmVision) {
+        queryArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-query",
             placeholder: "Describe what you want from the analysis…",
             value: DEFAULT_OUTFIT_QUERY });
-        const saveRefChk   = _mk("input", { type: "checkbox", checked: true, id: "fbt-outfit-save-ref" });
-        const saveRefLabel = _mk("label", { htmlFor: "fbt-outfit-save-ref",
-            cls: "fbt-ce-inline-label", textContent: "Add analyzed file to reference images" });
-        const saveRefRow = _mk("div", { cls: "fbt-ce-outfit-ref-chk-row" }, [saveRefChk, saveRefLabel]);
-
-        const analyzeBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "🔍 Analyze with LLM",
+        analyzeBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "🔍 Analyze with LLM",
+            disabled: true,
             onclick: async () => {
-                if (!selFile) { alert("Select an image or video file from the browser first."); return; }
-                analyzeBtn.disabled = true;
+                if (!selFile) { alert("Select a file from the browser first."); return; }
+                analyzeBtn.disabled    = true;
                 analyzeBtn.textContent = "Analyzing…";
                 try {
                     const body = {
@@ -1250,57 +1231,41 @@ function _openOutfitEditor(existingId) {
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || res.statusText);
                     if (data.description) descArea.value = data.description;
-                    if (saveRefChk.checked) {
-                        const refFile = data.frame_file || selFile.path;
-                        if (!refImages.some(r => r.file === refFile)) {
-                            refImages.push({ file: refFile, role: "costume detail" });
-                            _renderRefList();
-                        }
-                    }
+                    _addFileToRefs(data.frame_file || selFile.path);
                 } catch (e) { alert(`Analyze failed: ${e.message}`); }
                 finally {
-                    analyzeBtn.disabled = false;
+                    analyzeBtn.disabled    = false;
                     analyzeBtn.textContent = "🔍 Analyze with LLM";
                 }
             } });
-
-        analyzeSection.appendChild(_mk("div", { cls: "fbt-ce-hint", textContent: "LLM Analysis" }));
-        analyzeSection.appendChild(tabRow);
-        analyzeSection.appendChild(treeEl);
-        analyzeSection.appendChild(selFileEl);
-        analyzeSection.appendChild(previewWrap);
-        analyzeSection.appendChild(frameRow);
-        analyzeSection.appendChild(queryArea);
-        analyzeSection.appendChild(saveRefRow);
-        analyzeSection.appendChild(analyzeBtn);
     }
 
-    // ── SAM2 outfit extraction section ─────────────────────────────────────────
+    const actionRow = _mk("div", { cls: "fbt-ce-outfit-action-row" });
+    actionRow.appendChild(addRefBtn);
+    if (analyzeBtn) actionRow.appendChild(analyzeBtn);
+
+    browserSection.append(tabRow, treeEl, selFileEl, previewWrap, frameRow, actionRow);
+    if (queryArea) browserSection.appendChild(queryArea);
+
+    // ── SAM2 section (source driven by browser selection above) ────────────────
     const sam2Section = _mk("div", { cls: "fbt-ce-outfit-sam2" });
-    // Always re-fetch live so the section reflects the current server state
-    // without requiring a full page reload after the model is installed.
     fetch("/fbtools/outfits/sam2_status").then(r => r.json()).then(fresh => {
         _S.sam2 = fresh;
-    }).catch(() => {}).finally(() => _populateSam2Section());
-    function _populateSam2Section() {
-        sam2Section.innerHTML = "";
-        _buildSam2Section();
-    }
-    (function _buildSam2Section() {
+    }).catch(() => {}).finally(() => { sam2Section.innerHTML = ""; _buildSam2Section(); });
+
+    function _buildSam2Section() {
         const s = _S.sam2;
-        if (!s) return; // status unknown — skip silently
+        sam2Section.appendChild(_mk("div", { cls: "fbt-ce-label", textContent: "SAM2 Outfit Extraction" }));
+        if (!s) return;
 
         if (!s.packages_ok) {
-            // Packages not installed — show setup hint
             sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint fbt-ce-hint-warn",
-                textContent: "SAM2 Outfit Extraction unavailable." }));
+                textContent: "SAM2 packages not installed." }));
             sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint",
                 textContent: `To enable: ${s.install_hint}` }));
             return;
         }
-
         if (!s.available) {
-            // Packages ok but no model file
             sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint",
                 textContent: "SAM2 model not found." }));
             sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint fbt-ce-hint-warn",
@@ -1308,88 +1273,64 @@ function _openOutfitEditor(existingId) {
             return;
         }
 
-        // ── Full extraction UI ────────────────────────────────────────────────
-        let extractPoint = { x: 0.5, y: 0.5 };  // normalized
+        // Full extraction UI — image source comes from shared browser selection
+        let extractPoint   = { x: 0.5, y: 0.5 };
         let lastResultFile = null;
 
-        const srcInput = _mk("input", {
-            cls:         "fbt-ce-input",
-            placeholder: "Source image filename (from ComfyUI input dir)",
-        });
+        const noSelHint = _mk("div", { cls: "fbt-ce-hint",
+            textContent: "Select an image from the browser above to begin extraction." });
 
-        // Image preview with click-to-point
-        const previewWrap = _mk("div", { cls: "fbt-ce-sam2-preview-wrap" });
-        const previewImg  = _mk("img",  { cls: "fbt-ce-sam2-preview-img", alt: "" });
-        const pointDot    = _mk("div",  { cls: "fbt-ce-sam2-point-dot" });
-        const hintText    = _mk("div",  { cls: "fbt-ce-hint",
-            textContent: "Click the image to set the segmentation focus point." });
-        const pointLabel  = _mk("div",  { cls: "fbt-ce-hint fbt-ce-sam2-coords",
+        const sam2PreviewWrap = _mk("div", { cls: "fbt-ce-sam2-preview-wrap" });
+        const sam2PreviewImg  = _mk("img",  { cls: "fbt-ce-sam2-preview-img", alt: "" });
+        const pointDot        = _mk("div",  { cls: "fbt-ce-sam2-point-dot" });
+        sam2PreviewWrap.append(sam2PreviewImg, pointDot);
+        sam2PreviewImg.style.display = "none";
+        pointDot.style.display       = "none";
+
+        const pointLabel = _mk("div", { cls: "fbt-ce-hint fbt-ce-sam2-coords",
             textContent: "Point: (0.50, 0.50)" });
-        previewWrap.append(previewImg, pointDot);
-        previewImg.style.display = "none";
 
         function _updateDot() {
-            pointDot.style.left = `${extractPoint.x * 100}%`;
-            pointDot.style.top  = `${extractPoint.y * 100}%`;
+            pointDot.style.left    = `${extractPoint.x * 100}%`;
+            pointDot.style.top     = `${extractPoint.y * 100}%`;
             pointLabel.textContent = `Point: (${extractPoint.x.toFixed(2)}, ${extractPoint.y.toFixed(2)})`;
         }
         _updateDot();
 
-        previewWrap.addEventListener("click", e => {
-            if (!previewImg.naturalWidth) return;
-            const rect = previewWrap.getBoundingClientRect();
+        sam2PreviewWrap.addEventListener("click", e => {
+            if (!sam2PreviewImg.naturalWidth) return;
+            const rect = sam2PreviewWrap.getBoundingClientRect();
             extractPoint = {
-                x: Math.max(0, Math.min(1, (e.clientX - rect.left)  / rect.width)),
-                y: Math.max(0, Math.min(1, (e.clientY - rect.top)   / rect.height)),
+                x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+                y: Math.max(0, Math.min(1, (e.clientY - rect.top)  / rect.height)),
             };
             _updateDot();
         });
 
-        srcInput.addEventListener("change", () => {
-            const fname = srcInput.value.trim();
-            if (fname) {
-                previewImg.src = `/view?filename=${encodeURIComponent(fname)}&type=input`;
-                previewImg.style.display = "";
-            } else {
-                previewImg.style.display = "none";
-            }
-        });
-
-        // Result preview
-        const resultWrap = _mk("div",  { cls: "fbt-ce-sam2-result-wrap" });
-        const resultImg  = _mk("img",  { cls: "fbt-ce-sam2-result-img", alt: "Extracted outfit" });
+        const resultWrap   = _mk("div", { cls: "fbt-ce-sam2-result-wrap" });
+        const resultImg    = _mk("img", { cls: "fbt-ce-sam2-result-img", alt: "Extracted outfit" });
         resultWrap.style.display = "none";
         resultWrap.appendChild(resultImg);
 
-        const addResultBtn = _mk("button", {
-            cls:         "fbt-ce-btn fbt-ce-btn-sm",
+        const addResultBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
             textContent: "Add to References",
-            onclick: () => {
-                if (lastResultFile && !refImages.some(r => r.file === lastResultFile)) {
-                    refImages.push({ file: lastResultFile, role: "costume detail" });
-                    _renderRefList();
-                }
-            },
-        });
+            onclick: () => { if (lastResultFile) _addFileToRefs(lastResultFile); } });
         addResultBtn.style.display = "none";
 
-        // Extract button
-        const extractBtn = _mk("button", {
-            cls:         "fbt-ce-btn",
-            textContent: "✂ Extract Outfit",
+        const extractBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "✂ Extract Outfit",
+            disabled: true,
             onclick: async () => {
-                const fname = srcInput.value.trim();
-                if (!fname) { alert("Enter a source image filename first."); return; }
-                extractBtn.disabled   = true;
+                if (!selFile || selFile.isVideo) { alert("Select an image first."); return; }
+                extractBtn.disabled    = true;
                 extractBtn.textContent = "Extracting…";
-                resultWrap.style.display = "none";
+                resultWrap.style.display   = "none";
                 addResultBtn.style.display = "none";
                 try {
                     const res = await fetch("/fbtools/outfits/extract_outfit", {
-                        method:  "POST",
+                        method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body:    JSON.stringify({
-                            filename:    fname,
+                        body: JSON.stringify({
+                            filename:    selFile.path,
                             point_x:     extractPoint.x,
                             point_y:     extractPoint.y,
                             point_label: 1,
@@ -1397,8 +1338,8 @@ function _openOutfitEditor(existingId) {
                     });
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || res.statusText);
-                    lastResultFile = data.result_file;
-                    resultImg.src  = `/view?filename=${encodeURIComponent(lastResultFile)}&type=input`;
+                    lastResultFile       = data.result_file;
+                    resultImg.src        = `/view?filename=${encodeURIComponent(lastResultFile)}&type=input`;
                     resultWrap.style.display   = "";
                     addResultBtn.style.display = "";
                 } catch (e) { alert(`Extraction failed: ${e.message}`); }
@@ -1406,18 +1347,62 @@ function _openOutfitEditor(existingId) {
                     extractBtn.disabled    = false;
                     extractBtn.textContent = "✂ Extract Outfit";
                 }
-            },
-        });
+            } });
 
-        sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint", textContent: "SAM2 Outfit Extraction" }));
-        sam2Section.appendChild(srcInput);
-        sam2Section.appendChild(hintText);
-        sam2Section.appendChild(previewWrap);
-        sam2Section.appendChild(pointLabel);
-        sam2Section.appendChild(extractBtn);
-        sam2Section.appendChild(resultWrap);
-        sam2Section.appendChild(addResultBtn);
-    }());
+        // Wire browser selection → SAM2 preview
+        _onSelectionForSam2 = (sf) => {
+            if (sf && !sf.isVideo) {
+                noSelHint.style.display      = "none";
+                sam2PreviewImg.src           = _ceViewUrl(sf.path, sf.folder);
+                sam2PreviewImg.style.display = "";
+                pointDot.style.display       = "";
+                extractBtn.disabled          = false;
+                resultWrap.style.display     = "none";
+                addResultBtn.style.display   = "none";
+                lastResultFile               = null;
+                extractPoint                 = { x: 0.5, y: 0.5 };
+                _updateDot();
+            } else {
+                noSelHint.style.display      = "";
+                sam2PreviewImg.src           = "";
+                sam2PreviewImg.style.display = "none";
+                pointDot.style.display       = "none";
+                extractBtn.disabled          = true;
+            }
+        };
+        if (selFile) _onSelectionForSam2(selFile);
+
+        sam2Section.append(noSelHint, sam2PreviewWrap, pointLabel, extractBtn, resultWrap, addResultBtn);
+    }
+
+    // ── Reference images list ──────────────────────────────────────────────────
+    const refListEl = _mk("div", { cls: "fbt-ce-outfit-ref-list" });
+
+    function _renderRefList() {
+        refListEl.innerHTML = "";
+        if (!refImages.length) {
+            refListEl.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No reference images." }));
+            return;
+        }
+        refImages.forEach((img, i) => {
+            const row    = _mk("div", { cls: "fbt-ce-outfit-ref-row" });
+            const info   = _mk("span", { cls: "fbt-ce-outfit-ref-info", textContent: img.file });
+            const roleEl = _mk("select", { cls: "fbt-ce-select fbt-ce-outfit-ref-role" });
+            ["costume detail", "character sheet", "full body", "portrait", "side profile", "reference"].forEach(r => {
+                const opt = _mk("option", { value: r, textContent: r });
+                if (r === img.role) opt.selected = true;
+                roleEl.appendChild(opt);
+            });
+            roleEl.onchange = () => { refImages[i].role = roleEl.value; };
+            const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-danger",
+                textContent: "✕",
+                onclick: () => { refImages.splice(i, 1); _renderRefList(); }
+            });
+            row.append(info, roleEl, delBtn);
+            refListEl.appendChild(row);
+        });
+    }
+    _renderRefList();
 
     // ── Buttons ────────────────────────────────────────────────────────────────
     const saveBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Save",
@@ -1446,6 +1431,7 @@ function _openOutfitEditor(existingId) {
     const cancelBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "Cancel",
         onclick: () => overlay.remove() });
 
+    // ── Modal assembly ─────────────────────────────────────────────────────────
     modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "ID" }));
     modal.appendChild(idInput);
     modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Name" }));
@@ -1454,10 +1440,10 @@ function _openOutfitEditor(existingId) {
     modal.appendChild(tagsInput);
     modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Description" }));
     modal.appendChild(descArea);
+    modal.appendChild(browserSection);
+    modal.appendChild(sam2Section);
     modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }));
     modal.appendChild(refListEl);
-    if (_S.llmVision) modal.appendChild(analyzeSection);
-    modal.appendChild(sam2Section);
     modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, [cancelBtn, saveBtn]));
 
     document.body.appendChild(overlay);

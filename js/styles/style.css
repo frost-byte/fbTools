@@ -1031,6 +1031,22 @@ textarea.prompt-value-input {
     min-height: 1.4em;
 }
 
+.fbt-ce-outfit-browser {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+    background: color-mix(in srgb, var(--p-primary-400, #818cf8) 5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--p-primary-400, #818cf8) 20%, transparent);
+    border-radius: 5px;
+}
+
+.fbt-ce-outfit-action-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
 .fbt-ce-outfit-preview-wrap {
     display: flex;
     flex-direction: column;
