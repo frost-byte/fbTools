@@ -12974,7 +12974,10 @@ async def _outfits_sam2_status(request):
     """Return SAM2 availability: packages present and model file found."""
     try:
         from .utils.sam2_segmenter import check_dependencies, find_sam2_model
-        sams_dirs = [
+        sams_dirs = (
+            folder_paths.get_folder_paths("sams")
+            + folder_paths.get_folder_paths("sam2")
+        ) or [
             os.path.join(folder_paths.models_dir, "sams"),
             os.path.join(folder_paths.models_dir, "sam2"),
         ]
@@ -13040,7 +13043,10 @@ async def _outfits_extract_outfit(request):
                 status=503,
             )
 
-        sams_dirs  = [
+        sams_dirs  = (
+            folder_paths.get_folder_paths("sams")
+            + folder_paths.get_folder_paths("sam2")
+        ) or [
             os.path.join(folder_paths.models_dir, "sams"),
             os.path.join(folder_paths.models_dir, "sam2"),
         ]

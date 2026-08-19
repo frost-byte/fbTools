@@ -1277,6 +1277,15 @@ function _openOutfitEditor(existingId) {
 
     // ── SAM2 outfit extraction section ─────────────────────────────────────────
     const sam2Section = _mk("div", { cls: "fbt-ce-outfit-sam2" });
+    // Always re-fetch live so the section reflects the current server state
+    // without requiring a full page reload after the model is installed.
+    fetch("/fbtools/outfits/sam2_status").then(r => r.json()).then(fresh => {
+        _S.sam2 = fresh;
+    }).catch(() => {}).finally(() => _populateSam2Section());
+    function _populateSam2Section() {
+        sam2Section.innerHTML = "";
+        _buildSam2Section();
+    }
     (function _buildSam2Section() {
         const s = _S.sam2;
         if (!s) return; // status unknown — skip silently
@@ -1448,7 +1457,7 @@ function _openOutfitEditor(existingId) {
     modal.appendChild(_mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }));
     modal.appendChild(refListEl);
     if (_S.llmVision) modal.appendChild(analyzeSection);
-    if (_S.sam2) modal.appendChild(sam2Section);
+    modal.appendChild(sam2Section);
     modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, [cancelBtn, saveBtn]));
 
     document.body.appendChild(overlay);
