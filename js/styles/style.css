@@ -1211,6 +1211,27 @@ textarea.prompt-value-input {
     min-height: 12px;
 }
 
+/* ── LLM-loaded badge on Prompt Composition sidebar tab ────────────────────── */
+/* Targets the icon wrapper inside our tab button (data-testid is derived from
+   our own tab ID "fbt.composition-editor" so it's stable).  The wrapper already
+   carries Tailwind's `relative` class, so ::after positions against it. */
+
+body.fbt-llm-loaded
+    [data-testid="fbt.composition-editor-tab-button"]
+    .sidebar-icon-wrapper::after {
+    content: '';
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    width: 8px;
+    height: 8px;
+    background: #22c55e;
+    border-radius: 50%;
+    border: 1.5px solid var(--comfy-menu-bg, #0d0d0d);
+    pointer-events: none;
+    z-index: 10;
+}
+
 /* ── Phase 3: Inline new-resource forms in sidebar ─────────────────────────── */
 
 .fbt-ce-sb-new {
