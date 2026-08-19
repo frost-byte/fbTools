@@ -455,6 +455,7 @@ async function _loadResources() {
         const st = llmStatus.value;
         _S.llmLoaded     = st?.loaded_model  ?? null;
         _S.llmVision     = st?.supports_vision ?? false;
+        _llmSyncBadge();
         if (settingsRes.value) {
             _S.settings = settingsRes.value;
             const st = _S.settings;
@@ -1728,6 +1729,10 @@ function _llmGetFocusedCard() {
     return (_focusedShotIdx >= 0 && cards?.[_focusedShotIdx]) ? cards[_focusedShotIdx] : null;
 }
 
+function _llmSyncBadge() {
+    document.body.classList.toggle("fbt-llm-loaded", !!_S.llmLoaded);
+}
+
 function _llmSetBusy(busy) {
     _S.llmBusy = busy;
     if (_dom.llmGenSection) {
@@ -1775,6 +1780,7 @@ async function _llmLoadSelected() {
         _toast("Load error: " + e.message, "error");
         _S.llmLoaded = null;
     }
+    _llmSyncBadge();
     _llmSetBusy(false);
     _llmUpdateStatus();
 }
@@ -1789,6 +1795,7 @@ async function _llmUnload() {
     } catch (e) {
         _toast("Unload error: " + e.message, "error");
     }
+    _llmSyncBadge();
     _llmSetBusy(false);
     _llmUpdateStatus();
 }
