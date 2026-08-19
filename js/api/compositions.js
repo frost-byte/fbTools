@@ -112,6 +112,13 @@ export class CompositionsAPI extends BaseAPI {
         return this.post("/outfits/reload", {});
     }
 
+    listMedia(type, recursive = false, folder = "input") {
+        const params = { type };
+        if (recursive)          params.recursive = "true";
+        if (folder !== "input") params.folder    = folder;
+        return this.get("/media/list", params);
+    }
+
     listCameraPresets() {
         return this.get("/presets/cameras");
     }
