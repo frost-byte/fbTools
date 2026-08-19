@@ -883,6 +883,7 @@ function _refreshSidebar() {
     _populateBgList();
     _rebuildPresetList("camera");
     _rebuildPresetList("sound");
+    _rebuildOutfitList();
 }
 
 // ── Camera / Sound preset sidebar sections ────────────────────────────────────
