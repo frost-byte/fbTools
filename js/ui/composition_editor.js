@@ -1389,9 +1389,10 @@ function _openOutfitEditor(existingId) {
         }
         refImages.forEach((img, i) => {
             const row    = _mk("div", { cls: "fbt-ce-outfit-ref-row" });
-            const thumb  = _mk("img", { cls: "fbt-ce-outfit-ref-thumb" });
+            const thumb  = _mk("img", { cls: "fbt-ce-outfit-ref-thumb fbt-ce-clickable" });
             thumb.src    = _ceViewUrl(img.file, img.folder || "input");
-            thumb.title  = img.file;
+            thumb.title  = `${img.file}\nClick to load into browser & SAM2`;
+            thumb.onclick = () => _applySelection(img.file, img.folder || "input");
             const info   = _mk("span", { cls: "fbt-ce-outfit-ref-info", textContent: img.file });
             const roleEl = _mk("select", { cls: "fbt-ce-select fbt-ce-outfit-ref-role" });
             ["costume detail", "character sheet", "full body", "portrait", "side profile", "reference"].forEach(r => {
