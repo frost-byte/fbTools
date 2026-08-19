@@ -88,8 +88,8 @@ class SAM2Segmenter:
         if self._predictor is not None:
             return
 
+        import sys
         from safetensors.torch import load_file
-        import sam2 as _sam2_pkg
         from sam2.sam2_image_predictor import SAM2ImagePredictor
         from omegaconf import OmegaConf
         from hydra.utils import instantiate
@@ -97,15 +97,25 @@ class SAM2Segmenter:
         config_rel = _detect_config(Path(self._model_path).stem)
         logger.info("SAM2: building architecture from config=%s", config_rel)
 
-        # Load the YAML directly from the sam2 package directory instead of
+        # Load the YAML directly from the installed sam2 package instead of
         # going through Hydra's global compose() — other custom nodes (e.g.
-        # Comfyui-SecNodes) call GlobalHydra.clear() and re-initialize Hydra
-        # with their own config module, which breaks the standard build_sam2()
-        # call when it fires after those nodes have loaded.
-        sam2_pkg_dir = Path(_sam2_pkg.__file__).parent
-        config_path = sam2_pkg_dir / config_rel
-        if not config_path.exists():
-            raise FileNotFoundError(f"SAM2 config not found at {config_path}")
+        # Comfyui-SecNodes, ComfyUI-RMBG) call GlobalHydra.clear() and
+        # re-initialize Hydra with their own config module, which breaks the
+        # standard build_sam2() call.  We also can't trust `import sam2` to
+        # resolve to the installed package — bundled copies inside custom_nodes
+        # directories (e.g. ComfyUI-RMBG/models/sam2/) shadow the real one on
+        # sys.path.  Search sys.path directly for a sam2 directory that
+        # actually contains the config file.
+        config_path = None
+        for _sp in sys.path:
+            _candidate = Path(_sp) / "sam2" / config_rel
+            if _candidate.exists():
+                config_path = _candidate
+                break
+        if config_path is None:
+            raise FileNotFoundError(
+                f"SAM2 config '{config_rel}' not found in any sam2 package on sys.path"
+            )
 
         cfg = OmegaConf.load(config_path)
         # Apply the same postprocessing overrides that build_sam2() normally adds.
