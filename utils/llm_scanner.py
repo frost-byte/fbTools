@@ -19,7 +19,15 @@ supports_video : bool
 
 native_video : bool
     Model understands temporal video sequences natively without frame
-    sampling.  Currently only Qwen2-VL and Qwen2.5-VL variants.
+    sampling.  Qwen2-VL, Qwen2.5-VL, Qwen2.5-Omni, and LLaVA-Next-Video.
+
+quant_type : str | None
+    Quantization format detected from config.json quantization_config:
+    "awq", "gptq", "bitsandbytes", "fp8", or None (unquantized / unknown).
+
+quant_requires : str | None
+    Python package required to load this quant type, or None if no extra
+    package is needed (BnB is already present; unquantized HF needs nothing).
 
 format : "gguf" | "hf"
     GGUF models need llama-cpp-python.
@@ -57,7 +65,17 @@ _VISION_ARCHS: set[str] = {
 _NATIVE_VIDEO_ARCHS: set[str] = {
     "Qwen2VLForConditionalGeneration",
     "Qwen2_5_VLForConditionalGeneration",
+    "Qwen2_5OmniForConditionalGeneration",
     "LlavaNextVideoForConditionalGeneration",
+}
+
+# quant_type → (pip package name, import name)
+# pip name shown in the warning; import name used to check if it's already installed.
+_QUANT_REQUIRES: dict[str, tuple[str, str] | None] = {
+    "awq":          ("autoawq",  "awq"),        # pip: autoawq  → import awq
+    "gptq":         ("auto-gptq", "auto_gptq"), # pip: BUILD_CUDA_EXT=0 pip install auto-gptq
+    "bitsandbytes": None,   # already installed
+    "fp8":          None,   # torch-native on Ada/Hopper
 }
 
 # model_type values in config.json that imply vision without explicit architecture
@@ -77,27 +95,68 @@ _VISION_MODEL_TYPES: set[str] = {
 
 # ── Capability labels for the UI ──────────────────────────────────────────────
 
+def _detect_quant(config: dict) -> tuple[str | None, str | None]:
+    """Return (quant_type, quant_requires) from a config.json dict.
+
+    quant_requires is the pip package name needed to load this quant format,
+    or None if no extra package is needed (either built-in or already installed).
+    """
+    qc = config.get("quantization_config") or {}
+    qt = (
+        qc.get("quant_type")
+        or qc.get("quantization_type")
+        or qc.get("quant_method")
+        or (config.get("quantization_method"))
+    )
+    if qt:
+        qt = qt.lower()
+    entry = _QUANT_REQUIRES.get(qt) if qt else None
+    if entry is None:
+        return qt, None
+    pip_name, import_name = entry
+    try:
+        __import__(import_name)
+        return qt, None   # already installed — no warning needed
+    except ImportError:
+        return qt, pip_name
+
+
 def capability_tags(model: dict) -> list[str]:
     """Return short display tags for a model dict."""
     if not model.get("supports_vision"):
-        return ["🔤 Text only"]
-    tags = ["📷 Vision"]
-    if model.get("native_video"):
-        tags.append("🎬 Video (native)")
+        tags = ["🔤 Text only"]
     else:
-        tags.append("🎬 Video (frames)")
+        tags = ["📷 Vision"]
+        if model.get("native_video"):
+            tags.append("🎬 Video (native)")
+        else:
+            tags.append("🎬 Video (frames)")
+    qt = model.get("quant_type")
+    if qt:
+        req = model.get("quant_requires")
+        suffix = f" ⚠️ needs {req}" if req else ""
+        tags.append(f"⚡ {qt.upper()}{suffix}")
     return tags
 
 
 def capability_note(model: dict) -> str:
     """One-line human-readable capability summary."""
+    parts = []
     if not model.get("supports_vision"):
-        return "Text only — cannot analyse images or video."
-    parts = ["Accepts images."]
-    if model.get("native_video"):
-        parts.append("Native video understanding (temporal).")
+        parts.append("Text only — cannot analyse images or video.")
     else:
-        parts.append("Video via frame sampling (keyframes only).")
+        parts.append("Accepts images.")
+        if model.get("native_video"):
+            parts.append("Native video understanding (temporal).")
+        else:
+            parts.append("Video via frame sampling (keyframes only).")
+    qt = model.get("quant_type")
+    if qt:
+        req = model.get("quant_requires")
+        if req:
+            parts.append(f"Quantization: {qt.upper()} — requires `pip install {req}`.")
+        else:
+            parts.append(f"Quantization: {qt.upper()} (ready to load).")
     return " ".join(parts)
 
 
@@ -134,6 +193,8 @@ def _scan_gguf_dir(dirpath: str, name: str) -> dict | None:
         "supports_vision": supports_vision,
         "supports_video": supports_vision,
         "native_video":   False,
+        "quant_type":     None,   # GGUF quant is internal to the file
+        "quant_requires": None,
         "size_mb":        size_mb,
         "vision_handler": _gguf_vision_handler(main_file) if supports_vision else None,
     }
@@ -185,8 +246,10 @@ def _scan_hf_dir(dirpath: str, name: str) -> dict | None:
 
     supports_vision = has_vision_config or has_vision_arch or has_vision_type or has_preprocessor
     native_video = bool(set(architectures) & _NATIVE_VIDEO_ARCHS) or model_type in {
-        "qwen2_vl", "qwen2_5_vl", "llava_next_video"
+        "qwen2_vl", "qwen2_5_vl", "qwen2_5_omni", "llava_next_video"
     }
+
+    quant_type, quant_requires = _detect_quant(config)
 
     # Rough size estimate from total safetensors/bin bytes
     size_mb = _hf_size_mb(dirpath)
@@ -203,6 +266,8 @@ def _scan_hf_dir(dirpath: str, name: str) -> dict | None:
         "supports_vision": supports_vision,
         "supports_video": supports_vision,
         "native_video":   native_video,
+        "quant_type":     quant_type,
+        "quant_requires": quant_requires,
         "size_mb":        size_mb,
     }
 

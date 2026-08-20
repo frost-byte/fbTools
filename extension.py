@@ -13403,17 +13403,18 @@ async def _media_delete_tmp_frame(request):
 
 @routes.get("/fbtools/media/info")
 async def _media_info(request):
-    """Return metadata for a video or audio file in the ComfyUI input directory.
+    """Return metadata for a video or audio file.
 
-    ?filename=<name>
+    ?filename=<name>&dir=input|output  (dir defaults to "input")
     Response: {duration, fps, frame_count, width, height}
     """
     filename = request.rel_url.query.get("filename", "").strip()
+    src_dir  = request.rel_url.query.get("dir", "input")
     if not filename:
         return web.json_response({"error": "filename required"}, status=400)
-    input_dir = get_input_directory()
-    path = os.path.realpath(os.path.join(input_dir, filename))
-    if not path.startswith(os.path.realpath(input_dir)):
+    base = get_output_directory() if src_dir == "output" else get_input_directory()
+    path = os.path.realpath(os.path.join(base, filename))
+    if not path.startswith(os.path.realpath(base)):
         return web.json_response({"error": "Forbidden"}, status=403)
     if not os.path.isfile(path):
         return web.json_response({"error": f"Not found: {filename}"}, status=404)
@@ -13442,17 +13443,18 @@ async def _media_info(request):
 
 @routes.get("/fbtools/media/stream")
 async def _media_stream(request):
-    """Stream a media file from the ComfyUI input directory.
+    """Stream a media file from input or output directory.
 
-    ?filename=<name>
+    ?filename=<name>&dir=input|output  (dir defaults to "input")
     Supports HTTP Range requests so browsers can seek into video/audio.
     """
     filename = request.rel_url.query.get("filename", "").strip()
+    src_dir  = request.rel_url.query.get("dir", "input")
     if not filename:
         return web.Response(status=400, text="filename required")
-    input_dir = get_input_directory()
-    path = os.path.realpath(os.path.join(input_dir, filename))
-    if not path.startswith(os.path.realpath(input_dir)):
+    base = get_output_directory() if src_dir == "output" else get_input_directory()
+    path = os.path.realpath(os.path.join(base, filename))
+    if not path.startswith(os.path.realpath(base)):
         return web.Response(status=403, text="Forbidden")
     if not os.path.isfile(path):
         return web.Response(status=404, text="Not found")
@@ -13509,6 +13511,94 @@ async def _media_list(request):
         files.sort(key=str.lower)
         return web.json_response({"files": files})
     except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/media/sample_frames")
+async def _media_sample_frames(request):
+    """Extract thumbnail frames from a video clip for the filmstrip UI.
+
+    Body: {filename, dir: "input"|"output", start_time, duration, every_nth, cap}
+    Returns: {frames: [{index, timestamp, data_url}], fps, duration, frame_count}
+
+    Thumbnails are 160×90 JPEG at quality 72 — small enough for fast transport.
+    """
+    try:
+        body       = await request.json()
+        filename   = body.get("filename", "").strip()
+        src_dir    = body.get("dir", "input")
+        start_time = float(body.get("start_time", 0.0))
+        duration   = float(body.get("duration",   0.0))
+        every_nth  = max(1, int(body.get("every_nth", 1)))
+        cap        = max(1, min(60, int(body.get("cap", 24))))
+
+        if not filename:
+            return web.json_response({"error": "filename required"}, status=400)
+
+        base = get_output_directory() if src_dir == "output" else get_input_directory()
+        path = os.path.realpath(os.path.join(base, filename))
+        if not path.startswith(os.path.realpath(base)):
+            return web.json_response({"error": "Forbidden"}, status=403)
+        if not os.path.isfile(path):
+            return web.json_response({"error": f"Not found: {filename}"}, status=404)
+
+        def _sample():
+            import cv2
+            import base64 as _b64
+            THUMB_W, THUMB_H = 160, 90
+            cap_ = cv2.VideoCapture(path)
+            try:
+                fps   = cap_.get(cv2.CAP_PROP_FPS) or 24.0
+                total = int(cap_.get(cv2.CAP_PROP_FRAME_COUNT))
+                native_dur = total / fps
+
+                start_f = int(start_time * fps)
+                end_f   = min(total, start_f + int(duration * fps)) if duration > 0 else total
+                start_f = max(0, min(start_f, end_f - 1))
+
+                # Build candidate list respecting every_nth, then thin to cap
+                candidates = list(range(start_f, end_f, every_nth))
+                if len(candidates) > cap:
+                    step = len(candidates) / cap
+                    candidates = [candidates[int(i * step)] for i in range(cap)]
+
+                frames_out = []
+                for idx in candidates:
+                    cap_.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                    ok, bgr = cap_.read()
+                    if not ok:
+                        continue
+                    h, w = bgr.shape[:2]
+                    scale = min(THUMB_W / w, THUMB_H / h)
+                    nw, nh = int(w * scale), int(h * scale)
+                    resized = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_AREA)
+                    canvas = np.zeros((THUMB_H, THUMB_W, 3), dtype=np.uint8)
+                    yo, xo = (THUMB_H - nh) // 2, (THUMB_W - nw) // 2
+                    canvas[yo:yo + nh, xo:xo + nw] = resized
+                    ok2, buf = cv2.imencode(".jpg", canvas, [cv2.IMWRITE_JPEG_QUALITY, 72])
+                    if not ok2:
+                        continue
+                    b64 = _b64.b64encode(buf.tobytes()).decode()
+                    frames_out.append({
+                        "index":     idx,
+                        "timestamp": round(idx / fps, 2),
+                        "data_url":  f"data:image/jpeg;base64,{b64}",
+                    })
+
+                return {
+                    "frames":      frames_out,
+                    "fps":         round(fps, 4),
+                    "duration":    round(native_dur, 4),
+                    "frame_count": total,
+                }
+            finally:
+                cap_.release()
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _sample)
+        return web.json_response(result)
+    except Exception as exc:
+        logger.error("sample_frames error: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
 
 
@@ -14436,6 +14526,127 @@ async def _llm_gen_polish(request):
         )
         return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/describe_video")
+async def _llm_describe_video(request):
+    """Describe character actions/expressions/appearance in a video clip.
+
+    Body: { video_path, shot_number, subjects, environment, style, intent, max_frames }
+    intent: "actions" | "expressions" | "appearance"
+    video_path: filename relative to input or output dir, or an absolute path.
+    """
+    try:
+        body = await request.json()
+        video_path    = body.get("video_path", "")
+        video_dir     = body.get("dir", "input")
+        frame_indices = body.get("frame_indices", None)   # preferred: explicit list from UI
+        shot_number   = int(body.get("shot_number", 1))
+        subjects      = body.get("subjects", [])
+        environment   = body.get("environment", "")
+        style         = body.get("style", "")
+        intent        = body.get("intent", "actions")
+
+        if not video_path:
+            return web.json_response({"error": "video_path required"}, status=400)
+
+        base = get_output_directory() if video_dir == "output" else get_input_directory()
+        resolved = None
+        for candidate in [
+            os.path.join(base, video_path),
+            video_path,  # absolute path fallback
+        ]:
+            if os.path.isfile(candidate):
+                resolved = candidate
+                break
+        if not resolved:
+            return web.json_response({"error": f"Video not found: {video_path}"}, status=404)
+
+        def _extract_frames(path: str, indices: list[int]):
+            import cv2
+            from PIL import Image
+            cap = cv2.VideoCapture(path)
+            if not cap.isOpened():
+                return [], {}
+            raw_fps   = cap.get(cv2.CAP_PROP_FPS) or 24.0
+            total     = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration  = total / raw_fps if raw_fps > 0 else 0.0
+            frames = []
+            for idx in indices:
+                idx = max(0, min(idx, total - 1))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, bgr = cap.read()
+                if not ret:
+                    continue
+                frames.append(Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
+            cap.release()
+            # sample_fps: effective rate of the selected frames across the full clip.
+            # This drives temporal RoPE position IDs in Qwen2.5-Omni/VL.
+            sample_fps = len(frames) / duration if duration > 0 else raw_fps
+            meta = {"raw_fps": raw_fps, "sample_fps": sample_fps, "duration": duration}
+            return frames, meta
+
+        if not frame_indices:
+            return web.json_response({"error": "frame_indices required"}, status=400)
+
+        loop = asyncio.get_event_loop()
+        frames, video_meta = await loop.run_in_executor(None, _extract_frames, resolved, frame_indices)
+        if not frames:
+            return web.json_response({"error": "Could not extract frames from video"}, status=422)
+
+        # Allow the caller to supply fully custom prompts (from the UI editor).
+        # Fall back to auto-generated prompts when not provided.
+        system_override = body.get("system_prompt", "").strip()
+        user_override   = body.get("user_prompt",   "").strip()
+        if system_override or user_override:
+            system = system_override
+            user   = user_override
+        else:
+            system, user = _llm_client.prompt_for_video_action(
+                shot_number=shot_number,
+                subjects=subjects,
+                intent=intent,
+                environment=environment,
+                style=style,
+            )
+
+        logger.info(
+            "describe_video: %d frames, sample_fps=%.2f, raw_fps=%.2f, duration=%.1fs",
+            len(frames), video_meta["sample_fps"], video_meta["raw_fps"], video_meta["duration"],
+        )
+        result = await loop.run_in_executor(
+            None,
+            lambda: _llm_client.generate(
+                user, system_prompt=system, video_frames=frames,
+                max_tokens=512, video_meta=video_meta,
+            ),
+        )
+        return web.json_response(result, status=200 if result["success"] else 503)
+    except Exception as exc:
+        logger.error("LLM describe_video error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/video_prompt")
+async def _llm_video_prompt(request):
+    """Return the auto-generated system + user prompts for a video describe call.
+
+    Body: { shot_number, subjects, intent, environment, style }
+    Response: { system, user }
+    """
+    try:
+        body = await request.json()
+        system, user = _llm_client.prompt_for_video_action(
+            shot_number=int(body.get("shot_number", 1)),
+            subjects=body.get("subjects", []),
+            intent=body.get("intent", "actions"),
+            environment=body.get("environment", ""),
+            style=body.get("style", ""),
+        )
+        return web.json_response({"system": system, "user": user})
+    except Exception as exc:
+        logger.error("LLM video_prompt error: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
 
 
