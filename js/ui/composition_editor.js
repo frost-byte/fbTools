@@ -17,6 +17,7 @@ import { compositionsApi } from "../api/compositions.js";
 import { llmApi } from "../api/llm.js";
 import { libberAPI } from "../api/libber.js";
 import { buildFileTree } from "./file_tree.js";
+import { makeEntry, buildHistorySection } from "../utils/llm_history.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -1054,6 +1055,7 @@ function _openBgEditor(existing) {
         onclick: () => { if (selFile && !selFile.isVideo) _addFileToRefs(selFile.path, selFile.folder); } });
 
     let analyzeBtn = null;
+    let bgHistRefresh = null;
     if (_S.llmLoaded && _S.llmVision) {
         analyzeBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "🔍 Analyze with LLM",
             disabled: true,
@@ -1062,14 +1064,21 @@ function _openBgEditor(existing) {
                 analyzeBtn.disabled    = true;
                 analyzeBtn.textContent = "Analyzing…";
                 try {
-                    const data = await compositionsApi.analyzeBackground(
-                        selFile.path,
-                        { folder: selFile.folder || "input", frameTime }
-                    );
+                    const bgParams = { filename: selFile.path, folder: selFile.folder || "input", frameTime };
+                    const data = await compositionsApi.analyzeBackground(selFile.path, bgParams);
                     if (data.description) descEl.value  = data.description;
                     if (data.lighting)    lightEl.value = data.lighting;
                     if (data.soundscape)  sndEl.value   = data.soundscape;
                     _addFileToRefs(data.frame_file || selFile.path, selFile.folder || "input");
+                    llmApi.historyAdd(makeEntry({
+                        kind: "bg_analyze",
+                        compositionName: _S.composition?.name || "",
+                        modelId: _S.llmLoaded || "",
+                        params: bgParams,
+                        result: { description: data.description, lighting: data.lighting,
+                                  soundscape: data.soundscape, frameFile: data.frame_file || null },
+                    })).catch(() => {});
+                    bgHistRefresh?.();
                 } catch (e) { alert(`Analyze failed: ${e.message}`); }
                 finally {
                     analyzeBtn.disabled    = false;
@@ -1152,6 +1161,21 @@ function _openBgEditor(existing) {
         _mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }),
     ]));
     modal.appendChild(refListEl);
+
+    if (_S.llmLoaded && _S.llmVision) {
+        const { el: histEl, refresh } = buildHistorySection({
+            kind: "bg_analyze",
+            onRestore: entry => {
+                const r = entry.result || {};
+                if (r.description) descEl.value  = r.description;
+                if (r.lighting)    lightEl.value = r.lighting;
+                if (r.soundscape)  sndEl.value   = r.soundscape;
+            },
+        });
+        bgHistRefresh = refresh;
+        modal.appendChild(histEl);
+    }
+
     modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, footerBtns));
 
     document.body.appendChild(overlay);
@@ -1513,8 +1537,9 @@ function _openOutfitEditor(existingId) {
         disabled: true,
         onclick: () => { if (selFile && !selFile.isVideo) _addFileToRefs(selFile.path, selFile.folder); } });
 
-    let analyzeBtn = null;
-    let queryArea  = null;
+    let analyzeBtn   = null;
+    let queryArea    = null;
+    let outfitHistRefresh = null;
     if (_S.llmVision) {
         queryArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-query",
             placeholder: "Describe what you want from the analysis…",
@@ -1526,21 +1551,27 @@ function _openOutfitEditor(existingId) {
                 analyzeBtn.disabled    = true;
                 analyzeBtn.textContent = "Analyzing…";
                 try {
-                    const body = {
-                        filename:   selFile.path,
-                        query:      queryArea.value.trim() || DEFAULT_OUTFIT_QUERY,
-                        max_tokens: 400,
-                    };
-                    if (selFile.isVideo) body.frame_time = frameTime;
+                    const query = queryArea.value.trim() || DEFAULT_OUTFIT_QUERY;
+                    const reqBody = { filename: selFile.path, query, max_tokens: 400 };
+                    if (selFile.isVideo) reqBody.frame_time = frameTime;
                     const res  = await fetch("/fbtools/outfits/analyze_media", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(body),
+                        body: JSON.stringify(reqBody),
                     });
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || res.statusText);
                     if (data.description) descArea.value = data.description;
                     _addFileToRefs(data.frame_file || selFile.path, selFile.folder || "input");
+                    llmApi.historyAdd(makeEntry({
+                        kind: "outfit_analyze",
+                        compositionName: _S.composition?.name || "",
+                        modelId: _S.llmLoaded || "",
+                        params: { filename: selFile.path, folder: selFile.folder || "input",
+                                  frameTime: selFile.isVideo ? frameTime : null, query },
+                        result: { description: data.description, frameFile: data.frame_file || null },
+                    })).catch(() => {});
+                    outfitHistRefresh?.();
                 } catch (e) { alert(`Analyze failed: ${e.message}`); }
                 finally {
                     analyzeBtn.disabled    = false;
@@ -1767,6 +1798,20 @@ function _openOutfitEditor(existingId) {
         _mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }),
     ]));
     modal.appendChild(refListEl);
+
+    if (_S.llmVision) {
+        const { el: histEl, refresh } = buildHistorySection({
+            kind: "outfit_analyze",
+            onRestore: entry => {
+                const r = entry.result || {};
+                if (r.description) descArea.value = r.description;
+                if (entry.params?.query && queryArea) queryArea.value = entry.params.query;
+            },
+        });
+        outfitHistRefresh = refresh;
+        modal.appendChild(histEl);
+    }
+
     modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, [cancelBtn, saveBtn]));
 
     document.body.appendChild(overlay);
@@ -1897,16 +1942,26 @@ async function _llmGenAction() {
     _llmSetBusy(true);
     _dom.llmStatusEl.textContent = "Generating action…";
     try {
-        const r = await llmApi.generateShotAction({
+        const shotParams = {
             shotNumber:  _focusedShotIdx + 1,
             subjects,
             environment,
             style:    _S.composition.style || "cinematic",
             existing: shot.action || "",
-        });
+        };
+        const r = await llmApi.generateShotAction(shotParams);
         if (r.success && r.text) {
             card._actInput.value = r.text;
             card._actInput.dispatchEvent(new Event("input", { bubbles: true }));
+            llmApi.historyAdd(makeEntry({
+                kind: "shot_action",
+                compositionName: _S.composition?.name || "",
+                shotNumber: _focusedShotIdx + 1,
+                modelId: _S.llmLoaded || "",
+                params: shotParams,
+                result: { text: r.text },
+            })).catch(() => {});
+            _dom.llmSidebarHistory?.refresh();
         } else {
             _toast(r.message || "Generation failed", "error");
         }
@@ -1940,7 +1995,8 @@ async function _llmGenDialogue() {
     _llmSetBusy(true);
     _dom.llmStatusEl.textContent = "Generating dialogue…";
     try {
-        const r = await llmApi.generateDialogue({ speaker, context, language: lang });
+        const dlgParams = { speaker, context, language: lang };
+        const r = await llmApi.generateDialogue(dlgParams);
         if (r.success && r.text) {
             // Find the dialogue text textarea in the rebuilt card and set it
             const newCard = _dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card")[_focusedShotIdx];
@@ -1951,6 +2007,15 @@ async function _llmGenDialogue() {
             }
             if (shot.dialogue) shot.dialogue.text = r.text;
             _markDirty();
+            llmApi.historyAdd(makeEntry({
+                kind: "dialogue",
+                compositionName: _S.composition?.name || "",
+                shotNumber: _focusedShotIdx + 1,
+                modelId: _S.llmLoaded || "",
+                params: dlgParams,
+                result: { text: r.text },
+            })).catch(() => {});
+            _dom.llmSidebarHistory?.refresh();
         } else {
             _toast(r.message || "Generation failed", "error");
         }
@@ -1990,24 +2055,7 @@ async function _llmDescribeFromVideo() {
     let _pendingRestoreIndices = null;  // set before _doExtract when restoring a history entry
     const VISIBLE     = 6;     // thumbnails visible at once
 
-    // ── History helpers (server-side JSON via REST API) ─────────────────────────
-    function _histSave(entry) {
-        llmApi.describeHistoryAdd(entry).catch(e =>
-            console.warn("[fbTools] history save failed:", e));
-    }
-    async function _histDelete(id) {
-        await llmApi.describeHistoryDelete(id).catch(e =>
-            console.warn("[fbTools] history delete failed:", e));
-    }
-    function _timeAgo(iso) {
-        const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-        if (m < 1)  return "just now";
-        if (m < 60) return `${m}m ago`;
-        const h = Math.floor(m / 60);
-        if (h < 24) return `${h}h ago`;
-        return `${Math.floor(h / 24)}d ago`;
-    }
-    let intentVal     = "actions";
+    let intentVal = "actions";
 
     const _isVid = f => /\.(mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
 
@@ -2235,26 +2283,28 @@ async function _llmDescribeFromVideo() {
             if (r.success && r.text) {
                 resultArea.value = r.text;
                 sendBtn.disabled = false;
-                await llmApi.describeHistoryAdd({
-                    id:              Date.now(),
-                    ts:              new Date().toISOString(),
+                await llmApi.historyAdd(makeEntry({
+                    kind: "video_describe",
                     compositionName: _S.composition?.name || "",
-                    shotNumber:      _focusedShotIdx + 1,
-                    videoPath:       _curVideoPath,
-                    videoDir:        _curVideoDir,
-                    vidInfo:         { width: _vidInfo?.width, height: _vidInfo?.height,
-                                       fps: _vidInfo?.fps, duration: _vidDur },
-                    startTime:       _startTime,
-                    duration:        _duration,
-                    everyNth:        _everyNth,
-                    cap:             _cap,
-                    frameIndices:    indices,
-                    intent:          intentVal,
-                    systemPrompt:    sysTa.value.trim(),
-                    userPrompt:      userTa.value.trim(),
-                    result:          r.text,
-                }).catch(() => {});
-                _renderHistory();
+                    shotNumber: _focusedShotIdx + 1,
+                    modelId: _S.llmLoaded || "",
+                    params: {
+                        videoPath:    _curVideoPath,
+                        videoDir:     _curVideoDir,
+                        vidInfo:      { width: _vidInfo?.width, height: _vidInfo?.height,
+                                        fps: _vidInfo?.fps, duration: _vidDur },
+                        startTime:    _startTime,
+                        duration:     _duration,
+                        everyNth:     _everyNth,
+                        cap:          _cap,
+                        frameIndices: indices,
+                        intent:       intentVal,
+                        systemPrompt: sysTa.value.trim(),
+                        userPrompt:   userTa.value.trim(),
+                    },
+                    result: { text: r.text },
+                })).catch(() => {});
+                videoHistRefresh?.();
             } else {
                 resultArea.value = r.message || "Description failed — check the server log.";
                 _toast(r.message || "Description failed", "error");
@@ -2282,129 +2332,37 @@ async function _llmDescribeFromVideo() {
     ]));
 
     // ── History section ────────────────────────────────────────────────────────
-    const histSection  = _mk("div", { cls: "fbt-vd-hist-section" });
-    const histToggle   = _mk("button", {
-        cls: "fbt-vd-hist-toggle", textContent: "▶ History",
-        onclick: () => {
-            const open = histBody.style.display !== "none";
-            histBody.style.display  = open ? "none" : "";
-            histToggle.textContent  = (open ? "▶" : "▼") + " History";
+    const { el: videoHistEl, refresh: videoHistRefresh } = buildHistorySection({
+        kind: "video_describe",
+        onRestore: async entry => {
+            const p = entry.params || {};
+            _startTime = p.startTime ?? 0;
+            _duration  = p.duration  ?? 0;
+            _everyNth  = p.everyNth  ?? 1;
+            _cap       = p.cap       ?? 24;
+            startInp.value = _startTime;
+            durInp.value   = _duration;
+
+            _pendingRestoreIndices = p.frameIndices ?? [];
+            if (p.videoPath) await _loadVideo(p.videoPath, p.videoDir ?? "input");
+
+            intentVal = p.intent ?? "actions";
+            const rb = intentGroup.querySelector(`input[value="${intentVal}"]`);
+            if (rb) rb.checked = true;
+
+            sysTa.value  = p.systemPrompt ?? "";
+            userTa.value = p.userPrompt   ?? "";
+            if (promptBody.style.display === "none" && (sysTa.value || userTa.value)) {
+                promptBody.style.display = "";
+                promptToggle.textContent = "▼ Edit Prompt";
+            }
+
+            resultArea.value = entry.result?.text ?? "";
+            sendBtn.disabled = !resultArea.value;
+            modal.scrollTop  = 0;
         },
     });
-    const histBody = _mk("div", { cls: "fbt-vd-hist-body" });
-    histBody.style.display = "none";
-    histSection.appendChild(histToggle);
-    histSection.appendChild(histBody);
-    modal.appendChild(histSection);
-
-    async function _renderHistory() {
-        histBody.innerHTML = "";
-        let hist = [];
-        try { hist = await llmApi.describeHistoryList(); } catch { /* server unavailable */ }
-        if (!hist.length) {
-            histBody.appendChild(_mk("div", { cls: "fbt-vd-hist-empty",
-                textContent: "No runs yet." }));
-            return;
-        }
-        hist.forEach(entry => {
-            const item    = _mk("div", { cls: "fbt-vd-hist-item" });
-            const summary = _mk("div", { cls: "fbt-vd-hist-summary" });
-            const detail  = _mk("div", { cls: "fbt-vd-hist-detail" });
-            detail.style.display = "none";
-
-            const fname   = entry.videoPath?.split("/").pop() || entry.videoPath || "—";
-            const snippet = entry.result?.slice(0, 60) + (entry.result?.length > 60 ? "…" : "");
-            const vi      = entry.vidInfo || {};
-            const dimStr  = vi.width ? `${vi.width}×${vi.height}` : "";
-            const durStr  = vi.duration ? `${vi.duration.toFixed(1)}s` : "";
-
-            summary.appendChild(_mk("span", { cls: "fbt-vd-hist-age",
-                textContent: _timeAgo(entry.ts) }));
-            if (entry.compositionName)
-                summary.appendChild(_mk("span", { cls: "fbt-vd-hist-tag",
-                    textContent: entry.compositionName }));
-            summary.appendChild(_mk("span", { cls: "fbt-vd-hist-tag",
-                textContent: `Shot ${entry.shotNumber}` }));
-            summary.appendChild(_mk("span", { cls: "fbt-vd-hist-tag fbt-vd-hist-intent",
-                textContent: entry.intent }));
-            summary.appendChild(_mk("span", { cls: "fbt-vd-hist-snippet",
-                textContent: snippet }));
-            summary.addEventListener("click", () => {
-                const open = detail.style.display !== "none";
-                detail.style.display = open ? "none" : "";
-            });
-
-            // Detail body
-            const metaLine = [fname, dimStr, durStr, `${entry.frameIndices?.length ?? 0} frames`]
-                .filter(Boolean).join(" · ");
-            detail.appendChild(_mk("div", { cls: "fbt-vd-hist-meta", textContent: metaLine }));
-
-            const resultPre = _mk("div", { cls: "fbt-vd-hist-result",
-                textContent: entry.result || "" });
-            detail.appendChild(resultPre);
-
-            const btnRow = _mk("div", { cls: "fbt-vd-hist-btnrow" });
-
-            btnRow.appendChild(_mk("button", {
-                cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Restore",
-                onclick: async () => {
-                    // Restore extraction params
-                    _startTime = entry.startTime ?? 0;
-                    _duration  = entry.duration  ?? 0;
-                    _everyNth  = entry.everyNth  ?? 1;
-                    _cap       = entry.cap       ?? 24;
-                    startInp.value = _startTime;
-                    durInp.value   = _duration;
-                    // _everyNth and _cap state is set above; their inputs
-                    // don't have stored refs so we leave the display as-is
-
-                    // Flag the indices to auto-select after extraction
-                    _pendingRestoreIndices = entry.frameIndices ?? [];
-
-                    // Load the video (triggers _scheduleExtract internally)
-                    if (entry.videoPath) await _loadVideo(entry.videoPath, entry.videoDir ?? "input");
-
-                    // Restore intent radio
-                    intentVal = entry.intent ?? "actions";
-                    const rb = intentGroup.querySelector(`input[value="${intentVal}"]`);
-                    if (rb) rb.checked = true;
-
-                    // Restore and reveal prompts
-                    sysTa.value  = entry.systemPrompt ?? "";
-                    userTa.value = entry.userPrompt   ?? "";
-                    if (promptBody.style.display === "none" && (sysTa.value || userTa.value)) {
-                        promptBody.style.display = "";
-                        promptToggle.textContent = "▼ Edit Prompt";
-                    }
-
-                    // Restore result
-                    resultArea.value = entry.result ?? "";
-                    sendBtn.disabled = !entry.result;
-
-                    // Scroll back to top of modal
-                    modal.scrollTop = 0;
-                },
-            }));
-
-            btnRow.appendChild(_mk("button", {
-                cls: "fbt-ce-btn fbt-ce-btn-secondary", textContent: "Delete",
-                onclick: async () => { await _histDelete(entry.id); _renderHistory(); },
-            }));
-            detail.appendChild(btnRow);
-
-            item.appendChild(summary);
-            item.appendChild(detail);
-            histBody.appendChild(item);
-        });
-    }
-
-    // Render history on open; expand the section if there are entries
-    _renderHistory().then(() => {
-        if (histBody.children.length && !histBody.querySelector(".fbt-vd-hist-empty")) {
-            histBody.style.display = "";
-            histToggle.textContent = "▼ History";
-        }
-    });
+    modal.appendChild(videoHistEl);
 
     // ── Logic ──────────────────────────────────────────────────────────────────
 
@@ -2612,15 +2570,25 @@ async function _llmDescribeFromVideo() {
 async function _llmPolishAction() {
     const card = _llmGetFocusedCard();
     if (!card?._actInput) { _toast("Click inside a shot first", "warn"); return; }
-    const text = card._actInput.value.trim();
-    if (!text) { _toast("Nothing to polish", "warn"); return; }
+    const originalText = card._actInput.value.trim();
+    if (!originalText) { _toast("Nothing to polish", "warn"); return; }
+    const style = _S.composition.style || "cinematic";
     _llmSetBusy(true);
     _dom.llmStatusEl.textContent = "Polishing…";
     try {
-        const r = await llmApi.polish({ text, context: `Scene style: ${_S.composition.style || "cinematic"}` });
+        const r = await llmApi.polish({ text: originalText, context: `Scene style: ${style}` });
         if (r.success && r.text) {
             card._actInput.value = r.text;
             card._actInput.dispatchEvent(new Event("input", { bubbles: true }));
+            llmApi.historyAdd(makeEntry({
+                kind: "polish",
+                compositionName: _S.composition?.name || "",
+                shotNumber: _focusedShotIdx + 1,
+                modelId: _S.llmLoaded || "",
+                params: { originalText, style },
+                result: { text: r.text },
+            })).catch(() => {});
+            _dom.llmSidebarHistory?.refresh();
         } else {
             _toast(r.message || "Polish failed", "error");
         }
@@ -2761,6 +2729,32 @@ function _buildLlmSection(parent) {
     });
     genBtnRow.appendChild(_dom.llmFromVideoBtn);
     _dom.llmGenSection.appendChild(genBtnRow);
+
+    // History for shot_action + dialogue + polish (all three in one accordion)
+    const sidebarHist = buildHistorySection({
+        kind: ["shot_action", "dialogue", "polish"],
+        multiKind: true,
+        onRestore: entry => {
+            const card = _llmGetFocusedCard();
+            if (!card) { _toast("Click inside a shot first to apply", "warn"); return; }
+            const text = entry.result?.text || "";
+            if (entry.kind === "dialogue") {
+                const dlgTextarea = card.querySelector?.(".fbt-ce-dlg-fields textarea");
+                if (dlgTextarea) {
+                    dlgTextarea.value = text;
+                    dlgTextarea.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+                const shot = _S.composition?.shots?.[_focusedShotIdx];
+                if (shot?.dialogue) { shot.dialogue.text = text; _markDirty(); }
+            } else if (card._actInput) {
+                card._actInput.value = text;
+                card._actInput.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+            _toast("Restored to focused shot", "success");
+        },
+    });
+    _dom.llmSidebarHistory = sidebarHist;
+    _dom.llmGenSection.appendChild(sidebarHist.el);
     body.appendChild(_dom.llmGenSection);
 
     // Download prompt (hidden when models exist)

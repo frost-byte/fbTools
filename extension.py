@@ -14650,12 +14650,39 @@ async def _llm_video_prompt(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
-def _describe_history_path() -> str:
-    return os.path.join(user_data_dir(), "video_describe_history.json")
+# ── Unified LLM history ────────────────────────────────────────────────────────
+# Supersedes the old video_describe_history.json (migrated on first read).
 
-def _describe_history_load() -> list:
-    p = _describe_history_path()
+def _llm_history_path() -> str:
+    return os.path.join(user_data_dir(), "llm_history.json")
+
+def _llm_history_migrate(e: dict) -> dict:
+    """Promote a legacy flat video_describe entry to the unified envelope schema."""
+    if "params" in e:
+        return e  # already migrated
+    e.setdefault("kind", "video_describe")
+    e["params"] = {k: e.pop(k) for k in (
+        "videoPath", "videoDir", "vidInfo", "startTime", "duration",
+        "everyNth", "cap", "frameIndices", "intent", "systemPrompt", "userPrompt",
+    ) if k in e}
+    raw_result = e.pop("result", "")
+    e["result"] = {"text": raw_result} if isinstance(raw_result, str) else (raw_result or {})
+    return e
+
+def _llm_history_load() -> list:
+    p = _llm_history_path()
     if not os.path.exists(p):
+        # Migrate from the old per-feature file if present
+        old_p = os.path.join(user_data_dir(), "video_describe_history.json")
+        if os.path.exists(old_p):
+            try:
+                with open(old_p, encoding="utf-8") as f:
+                    entries = json.load(f)
+                entries = [_llm_history_migrate(e) for e in (entries if isinstance(entries, list) else [])]
+                _llm_history_save(entries)
+                return entries
+            except Exception:
+                pass
         return []
     try:
         with open(p, encoding="utf-8") as f:
@@ -14664,50 +14691,73 @@ def _describe_history_load() -> list:
     except Exception:
         return []
 
-def _describe_history_save(entries: list) -> None:
-    p = _describe_history_path()
+def _llm_history_save(entries: list) -> None:
+    p = _llm_history_path()
     with open(p, "w", encoding="utf-8") as f:
         json.dump(entries, f, ensure_ascii=False, indent=2)
 
 
-@routes.get("/fbtools/llm/describe_history")
-async def _llm_describe_history_list(request):
-    """Return all video-describe history entries, newest first."""
+@routes.get("/fbtools/llm/history")
+async def _llm_history_list(request):
+    """Return LLM run history entries, newest first.
+
+    Optional query param ?kind=shot_action,dialogue  — comma-separated kind filter.
+    """
     try:
-        return web.json_response(_describe_history_load())
+        kinds_param = request.rel_url.query.get("kind", "")
+        kinds = {k.strip() for k in kinds_param.split(",") if k.strip()} if kinds_param else set()
+        entries = _llm_history_load()
+        if kinds:
+            entries = [e for e in entries if e.get("kind") in kinds]
+        return web.json_response(entries)
     except Exception as exc:
-        logger.error("describe_history list error: %s", exc)
+        logger.error("llm_history list error: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/llm/describe_history")
-async def _llm_describe_history_add(request):
-    """Append a new history entry.  Body: the entry dict."""
+@routes.post("/fbtools/llm/history")
+async def _llm_history_add(request):
+    """Append a new history entry.  Body: the full entry dict."""
     try:
-        entry = await request.json()
-        entries = _describe_history_load()
+        entry   = await request.json()
+        entries = _llm_history_load()
         entries.insert(0, entry)
-        if len(entries) > 30:
-            entries = entries[:30]
-        _describe_history_save(entries)
+        if len(entries) > 50:
+            entries = entries[:50]
+        _llm_history_save(entries)
         return web.json_response({"success": True})
     except Exception as exc:
-        logger.error("describe_history add error: %s", exc)
+        logger.error("llm_history add error: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/llm/describe_history/delete")
-async def _llm_describe_history_delete(request):
-    """Remove a single history entry.  Body: { id: <numeric id> }"""
+@routes.post("/fbtools/llm/history/delete")
+async def _llm_history_delete(request):
+    """Remove a single entry.  Body: { id: <numeric id> }"""
     try:
         body     = await request.json()
         entry_id = int(body["id"])
-        entries  = [e for e in _describe_history_load() if e.get("id") != entry_id]
-        _describe_history_save(entries)
+        entries  = [e for e in _llm_history_load() if e.get("id") != entry_id]
+        _llm_history_save(entries)
         return web.json_response({"success": True})
     except Exception as exc:
-        logger.error("describe_history delete error: %s", exc)
+        logger.error("llm_history delete error: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
+
+
+# Legacy shims — keep old URL paths working during any in-flight requests
+# (/fbtools/llm/describe_history/*) by delegating to the new unified handlers.
+@routes.get("/fbtools/llm/describe_history")
+async def _llm_describe_history_list(request):
+    return await _llm_history_list(request)
+
+@routes.post("/fbtools/llm/describe_history")
+async def _llm_describe_history_add(request):
+    return await _llm_history_add(request)
+
+@routes.post("/fbtools/llm/describe_history/delete")
+async def _llm_describe_history_delete(request):
+    return await _llm_history_delete(request)
 
 
 @routes.post("/fbtools/llm/download/default")

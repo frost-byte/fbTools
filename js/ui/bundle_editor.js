@@ -10,6 +10,7 @@
 import { bundlesApi }    from "../api/bundles.js";
 import { llmApi }        from "../api/llm.js";
 import { compositionsApi } from "../api/compositions.js";
+import { makeEntry, buildHistorySection } from "../utils/llm_history.js";
 
 const BUNDLE_PAGE_SIZE = 10;
 
@@ -32,6 +33,7 @@ const _S = {
     editing:        null,  // bundle object being edited; null = list view
     isNew:          false,
     llmVision:      false,  // true when a vision-capable model is loaded
+    llmModel:       "",    // display name of currently loaded model
     // Subject editor state
     viewMode:       "bundles",  // "bundles" | "subjects"
     subjectEditing: null,       // full subject dict being edited; null = list view
@@ -116,6 +118,7 @@ async function _loadAll() {
     _S.mediaVideos = vids.value?.files        ?? [];
     _S.mediaAudio  = aud.value?.files         ?? [];
     _S.llmVision   = llmSt.value?.supports_vision ?? false;
+    _S.llmModel    = llmSt.value?.loaded_model    ?? "";
     if (settingsRes.value) _S.settings = settingsRes.value;
 }
 
@@ -1616,7 +1619,7 @@ function _buildAppearanceAnalyzer(b, appearEl) {
     sec.appendChild(applyRow);
 
     // ── Analyze button ────────────────────────────────────────────────────────
-    const queryEl = sec.querySelector("textarea.fbt-be-llm-query");
+    let _appHistRefresh = null;
     const analyzeBtn = _mk("button", {
         cls: "fbt-ce-btn fbt-be-llm-analyze-btn",
         textContent: "🔍 Analyze",
@@ -1631,11 +1634,27 @@ function _buildAppearanceAnalyzer(b, appearEl) {
             try {
                 const query = sec.querySelector("textarea.fbt-be-llm-query")?.value.trim()
                     || _DEFAULT_APPEARANCE_QUERY;
+                const frameIdx = isVideoMode
+                    ? (parseInt(sec.querySelector(".fbt-be-llm-frame-input")?.value, 10) || 0)
+                    : null;
                 const r = await llmApi.generate(query, { images: [img], max_tokens: 400 });
                 if (r?.text) {
                     resultEl.value = r.text.trim();
                     resultEl.style.display = "";
                     applyRow.style.display = "";
+                    llmApi.historyAdd(makeEntry({
+                        kind: "appearance_analyze",
+                        compositionName: b.name || b.id || "",
+                        modelId: _S.llmModel || "",
+                        params: {
+                            bundleName: b.name, bundleId: b.id,
+                            subjectId: b.subject_id || null,
+                            sourceImage: img, isVideoFrame: isVideoMode,
+                            frameIndex: frameIdx, query,
+                        },
+                        result: { text: r.text.trim() },
+                    })).catch(() => {});
+                    _appHistRefresh?.();
                 }
             } catch (e) {
                 _toast("LLM error: " + e.message, "error");
@@ -1647,6 +1666,36 @@ function _buildAppearanceAnalyzer(b, appearEl) {
     });
     // Insert analyze button after the query textarea, before the result
     sec.insertBefore(analyzeBtn, resultEl);
+
+    // ── History ───────────────────────────────────────────────────────────────
+    const { el: histEl, refresh: histRefresh } = buildHistorySection({
+        kind: "appearance_analyze",
+        onRestore: entry => {
+            const p = entry.params || {};
+            // Restore query
+            const qta = sec.querySelector("textarea.fbt-be-llm-query");
+            if (qta && p.query) qta.value = p.query;
+            // Try to select the source image in the dropdown (image mode only)
+            if (!isVideoMode && p.sourceImage) {
+                const imgSel = sec.querySelector(".fbt-be-llm-img-sel");
+                if (imgSel) {
+                    const opt = Array.from(imgSel.options).find(o => o.value === p.sourceImage);
+                    if (opt) {
+                        imgSel.value = p.sourceImage;
+                        imgSel.dispatchEvent(new Event("change"));
+                    }
+                }
+            }
+            // Show result
+            if (entry.result?.text) {
+                resultEl.value = entry.result.text;
+                resultEl.style.display = "";
+                applyRow.style.display = "";
+            }
+        },
+    });
+    _appHistRefresh = histRefresh;
+    sec.appendChild(histEl);
 
     return sec;
 }
