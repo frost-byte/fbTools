@@ -1987,7 +1987,26 @@ async function _llmDescribeFromVideo() {
     let _debounce     = null;
     let _curVideoPath = null;
     let _curVideoDir  = "input";
+    let _pendingRestoreIndices = null;  // set before _doExtract when restoring a history entry
     const VISIBLE     = 6;     // thumbnails visible at once
+
+    // ── History helpers (server-side JSON via REST API) ─────────────────────────
+    function _histSave(entry) {
+        llmApi.describeHistoryAdd(entry).catch(e =>
+            console.warn("[fbTools] history save failed:", e));
+    }
+    async function _histDelete(id) {
+        await llmApi.describeHistoryDelete(id).catch(e =>
+            console.warn("[fbTools] history delete failed:", e));
+    }
+    function _timeAgo(iso) {
+        const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+        if (m < 1)  return "just now";
+        if (m < 60) return `${m}m ago`;
+        const h = Math.floor(m / 60);
+        if (h < 24) return `${h}h ago`;
+        return `${Math.floor(h / 24)}d ago`;
+    }
     let intentVal     = "actions";
 
     const _isVid = f => /\.(mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
@@ -2216,6 +2235,26 @@ async function _llmDescribeFromVideo() {
             if (r.success && r.text) {
                 resultArea.value = r.text;
                 sendBtn.disabled = false;
+                await llmApi.describeHistoryAdd({
+                    id:              Date.now(),
+                    ts:              new Date().toISOString(),
+                    compositionName: _S.composition?.name || "",
+                    shotNumber:      _focusedShotIdx + 1,
+                    videoPath:       _curVideoPath,
+                    videoDir:        _curVideoDir,
+                    vidInfo:         { width: _vidInfo?.width, height: _vidInfo?.height,
+                                       fps: _vidInfo?.fps, duration: _vidDur },
+                    startTime:       _startTime,
+                    duration:        _duration,
+                    everyNth:        _everyNth,
+                    cap:             _cap,
+                    frameIndices:    indices,
+                    intent:          intentVal,
+                    systemPrompt:    sysTa.value.trim(),
+                    userPrompt:      userTa.value.trim(),
+                    result:          r.text,
+                }).catch(() => {});
+                _renderHistory();
             } else {
                 resultArea.value = r.message || "Description failed — check the server log.";
                 _toast(r.message || "Description failed", "error");
@@ -2241,6 +2280,131 @@ async function _llmDescribeFromVideo() {
         _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-secondary", textContent: "Close",
             onclick: () => overlay.remove() }),
     ]));
+
+    // ── History section ────────────────────────────────────────────────────────
+    const histSection  = _mk("div", { cls: "fbt-vd-hist-section" });
+    const histToggle   = _mk("button", {
+        cls: "fbt-vd-hist-toggle", textContent: "▶ History",
+        onclick: () => {
+            const open = histBody.style.display !== "none";
+            histBody.style.display  = open ? "none" : "";
+            histToggle.textContent  = (open ? "▶" : "▼") + " History";
+        },
+    });
+    const histBody = _mk("div", { cls: "fbt-vd-hist-body" });
+    histBody.style.display = "none";
+    histSection.appendChild(histToggle);
+    histSection.appendChild(histBody);
+    modal.appendChild(histSection);
+
+    async function _renderHistory() {
+        histBody.innerHTML = "";
+        let hist = [];
+        try { hist = await llmApi.describeHistoryList(); } catch { /* server unavailable */ }
+        if (!hist.length) {
+            histBody.appendChild(_mk("div", { cls: "fbt-vd-hist-empty",
+                textContent: "No runs yet." }));
+            return;
+        }
+        hist.forEach(entry => {
+            const item    = _mk("div", { cls: "fbt-vd-hist-item" });
+            const summary = _mk("div", { cls: "fbt-vd-hist-summary" });
+            const detail  = _mk("div", { cls: "fbt-vd-hist-detail" });
+            detail.style.display = "none";
+
+            const fname   = entry.videoPath?.split("/").pop() || entry.videoPath || "—";
+            const snippet = entry.result?.slice(0, 60) + (entry.result?.length > 60 ? "…" : "");
+            const vi      = entry.vidInfo || {};
+            const dimStr  = vi.width ? `${vi.width}×${vi.height}` : "";
+            const durStr  = vi.duration ? `${vi.duration.toFixed(1)}s` : "";
+
+            summary.appendChild(_mk("span", { cls: "fbt-vd-hist-age",
+                textContent: _timeAgo(entry.ts) }));
+            if (entry.compositionName)
+                summary.appendChild(_mk("span", { cls: "fbt-vd-hist-tag",
+                    textContent: entry.compositionName }));
+            summary.appendChild(_mk("span", { cls: "fbt-vd-hist-tag",
+                textContent: `Shot ${entry.shotNumber}` }));
+            summary.appendChild(_mk("span", { cls: "fbt-vd-hist-tag fbt-vd-hist-intent",
+                textContent: entry.intent }));
+            summary.appendChild(_mk("span", { cls: "fbt-vd-hist-snippet",
+                textContent: snippet }));
+            summary.addEventListener("click", () => {
+                const open = detail.style.display !== "none";
+                detail.style.display = open ? "none" : "";
+            });
+
+            // Detail body
+            const metaLine = [fname, dimStr, durStr, `${entry.frameIndices?.length ?? 0} frames`]
+                .filter(Boolean).join(" · ");
+            detail.appendChild(_mk("div", { cls: "fbt-vd-hist-meta", textContent: metaLine }));
+
+            const resultPre = _mk("div", { cls: "fbt-vd-hist-result",
+                textContent: entry.result || "" });
+            detail.appendChild(resultPre);
+
+            const btnRow = _mk("div", { cls: "fbt-vd-hist-btnrow" });
+
+            btnRow.appendChild(_mk("button", {
+                cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Restore",
+                onclick: async () => {
+                    // Restore extraction params
+                    _startTime = entry.startTime ?? 0;
+                    _duration  = entry.duration  ?? 0;
+                    _everyNth  = entry.everyNth  ?? 1;
+                    _cap       = entry.cap       ?? 24;
+                    startInp.value = _startTime;
+                    durInp.value   = _duration;
+                    // _everyNth and _cap state is set above; their inputs
+                    // don't have stored refs so we leave the display as-is
+
+                    // Flag the indices to auto-select after extraction
+                    _pendingRestoreIndices = entry.frameIndices ?? [];
+
+                    // Load the video (triggers _scheduleExtract internally)
+                    if (entry.videoPath) await _loadVideo(entry.videoPath, entry.videoDir ?? "input");
+
+                    // Restore intent radio
+                    intentVal = entry.intent ?? "actions";
+                    const rb = intentGroup.querySelector(`input[value="${intentVal}"]`);
+                    if (rb) rb.checked = true;
+
+                    // Restore and reveal prompts
+                    sysTa.value  = entry.systemPrompt ?? "";
+                    userTa.value = entry.userPrompt   ?? "";
+                    if (promptBody.style.display === "none" && (sysTa.value || userTa.value)) {
+                        promptBody.style.display = "";
+                        promptToggle.textContent = "▼ Edit Prompt";
+                    }
+
+                    // Restore result
+                    resultArea.value = entry.result ?? "";
+                    sendBtn.disabled = !entry.result;
+
+                    // Scroll back to top of modal
+                    modal.scrollTop = 0;
+                },
+            }));
+
+            btnRow.appendChild(_mk("button", {
+                cls: "fbt-ce-btn fbt-ce-btn-secondary", textContent: "Delete",
+                onclick: async () => { await _histDelete(entry.id); _renderHistory(); },
+            }));
+            detail.appendChild(btnRow);
+
+            item.appendChild(summary);
+            item.appendChild(detail);
+            histBody.appendChild(item);
+        });
+    }
+
+    // Render history on open; expand the section if there are entries
+    _renderHistory().then(() => {
+        if (histBody.children.length && !histBody.querySelector(".fbt-vd-hist-empty")) {
+            histBody.style.display = "";
+            histToggle.textContent = "▼ History";
+        }
+    });
 
     // ── Logic ──────────────────────────────────────────────────────────────────
 
@@ -2343,7 +2507,14 @@ async function _llmDescribeFromVideo() {
                 cap:       _cap,
             });
             _extracted = res.frames ?? [];
-            _selected  = new Set(_extracted.map(f => f.index));
+            if (_pendingRestoreIndices !== null) {
+                // Restore: only select the frames that were chosen in the history entry.
+                const want = new Set(_pendingRestoreIndices);
+                _selected  = new Set(_extracted.filter(f => want.has(f.index)).map(f => f.index));
+                _pendingRestoreIndices = null;
+            } else {
+                _selected  = new Set(_extracted.map(f => f.index));
+            }
             _carousel  = 0;
             _renderStrip();
             stripSection.style.display = "";

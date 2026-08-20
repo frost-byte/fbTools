@@ -14650,6 +14650,66 @@ async def _llm_video_prompt(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+def _describe_history_path() -> str:
+    return os.path.join(user_data_dir(), "video_describe_history.json")
+
+def _describe_history_load() -> list:
+    p = _describe_history_path()
+    if not os.path.exists(p):
+        return []
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+def _describe_history_save(entries: list) -> None:
+    p = _describe_history_path()
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+
+
+@routes.get("/fbtools/llm/describe_history")
+async def _llm_describe_history_list(request):
+    """Return all video-describe history entries, newest first."""
+    try:
+        return web.json_response(_describe_history_load())
+    except Exception as exc:
+        logger.error("describe_history list error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/describe_history")
+async def _llm_describe_history_add(request):
+    """Append a new history entry.  Body: the entry dict."""
+    try:
+        entry = await request.json()
+        entries = _describe_history_load()
+        entries.insert(0, entry)
+        if len(entries) > 30:
+            entries = entries[:30]
+        _describe_history_save(entries)
+        return web.json_response({"success": True})
+    except Exception as exc:
+        logger.error("describe_history add error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/describe_history/delete")
+async def _llm_describe_history_delete(request):
+    """Remove a single history entry.  Body: { id: <numeric id> }"""
+    try:
+        body     = await request.json()
+        entry_id = int(body["id"])
+        entries  = [e for e in _describe_history_load() if e.get("id") != entry_id]
+        _describe_history_save(entries)
+        return web.json_response({"success": True})
+    except Exception as exc:
+        logger.error("describe_history delete error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 @routes.post("/fbtools/llm/download/default")
 async def _llm_download_default(request):
     """Download the recommended default LLM model using huggingface_hub.

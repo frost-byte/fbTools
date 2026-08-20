@@ -103,6 +103,21 @@ export class LlmAPI extends BaseAPI {
         });
     }
 
+    /** Fetch all video-describe history entries (newest first). */
+    describeHistoryList() {
+        return this.get("/describe_history");
+    }
+
+    /** Append a history entry.  entry: the full run record object. */
+    describeHistoryAdd(entry) {
+        return this.post("/describe_history", entry);
+    }
+
+    /** Delete a history entry by numeric id. */
+    describeHistoryDelete(id) {
+        return this.post(`/describe_history/delete`, { id });
+    }
+
     /** Return the auto-generated system+user prompts for a video describe call (no inference). */
     videoPrompt({ shotNumber, subjects, environment, style, intent } = {}) {
         return this.post("/video_prompt", {
