@@ -103,20 +103,28 @@ export class LlmAPI extends BaseAPI {
         });
     }
 
-    /** Fetch all video-describe history entries (newest first). */
-    describeHistoryList() {
-        return this.get("/describe_history");
+    /**
+     * Fetch unified LLM run history entries, newest first.
+     * @param {object} opts - { kind: "shot_action,dialogue" } — optional comma-joined kind filter
+     */
+    historyList({ kind = "" } = {}) {
+        return this.get("/history", kind ? { kind } : {});
     }
 
-    /** Append a history entry.  entry: the full run record object. */
-    describeHistoryAdd(entry) {
-        return this.post("/describe_history", entry);
+    /** Append a history entry.  entry: the full unified run record. */
+    historyAdd(entry) {
+        return this.post("/history", entry);
     }
 
     /** Delete a history entry by numeric id. */
-    describeHistoryDelete(id) {
-        return this.post(`/describe_history/delete`, { id });
+    historyDelete(id) {
+        return this.post("/history/delete", { id });
     }
+
+    // Legacy aliases kept for any cached clients
+    describeHistoryList()    { return this.historyList({ kind: "video_describe" }); }
+    describeHistoryAdd(e)    { return this.historyAdd(e); }
+    describeHistoryDelete(id){ return this.historyDelete(id); }
 
     /** Return the auto-generated system+user prompts for a video describe call (no inference). */
     videoPrompt({ shotNumber, subjects, environment, style, intent } = {}) {
