@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v1.21.0 (2026-08-20)
+
+### Features
+
+- **llm**: Add server-side video describe history with REST API
+  ([`89c97cd`](https://github.com/frost-byte/fbTools/commit/89c97cd438367d1ba9a4c6e5612a8f65eb2a6c14))
+
+History entries are stored in user_data_dir/video_describe_history.json via GET/POST/DELETE
+  endpoints instead of browser localStorage. Tracks composition name, shot, video, extraction
+  settings, prompts, and result so runs are restorable across sessions.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.20.0 (2026-08-20)
 
 ### Bug Fixes
