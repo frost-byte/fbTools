@@ -1,6 +1,921 @@
 # CHANGELOG
 
 
+## v1.20.0 (2026-08-20)
+
+### Bug Fixes
+
+- **backgrounds**: Use correct modal-overlay CSS class in _openBgEditor
+  ([`c257bdd`](https://github.com/frost-byte/fbTools/commit/c257bdd53d6ccb37599c13ee26c2bb63fa66a496))
+
+_openBgEditor was creating the overlay with class fbt-ce-overlay which has no CSS rule, so the
+  overlay rendered as an unstyled block element (no position:fixed, no backdrop) instead of a
+  fullscreen modal. Each click appended another invisible div, causing the "two forms" symptom. Fix:
+  use fbt-ce-modal-overlay to match _openOutfitEditor and the CSS.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle-editor**: Pass audio start_time/duration for extract_from_visual source
+  ([`7484f7b`](https://github.com/frost-byte/fbTools/commit/7484f7b52a860a15620c575e91c60345047776da))
+
+The Process Audio button was hardcoding start_time=0 and duration=0 when audio source is
+  "extract_from_visual", ignoring the Timing section values the user set. All three source modes
+  write timing into b.audio.start_time / b.audio.duration via _buildAudioTimeSection, so always use
+  those values unconditionally.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle-editor**: Show codec info and ffmpeg conversion command on video error
+  ([`451a062`](https://github.com/frost-byte/fbTools/commit/451a062c5cae9f2ed0fe1ba2d482a2fd8d03a11b))
+
+mediaInfo now returns a 'codec' field (cv2 CAP_PROP_FOURCC fourcc string, e.g. HEVC, avc1, xvid).
+  The info line shows it alongside duration/fps/dims.
+
+The error handler now provides actionable feedback: - MKV/AVI: tells user these formats aren't
+  browser-playable, shows exact ffmpeg command to convert to H.264 MP4 - H.265/HEVC detected from
+  codec field: specific re-encode command - MOV/MP4 with unknown codec: suggests re-encode with
+  codec detail - All messages include the ready-to-run ffmpeg command with -map_metadata and
+  -pix_fmt yuv420p flags
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle-editor**: Use loadedmetadata event + error handler for video preview
+  ([`d88dffd`](https://github.com/frost-byte/fbTools/commit/d88dffdd55aa5488a51f82d914f7fd0f4d04058f))
+
+Previously the video player showed black/greyed-out controls with no feedback when the stream failed
+  or the format wasn't browser-playable (.mkv, .avi, H.265 .mp4). Duration detection also relied
+  solely on the mediaInfo endpoint; if that was slow or unavailable the trim slider never appeared.
+
+- Add loadedmetadata listener as primary slider trigger (more reliable than waiting for mediaInfo
+  alone) - Add error listener showing a human-readable message per MediaError code (network error,
+  unsupported format, not found) - Track _onMeta/_onErr refs in _buildVideoPicker scope so each
+  _loadFile call removes stale listeners before registering new ones
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle-editor**: Use setAttribute for input list property in _mk helper
+  ([`832de93`](https://github.com/frost-byte/fbTools/commit/832de93289197c42c7fc9560bfd754e48d006f16))
+
+HTMLInputElement.list is a read-only getter; assigning it directly via el[k] = v throws "Cannot set
+  property list … which has only a getter". Route it through setAttribute("list", v) so datalist
+  bindings on the character-sheet and LLM image inputs in the subject form render correctly.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle-editor**: Zero skip_first_frames when trim slider sets start_time
+  ([`1ef5b4d`](https://github.com/frost-byte/fbTools/commit/1ef5b4d2782cf525e6fe95c22340a9bc8a02b48d))
+
+skip_first_frames is the legacy VHS-style frame-count seek; start_time is the time-based replacement
+  introduced with the trim slider. Setting both simultaneously double-offsets the seek position.
+  Clear the legacy field whenever the slider or Mark Start button writes start_time.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **conditioning**: Add node_id class attr to CompositionToH3Conditioning
+  ([`44f1267`](https://github.com/frost-byte/fbTools/commit/44f12674ffc0cc5c5c740a236f5eaf45b1ab34bf))
+
+cls.node_id in execute() raised AttributeError on the ComfyUI-cloned class because node_id was only
+  passed to io.Schema(), not stored as a class attribute. Add it explicitly so the clone inherits
+  it.
+
+- **conditioning**: Fix H3 video/audio loaders and raise frame_load_cap default
+  ([`80d8b88`](https://github.com/frost-byte/fbTools/commit/80d8b88c99c1680a592520ad45e46c221e24f9cc))
+
+Rewrite _h3_load_video_frames to use cv2 exclusively with a VHS-equivalent time-accumulator
+  resampling loop — eliminates the broken VHS import path that caused UnboundLocalError and silent
+  frame failures.
+
+Replace the torchaudio fallback in _h3_load_audio with a direct ffmpeg subprocess call mirroring VHS
+  get_audio: -ss/-t for accurate seeking, -f f32le piped to stdout, SR and channel count parsed from
+  ffmpeg stderr. Fixes sample-rate mismatch (rapid playback) and wrong audio segment caused by
+  torchaudio loading entire stream before slicing.
+
+Raise frame_load_cap default from 16 to 96 across extension.py, reference_bundles.py, and
+  bundle_editor.js so H3's n%17==5 trimming leaves 90 frames (8 Qwen samples) instead of 5 (1
+  sample). Add a safety floor in the loader that upgrades any legacy cap < 39.
+
+Also includes SceneCompose scene_synopsis input, PromptCompositionLoader filename_prefix output, and
+  media frame extraction REST endpoints (_media_extract_frame, _media_delete_tmp_frame) that were
+  developed alongside these fixes and could not be cleanly separated without patch-mode staging.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **conditioning**: Suppress skip_first_frames when start_time is set in video loader
+  ([`e79bc46`](https://github.com/frost-byte/fbTools/commit/e79bc46a0d33972aa9f1e6ae563e76b52201cd4e))
+
+When both start_time (time-based seek) and skip_first_frames (legacy VHS-style frame-count seek) are
+  non-zero, the video loader was applying both, doubling the offset and seeking past the end of the
+  video.
+
+The trim slider added in da2018c sets start_time but does not zero skip_first_frames on existing
+  bundles, so any bundle configured with the old frame-count approach would seek to (start_time +
+  skip/fps) instead of the intended start_time.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **info-section**: Fix label overlap on wrapped multi-word info labels
+  ([`c0a8199`](https://github.com/frost-byte/fbTools/commit/c0a819968ccb5b5cfc443c24ddba84661bd229e4))
+
+align-items: center was causing the checkbox to sit at the vertical midpoint of a wrapped 2-line
+  label (e.g. DIALOGUE TAGS), making the second line appear to overlap the checkbox.
+
+Switch to flex-start so the checkbox pins to the top of the label. Widen the label from 42px to 56px
+  to reduce wrapping on shorter labels. Add padding-top: 2px to keep single-line labels optically
+  aligned with their adjacent inputs.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **outfit**: Guard get_folder_paths calls against KeyError
+  ([`9b0a39f`](https://github.com/frost-byte/fbTools/commit/9b0a39fe5e602ea411550d6e89bd53239012ef74))
+
+folder_paths.get_folder_paths() raises KeyError for unregistered folder types rather than returning
+  an empty list. Wrap both calls in a helper so "sams" is used when registered and "sam2" is
+  silently skipped when not.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **outfit**: Use folder_paths.get_folder_paths for SAM2 model discovery
+  ([`3358065`](https://github.com/frost-byte/fbTools/commit/3358065c9c010efd91fc8d48afcc703e31ad58dc))
+
+The SAM2 status endpoint was constructing model search paths manually from folder_paths.models_dir,
+  which resolves to the ComfyUI launch directory rather than the paths registered via
+  extra_model_paths.yaml.
+
+Switch to folder_paths.get_folder_paths("sams") + get_folder_paths("sam2") so all
+  extra_model_paths.yaml-registered sams directories are searched, with the manual construction as
+  fallback.
+
+Also re-fetch sam2_status live on every outfit modal open so the UI reflects the current server
+  state without requiring a page reload after the model is installed.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **outfit-modal**: Fix label layout and add ref image thumbnails
+  ([`a69effd`](https://github.com/frost-byte/fbTools/commit/a69effd6689211476643695174e75162d4fa1906))
+
+Wrap ID/Name/Tags/Description fields in .fbt-ce-row so labels sit horizontally beside their inputs
+  instead of appearing right-justified in a column. Add a Reference Images section header row for
+  consistency.
+
+Add 48x48 thumbnail to each reference image row using _ceViewUrl() so users can visually identify
+  added refs. Add CSS for .fbt-ce-outfit-ref-row and .fbt-ce-outfit-ref-thumb.
+
+Pass folder param to all _addFileToRefs() callers (addRefBtn, analyzeBtn, SAM2 addResultBtn) so
+  thumbnail URLs resolve correctly.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **outfit-modal**: Populate outfit list after resource load
+  ([`3721962`](https://github.com/frost-byte/fbTools/commit/3721962d6f52c2ca4c3e9ced3d977dacd188de79))
+
+_refreshSidebar() was missing a _rebuildOutfitList() call, so outfits loaded from disk were never
+  rendered into the sidebar after page load or panel re-open.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **sam2**: Bypass Hydra global state when loading SAM2 config
+  ([`73db5c7`](https://github.com/frost-byte/fbTools/commit/73db5c720244d710cd16057e9c914f57883b23db))
+
+Other custom nodes (Comfyui-SecNodes) call GlobalHydra.instance().clear() and re-initialize Hydra
+  with their own config module. This breaks the standard build_sam2() path because sam2/__init__.py
+  skips its own initialize_config_module() call when Hydra is already initialized, leaving compose()
+  searching the wrong config tree.
+
+Fix: load the SAM2 YAML directly from the package directory via OmegaConf.load() +
+  hydra.utils.instantiate(), bypassing Hydra's global config resolution entirely. Apply the same
+  postprocessing overrides that build_sam2() normally adds via OmegaConf.update(force_add=True).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **sam2**: Search sys.path for config instead of using import sam2
+  ([`fbb3afe`](https://github.com/frost-byte/fbTools/commit/fbb3afea9a193d377aa9216eba6dc11bdc1ae70b))
+
+import sam2 resolved to ComfyUI-RMBG/models/sam2/ (a bundled copy with no configs directory) instead
+  of the installed package in site-packages. Search sys.path directly for a sam2/ directory that
+  contains the needed config file so bundled shadow copies are skipped.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene**: Restore SceneCastBuild entries on workflow reload
+  ([`db9fc55`](https://github.com/frost-byte/fbTools/commit/db9fc55fabe309ef7c2eb3991c82ed388a7612f0))
+
+onNodeCreated fires before ComfyUI restores widget values from the saved workflow, so the initial
+  JSON parse always saw '[]'. Hook onConfigure (which fires after widget values are applied) and
+  re-read the widget there to rebuild the table with the saved entries.
+
+- **scene**: Rewrite SceneCastBuild with JSON-backed entries
+  ([`e184e88`](https://github.com/frost-byte/fbTools/commit/e184e880386086797929ed56624f0cd81fc940fa))
+
+Replace the 16 individual boolean/combo inputs (subject_N, bundle_N, visual_mode_N, use_audio_N)
+  with a single io.String.Input("cast_entries_json") storing a JSON array. Eliminates the io.Boolean
+  toggle widgets that bypassed setWidgetVisible and leaked into the node UI.
+
+The JS DOM table now manages entries directly in JS state, syncing to the hidden JSON widget via
+  _syncToWidget(). The cast editor's _pushToNode() is simplified to a single JSON.stringify write +
+  _refreshCastTable() call.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **settings**: Update MelBand model path to expect .safetensors (Kijai builds)
+  ([`b4d1ef8`](https://github.com/frost-byte/fbTools/commit/b4d1ef84b41b1d6fe6db42d047e95ca1fa92fdf5))
+
+Kijai/MelBandRoFormer_comfy provides fp16 (456 MB) and fp32 (913 MB) safetensors checkpoints — not
+  .pth. Update placeholder, tooltip, and backend comment to reflect the correct format and source.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Analyzer image pool now stays in sync with bundle's image list
+  ([`44e059b`](https://github.com/frost-byte/fbTools/commit/44e059b37be22cc76e10386dcbf75ed899c2bec8))
+
+Previously the Analyze Appearance dropdown was populated once at form-render time. If b.visual.files
+  was empty then, it fell back to all images in the input directory and never updated — so adding an
+  image to the bundle left the LLM section pointing at the wrong pool and the user had to manually
+  pick the right file from a large unsorted list.
+
+Changes: - _buildAppearanceAnalyzer: replace one-shot imagePool capture with a rebuildPool() that
+  re-reads b.visual.files on every call; auto-selects and previews the image automatically when the
+  bundle has exactly one file; stored as sec._refreshPool for external wiring - _buildImageList:
+  accepts an onFilesChange callback; fires it on every add and remove so the analyzer stays in sync
+  immediately - _renderForm: holds _llmEl ref (set after analyzer is built) and passes () =>
+  _llmEl?._refreshPool?.() into _buildImageList so the two sections are wired together through the
+  closure
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Escape double quotes in paceSel.title string
+  ([`33b3f0a`](https://github.com/frost-byte/fbTools/commit/33b3f0a00dad26b0fadfc506c7c15a4cbc5b6d00))
+
+Unescaped double quotes inside a double-quoted JS string caused a parse error that prevented the
+  entire fb_tools.js module chain from loading.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Reload LibberManager table from saved libber_name on workflow load
+  ([`4430846`](https://github.com/frost-byte/fbTools/commit/443084663e035ee886f803ac4314056d3ab2e1d5))
+
+onNodeCreated fires before ComfyUI restores widget values, so refreshTable() was reading the default
+  combo value instead of the saved libber_name. Hook onConfigure (which fires after values are
+  applied) to re-run refreshTable with the correct name.
+
+- **ui**: Remove CSS import from index.js, loaded by fb_tools.js link tag
+  ([`c82e266`](https://github.com/frost-byte/fbTools/commit/c82e2668d5ff5d319df1d2a32044a8394d28892d))
+
+Browsers reject CSS loaded via ES module import (strict MIME checking). The stylesheet was already
+  injected correctly via a <link> element in fb_tools.js; the duplicate import in index.js broke the
+  entire module chain.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Resolve sidebar double-click bug for fbTools panels
+  ([`aeca3d9`](https://github.com/frost-byte/fbTools/commit/aeca3d931f116380c08f0ec0fc642e4f878172fb))
+
+ComfyUI calls render(el) while the previous panel's DOM is still present. All four tab guards
+  checked for `.fbt-be-panel` — shared by both bundle and cast editors — so switching from one to
+  the other silently skipped rendering the new panel, leaving the old one visible.
+
+Fix: stamp each editor's root panel with a unique `data-fbt-editor` attribute ("bundle" / "cast")
+  and guard against that specific value. The composition editor gains an equivalent guard on
+  `.fbt-ce-panel`. Each render function already calls `el.innerHTML = ""` before building, so the
+  old panel is cleared automatically when the guard passes.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Restore widget-dependent UI on workflow reload for Story/Scene nodes
+  ([`ca84210`](https://github.com/frost-byte/fbTools/commit/ca84210616caf056a507ec357a5f0ead2cdb96af))
+
+Add onConfigure hooks to StoryEdit, StorySceneBatch, and SceneSelect so their tables/dropdowns
+  reload from the correct saved widget values after a workflow is opened. Each onNodeCreated fires
+  before ComfyUI restores widget values, so the initial loads read default values instead of the
+  saved ones.
+
+- StoryEdit: store loadStoryData on node._loadStoryData, call from onConfigure - StorySceneBatch:
+  re-fetch job_id options for saved story_name on onConfigure - SceneSelect: store updateSceneDir on
+  node._updateSceneDir, call from onConfigure
+
+- **ui**: Set widget.hidden and widget.element in setWidgetVisible
+  ([`408010f`](https://github.com/frost-byte/fbTools/commit/408010fd64c636e29ec9effc77edd87250972db3))
+
+Modern ComfyUI frontend gates visibility on widget.hidden; the old widget.type='hidden' fallback
+  only suppresses the LiteGraph canvas draw but leaves the DOM element (widget.element) visible. Add
+  both properties and optionally call node.setSize() when a node reference is provided.
+
+### Documentation
+
+- **scene**: Clarify SceneCastBuild works with PromptCompositionLoader
+  ([`e1b8f0c`](https://github.com/frost-byte/fbTools/commit/e1b8f0c341c21591c83a93d5fba78f727038ea32))
+
+Both SceneCastLoad and SceneCastBuild output SCENE_CAST type, so either wires into
+  PromptCompositionLoader's scene_cast input. Update tooltip and docstring to reflect this.
+
+### Features
+
+- **audio**: Add MelBand Roformer vocal extraction to preprocessing pipeline
+  ([`c96adcc`](https://github.com/frost-byte/fbTools/commit/c96adcce2a6e2a07fcba0cca0323d9b4f53ea243))
+
+When a MelBand Roformer safetensors checkpoint is configured, noise_removal now runs source
+  separation instead of spectral subtraction, producing a clean vocal stem. Falls back to the
+  existing spectral-subtraction path when no model path is set. Model is cached in-process after
+  first load.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **backgrounds**: Replace inline form with modal + LLM analysis
+  ([`fcbe2d8`](https://github.com/frost-byte/fbTools/commit/fcbe2d8a6b2f0b095e8780e2ea918df7169d49cf))
+
+Convert background create/edit from an inline sidebar form to a full modal matching the outfit
+  editor pattern.
+
+New capabilities: - File browser (Input/Output tabs, tree, image/video preview, frame picker) -
+  Reference images list with thumbnails and role dropdown - LLM analysis via POST
+  /fbtools/backgrounds/analyze_media — asks the model to return structured JSON and auto-fills
+  Description, Lighting, and Soundscape fields in one call - Clicking a reference thumbnail loads it
+  into the browser preview - Delete button moved into the modal footer
+
+Backend changes: - New /fbtools/backgrounds/analyze_media endpoint with JSON-structured LLM query
+  (description + lighting + soundscape); strips markdown fences and falls back to raw text if JSON
+  parse fails; supports folder param so output-dir images work too - list_backgrounds() now returns
+  full records (was only id/name/description summaries, so lighting/soundscape were lost on edit) -
+  background schema gains reference_images field (persisted as-is by existing save_background
+  passthrough) - analyzeBackground() added to CompositionsAPI
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle**: Add audio preprocessing pipeline with caching
+  ([`827261e`](https://github.com/frost-byte/fbTools/commit/827261ef58493d6caa2a9038b71d40a3856be46a))
+
+- utils/audio_preprocess.py: pure numpy pipeline (spectral denoise, LUFS normalize via pyloudnorm,
+  loop/truncate) with cache fingerprinting - POST /fbtools/bundles/preprocess_audio endpoint: runs
+  pipeline in executor, caches result as WAV under user_data_dir/bundles_cache/ - audio_cache field
+  plumbed through prompt_compositions, prompt_assembler, _resolve_cast_media, and
+  CompositionToH3Conditioning to bypass raw load - Bundle Editor: _buildAudioProcessingSection()
+  with noise/LUFS toggles, target LUFS input, status badge, and Process Audio button -
+  tests/test_audio_preprocess.py: 36 tests covering all pipeline steps
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle**: Add sampled preview with frame-count readout
+  ([`5e47950`](https://github.com/frost-byte/fbTools/commit/5e47950e592b468144219194397b966d054099fe))
+
+- Remove frame_load_cap and skip_first_frames from video section UI (start/end is now set via
+  slider/mark, cap defaults to 0) - Add live frame-count readout: "~N frames · X fps effective"
+  updates when any of FPS override, Every Nth, start, duration, or slider changes - Add POST
+  /fbtools/bundles/preview_sampled endpoint: cv2 time-accumulator resampling (mirrors H3
+  conditioning logic) → ffmpeg pipe → fragmented MP4 - Add "▶ Preview Sampled" button in the video
+  section: plays sampled preview in a separate in-panel video element; falls back to native clip
+  loop when ffmpeg unavailable with an explanatory note - Remove frame_load_cap default from 96 to 0
+  for new bundles
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle**: Add separate video file as audio source for Reference Bundles
+  ([`b4e7fbf`](https://github.com/frost-byte/fbTools/commit/b4e7fbfd99da7fb677722bde38722c5d2ee0aba6))
+
+Users can now excerpt audio from a different video than the visual reference. Adds
+  extract_from_video audio source option in bundle_editor.js and handles both the per-entry and
+  legacy flat paths in _resolve_cast_media.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle**: Add time-based trim (start_time/duration) to video visual references
+  ([`967a6ef`](https://github.com/frost-byte/fbTools/commit/967a6ef2a76059c1db046d1bed4311a0d61e38d8))
+
+_h3_load_video_frames now seeks to start_time via cap.set(CAP_PROP_POS_MSEC) and caps the output
+  frame count from duration * target_fps. Both params are propagated through _resolve_cast_media
+  entry_load_params and defaulted in BundleRegistry.upsert(). Bundle editor video visual section
+  gains a "Trim" section with Start (s) / Duration (s) number inputs above the existing frame
+  sampling controls.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle-editor**: Add processed audio preview player
+  ([`1e07f2e`](https://github.com/frost-byte/fbTools/commit/1e07f2e589573d656f778d7330fd1eb63ff09f44))
+
+After running "Process Audio", an <audio> player appears below the status line so the processed
+  (denoised/normalized) result can be listened to without leaving the editor.
+
+Backend: GET /fbtools/bundles/audio_cache/stream?path=<abs_path> serves files from
+  user_data_dir()/bundles_cache/ with Range support. Path is validated to stay within bundles_cache/
+  root.
+
+Frontend: _buildAudioProcessingSection now creates a hidden <audio> element alongside the status
+  line. _updateStatus shows/hides and reloads the player whenever audio_cache changes — on initial
+  render (if cache already set), after a successful Process run, and when settings are changed
+  (clears cache → hides player).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle-editor**: Add Subjects tab, image tree browser with folder tabs and dual preview
+  ([`638b594`](https://github.com/frost-byte/fbTools/commit/638b594a9ddca4944814128250c91105ab549897))
+
+- Add Subjects tab to Reference Bundle editor with full profile editor (name, ID, concept ID,
+  appearance w/ collapsible subfields, character sheet images with per-image role selects, voice
+  settings, LLM analysis) - Replace flat image picker with lazily-rendered collapsible tree browser
+  supporting subdirectories - Add Input/Output folder tabs to the tree browser so images from either
+  ComfyUI directory can be browsed with identical tree-view behaviour - Split the single preview
+  pane into two independent panes: a stable selected-image preview (click any assigned filename to
+  change it, tracks reorder/remove) and a dynamic browse-hover preview below the tree - Backend: add
+  `folder` param to /fbtools/media/list (input|output); add output-dir fallback for subject image
+  loading and LLM image loading
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **cast**: Add media frame extraction endpoints and scene synopsis input
+  ([`9bf9949`](https://github.com/frost-byte/fbTools/commit/9bf994986a3fc8843d1c3933e3e98a19308b1ff6))
+
+Add REST endpoints for extracting a single frame from a video file (_media_extract_frame,
+  _media_delete_tmp_frame) with temp file cleanup via _purge_old_tmp_frames. Add scene_synopsis
+  string input to SceneCompose, injected into the SCENE_INSTANCE for H3 summary override.
+
+Wire frame extraction into the bundle editor UI (visual frame picker for thumbnail/reference
+  selection) and expand SceneCastBuild JS node with bundle media preview and audio picker support.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **cast**: Positional subject recasting in Scene Cast
+  ([`3ba7c1d`](https://github.com/frost-byte/fbTools/commit/3ba7c1dd0a4f0b9b0a671485f96c0399caa95254))
+
+Cast entries now map to composition slots by row order rather than subject_id identity. Entry 0
+  targets S1, entry 1 targets S2, etc. A blank entry (no subject_id) is a pass-through that keeps
+  the composition's original subject unchanged.
+
+When a subject_registry is available and the entry's subject_id differs from the slot's current
+  subject, the slot's subject is fully replaced (name, appearance, voice, concept_id) before bundle
+  enrichment applies. This enables recasting: telling the Prompt Composition Loader "use Angie in S1
+  and Joe in S2 for this shoot, regardless of who the composition originally assigned."
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **composition**: Add speech_pace to shot dialogue with trim_to estimation
+  ([`28bfe33`](https://github.com/frost-byte/fbTools/commit/28bfe338c7beb02ea160711a0b6531fd45878f35))
+
+Adds a per-shot `speech_pace` field ("slow" / "normal" / "fast") to the composition dialogue schema.
+  The field drives two things simultaneously:
+
+- **Prompt injection**: slow/fast paces append a qualifying phrase to the shot's action text
+  ("speaking slowly and deliberately" / "speaking quickly") in both h3_ref2va and h3_fl2va formats.
+  Normal pace emits nothing. - **Voice reference trim_to**: `PromptCompositionLoader` estimates the
+  expected spoken duration of each shot's resolved dialogue (via `estimate_speech_duration`, a new
+  public utility) and accumulates it per slot. The per-slot totals are passed to `_build_h3_refplan`
+  as `slot_trim_to`, injecting a `trim_to` field into standalone audio reference entries so the
+  terminal node can trim the voice clip to match the generated line length.
+
+Pace → chars/sec mapping: slow=10, normal=13, fast=16 (documented in
+  `docs/audio_reference_observations.md` for field revision as data arrives).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **composition**: Enhance prompt assembler and add filename_prefix output
+  ([`0c316be`](https://github.com/frost-byte/fbTools/commit/0c316be3b66207e7a4a68c3d620ee5d87896d30e))
+
+Expand prompt_assembler.py with additional model-type formatters and assembly logic. Add
+  filename_prefix string input/output to PromptCompositionLoader so the composition name can be
+  wired directly into a VHS_VideoCombine filename_prefix input.
+
+Update composition editor UI, LLM client/scanner utilities, and extend test_prompt_assembler.py
+  coverage. Add prompt_assembly.md docs.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **composition**: Improve Saved Compositions UX and add LoRA search
+  ([`fc7eb80`](https://github.com/frost-byte/fbTools/commit/fc7eb80b2cc14fc516194867224aafeacb6c278a))
+
+- Saved Compositions list: add search field (filters by name/ID) and pagination (10 per page) with
+  prev/next controls - Make entire composition row clickable to load; remove redundant ⇩ button;
+  delete button uses stopPropagation to avoid double-trigger - Active composition indicator: 3px
+  green bottom border on the currently loaded entry in the saved list - LoRA name selector: replace
+  plain <select> with searchable combobox; type to filter the full LoRA list, arrow keys to
+  navigate, Enter to select; dropdown uses position:fixed to avoid sidebar clipping
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **compositions**: Add background and outfit visual reference subjects for H3 prompts
+  ([`bdbab76`](https://github.com/frost-byte/fbTools/commit/bdbab765b1b612ca478fe1fe70e390c3e0d8dfcc))
+
+Backgrounds: new "Include as <Subject N>" checkbox on the Background section of the composition
+  editor. When checked, the background's reference_images are injected as an extra slot in the
+  assembled prompt using the {BG} shortcut in shot action/camera text.
+
+Outfits: the outfit dropdown in each subject slot now stores an outfit ID in outfit_ids[slot_key]
+  rather than description text. Each outfit reference image gains a use_as_reference flag
+  (per-image, toggled from the outfit modal). Outfits with at least one flagged image are injected
+  as their own <Subject N> slot using {Fit_1}/{Fit_2}/… shortcuts. Outfits with no flagged images
+  contribute their description text to the subject's appearance phrase (text-only path).
+
+Background and outfit extra slots share a running letter counter so they coexist correctly (subjects
+  → BG → Fit_1 → Fit_2 in alphabetical slot order).
+
+Both call sites of assemble_composition() (REST endpoint + PromptCompositionLoader node) now resolve
+  and pass resolved_outfits alongside resolved_background.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **conditioning**: Add §1 validation, trim_to, and turbo warning to CompositionToH3Conditioning
+  ([`9ba1463`](https://github.com/frost-byte/fbTools/commit/9ba14630720f576d433a487de6e30f8bc71b24e2))
+
+Enforces all MiniMax H3 Ref2VA hard limits before delegating to the native node, with explicit
+  errors rather than silent truncation:
+
+- Pre-load: ≤ 3 standalone audio refs, audio must pair with a visual, ≤ 12 total reference files,
+  trim_to < 2s caught early with an actionable message - Post-load (actual samples): per-clip 2–15s,
+  total audio ≤ 15s - trim_to applied to waveform via sample-level slice after ffmpeg load - Turbo
+  LoRA warning (logged + status update) when has_turbo_lora is set on the refplan and audio
+  references are present
+
+PromptCompositionLoader now sets has_turbo_lora on the refplan dict by checking whether any attached
+  LoRA name contains "turbo".
+
+Status line now includes total loaded audio duration.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **history**: Add Run History panel and Run Meta Capture node
+  ([`ceb6b98`](https://github.com/frost-byte/fbTools/commit/ceb6b98458c2ff60355fc053ece37daad8c47fe7))
+
+- RunMetaCapture node: captures runtime string values at execution time, stores by prompt_id;
+  autogrow value slots (up to 12); supports partial execution via is_output_node play button; inline
+  text preview - [track: Label] tag system: right-click any node to embed a tracking tag in its
+  title; green pill bar drawn via onDrawForeground - Run History sidebar panel: merges /history
+  widget snapshots with RunMetaCapture captures keyed by prompt_id; shows timestamp, workflow name,
+  and short prompt ID chip per run - LoraStackBuilder custom renderer: filters disabled/None LoRA
+  slots, suppresses video/audio columns for non-LTX targets, shows model badge
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **llm**: Add LLM video analysis assistant with Qwen2.5-Omni GPTQ support
+  ([`084e395`](https://github.com/frost-byte/fbTools/commit/084e3955d52f28e51d5cf653a950bf4b16fccac3))
+
+Adds an LLM assistant to the Composition Editor for analysing video clips and generating shot action
+  descriptions.
+
+## Infrastructure - `utils/llm_scanner.py`: scans ComfyUI LLM directories for GGUF and HF models;
+  detects vision, native-video, and quantisation capabilities - `utils/llm_client.py`:
+  load/unload/generate for GGUF (llama-cpp-python) and HF (transformers) models; task-specific
+  prompt builders - REST endpoints: `/fbtools/llm/{models,status,load,unload,generate,
+  generate/shot_action,generate/dialogue,generate/polish,
+  describe_video,video_prompt,download/default}`
+
+## Qwen2.5-Omni GPTQ workarounds - `block_name_to_quantize`: optimum's BLOCK_PATTERNS list omits
+  `thinker.model.layers`; patching the embedded quantisation config dict before `from_pretrained`
+  bypasses the pattern scan - `return_audio=False` + `thinker_max_new_tokens`: Omni's `generate()`
+  returns `(text, waveform)` by default; standard token-slice decode indexed the batch dim instead
+  of seq dim, producing empty text - Omni default system prompt prepended to custom instructions to
+  silence the "audio output may not work" warning and stay in the model's trained operational mode -
+  AWQ Triton monkey-patch retained for future use: forces `dequantize_gemm+matmul` fallback when the
+  Triton bitshift kernel fails on packed int4 float16 weights - `max_memory` capped at 70% GPU / 64
+  GiB CPU so LLM and diffusion models can coexist in VRAM
+
+## Temporal RoPE encoding - `_extract_frames` now returns `{sample_fps, raw_fps, duration}` -
+  `sample_fps = len(selected_frames) / clip_duration` is passed in the video content element so
+  qwen_omni_utils computes correct temporal position IDs (previously defaulted to 2.0 fps regardless
+  of actual frame rate)
+
+## Composition Editor UI - "Describe from Video" modal: filmstrip with carousel, frame selection,
+  frame budget indicator (tokens/frame from Omni's patch/merge params) - Modal stays open after
+  inference; result appears in editable textarea; "Send to Action" pushes text into the focused shot
+  card's Action field - Collapsible "Edit Prompt" section pre-populates system + user prompts from
+  `/fbtools/llm/video_prompt`; edits are sent as overrides
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **lora**: Add Enabled Summary output to LoraStackBuilder
+  ([`8aaedc4`](https://github.com/frost-byte/fbTools/commit/8aaedc4f7381e64e3b34af121812f05ab2d8a574))
+
+Adds a new string output that lists only enabled LoRAs, one per line, in the format: name
+  model/clip[/video/audio]. Name is the basename truncated to 48 chars with extension stripped;
+  values use minimal decimal notation (1, 0.5, 0.75). Output always ends with a trailing newline for
+  easy concatenation with other string nodes.
+
+A boolean input (Summary: Include Prev Stack, default off) controls whether the summary covers only
+  LoRAs defined in this node or all merged entries including Prev Stack.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **outfit**: Replace LLM analyze text input with tree browser + preview
+  ([`57faaf0`](https://github.com/frost-byte/fbTools/commit/57faaf073a6e8443459034ab7a47e9bb9332d899))
+
+- Add Input/Output folder tabs with lazy subdirectory tree showing both images and videos combined
+  (same tree pattern as bundle editor) - Add image preview pane (img) and video preview pane (video
+  w/controls) that update when a file is selected in the tree - Add frame-time row (hidden for
+  images, shown for videos): number input syncs bidirectionally with the video element's
+  currentTime; "↺ Use current" button captures the scrubbed position from the video player - Pass
+  frame_time in the analyze_media request when a video is selected - Add listMedia() to
+  CompositionsAPI; load all four media lists (input/output × image/video) in _loadResources via
+  Promise.allSettled
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **outfit-modal**: Click ref thumbnail to load into browser and SAM2
+  ([`1bc7150`](https://github.com/frost-byte/fbTools/commit/1bc7150c8130a87fcad16d1ebacee9acda208807))
+
+Clicking any reference image thumbnail in the ref list now calls _applySelection(), which updates
+  the file browser selection, the preview, and fires _onSelectionForSam2 — so the user can jump
+  straight from an existing reference into SAM2 segmentation without re-browsing the tree.
+
+Teal hover glow on thumbnails signals the SAM2 association.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **outfits**: Add reference images and image/video LLM analysis
+  ([`9e9ce2d`](https://github.com/frost-byte/fbTools/commit/9e9ce2d3d8344b847fbf7a42142c1efd0c3c2637))
+
+OutfitRegistry entries now carry reference_images: [{file, role}]. Legacy plain strings
+  auto-normalize to {file, role: "costume detail"}.
+
+Backend: - POST /fbtools/outfits/analyze_media: accepts image or video filename, extracts frame at
+  1s for video (saved permanently as _outfit_ref_*.jpg), runs loaded LLM, returns {description,
+  frame_file} - POST /fbtools/outfits/save: now accepts reference_images array
+
+Frontend outfit editor: - Image-only input replaced with image/video input; shows hint when video is
+  detected explaining frame extraction - After LLM analysis, analyzed file (or extracted frame) is
+  appended to a mutable reference list when "Add as reference image" is checked - Reference list
+  shows each entry with role dropdown and delete button - Save persists reference_images alongside
+  name/description/tags
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene**: Add Scene Cast input to PromptAssemble for video references
+  ([`0899c73`](https://github.com/frost-byte/fbTools/commit/0899c73b7d1a9e9d36d2798dd9deb249151dfcf9))
+
+PromptAssemble was calling assemble_prompt() with video_entries=None, so subjects whose cast bundle
+  has visual_mode='video' never received a <Video N> label in the H3 subject_definitions section.
+
+Add an optional SCENE_CAST input; when connected, _resolve_cast_media() extracts video_entries_full
+  and passes it to assemble_prompt() so video-referenced subjects are correctly labelled in the
+  assembled prompt.
+
+- **settings**: Add global audio + speech pace defaults to composition settings
+  ([`e41ba56`](https://github.com/frost-byte/fbTools/commit/e41ba56bae34e91158741f4d20c15f08661d71d2))
+
+Backend (extension.py): - _COMPOSITION_SETTINGS_DEFAULTS adds default_speech_pace, default_audio_*,
+  and melband_model_path alongside the existing libber_delimiter - POST
+  /fbtools/compositions/settings validates and persists all new fields (pace: slow/normal/fast enum;
+  LUFS: clamped to −36..−6; others: bool/str)
+
+Composition editor UI (_buildSettingsSection): - "Default speech pace" dropdown (slow/normal/fast
+  with WPM hint) - "Default audio processing" group: noise removal checkbox, LUFS normalize
+  checkbox, target LUFS numeric input - "Vocal isolation" group: MelBand model path text input
+  (reserved) - All controls stored in _dom for post-load sync in _loadResources() - New dialogue
+  speech_pace defaults to _S.settings.default_speech_pace
+
+Bundle editor: - Imports compositionsApi; _loadAll() fetches global settings into _S.settings -
+  _startNew() reads default_audio_* to pre-fill new bundles' audio_processing
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **subjects**: Add per-image roles to character_sheet_images
+  ([`684d8f9`](https://github.com/frost-byte/fbTools/commit/684d8f9e72cc9cd330694ded547ce8d110456713))
+
+Changes character_sheet_images from list[str] to list[{file, role}]. Existing plain strings
+  auto-migrate to {file, role:"character sheet"}.
+
+Adds <Picture N> role lines to H3 ref2va subject_definitions so the model knows each image is an
+  appearance reference and not a scene composition template — prevents spatial bleed from portrait
+  framing (where a portrait shot's left-side face anchor was being replicated in the output layout).
+
+Role descriptions always end with "do not use as scene composition". Canonical roles: character
+  sheet, portrait, side profile, full body, costume detail, reference. Free-form strings are also
+  accepted.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Add reusable FileTree component for input/output file browsing
+  ([`38ba44c`](https://github.com/frost-byte/fbTools/commit/38ba44cbf7c352c20df3a77adc6253990e5de153))
+
+Extracted from the composition editor's video/image file selectors into a standalone
+  js/ui/file_tree.js module with Input/Output tabs, lazy folder expansion, and fbt-be-tree-file-cur
+  highlight tracking.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Add Subject editor to Reference Bundles panel
+  ([`f792d7c`](https://github.com/frost-byte/fbTools/commit/f792d7ccf366f30b3bde4507e08abdc750f71d2b))
+
+Adds a full subject creation/editing UI to the bundle_editor sidebar panel under a new Bundles |
+  Subjects tab switcher. Subjects now have a dedicated editor with all profile fields: name, ID,
+  concept ID, appearance (summary + face/hair/body/outfit detail fields in a collapsible), voice
+  (description, language, audio reference file dropdown), and a character_sheet_images list with
+  per-image role dropdowns (character sheet, portrait, side profile, full body, costume detail,
+  reference). Optional LLM appearance analysis fills the appearance summary from an image when a
+  vision model is loaded.
+
+Also adds getSubject, saveSubject, and deleteSubject methods to BundlesAPI and CSS for the tab
+  switcher, subfield grid, and sheet-image rows.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Add video/audio/image previews and dual-handle trim slider to bundle editor
+  ([`67c1210`](https://github.com/frost-byte/fbTools/commit/67c1210f2a2e7ca857d550ecadaf8779511cd798))
+
+Video visual section: - <video controls> player shown when a file is selected (streams via new GET
+  /fbtools/media/stream endpoint which supports HTTP Range for seeking) - Info line shows duration,
+  fps, resolution, frame count - Dual-handle range slider lets users drag start and end of the trim
+  region; the green fill shows the selected segment - "◁ Mark Start" and "Mark End ▷" buttons stamp
+  the slider handles at the current video player position (scrub to find the frame, then click) -
+  Slider and number inputs stay two-way synced; duration=0 preserved as "to end of file" when the
+  right handle is dragged all the way to the end
+
+Image visual section: - Hover any image row to see a full-width thumbnail preview above the list -
+  Preview also appears when an image is added from the dropdown
+
+Audio section (file / extract_from_video): - <audio controls> player appears below the file selector
+  and updates its src when the selection changes
+
+Backend: - GET /fbtools/media/info — returns duration, fps, width, height, frame_count for any file
+  in the input directory (uses cv2) - GET /fbtools/media/stream — streams the file with
+  range-request support so the browser can seek without downloading the whole file
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Apply pagination, expanded click area, and active indicator to all list sections
+  ([`4ae847d`](https://github.com/frost-byte/fbTools/commit/4ae847dc738cce0a5852cfbbaea272e6391282a0))
+
+- Composition sidebar: Subjects and Backgrounds lists now paginate (10/page) and highlight currently
+  assigned subjects / active background with green underline - Bundle editor: list paginates
+  (10/page), full card click opens editor, most-recently-saved bundle underlined on return to list
+  view - Cast editor: list paginates (10/page), active indicator on last-saved cast - Filter/search
+  changes reset page to 0 in bundle editor - Shared pagination uses existing
+  fbt-ce-pg-btn/info/saved-pagination CSS classes - New fbt-be-card-clickable / fbt-be-card-active
+  CSS rules for card hover and selection
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Green dot badge on Prompt Composition sidebar tab when LLM is loaded
+  ([`4eae2fc`](https://github.com/frost-byte/fbTools/commit/4eae2fc7fbd9ed6921abae4c0b6e7687246e1cdd))
+
+Uses a CSS ::after pseudo-element on .sidebar-icon-wrapper inside the tab button (targeted via the
+  stable data-testid="fbt.composition-editor-tab-button" attribute that ComfyUI derives from our
+  registered tab ID). The body class fbt-llm-loaded is toggled by _llmSyncBadge(), called at every
+  point _S.llmLoaded changes (initial load, model load success/failure, and unload).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Replace image dropdown with collapsible tree browser
+  ([`a43c8dc`](https://github.com/frost-byte/fbTools/commit/a43c8dc65c5d4a0221aa92ba7f3b3d4455feab53))
+
+Adds subdirectory support to the image picker in the bundle visual section: - Backend:
+  /fbtools/media/list now accepts ?recursive=true, using os.walk() to return relative paths
+  including subdirectories (e.g. portraits/alice.jpg) - Frontend: replaces the flat <select>
+  dropdown with a collapsible tree browser showing dirs as lazy-expanded nodes and files as
+  clickable leaves - Selected state syncs back to the tree (checkmark + dimmed) when files are added
+  or removed from the list - Hover preview now stays visible when moving between the selected-files
+  list, the tree browser, and the preview image, by wrapping all three in a single hover container
+  rather than attaching handlers to each element independently - Adds _viewUrl() helper that
+  correctly splits subfolder/filename for the ComfyUI /view endpoint so subdirectory images preview
+  correctly
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Refactoring
+
+- **h3**: Extract CompositionToH3Conditioning validation into pure helpers
+  ([`51560ab`](https://github.com/frost-byte/fbTools/commit/51560ab3f66d3e12c8a80e08425933c4bca9eb60))
+
+Move the three §1 invariant checks out of extension.py's execute() method and into testable
+  functions in utils/prompt_assembler.py: - validate_h3_refs_pre(references) -> list[str] (pre-load:
+  count/pairing/trim_to) - validate_h3_audio_clip(dur, aord, basename) -> str | None (per-clip 2–15
+  s) - validate_h3_audio_total(durations) -> str | None (total ≤ 15 s)
+
+extension.py delegates to the imported helpers; behaviour is unchanged. 29 new tests cover every
+  rule and boundary value.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **outfit**: Unify outfit modal into single file browser + action flow
+  ([`eff13ac`](https://github.com/frost-byte/fbTools/commit/eff13ac795a2adf19aa7f425b157f0aac070f53c))
+
+Replace the fragmented layout (refs list → LLM section → SAM2 section, each with its own file
+  picker) with one coherent structure:
+
+- Single File Browser section (always visible, tree + Input/Output tabs + preview + frame-time row
+  for video) at the top - Two action buttons beneath: "+ Add as Reference" (images only, no LLM
+  required) and "🔍 Analyze with LLM" (images+video, LLM optional) - LLM query textarea shown only
+  when a vision model is loaded - SAM2 section below the browser: no longer has its own srcInput —
+  selecting an image from the browser populates the SAM2 click-to-point preview automatically;
+  selecting a video disables extraction - Analyze always adds the result file to refs (checkbox
+  removed) - Reference Images list moves to bottom as the output of all three paths
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Testing
+
+- Fix 4 stale test assertions
+  ([`98af771`](https://github.com/frost-byte/fbTools/commit/98af7718768686c3cc7665d6228cd34f2ec8b47e))
+
+- test_s1_maps_to_slot_a / test_two_subjects_remapped_in_order: H3 ref2va uses <Subject N> labels,
+  not names; assert appearance summary text ("tall woman", "short man") rather than the name -
+  test_dialogue_tags_use_subject_language: <d> wrapping requires use_dialogue_tags=True on the
+  composition; set it explicitly - test_style_retention_analysis_line: phrasing is "tonal style",
+  not "audio style"; update assertion to match
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.19.1 (2026-08-13)
 
 ### Bug Fixes
