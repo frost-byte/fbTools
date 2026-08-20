@@ -1,6 +1,29 @@
 # CHANGELOG
 
 
+## v1.22.0 (2026-08-20)
+
+### Features
+
+- **llm**: Unified run history across all seven LLM features
+  ([`b6c0438`](https://github.com/frost-byte/fbTools/commit/b6c04386812ee97019d73ee2d0e89ddda473bb2a))
+
+Single llm_history.json file with kind-discriminated entries replaces the old
+  video_describe_history.json. History now covers: video_describe, bg_analyze, outfit_analyze,
+  shot_action, dialogue, polish, and appearance_analyze. Shared buildHistorySection() utility
+  renders the collapsible accordion for both modals and the sidebar.
+
+- Backend: /fbtools/llm/history (GET ?kind= filter, POST, POST /delete) migrates old flat entries on
+  first read; legacy /describe_history routes shim to the new handlers - js/utils/llm_history.js:
+  makeEntry() + buildHistorySection() - Sidebar shows shot_action+dialogue+polish together; Restore
+  applies result text to the currently focused shot card - BG, Outfit, Appearance modals each get
+  their own filtered history accordion with kind-appropriate Restore behaviour
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.21.0 (2026-08-20)
 
 ### Features
