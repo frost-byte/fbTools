@@ -16,6 +16,7 @@
 import { compositionsApi } from "../api/compositions.js";
 import { llmApi } from "../api/llm.js";
 import { libberAPI } from "../api/libber.js";
+import { buildFileTree } from "./file_tree.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,79 @@ const MODEL_TYPES = [
 ];
 
 const LANGUAGES = ["English", "Japanese", "Chinese", "Korean", "Spanish", "French", "German", "Other"];
+
+// ── Media helpers (video filmstrip) ───────────────────────────────────────────
+
+/** Dual-handle range slider — same logic as _buildRangeSlider in bundle_editor.js */
+function _buildRangeSlider(minVal, maxVal, loVal, hiVal, { step = 0.1, onchange } = {}) {
+    loVal = Math.max(minVal, Math.min(loVal, maxVal));
+    hiVal = Math.max(loVal,  Math.min(hiVal, maxVal));
+    const wrap  = _mk("div", { cls: "fbt-range-wrap" });
+    const track = _mk("div", { cls: "fbt-range-track" });
+    const fill  = _mk("div", { cls: "fbt-range-fill" });
+    track.appendChild(fill);
+    wrap.appendChild(track);
+    const lo = _mk("input", { cls: "fbt-range-input fbt-range-lo",
+        type: "range", min: minVal, max: maxVal, step, value: loVal });
+    const hi = _mk("input", { cls: "fbt-range-input fbt-range-hi",
+        type: "range", min: minVal, max: maxVal, step, value: hiVal });
+    const loLabel = _mk("span", { cls: "fbt-range-lo-label" });
+    const hiLabel = _mk("span", { cls: "fbt-range-hi-label" });
+    wrap.appendChild(lo);
+    wrap.appendChild(hi);
+    wrap.appendChild(_mk("div", { cls: "fbt-range-labels" }, [loLabel, hiLabel]));
+    const range = maxVal - minVal;
+    const fmt = v => {
+        const m = Math.floor(v / 60), s = (v % 60).toFixed(1);
+        return m > 0 ? `${m}:${s.padStart(4, "0")}` : `${s}s`;
+    };
+    const updateFill = () => {
+        if (range <= 0) return;
+        const loV = parseFloat(lo.value), hiV = parseFloat(hi.value);
+        const loP = ((loV - minVal) / range) * 100, hiP = ((hiV - minVal) / range) * 100;
+        fill.style.left  = loP + "%";
+        fill.style.width = (hiP - loP) + "%";
+        loLabel.textContent = fmt(loV);
+        hiLabel.textContent = fmt(hiV);
+        lo.style.zIndex = loV >= hiV - range * 0.02 ? 5 : 2;
+    };
+    lo.addEventListener("input", () => {
+        if (parseFloat(lo.value) > parseFloat(hi.value)) lo.value = hi.value;
+        updateFill();
+        onchange?.(parseFloat(lo.value), parseFloat(hi.value));
+    });
+    hi.addEventListener("input", () => {
+        if (parseFloat(hi.value) < parseFloat(lo.value)) hi.value = lo.value;
+        updateFill();
+        onchange?.(parseFloat(lo.value), parseFloat(hi.value));
+    });
+    updateFill();
+    return { el: wrap, lo, hi, updateFill,
+        setValues(newLo, newHi) {
+            lo.value = Math.max(minVal, Math.min(newLo, maxVal));
+            hi.value = Math.max(parseFloat(lo.value), Math.min(newHi, maxVal));
+            updateFill();
+        },
+    };
+}
+
+/** Call POST /fbtools/media/sample_frames — returns {frames, fps, duration, frame_count} */
+async function _mediaSampleFrames({ filename, dir, startTime, duration, everyNth, cap }) {
+    const res = await fetch("/fbtools/media/sample_frames", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            filename,
+            dir:        dir       ?? "input",
+            start_time: startTime ?? 0,
+            duration:   duration  ?? 0,
+            every_nth:  everyNth  ?? 1,
+            cap:        cap       ?? 24,
+        }),
+    });
+    if (!res.ok) { const t = await res.text(); throw new Error(t); }
+    return res.json();
+}
 
 const LORA_MODEL_TARGETS = [
     "LTX2.3", "Wan2.2-Native-High", "Wan2.2-Native-Low",
@@ -70,6 +144,7 @@ const _S = {
     llmDefault:     null,  // recommended default model info
     llmLoaded:      null,  // currently loaded model name (string) or null
     llmVision:      false, // does loaded model support vision?
+    llmNativeVideo: false, // does loaded model support native temporal video?
     llmBusy:        false, // in-flight load or generate
     // SAM2 segmentation state
     sam2:           null,  // null=unchecked; {available, packages_ok, model_file, install_hint, model_hint}
@@ -442,8 +517,8 @@ async function _loadResources() {
             fetch("/fbtools/outfits/sam2_status").then(r => r.json()),
             compositionsApi.listMedia("image", true),
             compositionsApi.listMedia("image", true, "output"),
-            compositionsApi.listMedia("video"),
-            compositionsApi.listMedia("video", false, "output"),
+            compositionsApi.listMedia("video", true),
+            compositionsApi.listMedia("video", true, "output"),
         ]);
         _S.subjects      = subj.value?.subjects      ?? [];
         _S.backgrounds   = bg.value?.backgrounds     ?? [];
@@ -453,8 +528,9 @@ async function _loadResources() {
         _S.llmModels     = llmData.value?.models     ?? [];
         _S.llmDefault    = llmData.value?.default_model ?? null;
         const st = llmStatus.value;
-        _S.llmLoaded     = st?.loaded_model  ?? null;
-        _S.llmVision     = st?.supports_vision ?? false;
+        _S.llmLoaded       = st?.loaded_model   ?? null;
+        _S.llmVision       = st?.supports_vision ?? false;
+        _S.llmNativeVideo  = st?.native_video    ?? false;
         _llmSyncBadge();
         if (settingsRes.value) {
             _S.settings = settingsRes.value;
@@ -1749,13 +1825,15 @@ function _llmUpdateStatus() {
         _dom.llmStatusEl.className = "fbt-ce-llm-status fbt-ce-llm-ok";
         if (_dom.llmUnloadBtn) _dom.llmUnloadBtn.style.display = "";
         if (_dom.llmLoadBtn)   _dom.llmLoadBtn.textContent = "Reload";
-        if (_dom.llmGenSection) _dom.llmGenSection.style.display = "";
+        if (_dom.llmGenSection)    _dom.llmGenSection.style.display = "";
+        if (_dom.llmFromVideoBtn)  _dom.llmFromVideoBtn.style.display = _S.llmNativeVideo ? "" : "none";
     } else {
         _dom.llmStatusEl.textContent = "No model loaded.";
         _dom.llmStatusEl.className = "fbt-ce-llm-status";
-        if (_dom.llmUnloadBtn) _dom.llmUnloadBtn.style.display = "none";
-        if (_dom.llmLoadBtn)   _dom.llmLoadBtn.textContent = "Load";
-        if (_dom.llmGenSection) _dom.llmGenSection.style.display = "none";
+        if (_dom.llmUnloadBtn)    _dom.llmUnloadBtn.style.display = "none";
+        if (_dom.llmLoadBtn)      _dom.llmLoadBtn.textContent = "Load";
+        if (_dom.llmGenSection)   _dom.llmGenSection.style.display = "none";
+        if (_dom.llmFromVideoBtn) _dom.llmFromVideoBtn.style.display = "none";
     }
 }
 
@@ -1769,8 +1847,9 @@ async function _llmLoadSelected() {
     try {
         const r = await llmApi.loadModel(modelInfo);
         if (r.success) {
-            _S.llmLoaded = modelInfo.name;
-            _S.llmVision = modelInfo.supports_vision;
+            _S.llmLoaded       = modelInfo.name;
+            _S.llmVision       = modelInfo.supports_vision;
+            _S.llmNativeVideo  = modelInfo.native_video ?? false;
             _toast(`Loaded: ${modelInfo.name}`, "ok");
         } else {
             _toast(r.message || "Load failed", "error");
@@ -1789,8 +1868,9 @@ async function _llmUnload() {
     _llmSetBusy(true);
     try {
         await llmApi.unloadModel();
-        _S.llmLoaded = null;
-        _S.llmVision = false;
+        _S.llmLoaded      = null;
+        _S.llmVision      = false;
+        _S.llmNativeVideo = false;
         _toast("Model unloaded", "ok");
     } catch (e) {
         _toast("Unload error: " + e.message, "error");
@@ -1879,6 +1959,483 @@ async function _llmGenDialogue() {
     }
     _llmSetBusy(false);
     _llmUpdateStatus();
+}
+
+async function _llmDescribeFromVideo() {
+    const card = _llmGetFocusedCard();
+    if (!card) { _toast("Click inside a shot first", "warn"); return; }
+    const shot = _S.composition?.shots?.[_focusedShotIdx];
+    if (!shot) return;
+
+    const overlay = _mk("div", { cls: "fbt-ce-modal-overlay",
+        onclick: e => { if (e.target === overlay) overlay.remove(); } });
+    const modal = _mk("div", { cls: "fbt-ce-modal fbt-vd-modal" });
+    overlay.appendChild(modal);
+    modal.appendChild(_mk("div", { cls: "fbt-ce-modal-title", textContent: "Describe from Video" }));
+
+    // ── State ──────────────────────────────────────────────────────────────────
+    let _vidInfo      = null;   // {duration, fps, frame_count, …}
+    let _vidDur       = 0;
+    let _slider       = null;
+    let _startTime    = 0;
+    let _duration     = 0;     // 0 = to end
+    let _everyNth     = 1;
+    let _cap          = 24;
+    let _extracted    = [];    // [{index, timestamp, data_url}]
+    let _selected     = new Set();
+    let _carousel     = 0;     // viewport start index
+    let _debounce     = null;
+    let _curVideoPath = null;
+    let _curVideoDir  = "input";
+    const VISIBLE     = 6;     // thumbnails visible at once
+    let intentVal     = "actions";
+
+    const _isVid = f => /\.(mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
+
+    // ── Video file tree ────────────────────────────────────────────────────────
+    const videoTree = buildFileTree({
+        inputFiles:  _S.mediaInVideos,
+        outputFiles: _S.mediaOutVideos,
+        filter:      _isVid,
+        isSelected:  (p, d) => p === _curVideoPath && d === _curVideoDir,
+        onSelect:    (p, d) => _loadVideo(p, d),
+        emptyText:   "No videos in {dir}/",
+        initialDir:  _S.mediaInVideos.length ? "input" : "output",
+    });
+    modal.appendChild(videoTree.el);
+
+    // ── Video preview element ──────────────────────────────────────────────────
+    const videoEl = _mk("video", { cls: "fbt-vd-video-preview" });
+    videoEl.controls = true;
+    videoEl.preload  = "metadata";
+    videoEl.style.display = "none";
+    modal.appendChild(videoEl);
+
+    // ── Dual-handle clip range slider ──────────────────────────────────────────
+    const sliderWrap = _mk("div");
+    sliderWrap.style.display = "none";
+    modal.appendChild(sliderWrap);
+
+    // ── Mark buttons ───────────────────────────────────────────────────────────
+    const markRow = _mk("div", { cls: "fbt-vd-mark-row" });
+    markRow.style.display = "none";
+    modal.appendChild(markRow);
+
+    // ── Trim text inputs ───────────────────────────────────────────────────────
+    const trimGrid = _mk("div", { cls: "fbt-be-param-grid" });
+
+    const _makeTrimCell = (label, hint, getValue, onInput) => {
+        const cell = _mk("div", { cls: "fbt-be-param-cell" });
+        const lbl  = _mk("span", { cls: "fbt-be-param-label", textContent: label });
+        lbl.title  = hint;
+        const inp  = _mk("input", { cls: "fbt-be-param-input", type: "number", min: 0, step: 0.1, value: getValue() });
+        inp.addEventListener("input", () => onInput(parseFloat(inp.value) || 0, inp));
+        cell.appendChild(lbl); cell.appendChild(inp);
+        return { cell, inp };
+    };
+
+    const { cell: startCell, inp: startInp } = _makeTrimCell("Start (s)", "Clip start in seconds",
+        () => _startTime, (v, inp) => { _startTime = v; _syncSlider(); _scheduleExtract(); });
+    const { cell: durCell, inp: durInp } = _makeTrimCell("Duration (s)", "0 = to end of file",
+        () => _duration, (v, inp) => { _duration = v; _syncSlider(); _scheduleExtract(); });
+    trimGrid.appendChild(startCell);
+    trimGrid.appendChild(durCell);
+    modal.appendChild(trimGrid);
+
+    // ── Sampling params ────────────────────────────────────────────────────────
+    const sampGrid = _mk("div", { cls: "fbt-be-param-grid" });
+
+    const _makeSampCell = (label, hint, val, onInput) => {
+        const cell = _mk("div", { cls: "fbt-be-param-cell" });
+        const lbl  = _mk("span", { cls: "fbt-be-param-label", textContent: label });
+        lbl.title  = hint;
+        const inp  = _mk("input", { cls: "fbt-be-param-input", type: "number", min: 1, step: 1, value: val });
+        inp.addEventListener("input", () => onInput(Math.max(1, parseInt(inp.value) || 1)));
+        cell.appendChild(lbl); cell.appendChild(inp);
+        return { cell, inp };
+    };
+
+    sampGrid.appendChild(_makeSampCell("Every Nth", "1 = every frame, 3 = every 3rd frame",
+        _everyNth, v => { _everyNth = v; _scheduleExtract(); }).cell);
+    sampGrid.appendChild(_makeSampCell("Cap", "Max frames to extract (1–60)",
+        _cap, v => { _cap = Math.min(60, v); _scheduleExtract(); }).cell);
+    modal.appendChild(sampGrid);
+
+    // ── Filmstrip ──────────────────────────────────────────────────────────────
+    const stripSection = _mk("div", { cls: "fbt-vd-strip-section" });
+    stripSection.style.display = "none";
+
+    const stripViewport = _mk("div", { cls: "fbt-vd-strip-viewport" });
+    const stripInner    = _mk("div", { cls: "fbt-vd-strip-inner" });
+    stripViewport.appendChild(stripInner);
+    stripSection.appendChild(stripViewport);
+
+    const carouselInp = _mk("input", { cls: "fbt-vd-carousel", type: "range", min: 0, max: 0, step: 1, value: 0 });
+    carouselInp.addEventListener("input", () => {
+        _carousel = parseInt(carouselInp.value, 10);
+        _renderStrip();
+    });
+    stripSection.appendChild(carouselInp);
+
+    const stripStatus = _mk("div", { cls: "fbt-vd-strip-status" });
+    const budgetEl    = _mk("div", { cls: "fbt-vd-budget" });
+    const allBtn  = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "All",
+        onclick: () => { _selected = new Set(_extracted.map(f => f.index)); _renderStrip(); _updateDescBtn(); } });
+    const noneBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "None",
+        onclick: () => { _selected.clear(); _renderStrip(); _updateDescBtn(); } });
+    const statusRow = _mk("div", { cls: "fbt-vd-strip-status-row" }, [stripStatus, budgetEl, allBtn, noneBtn]);
+    stripSection.appendChild(statusRow);
+
+    const extractingEl = _mk("div", { cls: "fbt-vd-extracting", textContent: "Extracting frames…" });
+    extractingEl.style.display = "none";
+    stripSection.appendChild(extractingEl);
+
+    modal.appendChild(stripSection);
+
+    // ── Intent radio ───────────────────────────────────────────────────────────
+    const intentWrap  = _mk("div", { cls: "fbt-ce-row" });
+    intentWrap.appendChild(_mk("span", { cls: "fbt-ce-label", textContent: "Focus" }));
+    const intentGroup = _mk("div", { cls: "fbt-ce-video-intent-group" });
+    for (const [val, label, tip] of [
+        ["actions",     "Actions",     "Physical movement, gestures, body language"],
+        ["expressions", "Expressions", "Facial expressions, emotion, gaze direction"],
+        ["appearance",  "Appearance",  "Clothing, visual features, distinguishing details"],
+    ]) {
+        const lbl = _mk("label", { cls: "fbt-ce-video-intent-opt", title: tip });
+        const rb  = _mk("input", { type: "radio", name: "fbt-vid-intent" });
+        rb.value   = val;
+        rb.checked = val === "actions";
+        rb.addEventListener("change", () => { intentVal = val; });
+        lbl.appendChild(rb);
+        lbl.appendChild(document.createTextNode(" " + label));
+        intentGroup.appendChild(lbl);
+    }
+    intentWrap.appendChild(intentGroup);
+    modal.appendChild(intentWrap);
+
+    // ── Prompt editor (collapsible) ────────────────────────────────────────────
+    const promptSection = _mk("div", { cls: "fbt-vd-prompt-section" });
+    const promptToggle  = _mk("button", {
+        cls: "fbt-vd-prompt-toggle", textContent: "▶ Edit Prompt",
+        onclick: () => {
+            const open = promptBody.style.display !== "none";
+            promptBody.style.display = open ? "none" : "";
+            promptToggle.textContent = (open ? "▶" : "▼") + " Edit Prompt";
+        },
+    });
+    const promptBody = _mk("div", { cls: "fbt-vd-prompt-body" });
+    promptBody.style.display = "none";
+
+    const sysTa = _mk("textarea", {
+        cls: "fbt-vd-prompt-ta", rows: 3,
+        placeholder: "System prompt (auto-generated; edit to override)…",
+    });
+    const userTa = _mk("textarea", {
+        cls: "fbt-vd-prompt-ta", rows: 5,
+        placeholder: "User prompt (auto-generated; edit to override)…",
+    });
+    promptBody.appendChild(_mk("label", { cls: "fbt-vd-prompt-label", textContent: "System" }));
+    promptBody.appendChild(sysTa);
+    promptBody.appendChild(_mk("label", { cls: "fbt-vd-prompt-label", textContent: "User" }));
+    promptBody.appendChild(userTa);
+    promptSection.appendChild(promptToggle);
+    promptSection.appendChild(promptBody);
+    modal.appendChild(promptSection);
+
+    // Fetch default prompts and populate the textareas.
+    // Called on open and again when intent changes.
+    async function _loadPromptPreview() {
+        const subjects = Object.keys(_S.composition.subjects || {}).map(k => {
+            const subj = _S.subjects.find(s => s.id === _S.composition.subjects[k]);
+            return subj?.name || k;
+        });
+        const bg = _S.backgrounds.find(b => b.id === _S.composition.background);
+        try {
+            const r = await llmApi.videoPrompt({
+                shotNumber:  _focusedShotIdx + 1,
+                subjects,
+                environment: bg?.description || "",
+                style:       _S.composition.style || "cinematic",
+                intent:      intentVal,
+            });
+            if (r.system !== undefined) sysTa.value  = r.system;
+            if (r.user   !== undefined) userTa.value = r.user;
+        } catch { /* non-fatal */ }
+    }
+    _loadPromptPreview();
+
+    // Re-fetch when intent changes so the preview stays in sync.
+    intentGroup.addEventListener("change", _loadPromptPreview);
+
+    // ── Result area ────────────────────────────────────────────────────────────
+    const resultArea = _mk("textarea", {
+        cls: "fbt-vd-result-area",
+        placeholder: "Description will appear here after running…",
+        rows: 5,
+    });
+    const sendBtn = _mk("button", {
+        cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Send to Action",
+        disabled: true,
+        onclick: () => {
+            card._actInput.value = resultArea.value;
+            card._actInput.dispatchEvent(new Event("input", { bubbles: true }));
+            overlay.remove();
+        },
+    });
+    modal.appendChild(_mk("div", { cls: "fbt-vd-result-wrap" }, [resultArea, sendBtn]));
+
+    // ── Footer buttons ─────────────────────────────────────────────────────────
+    async function _runDescribe() {
+        const indices = [..._selected].sort((a, b) => a - b);
+        const subjects = Object.keys(_S.composition.subjects || {}).map(k => {
+            const subj = _S.subjects.find(s => s.id === _S.composition.subjects[k]);
+            return subj?.name || k;
+        });
+        const bg = _S.backgrounds.find(b => b.id === _S.composition.background);
+        descBtn.disabled = true;
+        descBtn.textContent = "Running…";
+        resultArea.value = "";
+        sendBtn.disabled = true;
+        _llmSetBusy(true);
+        _dom.llmStatusEl.textContent = "Describing from video…";
+        try {
+            const r = await llmApi.describeVideo({
+                videoPath:    _curVideoPath,
+                videoDir:     _curVideoDir,
+                frameIndices: indices,
+                shotNumber:   _focusedShotIdx + 1,
+                subjects,
+                environment:  bg?.description || "",
+                style:        _S.composition.style || "cinematic",
+                intent:       intentVal,
+                // Send edited prompts if the section was opened and values set
+                systemPrompt: sysTa.value.trim(),
+                userPrompt:   userTa.value.trim(),
+            });
+            console.log("[fbTools] describeVideo response:", r);
+            if (r.success && r.text) {
+                resultArea.value = r.text;
+                sendBtn.disabled = false;
+            } else {
+                resultArea.value = r.message || "Description failed — check the server log.";
+                _toast(r.message || "Description failed", "error");
+            }
+        } catch (e) {
+            console.error("[fbTools] describeVideo error:", e);
+            resultArea.value = "Error: " + e.message;
+            _toast("Error: " + e.message, "error");
+        }
+        _llmSetBusy(false);
+        _llmUpdateStatus();
+        _updateDescBtn();
+    }
+
+    const descBtn = _mk("button", {
+        cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Describe 0 frames",
+        disabled: true,
+        onclick: _runDescribe,
+    });
+
+    modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, [
+        descBtn,
+        _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-secondary", textContent: "Close",
+            onclick: () => overlay.remove() }),
+    ]));
+
+    // ── Logic ──────────────────────────────────────────────────────────────────
+
+    // Omni context budget: 32K ctx, patch=14, spatial_merge=2, temporal_patch=2
+    // tokens/frame = W×H / (14²×4×2) = W×H / 1568; reserve 1500 for text
+    function _frameBudget() {
+        if (!_vidInfo?.width || !_vidInfo?.height) return null;
+        return Math.max(1, Math.floor(31268 / ((_vidInfo.width * _vidInfo.height) / 1568)));
+    }
+
+    function _updateDescBtn() {
+        const n    = _selected.size;
+        const safe = _frameBudget();
+        descBtn.disabled    = n === 0;
+        descBtn.textContent = `Describe ${n} frame${n === 1 ? "" : "s"}`;
+        const over = safe !== null && n > 0 && n > safe;
+        descBtn.classList.toggle("fbt-ce-btn-primary", !over);
+        descBtn.classList.toggle("fbt-ce-btn-danger",   over);
+        if (safe === null) {
+            budgetEl.textContent = "";
+        } else if (over) {
+            budgetEl.textContent = `⚠ ~${safe} safe`;
+            budgetEl.style.color = "var(--p-amber-400, #fbbf24)";
+        } else {
+            budgetEl.textContent = `~${safe} safe`;
+            budgetEl.style.color = "var(--fg-muted, #888)";
+        }
+    }
+
+    function _renderStrip() {
+        stripInner.innerHTML = "";
+        if (!_extracted.length) return;
+
+        const maxOffset = Math.max(0, _extracted.length - VISIBLE);
+        carouselInp.max   = maxOffset;
+        _carousel          = Math.min(_carousel, maxOffset);
+        carouselInp.value  = _carousel;
+
+        // Show VISIBLE frames starting at _carousel
+        _extracted.slice(_carousel, _carousel + VISIBLE).forEach(frame => {
+            const thumb = _mk("div", {
+                cls: _selected.has(frame.index)
+                    ? "fbt-vd-thumb fbt-vd-thumb-on"
+                    : "fbt-vd-thumb fbt-vd-thumb-off",
+            });
+            const img = _mk("img", { cls: "fbt-vd-thumb-img" });
+            img.src   = frame.data_url;
+            const ts  = _mk("span", { cls: "fbt-vd-thumb-ts",
+                textContent: _fmtTs(frame.timestamp) });
+            thumb.appendChild(img);
+            thumb.appendChild(ts);
+            thumb.addEventListener("click", () => {
+                if (_selected.has(frame.index)) _selected.delete(frame.index);
+                else                             _selected.add(frame.index);
+                thumb.className = _selected.has(frame.index)
+                    ? "fbt-vd-thumb fbt-vd-thumb-on"
+                    : "fbt-vd-thumb fbt-vd-thumb-off";
+                _updateDescBtn();
+                const n = _selected.size;
+                stripStatus.textContent = `${n} / ${_extracted.length} selected`;
+            });
+            stripInner.appendChild(thumb);
+        });
+
+        const n = _selected.size;
+        stripStatus.textContent = `${n} / ${_extracted.length} selected`;
+        _updateDescBtn();
+    }
+
+    function _fmtTs(s) {
+        const m = Math.floor(s / 60), sec = (s % 60).toFixed(1);
+        return m > 0 ? `${m}:${sec.padStart(4, "0")}` : `${sec}s`;
+    }
+
+    function _syncSlider() {
+        if (!_slider || _vidDur <= 0) return;
+        const hi = _duration > 0 ? _startTime + _duration : _vidDur;
+        _slider.setValues(_startTime, Math.min(hi, _vidDur));
+    }
+
+    function _scheduleExtract() {
+        clearTimeout(_debounce);
+        _debounce = setTimeout(_doExtract, 500);
+    }
+
+    async function _doExtract() {
+        if (!_vidInfo || !_curVideoPath) return;
+        extractingEl.style.display = "";
+        stripInner.innerHTML = "";
+        _extracted = [];
+        _selected.clear();
+        _updateDescBtn();
+        try {
+            const res = await _mediaSampleFrames({
+                filename:  _curVideoPath,
+                dir:       _curVideoDir,
+                startTime: _startTime,
+                duration:  _duration,
+                everyNth:  _everyNth,
+                cap:       _cap,
+            });
+            _extracted = res.frames ?? [];
+            _selected  = new Set(_extracted.map(f => f.index));
+            _carousel  = 0;
+            _renderStrip();
+            stripSection.style.display = "";
+        } catch (e) {
+            stripStatus.textContent = `Extract failed: ${e.message}`;
+            stripSection.style.display = "";
+        } finally {
+            extractingEl.style.display = "none";
+        }
+    }
+
+    async function _loadVideo(vfile, vdir) {
+        _curVideoPath = vfile;
+        _curVideoDir  = vdir;
+        _vidInfo = null; _vidDur = 0; _startTime = 0; _duration = 0;
+        _extracted = []; _selected.clear();
+        stripSection.style.display  = "none";
+        sliderWrap.style.display    = "none";
+        markRow.style.display       = "none";
+        videoEl.style.display       = "none";
+        _updateDescBtn();
+
+        try {
+            const info = await fetch(
+                `/fbtools/media/info?filename=${encodeURIComponent(vfile)}&dir=${vdir}`
+            ).then(r => r.json());
+            if (info.error) throw new Error(info.error);
+            _vidInfo = info;
+            _vidDur  = info.duration || 0;
+            _updateDescBtn(); // refresh budget display with resolution info
+        } catch (e) {
+            return; // video info failed — skip slider
+        }
+
+        // Wire up <video> for mark-button scrubbing
+        videoEl.src = `/fbtools/media/stream?filename=${encodeURIComponent(vfile)}&dir=${vdir}`;
+        videoEl.style.display = "";
+
+        if (_vidDur > 0) {
+            const step = Math.max(0.05, _vidDur / 2000);
+            _slider = _buildRangeSlider(0, _vidDur, 0, _vidDur, {
+                step,
+                onchange: (lo, hi) => {
+                    _startTime = parseFloat(lo.toFixed(2));
+                    _duration  = hi >= _vidDur - step ? 0 : parseFloat((hi - lo).toFixed(2));
+                    startInp.value = _startTime;
+                    durInp.value   = _duration;
+                    _scheduleExtract();
+                },
+            });
+            sliderWrap.innerHTML = "";
+            sliderWrap.appendChild(_slider.el);
+            sliderWrap.style.display = "";
+
+            markRow.innerHTML = "";
+            markRow.appendChild(_mk("button", { cls: "fbt-ce-btn", textContent: "◁ Mark Start",
+                title: "Set start to current video position",
+                onclick: () => {
+                    if (!_slider) return;
+                    const t = Math.min(videoEl.currentTime, parseFloat(_slider.hi.value));
+                    _slider.setValues(t, parseFloat(_slider.hi.value));
+                    _startTime = parseFloat(t.toFixed(2));
+                    startInp.value = _startTime;
+                    _doExtract();
+                },
+            }));
+            markRow.appendChild(_mk("button", { cls: "fbt-ce-btn", textContent: "Mark End ▷",
+                title: "Set end to current video position",
+                onclick: () => {
+                    if (!_slider) return;
+                    const t   = Math.max(videoEl.currentTime, parseFloat(_slider.lo.value));
+                    const dur = t >= _vidDur - step ? 0 : parseFloat((t - _startTime).toFixed(2));
+                    _slider.setValues(parseFloat(_slider.lo.value), t);
+                    _duration = dur;
+                    durInp.value = dur;
+                    _doExtract();
+                },
+            }));
+            markRow.style.display = "";
+        }
+
+        // Auto-extract initial frames
+        _scheduleExtract();
+    }
+
+    // ── Auto-load first video ──────────────────────────────────────────────────
+    const _firstVid = _S.mediaInVideos.find(_isVid);
+    const _firstOut = _S.mediaOutVideos.find(_isVid);
+    if (_firstVid)      _loadVideo(_firstVid, "input");
+    else if (_firstOut) _loadVideo(_firstOut, "output");
+
+    document.body.appendChild(overlay);
 }
 
 async function _llmPolishAction() {
@@ -2025,6 +2582,13 @@ function _buildLlmSection(parent) {
         title: "Polish / improve the existing action text",
         onclick: _llmPolishAction,
     }));
+    _dom.llmFromVideoBtn = _mk("button", {
+        cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "From Video",
+        title: "Describe character actions from a video clip (requires a native-video model such as Qwen2.5-Omni)",
+        style: { display: "none" },
+        onclick: _llmDescribeFromVideo,
+    });
+    genBtnRow.appendChild(_dom.llmFromVideoBtn);
     _dom.llmGenSection.appendChild(genBtnRow);
     body.appendChild(_dom.llmGenSection);
 

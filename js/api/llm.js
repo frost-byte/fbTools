@@ -74,6 +74,47 @@ export class LlmAPI extends BaseAPI {
     }
 
     /**
+     * Describe character actions/expressions/appearance from a video clip.
+     * Requires a native-video model to be loaded (e.g. Qwen2.5-Omni).
+     *
+     * @param {string}   videoPath    — filename relative to dir
+     * @param {string}   videoDir     — "input" | "output"
+     * @param {number[]} frameIndices — exact frame indices selected in the filmstrip
+     * @param {number}   shotNumber
+     * @param {string[]} subjects
+     * @param {string}   environment
+     * @param {string}   style
+     * @param {string}   intent       — "actions" | "expressions" | "appearance"
+     */
+    describeVideo({ videoPath, videoDir, frameIndices, shotNumber, subjects, environment, style, intent,
+                    systemPrompt, userPrompt } = {}) {
+        return this.post("/describe_video", {
+            video_path:    videoPath    ?? "",
+            dir:           videoDir     ?? "input",
+            frame_indices: frameIndices ?? [],
+            shot_number:   shotNumber   ?? 1,
+            subjects:      subjects     ?? [],
+            environment:   environment  ?? "",
+            style:         style        ?? "cinematic",
+            intent:        intent       ?? "actions",
+            // Optional overrides — omit keys when empty so backend uses auto-generated prompts
+            ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
+            ...(userPrompt   ? { user_prompt:   userPrompt   } : {}),
+        });
+    }
+
+    /** Return the auto-generated system+user prompts for a video describe call (no inference). */
+    videoPrompt({ shotNumber, subjects, environment, style, intent } = {}) {
+        return this.post("/video_prompt", {
+            shot_number: shotNumber  ?? 1,
+            subjects:    subjects    ?? [],
+            environment: environment ?? "",
+            style:       style       ?? "cinematic",
+            intent:      intent      ?? "actions",
+        });
+    }
+
+    /**
      * Download the default recommended model.
      * Long-running — takes minutes.
      */
