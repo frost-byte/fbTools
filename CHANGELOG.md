@@ -1,6 +1,44 @@
 # CHANGELOG
 
 
+## v1.23.0 (2026-08-21)
+
+### Documentation
+
+- Add audio reference rules, brave MCP guide, and generic workflow scanner
+  ([`2605c0f`](https://github.com/frost-byte/fbTools/commit/2605c0fd3d38115738f4d5df769bfbff7fd11d5d))
+
+Add H3 Ref2VA audio reference constraints and community-validated guidance, an empirical audio
+  observations log, a generic brave-devtools MCP setup guide (machine-specific config gitignored via
+  docs/*.local.md), and a general-purpose scan_node_usage.py script replacing the mixlab-specific
+  scanner.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Features
+
+- **ui**: Migrate all file pickers to FileTree with input/output tabs
+  ([`0ccdca3`](https://github.com/frost-byte/fbTools/commit/0ccdca3a2c688fdf571e3f889c7dee1c3f2b3f1e))
+
+Replace flat <select> dropdowns and hand-rolled tree implementations in bundle_editor and
+  composition_editor with the shared buildFileTree component.
+
+- bundle_editor: video picker, audio-from-video picker, separate audio picker all use buildFileTree
+  with Input/Output tabs; new video_dir and audio_dir fields persist which directory was selected -
+  composition_editor: bg editor and outfit editor drop ~160 lines of duplicated
+  _insertPath/_renderTreeNode/tab logic in favour of buildFileTree - bundlesApi.streamUrl and
+  mediaInfo accept an optional dir parameter - Backend resolves bundle video and audio file paths
+  from the saved dir field (visual.video_dir, audio.video_dir, audio.audio_dir) so output-dir files
+  load correctly in ComfyUI nodes - preview_sampled endpoint supports dir parameter for output
+  videos
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.22.0 (2026-08-20)
 
 ### Features
