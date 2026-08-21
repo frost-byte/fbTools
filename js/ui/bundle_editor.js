@@ -11,6 +11,7 @@ import { bundlesApi }    from "../api/bundles.js";
 import { llmApi }        from "../api/llm.js";
 import { compositionsApi } from "../api/compositions.js";
 import { makeEntry, buildHistorySection } from "../utils/llm_history.js";
+import { buildFileTree } from "./file_tree.js";
 
 const BUNDLE_PAGE_SIZE = 10;
 
@@ -23,8 +24,10 @@ const _S = {
     subjects:     [],   // [{id, name, appearance_summary}]
     mediaImages:       [],   // input dir images (recursive)
     mediaImagesOutput: [],   // output dir images (recursive)
-    mediaVideos:       [],   // filenames from /fbtools/media/list?type=video
-    mediaAudio:        [],   // filenames from /fbtools/media/list?type=audio
+    mediaVideos:       [],   // filenames from /fbtools/media/list?type=video (input)
+    mediaVideosOutput: [],   // filenames from /fbtools/media/list?type=video (output)
+    mediaAudio:        [],   // filenames from /fbtools/media/list?type=audio (input)
+    mediaAudioOutput:  [],   // filenames from /fbtools/media/list?type=audio (output)
     settings:     {},   // global composition settings (audio processing defaults, etc.)
     filterSubject:  "",
     filterText:     "",
@@ -101,13 +104,15 @@ function _filteredBundles() {
 // ── Data load ─────────────────────────────────────────────────────────────────
 
 async function _loadAll() {
-    const [bundles, subjects, imgs, imgsOut, vids, aud, llmSt, settingsRes] = await Promise.allSettled([
+    const [bundles, subjects, imgs, imgsOut, vids, vidsOut, aud, audOut, llmSt, settingsRes] = await Promise.allSettled([
         bundlesApi.listBundles(),
         bundlesApi.listSubjects(),
         bundlesApi.listMedia("image", true),              // input dir, recursive
         bundlesApi.listMedia("image", true, "output"),    // output dir, recursive
         bundlesApi.listMedia("video"),
+        bundlesApi.listMedia("video", false, "output"),   // output dir videos
         bundlesApi.listMedia("audio"),
+        bundlesApi.listMedia("audio", false, "output"),   // output dir audio
         llmApi.status(),
         compositionsApi.getSettings(),
     ]);
@@ -115,8 +120,10 @@ async function _loadAll() {
     _S.subjects           = subjects.value?.subjects ?? [];
     _S.mediaImages        = imgs.value?.files        ?? [];
     _S.mediaImagesOutput  = imgsOut.value?.files     ?? [];
-    _S.mediaVideos = vids.value?.files        ?? [];
-    _S.mediaAudio  = aud.value?.files         ?? [];
+    _S.mediaVideos        = vids.value?.files        ?? [];
+    _S.mediaVideosOutput  = vidsOut.value?.files     ?? [];
+    _S.mediaAudio         = aud.value?.files          ?? [];
+    _S.mediaAudioOutput   = audOut.value?.files       ?? [];
     _S.llmVision   = llmSt.value?.supports_vision ?? false;
     _S.llmModel    = llmSt.value?.loaded_model    ?? "";
     if (settingsRes.value) _S.settings = settingsRes.value;
@@ -259,8 +266,8 @@ function _startNew(subjectId = "") {
         id:                  "",
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
-        visual:              { type: "images", file: "", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1 },
-        audio:               { source: "none", file: "", video_file: "", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "", audio_processing: { noise_removal: !!(_S.settings.default_audio_noise_removal), normalize_lufs: _S.settings.default_audio_normalize_lufs !== false, target_lufs: _S.settings.default_audio_target_lufs ?? -14.0 }, audio_cache: "" },
+        visual:              { type: "images", file: "", video_dir: "input", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1 },
+        audio:               { source: "none", file: "", audio_dir: "input", video_file: "", video_dir: "input", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "", audio_processing: { noise_removal: !!(_S.settings.default_audio_noise_removal), normalize_lufs: _S.settings.default_audio_normalize_lufs !== false, target_lufs: _S.settings.default_audio_target_lufs ?? -14.0 }, audio_cache: "" },
         appearance_override: "",
         tags:                [],
     };
@@ -627,25 +634,25 @@ function _buildRangeSlider(minVal, maxVal, loVal, hiVal, { step = 0.1, onchange 
 }
 
 function _buildVideoPicker(wrap, b) {
-    if (!_S.mediaVideos.length) {
-        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No video files in input directory" }));
+    const _isVid = f => /\.(mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
+
+    if (!_S.mediaVideos.length && !_S.mediaVideosOutput.length) {
+        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No video files found" }));
         _buildFrameParamSection(wrap, b.visual);
         return;
     }
 
-    // ── File selector ──────────────────────────────────────────────────────────
-    const sel = document.createElement("select");
-    sel.className = "fbt-ce-select";
-    const blank = document.createElement("option");
-    blank.value = ""; blank.textContent = "— select video file —";
-    if (!b.visual.file) blank.selected = true;
-    sel.appendChild(blank);
-    _S.mediaVideos.forEach(f => {
-        const o = document.createElement("option");
-        o.value = f; o.textContent = f;
-        if (f === b.visual.file) o.selected = true;
-        sel.appendChild(o);
+    // ── File tree ──────────────────────────────────────────────────────────────
+    const fileTree = buildFileTree({
+        inputFiles:  _S.mediaVideos,
+        outputFiles: _S.mediaVideosOutput,
+        filter:      _isVid,
+        isSelected:  (p, d) => p === b.visual.file && d === (b.visual.video_dir || "input"),
+        onSelect:    (p, d) => { b.visual.file = p; b.visual.video_dir = d; _loadFile(p, d); },
+        emptyText:   "No videos in {dir}/",
+        initialDir:  _S.mediaVideos.length ? "input" : "output",
     });
+    wrap.appendChild(fileTree.el);
 
     // ── Preview ────────────────────────────────────────────────────────────────
     const videoEl = document.createElement("video");
@@ -666,7 +673,6 @@ function _buildVideoPicker(wrap, b) {
     markRow.style.display = "none";
 
     // ── Trim number inputs (always visible; synced with slider) ───────────────
-    wrap.appendChild(sel);
     wrap.appendChild(videoEl);
     wrap.appendChild(infoEl);
     wrap.appendChild(sliderWrap);
@@ -791,7 +797,7 @@ function _buildVideoPicker(wrap, b) {
     errorEl.style.display = "none";
     wrap.insertBefore(errorEl, sliderWrap);
 
-    const _loadFile = async filename => {
+    const _loadFile = async (filename, dir = "input") => {
         // Remove stale listeners from a previous load
         if (_onMeta) { videoEl.removeEventListener("loadedmetadata", _onMeta); _onMeta = null; }
         if (_onErr)  { videoEl.removeEventListener("error",           _onErr);  _onErr  = null; }
@@ -812,7 +818,7 @@ function _buildVideoPicker(wrap, b) {
 
         if (!filename) { videoEl.style.display = "none"; videoEl.src = ""; return; }
 
-        videoEl.src = bundlesApi.streamUrl(filename);
+        videoEl.src = bundlesApi.streamUrl(filename, dir);
         videoEl.style.display = "";
 
         // loadedmetadata fires when the browser can decode the video header —
@@ -865,7 +871,7 @@ function _buildVideoPicker(wrap, b) {
         videoEl.addEventListener("error", _onErr, { once: true });
 
         try {
-            const info = await bundlesApi.mediaInfo(filename);
+            const info = await bundlesApi.mediaInfo(filename, dir);
             _vidInfo = info;
             if (info.duration > 0) {
                 _vidDur = info.duration;
@@ -881,8 +887,7 @@ function _buildVideoPicker(wrap, b) {
         } catch (_) { /* loadedmetadata will build the slider if mediaInfo is unavailable */ }
     };
 
-    sel.addEventListener("change", () => { b.visual.file = sel.value; _loadFile(sel.value); });
-    if (b.visual.file) _loadFile(b.visual.file);
+    if (b.visual.file) _loadFile(b.visual.file, b.visual.video_dir || "input");
 
     _buildFrameParamSection(wrap, b.visual, { onchange: _updateFrameCount });
     wrap.appendChild(frameCountReadout);
@@ -932,6 +937,7 @@ function _buildVideoPicker(wrap, b) {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         filename:         b.visual.file,
+                        dir:              b.visual.video_dir || "input",
                         start_time:       b.visual.start_time       || 0,
                         duration:         b.visual.duration         || 0,
                         force_rate:       b.visual.force_rate       || 0,
@@ -1382,74 +1388,73 @@ function _buildAudioProcessingSection(wrap, b, sourceAudioEl = null) {
     wrap.appendChild(sec);
 }
 
-function _buildAudioPlayer(filename) {
+function _buildAudioPlayer(filename, dir = "input") {
     const el = document.createElement("audio");
     el.className = "fbt-be-audio-preview";
     el.controls = true;
     el.preload = "none";
-    if (filename) el.src = bundlesApi.streamUrl(filename);
+    if (filename) el.src = bundlesApi.streamUrl(filename, dir);
     else el.style.display = "none";
     return el;
 }
 
 function _buildAudioVideoPicker(wrap, b) {
-    if (!_S.mediaVideos.length) {
-        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No video files in input directory" }));
+    const _isVid = f => /\.(mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
+
+    if (!_S.mediaVideos.length && !_S.mediaVideosOutput.length) {
+        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No video files found" }));
         return null;
     }
-    const sel = document.createElement("select");
-    sel.className = "fbt-ce-select";
-    const blank = document.createElement("option");
-    blank.value = ""; blank.textContent = "— select video file —";
-    if (!b.audio.video_file) blank.selected = true;
-    sel.appendChild(blank);
-    _S.mediaVideos.forEach(f => {
-        const o = document.createElement("option");
-        o.value = f; o.textContent = f;
-        if (f === b.audio.video_file) o.selected = true;
-        sel.appendChild(o);
-    });
 
-    const audioEl = _buildAudioPlayer(b.audio.video_file);
+    const audioEl = _buildAudioPlayer(b.audio.video_file, b.audio.video_dir || "input");
     audioEl.title = "Original source audio";
-    sel.addEventListener("change", () => {
-        b.audio.video_file = sel.value;
-        if (sel.value) { audioEl.src = bundlesApi.streamUrl(sel.value); audioEl.style.display = ""; }
-        else { audioEl.src = ""; audioEl.style.display = "none"; }
+
+    const fileTree = buildFileTree({
+        inputFiles:  _S.mediaVideos,
+        outputFiles: _S.mediaVideosOutput,
+        filter:      _isVid,
+        isSelected:  (p, d) => p === b.audio.video_file && d === (b.audio.video_dir || "input"),
+        onSelect:    (p, d) => {
+            b.audio.video_file = p;
+            b.audio.video_dir  = d;
+            if (p) { audioEl.src = bundlesApi.streamUrl(p, d); audioEl.style.display = ""; }
+            else   { audioEl.src = ""; audioEl.style.display = "none"; }
+        },
+        emptyText:   "No videos in {dir}/",
+        initialDir:  _S.mediaVideos.length ? "input" : "output",
     });
 
-    wrap.appendChild(sel);
+    wrap.appendChild(fileTree.el);
     wrap.appendChild(audioEl);
     return audioEl;
 }
 
 function _buildAudioPicker(wrap, b) {
     let audioEl = null;
-    if (!_S.mediaAudio.length) {
-        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No audio files in input directory" }));
+    const _isAud = f => /\.(mp3|wav|flac|ogg|m4a|aac|opus|wma)$/i.test(f);
+
+    if (!_S.mediaAudio.length && !_S.mediaAudioOutput.length) {
+        wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No audio files found" }));
     } else {
-        const sel = document.createElement("select");
-        sel.className = "fbt-ce-select";
-        const blank = document.createElement("option");
-        blank.value = ""; blank.textContent = "— select audio file —";
-        if (!b.audio.file) blank.selected = true;
-        sel.appendChild(blank);
-        _S.mediaAudio.forEach(f => {
-            const o = document.createElement("option");
-            o.value = f; o.textContent = f;
-            if (f === b.audio.file) o.selected = true;
-            sel.appendChild(o);
-        });
-
-        audioEl = _buildAudioPlayer(b.audio.file);
+        audioEl = _buildAudioPlayer(b.audio.file, b.audio.audio_dir || "input");
         audioEl.title = "Original source audio";
-        sel.addEventListener("change", () => {
-            b.audio.file = sel.value;
-            if (sel.value) { audioEl.src = bundlesApi.streamUrl(sel.value); audioEl.style.display = ""; }
-            else { audioEl.src = ""; audioEl.style.display = "none"; }
+
+        const fileTree = buildFileTree({
+            inputFiles:  _S.mediaAudio,
+            outputFiles: _S.mediaAudioOutput,
+            filter:      _isAud,
+            isSelected:  (p, d) => p === b.audio.file && d === (b.audio.audio_dir || "input"),
+            onSelect:    (p, d) => {
+                b.audio.file      = p;
+                b.audio.audio_dir = d;
+                if (p) { audioEl.src = bundlesApi.streamUrl(p, d); audioEl.style.display = ""; }
+                else   { audioEl.src = ""; audioEl.style.display = "none"; }
+            },
+            emptyText:   "No audio files in {dir}/",
+            initialDir:  _S.mediaAudio.length ? "input" : "output",
         });
 
-        wrap.appendChild(sel);
+        wrap.appendChild(fileTree.el);
         wrap.appendChild(audioEl);
     }
     _buildAudioTimeSection(wrap, b.audio);
