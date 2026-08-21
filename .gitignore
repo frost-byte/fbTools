@@ -99,6 +99,9 @@ cookiecutter-pypackage-env/
 .history/
 *.code-workspace
 
+# Local machine-specific docs (IPs, paths, credentials)
+docs/*.local.md
+
 # Frontend extension
 node_modules/
 .env
