@@ -970,85 +970,17 @@ function _openBgEditor(existing) {
         if (analyzeBtn) analyzeBtn.disabled = false;
     };
 
-    // tabs
-    const tabRow   = _mk("div", { cls: "fbt-be-tab-row" });
-    const treeEl   = _mk("div", { cls: "fbt-be-tree fbt-ce-outfit-tree" });
-    let   curTab   = "input";
-
-    const _insertPath = (node, parts, fullPath) => {
-        if (parts.length === 1) {
-            node.files.push({ name: parts[0], path: fullPath });
-        } else {
-            const dir = parts[0];
-            if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: [] });
-            _insertPath(node.dirs.get(dir), parts.slice(1), fullPath);
-        }
-    };
-
-    const _renderTreeNode = (node, depth, folder) => {
-        const el = _mk("div", { cls: "fbt-be-tree-node" });
-        const indent = depth * 14;
-        [...node.dirs.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([dirName, child]) => {
-            const childWrap = _mk("div", { cls: "fbt-be-tree-children" });
-            childWrap.style.display = "none";
-            const arrow  = _mk("span", { cls: "fbt-be-tree-arrow", textContent: "▶" });
-            const toggle = _mk("button", { cls: "fbt-be-tree-toggle" });
-            toggle.style.paddingLeft = (indent + 2) + "px";
-            toggle.append(arrow, document.createTextNode(" " + dirName + "/"));
-            toggle.addEventListener("click", () => {
-                const opening = childWrap.style.display === "none";
-                childWrap.style.display = opening ? "" : "none";
-                arrow.textContent = opening ? "▼" : "▶";
-                if (opening && !childWrap.firstChild)
-                    childWrap.appendChild(_renderTreeNode(child, depth + 1, folder));
-            });
-            el.appendChild(toggle);
-            el.appendChild(childWrap);
-        });
-        node.files.sort((a, b) => a.name.localeCompare(b.name)).forEach(f => {
-            const btn = _mk("button", { cls: "fbt-be-tree-file" });
-            btn.style.paddingLeft = (indent + 16) + "px";
-            btn.textContent = f.name;
-            btn.addEventListener("click", () => {
-                treeEl.querySelectorAll(".fbt-be-tree-file").forEach(b => b.classList.remove("fbt-be-selected"));
-                btn.classList.add("fbt-be-selected");
-                _applySelection(f.path, folder);
-            });
-            el.appendChild(btn);
-        });
-        return el;
-    };
-
-    const _loadTab = (folder) => {
-        curTab = folder;
-        treeEl.innerHTML = "";
-        const isImg   = (f) => /\.(png|jpg|jpeg|webp|gif|bmp|tiff?)$/i.test(f);
-        const isVid   = (f) => /\.(mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
-        const files   = folder === "output"
-            ? [...(_S.mediaOutImages || []), ...(_S.mediaOutVideos || [])]
-            : [...(_S.mediaInImages  || []), ...(_S.mediaInVideos  || [])];
-        const filtered = files.filter(f => isImg(f) || isVid(f));
-        if (!filtered.length) {
-            treeEl.appendChild(_mk("div", { cls: "fbt-ce-empty",
-                textContent: `No images or videos in ${folder}/` }));
-            return;
-        }
-        const root = { dirs: new Map(), files: [] };
-        filtered.forEach(f => _insertPath(root, f.split("/"), f));
-        treeEl.appendChild(_renderTreeNode(root, 0, folder));
-    };
-
-    ["input", "output"].forEach(tab => {
-        const btn = _mk("button", { cls: "fbt-be-tab" + (tab === "input" ? " fbt-be-tab-active" : ""),
-            textContent: tab.charAt(0).toUpperCase() + tab.slice(1),
-            onclick: () => {
-                tabRow.querySelectorAll(".fbt-be-tab").forEach(b => b.classList.remove("fbt-be-tab-active"));
-                btn.classList.add("fbt-be-tab-active");
-                _loadTab(tab);
-            } });
-        tabRow.appendChild(btn);
+    // ── File tree ──────────────────────────────────────────────────────────────
+    const _isImgOrVid = f => /\.(png|jpg|jpeg|webp|gif|bmp|tiff?|mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
+    const bgTree = buildFileTree({
+        inputFiles:  [...(_S.mediaInImages || []), ...(_S.mediaInVideos || [])],
+        outputFiles: [...(_S.mediaOutImages || []), ...(_S.mediaOutVideos || [])],
+        filter:      _isImgOrVid,
+        isSelected:  (p, d) => selFile?.path === p && selFile?.folder === d,
+        onSelect:    (p, d) => _applySelection(p, d),
+        emptyText:   "No images or videos in {dir}/",
+        initialDir:  "input",
     });
-    _loadTab("input");
 
     const addRefBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "+ Add as Reference",
         disabled: true,
@@ -1091,7 +1023,7 @@ function _openBgEditor(existing) {
     actionRow.appendChild(addRefBtn);
     if (analyzeBtn) actionRow.appendChild(analyzeBtn);
 
-    browserSection.append(tabRow, treeEl, selFileEl, previewWrap, frameRow, actionRow);
+    browserSection.append(bgTree.el, selFileEl, previewWrap, frameRow, actionRow);
 
     _renderRefList();
 
@@ -1450,87 +1382,17 @@ function _openOutfitEditor(existingId) {
         if (_onSelectionForSam2) _onSelectionForSam2(selFile);
     };
 
-    // tree
-    const treeEl = _mk("div", { cls: "fbt-be-tree fbt-ce-outfit-tree" });
-
-    const _insertPath = (node, parts, fullPath) => {
-        if (parts.length === 1) {
-            node.files.push({ name: parts[0], path: fullPath });
-        } else {
-            const dir = parts[0];
-            if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: [] });
-            _insertPath(node.dirs.get(dir), parts.slice(1), fullPath);
-        }
-    };
-
-    const _renderTreeNode = (node, depth, folder) => {
-        const el = _mk("div", { cls: "fbt-be-tree-node" });
-        const indent = depth * 14;
-        [...node.dirs.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([dirName, child]) => {
-            const childWrap = _mk("div", { cls: "fbt-be-tree-children" });
-            childWrap.style.display = "none";
-            const arrow  = _mk("span", { cls: "fbt-be-tree-arrow", textContent: "▶" });
-            const toggle = _mk("button", { cls: "fbt-be-tree-toggle" });
-            toggle.style.paddingLeft = (indent + 2) + "px";
-            toggle.append(arrow, document.createTextNode(" " + dirName + "/"));
-            toggle.addEventListener("click", () => {
-                const opening = childWrap.style.display === "none";
-                childWrap.style.display = opening ? "" : "none";
-                arrow.textContent = opening ? "▼" : "▶";
-                if (opening && !childWrap.firstChild)
-                    childWrap.appendChild(_renderTreeNode(child, depth + 1, folder));
-            });
-            el.appendChild(_mk("div", {}, [toggle, childWrap]));
-        });
-        [...node.files].sort((a, z) => a.name.localeCompare(z.name)).forEach(({ name, path }) => {
-            const fileEl = _mk("div", { cls: "fbt-be-tree-file" });
-            fileEl.style.paddingLeft = (indent + 16) + "px";
-            if (selFile?.path === path && selFile?.folder === folder)
-                fileEl.classList.add("fbt-be-tree-file-sel");
-            fileEl.appendChild(_mk("span", { cls: "fbt-be-tree-file-name", textContent: name, title: path }));
-            fileEl.addEventListener("click", () => {
-                treeEl.querySelectorAll(".fbt-be-tree-file-sel").forEach(el => el.classList.remove("fbt-be-tree-file-sel"));
-                fileEl.classList.add("fbt-be-tree-file-sel");
-                _applySelection(path, folder);
-            });
-            el.appendChild(fileEl);
-        });
-        return el;
-    };
-
-    let activeFolder = "input";
-    const _rebuildTree = () => {
-        treeEl.innerHTML = "";
-        const imgs  = activeFolder === "output" ? _S.mediaOutImages : _S.mediaInImages;
-        const vids  = activeFolder === "output" ? _S.mediaOutVideos : _S.mediaInVideos;
-        const files = [...imgs, ...vids];
-        if (!files.length) {
-            treeEl.appendChild(_mk("div", { cls: "fbt-be-media-empty",
-                textContent: `No media in ${activeFolder} directory.` }));
-            return;
-        }
-        const root = { dirs: new Map(), files: [] };
-        files.forEach(p => _insertPath(root, p.split("/"), p));
-        treeEl.appendChild(_renderTreeNode(root, 0, activeFolder));
-    };
-
-    const tabRow    = _mk("div", { cls: "fbt-be-tree-tab-row" });
-    const tabInput  = _mk("button", { cls: "fbt-be-tree-tab active", textContent: "Input" });
-    const tabOutput = _mk("button", { cls: "fbt-be-tree-tab",        textContent: "Output" });
-    tabRow.append(tabInput, tabOutput);
-    tabInput.addEventListener("click", () => {
-        if (activeFolder === "input") return;
-        activeFolder = "input";
-        tabInput.classList.add("active"); tabOutput.classList.remove("active");
-        _rebuildTree();
+    // ── File tree ──────────────────────────────────────────────────────────────
+    const _isImgOrVid = f => /\.(png|jpg|jpeg|webp|gif|bmp|tiff?|mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
+    const outfitTree = buildFileTree({
+        inputFiles:  [...(_S.mediaInImages || []), ...(_S.mediaInVideos || [])],
+        outputFiles: [...(_S.mediaOutImages || []), ...(_S.mediaOutVideos || [])],
+        filter:      _isImgOrVid,
+        isSelected:  (p, d) => selFile?.path === p && selFile?.folder === d,
+        onSelect:    (p, d) => _applySelection(p, d),
+        emptyText:   "No images or videos in {dir}/",
+        initialDir:  "input",
     });
-    tabOutput.addEventListener("click", () => {
-        if (activeFolder === "output") return;
-        activeFolder = "output";
-        tabOutput.classList.add("active"); tabInput.classList.remove("active");
-        _rebuildTree();
-    });
-    _rebuildTree();
 
     // action buttons
     const addRefBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "+ Add as Reference",
@@ -1584,7 +1446,7 @@ function _openOutfitEditor(existingId) {
     actionRow.appendChild(addRefBtn);
     if (analyzeBtn) actionRow.appendChild(analyzeBtn);
 
-    browserSection.append(tabRow, treeEl, selFileEl, previewWrap, frameRow, actionRow);
+    browserSection.append(outfitTree.el, selFileEl, previewWrap, frameRow, actionRow);
     if (queryArea) browserSection.appendChild(queryArea);
 
     // ── SAM2 section (source driven by browser selection above) ────────────────

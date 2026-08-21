@@ -95,12 +95,13 @@ export class BundlesAPI extends BaseAPI {
         return this.get("/media/list", params);
     }
 
-    mediaInfo(filename) {
-        return this.get("/media/info", { filename });
+    mediaInfo(filename, dir = "input") {
+        return this.get("/media/info", { filename, ...(dir !== "input" ? { dir } : {}) });
     }
 
-    streamUrl(filename) {
-        return `/fbtools/media/stream?filename=${encodeURIComponent(filename)}`;
+    streamUrl(filename, dir = "input") {
+        const dirPart = dir !== "input" ? `&dir=${encodeURIComponent(dir)}` : "";
+        return `/fbtools/media/stream?filename=${encodeURIComponent(filename)}${dirPart}`;
     }
 
     preprocessAudio({ bundle_id, filename, start_time, duration, audio_processing }) {

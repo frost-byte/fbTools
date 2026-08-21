@@ -13620,7 +13620,8 @@ async def _bundles_preview_sampled(request):
     if not filename:
         return web.json_response({"error": "filename required"}, status=400)
 
-    input_dir = get_input_directory()
+    src_dir   = (data.get("dir") or "input").strip()
+    input_dir = get_output_directory() if src_dir == "output" else get_input_directory()
     path = os.path.realpath(os.path.join(input_dir, filename))
     if not path.startswith(os.path.realpath(input_dir)):
         return web.json_response({"error": "Forbidden"}, status=403)
@@ -15140,7 +15141,11 @@ def _resolve_cast_media(
         if visual_mode == "video":
             vfile = visual.get("file", "")
             if vfile:
-                abs_vfile = os.path.join(input_dir, vfile)
+                vdir = visual.get("video_dir", "input")
+                abs_vfile = os.path.join(
+                    get_output_directory() if vdir == "output" else input_dir,
+                    vfile,
+                )
                 entry_load_params = {
                     "start_time":        float(visual.get("start_time", 0.0)),
                     "duration":          float(visual.get("duration",   0.0)),
@@ -15173,15 +15178,23 @@ def _resolve_cast_media(
                 elif a_src == "extract_from_video":
                     av_file = audio.get("video_file", "")
                     if av_file:
+                        av_dir = audio.get("video_dir", "input")
                         entry_audio_source = "extract_from_visual"
-                        entry_audio_path   = os.path.join(input_dir, av_file)
+                        entry_audio_path   = os.path.join(
+                            get_output_directory() if av_dir == "output" else input_dir,
+                            av_file,
+                        )
                         entry_audio_start  = audio.get("start_time", 0.0)
                         entry_audio_dur    = audio.get("duration",   0.0)
                 elif a_src == "file":
                     af = audio.get("file", "")
                     if af:
+                        af_dir = audio.get("audio_dir", "input")
                         entry_audio_source = "file"
-                        entry_audio_path   = os.path.join(input_dir, af)
+                        entry_audio_path   = os.path.join(
+                            get_output_directory() if af_dir == "output" else input_dir,
+                            af,
+                        )
                         entry_audio_start  = audio.get("start_time", 0.0)
                         entry_audio_dur    = audio.get("duration", 0.0)
 
