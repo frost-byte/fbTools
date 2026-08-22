@@ -1743,6 +1743,8 @@ function _llmUpdateStatus() {
         if (_dom.llmGenSection)   _dom.llmGenSection.style.display = "none";
         if (_dom.llmFromVideoBtn) _dom.llmFromVideoBtn.style.display = "none";
     }
+    // Push state to the shared panel header badge (no-op if panel not mounted)
+    window._fbtUpdateLlmStatus?.(_S.llmLoaded, _S.llmVision, _S.llmNativeVideo);
 }
 
 async function _llmLoadSelected() {

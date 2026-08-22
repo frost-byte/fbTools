@@ -465,70 +465,20 @@ import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
 import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect, setupLoraStackBuilder } from "./nodes/lora.js";
 import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
 import { setupSceneCastBuild } from "./nodes/scene_cast_build.js";
-import { renderCompositionEditor }    from "./ui/composition_editor.js";
-import { renderBundleEditor }         from "./ui/bundle_editor.js";
-import { renderCastEditor }           from "./ui/cast_editor.js";
-import { renderSourceProfileEditor }  from "./ui/source_profile_editor.js";
-import { patchNodeForTracking }       from "./utils/run_tracker.js";
-import { renderRunHistory }           from "./ui/run_history.js";
+import { renderFbtPanel } from "./ui/fbt_panel.js";
+import { patchNodeForTracking } from "./utils/run_tracker.js";
 
-// Store app ref once so all panels can fire toasts via window._fbtApp
+// Single sidebar entry — hosts Compose, Bundles, Casts, Sources, History tabs
+// with a persistent LLM status bar and lazy tab mounting.
 app.extensionManager.registerSidebarTab({
-    id: "fbt.composition-editor",
-    icon: "pi pi-file-edit",
-    title: "Prompt Compositions",
-    tooltip: "Structured prompt editor for video generation",
+    id: "fbt.panel",
+    icon: "pi pi-box",
+    title: "fbTools",
+    tooltip: "Prompt Compositions · Reference Bundles · Scene Casts · Source Profiles · Run History",
     type: "custom",
     render: (el) => {
         window._fbtApp = app;
-        if (!el.querySelector(".fbt-ce-panel")) renderCompositionEditor(el);
-    },
-});
-
-app.extensionManager.registerSidebarTab({
-    id: "fbt.bundle-editor",
-    icon: "pi pi-images",
-    title: "Reference Bundles",
-    tooltip: "Manage reference media bundles for subjects",
-    type: "custom",
-    render: (el) => {
-        window._fbtApp = app;
-        if (!el.querySelector('[data-fbt-editor="bundle"]')) renderBundleEditor(el);
-    },
-});
-
-app.extensionManager.registerSidebarTab({
-    id: "fbt.cast-editor",
-    icon: "pi pi-users",
-    title: "Scene Casts",
-    tooltip: "Assign reference bundles to subjects for each scene cast",
-    type: "custom",
-    render: (el) => {
-        window._fbtApp = app;
-        if (!el.querySelector('[data-fbt-editor="cast"]')) renderCastEditor(el);
-    },
-});
-
-app.extensionManager.registerSidebarTab({
-    id: "fbt.source-profiles",
-    icon: "pi pi-video",
-    title: "Source Profiles",
-    tooltip: "Browse and annotate media-first subject profiles",
-    type: "custom",
-    render: (el) => {
-        window._fbtApp = app;
-        if (!el.querySelector('[data-fbt-editor="source-profiles"]')) renderSourceProfileEditor(el);
-    },
-});
-
-app.extensionManager.registerSidebarTab({
-    id: "fbt.run-history",
-    icon: "pi pi-history",
-    title: "Run History",
-    tooltip: "View widget values for tracked nodes across recent runs",
-    type: "custom",
-    render: (el) => {
-        if (!el.querySelector(".fbt-rh-panel")) renderRunHistory(el);
+        renderFbtPanel(el);
     },
 });
 
