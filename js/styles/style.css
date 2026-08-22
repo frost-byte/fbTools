@@ -802,6 +802,69 @@ textarea.prompt-value-input {
     min-width: 0;
 }
 
+/* ── Slot appearance overrides ───────────────────────────────────────────────── */
+
+.fbt-ce-slot-override-wrap {
+    margin-top: 4px;
+}
+
+.fbt-ce-slot-override-toggle {
+    font-size: 11px;
+    color: var(--p-text-muted-color, #888);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 2px 0;
+    text-align: left;
+    width: 100%;
+}
+
+.fbt-ce-slot-override-toggle:hover {
+    color: var(--fg-color, #ddd);
+}
+
+.fbt-ce-slot-override-body {
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    background: var(--p-surface-ground, #1a1a1a);
+    border-radius: 4px;
+    border: 1px solid var(--border-color, #444);
+}
+
+.fbt-ce-slot-override-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--p-text-muted-color, #888);
+    margin-top: 2px;
+}
+
+.fbt-ce-slot-override-desc {
+    font-size: 12px;
+    min-height: 40px;
+    resize: vertical;
+}
+
+.fbt-ce-slot-override-field-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.fbt-ce-slot-override-field-key {
+    font-size: 11px;
+    color: var(--p-text-muted-color, #888);
+    min-width: 36px;
+}
+
+.fbt-ce-slot-override-field-inp {
+    flex: 1;
+    font-size: 12px;
+}
+
 /* ── Libbers section (per-composition) ──────────────────────────────────────── */
 
 .fbt-ce-libbers-list {

@@ -212,6 +212,7 @@ function _newComp() {
         task_flags: [],
         use_dialogue_tags: false,
         subjects: {}, outfit_overrides: {}, outfit_ids: {},
+        slot_descriptors: {}, appearance_overrides: {},
         background: "", scene_synopsis: "", shots: [],
         overall_soundscape: "", non_diegetic_music: "",
         libbers: [],
@@ -2973,12 +2974,83 @@ function _rebuildSlots() {
                 delete comp.subjects[key];
                 delete comp.outfit_overrides?.[key];
                 delete comp.outfit_ids?.[key];
+                delete comp.slot_descriptors?.[key];
+                delete comp.appearance_overrides?.[key];
                 _renumberSlots();
                 _rebuildSlots();
                 _refreshShotDialogueSpeakers();
                 _markDirty();
             },
         });
+
+        // ── Appearance overrides ─────────────────────────────────────────────────
+        // slot_descriptors[key]   — replaces appearance.summary for this composition
+        // appearance_overrides[key] — granular sub-field overrides (face, hair, body)
+        const overrideWrap = _mk("div", { cls: "fbt-ce-slot-override-wrap" });
+        const overrideToggle = _mk("button", {
+            cls: "fbt-ce-slot-override-toggle",
+            title: "Override appearance fields for this composition",
+        });
+        const _hasOverrides = () => {
+            const d = comp.slot_descriptors?.[key];
+            const f = comp.appearance_overrides?.[key];
+            return (d && d.trim()) || (f && Object.values(f).some(v => v?.trim()));
+        };
+        const _updateToggleLabel = () => {
+            overrideToggle.textContent = "Override appearance" + (_hasOverrides() ? " ✎" : "");
+        };
+        _updateToggleLabel();
+        const overrideBody = _mk("div", { cls: "fbt-ce-slot-override-body", style: { display: "none" } });
+        overrideToggle.onclick = () => {
+            const open = overrideBody.style.display === "none";
+            overrideBody.style.display = open ? "" : "none";
+        };
+
+        // Description override
+        const descLabel = _mk("label", { cls: "fbt-ce-slot-override-label",
+            textContent: "Description (replaces profile summary)" });
+        const descEl = _mk("textarea", {
+            cls: "fbt-ce-textarea fbt-ce-slot-override-desc",
+            placeholder: "Leave empty to use the profile's appearance summary",
+            rows: 2,
+        });
+        descEl.value = comp.slot_descriptors?.[key] || "";
+        descEl.addEventListener("input", () => {
+            if (!comp.slot_descriptors) comp.slot_descriptors = {};
+            comp.slot_descriptors[key] = descEl.value;
+            _updateToggleLabel();
+            _markDirty();
+        });
+        overrideBody.appendChild(descLabel);
+        overrideBody.appendChild(descEl);
+
+        // Per-field overrides
+        const fieldLabel = _mk("label", { cls: "fbt-ce-slot-override-label",
+            textContent: "Field overrides (face / hair / body)" });
+        overrideBody.appendChild(fieldLabel);
+        const fields = ["face", "hair", "body"];
+        fields.forEach(field => {
+            const row2 = _mk("div", { cls: "fbt-ce-slot-override-field-row" });
+            row2.appendChild(_mk("span", { cls: "fbt-ce-slot-override-field-key", textContent: field }));
+            const inp = _mk("input", {
+                type: "text",
+                cls: "fbt-ce-input fbt-ce-slot-override-field-inp",
+                placeholder: `override ${field}…`,
+                value: comp.appearance_overrides?.[key]?.[field] || "",
+            });
+            inp.addEventListener("input", () => {
+                if (!comp.appearance_overrides) comp.appearance_overrides = {};
+                if (!comp.appearance_overrides[key]) comp.appearance_overrides[key] = {};
+                comp.appearance_overrides[key][field] = inp.value;
+                _updateToggleLabel();
+                _markDirty();
+            });
+            row2.appendChild(inp);
+            overrideBody.appendChild(row2);
+        });
+
+        overrideWrap.appendChild(overrideToggle);
+        overrideWrap.appendChild(overrideBody);
 
         row.appendChild(label);
         row.appendChild(subSel);
@@ -2988,6 +3060,7 @@ function _rebuildSlots() {
         card.appendChild(infoEl);
         card.appendChild(outfitInfoEl);
         card.appendChild(conceptRow);
+        card.appendChild(overrideWrap);
         container.appendChild(card);
     });
     if (!slots.length) {
@@ -3001,15 +3074,21 @@ function _renumberSlots() {
     const newSubjects = {};
     const newOutfits = {};
     const newOutfitIds = {};
+    const newDescriptors = {};
+    const newAppOverrides = {};
     oldKeys.forEach((k, i) => {
         const newKey = `S${i + 1}`;
         newSubjects[newKey] = comp.subjects[k];
-        if (comp.outfit_overrides?.[k]) newOutfits[newKey] = comp.outfit_overrides[k];
-        if (comp.outfit_ids?.[k]) newOutfitIds[newKey] = comp.outfit_ids[k];
+        if (comp.outfit_overrides?.[k])     newOutfits[newKey]      = comp.outfit_overrides[k];
+        if (comp.outfit_ids?.[k])           newOutfitIds[newKey]    = comp.outfit_ids[k];
+        if (comp.slot_descriptors?.[k])     newDescriptors[newKey]  = comp.slot_descriptors[k];
+        if (comp.appearance_overrides?.[k]) newAppOverrides[newKey] = comp.appearance_overrides[k];
     });
     comp.subjects = newSubjects;
     comp.outfit_overrides = newOutfits;
     comp.outfit_ids = newOutfitIds;
+    comp.slot_descriptors = newDescriptors;
+    comp.appearance_overrides = newAppOverrides;
     // Update shot dialogue speaker keys
     (comp.shots || []).forEach(shot => {
         if (shot.dialogue?.speaker) {
