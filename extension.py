@@ -81,6 +81,14 @@ from .utils.subject_profiles import (
     save_registry as _save_subject_registry,
     SUPPORTED_LANGUAGES as _SUBJECT_LANGUAGES,
 )
+from .utils.source_profiles import (
+    SourceProfileRegistry,
+    load_registry as _load_source_registry,
+    save_registry as _save_source_registry,
+    ENTITY_TYPES as _SOURCE_ENTITY_TYPES,
+    MEDIA_TYPES as _SOURCE_MEDIA_TYPES,
+    MEDIA_DIRS as _SOURCE_MEDIA_DIRS,
+)
 from .utils.scene_templates import (
     SceneTemplate,
     load_template as _load_scene_template,
@@ -165,6 +173,8 @@ EXTENSION_PREFIX = "fbt"
 _concept_reload_counter: int = 0
 # Incremented by POST /fbtools/subjects/reload so SubjectProfileLoad re-executes
 _subject_reload_counter: int = 0
+# Incremented by POST /fbtools/source_profiles/reload so SourceProfileLoad re-executes
+_source_profile_reload_counter: int = 0
 # Incremented by POST /fbtools/scene_templates/reload so SceneTemplate nodes re-execute
 _scene_template_reload_counter: int = 0
 # Incremented by POST /fbtools/compositions/reload so PromptCompositionLoader nodes re-execute
@@ -1498,6 +1508,11 @@ def default_registry_path() -> str:
 def default_subject_profiles_path() -> str:
     """Default path for the subject profiles JSON file."""
     return os.path.join(user_data_dir(), "subject_profiles.json")
+
+
+def default_source_profiles_path() -> str:
+    """Default path for the source profile registry JSON file."""
+    return os.path.join(user_data_dir(), "source_profiles.json")
 
 
 def default_bundle_registry_path() -> str:
@@ -11958,6 +11973,300 @@ class SubjectProfileList(io.ComfyNode):
         return io.NodeOutput(listing, count, ui={"subject_list": listing, "subject_count": count})
 
 
+# ── Source Profile helpers ────────────────────────────────────────────────────
+
+def _source_profile_get_ids() -> list[str]:
+    """Read source_profiles.json and return profile IDs for combo widgets."""
+    try:
+        reg = _load_source_registry(default_source_profiles_path())
+        ids = reg.profile_ids()
+        return ids if ids else ["(none)"]
+    except Exception:
+        return ["(none)"]
+
+
+# ── Custom type: SOURCE_PROFILE ───────────────────────────────────────────────
+
+SOURCE_PROFILE_TYPE = "SOURCE_PROFILE"
+
+
+@io.comfytype(io_type=SOURCE_PROFILE_TYPE)
+class SourceProfileIOType:
+    """Carries a full source profile (media ref + subjects list) between nodes."""
+    Type = object  # SourceProfileRegistry profile dict
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "source_profile", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+# ── Node: SourceProfileLoad ───────────────────────────────────────────────────
+
+class SourceProfileLoad(io.ComfyNode):
+    """Load a source profile from disk and expose it for wiring into CastBuild.
+
+    A source profile is a media-first subject catalog: one video or image
+    annotated with the identifiable subjects it contains. Connect the
+    source_profile output to a CastBuild node to make all subjects in this
+    profile available as cast slot options.
+
+    Use POST /fbtools/source_profiles/reload to force re-execution after
+    editing source_profiles.json externally.
+    """
+    node_id = prefixed_node_id("SourceProfileLoad")
+    display_name = "Source Profile Load"
+    category = "🧊 frost-byte/Scene"
+    is_output_node = True
+
+    @classmethod
+    def define_schema(cls):
+        profile_ids = _source_profile_get_ids()
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            is_output_node=cls.is_output_node,
+            inputs=[
+                io.Combo.Input(
+                    "profile_id",
+                    options=profile_ids,
+                    display_name="Source Profile",
+                    tooltip="Source profile to load. Press R to refresh the list after adding new profiles.",
+                ),
+            ],
+            outputs=[
+                SourceProfileIOType.Output(
+                    "source_profile",
+                    display_name="Source Profile",
+                    tooltip="Full source profile dict for wiring into CastBuild.",
+                ),
+                io.String.Output(
+                    "subject_info",
+                    display_name="Subject Info",
+                    tooltip="Formatted summary of subjects in this profile.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, profile_id: str = "", **_):
+        path = default_source_profiles_path()
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0
+        return (path, profile_id, mtime, _source_profile_reload_counter)
+
+    @classmethod
+    def execute(cls, profile_id: str = "") -> io.NodeOutput:
+        path = default_source_profiles_path()
+        registry = _load_source_registry(path)
+
+        profile = registry.get_profile(profile_id) if profile_id and profile_id != "(none)" else None
+        if profile is None:
+            logger.warning("SourceProfileLoad: profile_id %r not found in %s", profile_id, path)
+            return io.NodeOutput(None, "")
+
+        subjects = profile.get("subjects", [])
+        lines = [f"[{s.get('entity_type','?')}] {s.get('label', s.get('id',''))} — {s.get('role_description','')}"
+                 for s in subjects]
+        subject_info = "\n".join(lines) if lines else "(no subjects defined)"
+
+        send_status_update(
+            cls.node_id,
+            f"Loaded: {profile.get('name', profile_id)} | {len(subjects)} subject(s)",
+        )
+        return io.NodeOutput(profile, subject_info)
+
+
+# ── Node: SourceProfileDefine ─────────────────────────────────────────────────
+
+class SourceProfileDefine(io.ComfyNode):
+    """Create or update a source profile entry.
+
+    Defines the profile metadata (name, media file) only. Use the Source
+    Profiles UI panel or SourceProfileDefine nodes chained together to add
+    subjects. When auto_save is enabled the registry is written to
+    source_profiles.json immediately.
+    """
+    node_id = prefixed_node_id("SourceProfileDefine")
+    display_name = "Source Profile Define"
+    category = "🧊 frost-byte/Scene"
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            inputs=[
+                io.String.Input(
+                    "profile_id",
+                    display_name="Profile ID",
+                    default="",
+                    multiline=False,
+                    tooltip="Unique snake_case identifier, e.g. theater_scene_video1.",
+                ),
+                io.String.Input(
+                    "name",
+                    display_name="Name",
+                    default="",
+                    multiline=False,
+                    tooltip="Human-readable name for this source profile.",
+                ),
+                io.String.Input(
+                    "media_filename",
+                    display_name="Media Filename",
+                    default="",
+                    multiline=False,
+                    tooltip="Filename of the source video or image in the ComfyUI input or output directory.",
+                ),
+                io.Combo.Input(
+                    "media_dir",
+                    options=_SOURCE_MEDIA_DIRS,
+                    display_name="Media Dir",
+                    tooltip="Whether the source file lives in the input or output directory.",
+                ),
+                io.Combo.Input(
+                    "media_type",
+                    options=_SOURCE_MEDIA_TYPES,
+                    display_name="Media Type",
+                    tooltip="video or image.",
+                ),
+                io.String.Input(
+                    "subjects_json",
+                    display_name="Subjects JSON",
+                    default="[]",
+                    multiline=True,
+                    tooltip='Optional JSON array of subject entries to add/update. Each entry: {"id","label","role_description","entity_type","notes"}.',
+                ),
+                io.Boolean.Input(
+                    "auto_save",
+                    display_name="Auto Save",
+                    default=True,
+                    tooltip="Write source_profiles.json immediately after defining this profile.",
+                ),
+            ],
+            outputs=[
+                SourceProfileIOType.Output(
+                    "source_profile",
+                    display_name="Source Profile",
+                    tooltip="The created or updated source profile dict.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        profile_id: str,
+        name: str = "",
+        media_filename: str = "",
+        media_dir: str = "input",
+        media_type: str = "video",
+        subjects_json: str = "[]",
+        auto_save: bool = True,
+    ) -> io.NodeOutput:
+        if not profile_id.strip():
+            raise ValueError("SourceProfileDefine: profile_id cannot be empty")
+
+        pid = profile_id.strip()
+        path = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        registry = registry.define_profile(
+            profile_id=pid,
+            name=name,
+            media_filename=media_filename,
+            media_dir=media_dir,
+            media_type=media_type,
+        )
+
+        try:
+            subjects = json.loads(subjects_json) if subjects_json.strip() not in ("", "[]") else []
+        except Exception:
+            subjects = []
+            logger.warning("SourceProfileDefine: invalid subjects_json, skipping subjects")
+
+        for s in subjects:
+            sid = s.get("id", "").strip()
+            if sid:
+                registry = registry.define_subject(
+                    profile_id=pid,
+                    subject_id=sid,
+                    label=s.get("label", ""),
+                    role_description=s.get("role_description", ""),
+                    entity_type=s.get("entity_type", "person"),
+                    notes=s.get("notes", ""),
+                )
+
+        if auto_save:
+            _save_source_registry(registry, path, backup=True)
+            logger.info("SourceProfileDefine: saved %r to %s", pid, path)
+            send_status_update(cls.node_id, f"Saved source profile: {pid}")
+
+        profile = registry.get_profile(pid)
+        return io.NodeOutput(profile)
+
+
+# ── Node: SourceProfileList ───────────────────────────────────────────────────
+
+class SourceProfileList(io.ComfyNode):
+    """Display all defined source profiles and their subjects.
+
+    Useful for quickly reviewing the source catalog without opening the
+    JSON file.  Filter by media type to narrow the listing.
+    """
+    node_id = prefixed_node_id("SourceProfileList")
+    display_name = "Source Profile List"
+    category = "🧊 frost-byte/Scene"
+    is_output_node = True
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            is_output_node=cls.is_output_node,
+            inputs=[
+                io.Combo.Input(
+                    "filter_type",
+                    options=["all"] + _SOURCE_MEDIA_TYPES,
+                    display_name="Filter by Type",
+                    tooltip="Show all profiles, or only video/image sources.",
+                ),
+            ],
+            outputs=[
+                io.String.Output(
+                    "profile_list",
+                    display_name="Profile List",
+                    tooltip="Formatted listing of all source profiles and their subjects.",
+                ),
+                io.Int.Output("profile_count", display_name="Profile Count"),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, filter_type: str = "all", **_):
+        path = default_source_profiles_path()
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0
+        return (path, filter_type, mtime, _source_profile_reload_counter)
+
+    @classmethod
+    def execute(cls, filter_type: str = "all") -> io.NodeOutput:
+        registry = _load_source_registry(default_source_profiles_path())
+        listing = registry.list_profiles(filter_type=filter_type)
+        count = len(registry.profiles)
+        return io.NodeOutput(listing, count, ui={"profile_list": listing, "profile_count": count})
+
+
 # ── Subject REST API endpoints ────────────────────────────────────────────────
 
 @routes.post("/fbtools/subjects/reload")
@@ -11975,6 +12284,110 @@ async def _subjects_get_profiles(request):
     try:
         registry = _load_subject_registry(default_subject_profiles_path())
         return web.json_response(registry.to_dict())
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── Source Profile REST API endpoints ─────────────────────────────────────────
+
+@routes.post("/fbtools/source_profiles/reload")
+async def _source_profiles_reload(request):
+    """Increment reload counter so SourceProfileLoad/List nodes re-execute."""
+    global _source_profile_reload_counter
+    _source_profile_reload_counter += 1
+    logger.info("Source profiles reload requested (counter=%d)", _source_profile_reload_counter)
+    return web.json_response({"success": True, "counter": _source_profile_reload_counter})
+
+
+@routes.get("/fbtools/source_profiles/list")
+async def _source_profiles_list(request):
+    """Return [{id, name, media_type, media_filename, media_dir, subject_count}] sorted by name."""
+    try:
+        registry = _load_source_registry(default_source_profiles_path())
+        items = []
+        for pid, p in registry.profiles.items():
+            items.append({
+                "id":             pid,
+                "name":           p.get("name", pid),
+                "media_type":     p.get("media_type", "video"),
+                "media_filename": p.get("media_filename", ""),
+                "media_dir":      p.get("media_dir", "input"),
+                "subject_count":  len(p.get("subjects", [])),
+            })
+        items.sort(key=lambda x: x["name"].lower())
+        return web.json_response({"profiles": items})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/source_profiles/get")
+async def _source_profiles_get_one(request):
+    """Return a single source profile by ?id=<profile_id>."""
+    pid = request.rel_url.query.get("id", "")
+    if not pid:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        registry = _load_source_registry(default_source_profiles_path())
+        profile = registry.get_profile(pid)
+        if profile is None:
+            return web.json_response({"error": f"Source profile '{pid}' not found"}, status=404)
+        return web.json_response(profile)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/save")
+async def _source_profiles_save(request):
+    """Create or update a source profile. Body: full profile dict with 'id'."""
+    try:
+        data = await request.json()
+        pid = data.get("id", "").strip()
+        if not pid:
+            return web.json_response({"error": "Profile 'id' is required"}, status=400)
+        path = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        registry = registry.define_profile(
+            profile_id=pid,
+            name=data.get("name", pid),
+            media_filename=data.get("media_filename", ""),
+            media_dir=data.get("media_dir", "input"),
+            media_type=data.get("media_type", "video"),
+        )
+        for s in data.get("subjects", []):
+            sid = s.get("id", "").strip()
+            if sid:
+                registry = registry.define_subject(
+                    profile_id=pid,
+                    subject_id=sid,
+                    label=s.get("label", ""),
+                    role_description=s.get("role_description", ""),
+                    entity_type=s.get("entity_type", "person"),
+                    notes=s.get("notes", ""),
+                )
+        _save_source_registry(registry, path)
+        global _source_profile_reload_counter
+        _source_profile_reload_counter += 1
+        return web.json_response({"success": True, "id": pid})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.delete("/fbtools/source_profiles/delete")
+async def _source_profiles_delete(request):
+    """Delete a source profile by ?id=<profile_id>."""
+    pid = request.rel_url.query.get("id", "")
+    if not pid:
+        return web.json_response({"error": "id parameter required"}, status=400)
+    try:
+        path = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        if registry.get_profile(pid) is None:
+            return web.json_response({"error": f"Source profile '{pid}' not found"}, status=404)
+        registry = registry.remove_profile(pid)
+        _save_source_registry(registry, path)
+        global _source_profile_reload_counter
+        _source_profile_reload_counter += 1
+        return web.json_response({"success": True})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -16252,6 +16665,10 @@ class FBToolsExtension(ComfyExtension):
             SubjectProfileLoad,
             SubjectProfileDefine,
             SubjectProfileList,
+            # Source Profile nodes
+            SourceProfileLoad,
+            SourceProfileDefine,
+            SourceProfileList,
             # Scene Template nodes
             SceneTemplateLoad,
             SceneTemplateList,
