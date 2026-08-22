@@ -1410,3 +1410,115 @@ class TestValidateH3AudioTotal:
     def test_just_over_15s_fails(self):
         err = validate_h3_audio_total([15.001])
         assert err is not None
+
+
+# ── assemble_composition: slot_descriptors + appearance_overrides ───────────────
+
+assemble_composition = pa.assemble_composition
+
+
+def _simple_composition(subjects_keys=("S1",), slot_descriptors=None, appearance_overrides=None):
+    comp = {
+        "id": "test_comp",
+        "name": "Test",
+        "model_type": "h3_ref2va",
+        "style": "",
+        "subjects": {k: k.lower() for k in subjects_keys},
+        "shots": [
+            {
+                "id": "shot_1", "timestamp": None,
+                "camera": "Close-up", "action": "{A} speaks.",
+                "dialogue": {"speaker": "S1", "text": "Hello."}, "sound_events": None,
+            }
+        ],
+        "overall_soundscape": "", "non_diegetic_music": "N/A",
+    }
+    if slot_descriptors:
+        comp["slot_descriptors"] = slot_descriptors
+    if appearance_overrides:
+        comp["appearance_overrides"] = appearance_overrides
+    return comp
+
+
+def _make_resolved_subjects(keys=("S1",), summary="original summary", face="original face"):
+    return {
+        k: {
+            "subject_id": k.lower(),
+            "name": k,
+            "appearance": {"summary": summary, "face": face, "hair": "", "body": "", "default_outfit": ""},
+            "voice": {"description": "", "audio_reference_file": "", "language": "en-us"},
+            "character_sheet_images": [],
+            "concept_id": "",
+        }
+        for k in keys
+    }
+
+
+class TestSlotDescriptors:
+    def test_slot_descriptor_overrides_summary(self):
+        comp = _simple_composition(slot_descriptors={"S1": "custom appearance description"})
+        resolved = _make_resolved_subjects()
+        result = assemble_composition(comp, resolved, None, "h3_ref2va")
+        assert "custom appearance description" in result["prompt"]
+
+    def test_slot_descriptor_does_not_mutate_original_subject(self):
+        comp = _simple_composition(slot_descriptors={"S1": "override text"})
+        resolved = _make_resolved_subjects()
+        orig_summary = resolved["S1"]["appearance"]["summary"]
+        assemble_composition(comp, resolved, None, "h3_ref2va")
+        assert resolved["S1"]["appearance"]["summary"] == orig_summary
+
+    def test_empty_slot_descriptor_uses_profile_summary(self):
+        comp = _simple_composition(slot_descriptors={"S1": ""})
+        resolved = _make_resolved_subjects(summary="profile summary")
+        result = assemble_composition(comp, resolved, None, "h3_ref2va")
+        assert "profile summary" in result["prompt"]
+
+    def test_whitespace_slot_descriptor_treated_as_empty(self):
+        comp = _simple_composition(slot_descriptors={"S1": "   "})
+        resolved = _make_resolved_subjects(summary="profile summary")
+        result = assemble_composition(comp, resolved, None, "h3_ref2va")
+        assert "profile summary" in result["prompt"]
+
+    def test_unknown_slot_key_ignored(self):
+        comp = _simple_composition(slot_descriptors={"S99": "should be ignored"})
+        resolved = _make_resolved_subjects(summary="profile summary")
+        result = assemble_composition(comp, resolved, None, "h3_ref2va")
+        assert "profile summary" in result["prompt"]
+
+
+class TestAppearanceOverrides:
+    def test_field_override_updates_face(self):
+        comp = _simple_composition(appearance_overrides={"S1": {"face": "new face description"}})
+        resolved = _make_resolved_subjects(face="original face")
+        result = assemble_composition(comp, resolved, None, "h3_ref2va")
+        # face appears in h3 subject_definitions section
+        assert "new face description" in result["prompt"]
+
+    def test_field_override_does_not_mutate_original(self):
+        comp = _simple_composition(appearance_overrides={"S1": {"face": "overridden face"}})
+        resolved = _make_resolved_subjects(face="original face")
+        assemble_composition(comp, resolved, None, "h3_ref2va")
+        assert resolved["S1"]["appearance"]["face"] == "original face"
+
+    def test_empty_string_override_not_applied(self):
+        comp = _simple_composition(appearance_overrides={"S1": {"face": ""}})
+        resolved = _make_resolved_subjects(face="original face")
+        result = assemble_composition(comp, resolved, None, "h3_ref2va")
+        assert "original face" in result["prompt"]
+
+    def test_descriptor_and_field_override_both_applied(self):
+        comp = _simple_composition(
+            slot_descriptors={"S1": "custom summary"},
+            appearance_overrides={"S1": {"face": "custom face"}},
+        )
+        resolved = _make_resolved_subjects(summary="original summary", face="original face")
+        result = assemble_composition(comp, resolved, None, "h3_ref2va")
+        assert "custom summary" in result["prompt"]
+        assert "custom face" in result["prompt"]
+
+    def test_no_overrides_passes_through_cleanly(self):
+        comp = _simple_composition()
+        resolved = _make_resolved_subjects(summary="untouched summary")
+        result = assemble_composition(comp, resolved, None, "h3_ref2va")
+        assert "untouched summary" in result["prompt"]

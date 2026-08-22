@@ -1385,6 +1385,26 @@ def assemble_composition(
         if letter:
             slot_assignments[letter] = subject
 
+    # Apply composition-level slot descriptors: per-slot appearance summary override.
+    # These sit on top of the profile's stored appearance.summary without modifying it.
+    import copy as _copy
+    slot_descriptors   = composition.get("slot_descriptors",   {})
+    appearance_overrides = composition.get("appearance_overrides", {})
+    for sk in slot_keys:
+        letter = slot_map.get(sk)
+        if not letter or letter not in slot_assignments:
+            continue
+        desc = slot_descriptors.get(sk, "").strip()
+        field_overrides = appearance_overrides.get(sk) or {}
+        if desc or field_overrides:
+            slot_assignments[letter] = _copy.deepcopy(slot_assignments[letter])
+            app = slot_assignments[letter].setdefault("appearance", {})
+            if desc:
+                app["summary"] = desc
+            for field, value in field_overrides.items():
+                if isinstance(value, str) and value.strip():
+                    app[field] = value.strip()
+
     # Running letter index for extra slots (background + outfit references).
     _next_letter_idx = len(slot_keys)
 
