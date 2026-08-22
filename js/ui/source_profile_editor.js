@@ -37,6 +37,8 @@ const PASS_LABELS = {
 
 const CAPTIONER_TYPES = ["qwen_vl", "qwen_omni", "gemini_flash"];
 
+const CLIP_COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#ec4899"];
+
 // ── Module state ───────────────────────────────────────────────────────────────
 
 const _S = {
@@ -235,6 +237,43 @@ const _CSS = `
 /* Section heading */
 .spe-section-head { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
     color:var(--p-text-muted-color,#888); margin:10px 0 5px; }
+
+/* Clips section */
+.spe-clips { border-top:1px solid var(--p-surface-border,#444); padding:10px;
+    background:var(--p-surface-section,#252525); flex-shrink:0; }
+.spe-clips-title { font-weight:600; font-size:12px; margin-bottom:6px; display:flex;
+    align-items:center; gap:6px; cursor:pointer; }
+.spe-clips-toolbar { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:6px; }
+.spe-clips-toolbar label { font-size:11px; color:var(--p-text-muted-color,#888); white-space:nowrap; }
+.spe-clips-toolbar input[type=number] { width:68px; padding:3px 6px; border-radius:4px;
+    border:1px solid var(--p-surface-border,#555);
+    background:var(--p-surface-ground,#1a1a1a); color:var(--p-text-color,#eee); font-size:12px; }
+.spe-clips-toolbar select { padding:3px 6px; border-radius:4px;
+    border:1px solid var(--p-surface-border,#555);
+    background:var(--p-surface-ground,#1a1a1a); color:var(--p-text-color,#eee); font-size:12px; }
+.spe-timeline-wrap { margin-bottom:8px; overflow:hidden; border-radius:4px; }
+.spe-timeline { display:block; width:100%; height:72px; cursor:default; }
+.spe-clip-card { border:1px solid var(--p-surface-border,#444); border-radius:5px;
+    margin-bottom:5px; overflow:hidden; background:var(--p-surface-ground,#1a1a1a); }
+.spe-clip-card-head { display:flex; align-items:center; gap:6px; padding:5px 8px;
+    background:var(--p-surface-section,#252525); cursor:pointer; user-select:none; }
+.spe-clip-color-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+.spe-clip-card-body { padding:8px; }
+.spe-clip-card-body.collapsed { display:none; }
+.spe-clip-row { display:flex; gap:6px; align-items:center; margin-bottom:6px; font-size:11px;
+    color:var(--p-text-muted-color,#888); }
+.spe-clip-inp { width:68px; padding:3px 5px; border-radius:3px;
+    border:1px solid var(--p-surface-border,#555);
+    background:var(--p-surface-ground,#1a1a1a); color:var(--p-text-color,#eee); font-size:11px; }
+.spe-clip-inp.wide { width:100%; box-sizing:border-box; }
+.spe-clip-ta { width:100%; padding:4px 6px; border-radius:3px; box-sizing:border-box;
+    border:1px solid var(--p-surface-border,#555);
+    background:var(--p-surface-ground,#1a1a1a); color:var(--p-text-color,#eee); font-size:12px;
+    resize:vertical; margin-bottom:6px; }
+.spe-clip-subj-list { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
+.spe-clip-subj-check { display:flex; align-items:center; gap:4px; font-size:11px;
+    cursor:pointer; color:var(--p-text-color,#eee); }
+.spe-clips-det-note { font-size:11px; color:#fbbf24; margin-top:4px; }
 `;
 
 function _injectCSS() {
@@ -250,6 +289,439 @@ function _injectCSS() {
 function _mediaUrl(filename, dir) {
     if (!filename) return "";
     return bundlesApi.streamUrl(filename, dir);
+}
+
+function _genClipId() {
+    return "clip_" + Date.now().toString(36).slice(-5);
+}
+
+function _fmtT(sec) {
+    return (Math.round(sec * 10) / 10).toFixed(1) + "s";
+}
+
+function _drawTimeline(canvas, clips, suggestions, totalDuration) {
+    const W = canvas.width;
+    const H = canvas.height;
+    const ctx = canvas.getContext("2d");
+    const dur = totalDuration > 0 ? totalDuration : 1;
+    const toX = t => (t / dur) * W;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#111";
+    ctx.fillRect(0, 0, W, H);
+
+    const BAND_TOP = 10, BAND_BOT = H - 20;
+
+    // Clip bands
+    clips.forEach((clip, i) => {
+        const x1 = toX(clip.start_time);
+        const x2 = toX(clip.end_time);
+        const col = CLIP_COLORS[i % CLIP_COLORS.length];
+        ctx.fillStyle = col + "33";
+        ctx.fillRect(x1, BAND_TOP, x2 - x1, BAND_BOT - BAND_TOP);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x1 + 0.5, BAND_TOP + 0.5, x2 - x1 - 1, BAND_BOT - BAND_TOP - 1);
+        // Label
+        const label = clip.label || `Clip ${i + 1}`;
+        ctx.fillStyle = "#ddd";
+        ctx.font = "10px sans-serif";
+        ctx.textAlign = "center";
+        const mid = (x1 + x2) / 2;
+        const maxW = x2 - x1 - 6;
+        const text = ctx.measureText(label).width > maxW ? "" : label;
+        if (text) ctx.fillText(text, mid, (BAND_TOP + BAND_BOT) / 2 + 4);
+    });
+
+    // Internal boundary handles
+    clips.forEach((clip, i) => {
+        if (i === 0) return;
+        const x = toX(clip.start_time);
+        ctx.strokeStyle = "#ffffffcc";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x, BAND_TOP); ctx.lineTo(x, BAND_BOT); ctx.stroke();
+        ctx.fillStyle = "#fff";
+        ctx.beginPath(); ctx.arc(x, (BAND_TOP + BAND_BOT) / 2, 5, 0, Math.PI * 2); ctx.fill();
+    });
+
+    // Suggestion markers (dashed gold)
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = "#fbbf24";
+    ctx.lineWidth = 1.5;
+    suggestions.forEach(seg => {
+        const x = toX(seg.start_time);
+        ctx.beginPath(); ctx.moveTo(x, 2); ctx.lineTo(x, H - 2); ctx.stroke();
+    });
+    ctx.setLineDash([]);
+
+    // Time axis ticks
+    const tickStep = dur <= 20 ? 2 : dur <= 60 ? 5 : dur <= 180 ? 15 : 30;
+    ctx.fillStyle = "#555"; ctx.font = "9px monospace"; ctx.textAlign = "center";
+    for (let t = 0; t <= dur + 0.001; t += tickStep) {
+        const x = Math.round(toX(t));
+        ctx.fillStyle = "#444";
+        ctx.fillRect(x, BAND_BOT, 1, 4);
+        ctx.fillStyle = "#666";
+        ctx.fillText(`${t}`, x, H - 2);
+    }
+
+    // Start / end labels under first / last clip
+    if (clips.length) {
+        ctx.font = "9px monospace"; ctx.fillStyle = "#888";
+        ctx.textAlign = "left";
+        ctx.fillText(_fmtT(clips[0].start_time), toX(clips[0].start_time) + 2, BAND_BOT + 4);
+        ctx.textAlign = "right";
+        const last = clips[clips.length - 1];
+        ctx.fillText(_fmtT(last.end_time), toX(last.end_time) - 2, BAND_BOT + 4);
+    }
+}
+
+function _renderClipsSection(container, profile, onClipsChanged) {
+    const wrap = _mk("div", { cls: "spe-clips" });
+    container.appendChild(wrap);
+
+    let clipsOpen = false;
+    let suggestions = [];
+    let detecting = false;
+    let autoSegRunning = false;
+    let clipsCaptioner = "qwen_vl";
+    let videoDuration = 0;
+    let hiddenVideo = null;
+    let clips = [...(profile.clips || [])];
+
+    // ── Title row (toggle) ────────────────────────────────────────────────────
+    const chevron = _mk("i", { cls: "pi pi-chevron-down", style: { marginLeft: "auto" } });
+    const titleRow = _mk("div", { cls: "spe-clips-title" }, [
+        _mk("i", { cls: "pi pi-clock" }), "  Clips ", chevron,
+    ]);
+    wrap.appendChild(titleRow);
+
+    const body = _mk("div", { cls: "spe-collapsible collapsed" });
+    wrap.appendChild(body);
+
+    // ── Duration probe ────────────────────────────────────────────────────────
+    let durationInput, segDurInput;
+
+    const probeDuration = () => {
+        if (profile.media_type !== "video" || !profile.media_filename || hiddenVideo) return;
+        hiddenVideo = _mk("video", { preload: "metadata" });
+        hiddenVideo.style.display = "none";
+        hiddenVideo.src = _mediaUrl(profile.media_filename, profile.media_dir);
+        hiddenVideo.addEventListener("loadedmetadata", () => {
+            videoDuration = hiddenVideo.duration || 0;
+            if (durationInput && videoDuration > 0) durationInput.value = videoDuration.toFixed(1);
+            redraw();
+        });
+        document.body.appendChild(hiddenVideo);
+    };
+
+    const getTotalDuration = () => {
+        if (videoDuration > 0) return videoDuration;
+        const v = parseFloat(durationInput?.value) || 0;
+        if (v > 0) return v;
+        if (!clips.length) return 60;
+        return Math.max(...clips.map(c => c.end_time), 1);
+    };
+
+    // ── Toolbar ───────────────────────────────────────────────────────────────
+    durationInput = _mk("input", { type: "number", placeholder: "auto", min: 0, step: 0.5 });
+    durationInput.onchange = () => { videoDuration = parseFloat(durationInput.value) || 0; redraw(); };
+
+    segDurInput = _mk("input", { type: "number", placeholder: "10", min: 1, step: 0.5,
+        value: (profile.default_segment_duration ?? 10).toFixed(1) });
+
+    const autoSegBtn = _mk("button", { cls: "spe-btn sm", onclick: runAutoSegment }, ["Auto-segment"]);
+
+    body.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
+        _mk("label", {}, ["Duration (s):"]), durationInput,
+        _mk("label", {}, ["Seg (s):"]), segDurInput,
+        autoSegBtn,
+    ]));
+
+    // Detect row
+    const captEl = _mk("select");
+    CAPTIONER_TYPES.forEach(c => {
+        const o = _mk("option", { value: c }, [c]);
+        if (c === clipsCaptioner) o.selected = true;
+        captEl.appendChild(o);
+    });
+    captEl.onchange = () => { clipsCaptioner = captEl.value; };
+
+    const detectBtn = _mk("button", { cls: "spe-btn sm ghost", onclick: runDetect }, ["Detect boundaries"]);
+    const detectSpinner = _mk("span", { style: { fontSize: "11px", color: "#888", display: "none" } }, [" Detecting…"]);
+    let detNoteEl = null;
+
+    body.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
+        _mk("label", {}, ["Captioner:"]), captEl, detectBtn, detectSpinner,
+    ]));
+
+    // ── Timeline canvas ───────────────────────────────────────────────────────
+    const canvasWrap = _mk("div", { cls: "spe-timeline-wrap" });
+    const canvas = document.createElement("canvas");
+    canvas.className = "spe-timeline";
+    canvas.height = 72;
+    canvasWrap.appendChild(canvas);
+    body.appendChild(canvasWrap);
+
+    // ── Clip list ─────────────────────────────────────────────────────────────
+    const listEl = _mk("div");
+    body.appendChild(listEl);
+
+    const addClipBtn = _mk("button", { cls: "spe-btn sm", style: { marginTop: "4px" },
+        onclick: addNewClip }, ["+ Add clip"]);
+    body.appendChild(addClipBtn);
+
+    // ── Toggle ────────────────────────────────────────────────────────────────
+    titleRow.onclick = () => {
+        clipsOpen = !clipsOpen;
+        body.classList.toggle("collapsed", !clipsOpen);
+        chevron.className = "pi pi-chevron-" + (clipsOpen ? "up" : "down");
+        if (clipsOpen) {
+            probeDuration();
+            requestAnimationFrame(redraw);
+        } else {
+            if (hiddenVideo) { hiddenVideo.remove(); hiddenVideo = null; }
+        }
+    };
+
+    // ── Redraw ────────────────────────────────────────────────────────────────
+    function redraw() {
+        canvas.width = canvas.offsetWidth || 380;
+        _drawTimeline(canvas, clips, suggestions, getTotalDuration());
+        renderClipList();
+    }
+
+    // ── Timeline drag ─────────────────────────────────────────────────────────
+    const MIN_DUR = 1.0;
+    let _drag = null;
+
+    canvas.addEventListener("mousedown", e => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const totalDur = getTotalDuration() || 1;
+        for (let i = 1; i < clips.length; i++) {
+            const hx = (clips[i].start_time / totalDur) * canvas.offsetWidth;
+            if (Math.abs(x - hx) <= 8) { _drag = { i }; e.preventDefault(); break; }
+        }
+    });
+
+    canvas.addEventListener("mousemove", e => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const totalDur = getTotalDuration() || 1;
+        let over = false;
+        for (let i = 1; i < clips.length; i++) {
+            const hx = (clips[i].start_time / totalDur) * canvas.offsetWidth;
+            if (Math.abs(x - hx) <= 8) { over = true; break; }
+        }
+        canvas.style.cursor = over ? "col-resize" : "default";
+        if (!_drag) return;
+        const i = _drag.i;
+        const t = Math.round(((x / canvas.offsetWidth) * totalDur) * 10) / 10;
+        const clamped = Math.max(clips[i - 1].start_time + MIN_DUR,
+                                 Math.min(clips[i].end_time - MIN_DUR, t));
+        clips = clips.map((c, j) =>
+            j === i - 1 ? { ...c, end_time: clamped }
+          : j === i     ? { ...c, start_time: clamped }
+          : c);
+        canvas.width = canvas.offsetWidth;
+        _drawTimeline(canvas, clips, suggestions, totalDur);
+    });
+
+    const endDrag = () => {
+        if (!_drag) return;
+        _drag = null;
+        profile.clips = clips;
+        onClipsChanged(clips);
+        renderClipList();
+    };
+    canvas.addEventListener("mouseup", endDrag);
+    canvas.addEventListener("mouseleave", endDrag);
+
+    // ── Clip list render ──────────────────────────────────────────────────────
+    function renderClipList() {
+        listEl.innerHTML = "";
+        clips.forEach((clip, i) => {
+            const color = CLIP_COLORS[i % CLIP_COLORS.length];
+            const subjects = profile.subjects || [];
+
+            const labelInp = _mk("input", { type: "text", cls: "spe-clip-inp wide",
+                value: clip.label || "", placeholder: "Segment label" });
+            labelInp.onchange = () => { clips[i] = { ...clips[i], label: labelInp.value }; commitClip(i); };
+
+            const startEl = _mk("input", { type: "number", cls: "spe-clip-inp",
+                value: clip.start_time.toFixed(1), min: 0, step: 0.1 });
+            const endEl   = _mk("input", { type: "number", cls: "spe-clip-inp",
+                value: clip.end_time.toFixed(1),   min: 0, step: 0.1 });
+            const applyTimes = () => {
+                const s = parseFloat(startEl.value) || 0;
+                const e = parseFloat(endEl.value)   || 0;
+                if (e > s) { clips[i] = { ...clips[i], start_time: s, end_time: e }; commitClip(i); }
+            };
+            startEl.onchange = applyTimes; endEl.onchange = applyTimes;
+
+            const durSpan = _mk("span", { style: { color: "#888" } },
+                [`(${(clip.end_time - clip.start_time).toFixed(1)}s)`]);
+
+            const actionEl = _mk("textarea", { cls: "spe-clip-ta", rows: 2,
+                placeholder: "Action description — edit manually or click Describe" });
+            actionEl.value = clip.action || "";
+            actionEl.onchange = () => { clips[i] = { ...clips[i], action: actionEl.value }; commitClip(i); };
+
+            const describeBtn = _mk("button", { cls: "spe-btn sm ghost",
+                onclick: () => describeClipAction(i, actionEl, describeBtn) }, ["Describe"]);
+
+            const subjWrap = _mk("div", { cls: "spe-clip-subj-list" });
+            subjects.forEach(s => {
+                const cb = _mk("input", { type: "checkbox" });
+                cb.checked = (clip.subjects || []).includes(s.id);
+                cb.onchange = () => {
+                    const cur = new Set(clips[i].subjects || []);
+                    if (cb.checked) cur.add(s.id); else cur.delete(s.id);
+                    clips[i] = { ...clips[i], subjects: [...cur] };
+                    commitClip(i);
+                };
+                subjWrap.appendChild(_mk("label", { cls: "spe-clip-subj-check" },
+                    [cb, " " + (s.label || s.id)]));
+            });
+
+            const clipBody = _mk("div", { cls: "spe-clip-card-body" }, [
+                _mk("div", { cls: "spe-clip-row", style: { marginBottom: "6px" } }, [labelInp]),
+                _mk("div", { cls: "spe-clip-row" }, [
+                    "Start:", startEl, "End:", endEl, durSpan,
+                ]),
+                actionEl,
+                subjects.length ? subjWrap : null,
+                _mk("div", { style: { display: "flex", gap: "4px" } }, [describeBtn]),
+            ]);
+
+            let cardOpen = true;
+            const head = _mk("div", { cls: "spe-clip-card-head" }, [
+                _mk("span", { cls: "spe-clip-color-dot", style: { background: color } }),
+                _mk("span", { style: { flex: "1", fontWeight: "600", fontSize: "12px" } },
+                    [clip.label || `Clip ${i + 1}`]),
+                _mk("span", { style: { color: "#888", fontSize: "11px" } },
+                    [`${clip.start_time.toFixed(1)}–${clip.end_time.toFixed(1)}s`]),
+                _mk("button", { cls: "spe-btn sm danger",
+                    onclick: e => { e.stopPropagation(); removeClip(i); } }, ["×"]),
+            ]);
+            head.addEventListener("click", e => {
+                if (e.target.closest(".spe-btn")) return;
+                cardOpen = !cardOpen;
+                clipBody.classList.toggle("collapsed", !cardOpen);
+            });
+
+            listEl.appendChild(_mk("div", { cls: "spe-clip-card" }, [head, clipBody]));
+        });
+    }
+
+    // ── Operations ────────────────────────────────────────────────────────────
+    function commitClip(i) {
+        profile.clips = clips;
+        onClipsChanged(clips);
+        canvas.width = canvas.offsetWidth;
+        _drawTimeline(canvas, clips, suggestions, getTotalDuration());
+    }
+
+    function removeClip(i) {
+        clips = clips.filter((_, j) => j !== i);
+        profile.clips = clips;
+        onClipsChanged(clips);
+        redraw();
+    }
+
+    function addNewClip() {
+        const lastEnd = clips.length ? clips[clips.length - 1].end_time : 0;
+        const segDur  = parseFloat(segDurInput.value) || (profile.default_segment_duration ?? 10);
+        clips.push({
+            id: _genClipId(), label: `Clip ${clips.length + 1}`,
+            start_time: lastEnd, end_time: lastEnd + segDur,
+            select_every_nth: 2, frame_load_cap: 120, subjects: [], action: "",
+        });
+        profile.clips = clips;
+        onClipsChanged(clips);
+        redraw();
+    }
+
+    async function runAutoSegment() {
+        const totalDur = getTotalDuration();
+        if (totalDur <= 0) { _toast("Set video duration first", "warn"); return; }
+        if (autoSegRunning) return;
+        autoSegRunning = true;
+        autoSegBtn.disabled = true;
+        autoSegBtn.textContent = "…";
+        try {
+            const segDur = parseFloat(segDurInput.value) || (profile.default_segment_duration ?? 10);
+            const res = await sourceProfilesApi.autoPartition({
+                profile_id: profile.id, video_duration: totalDur, segment_duration: segDur,
+            });
+            clips = res.profile?.clips || [];
+            profile.clips = clips;
+            onClipsChanged(clips);
+            redraw();
+            _toast(`Created ${clips.length} clip(s)`, "success");
+        } catch (err) {
+            _toast(`Auto-segment failed: ${err.message}`, "error");
+        } finally {
+            autoSegRunning = false;
+            autoSegBtn.disabled = false;
+            autoSegBtn.textContent = "Auto-segment";
+        }
+    }
+
+    async function runDetect() {
+        const totalDur = getTotalDuration();
+        if (totalDur <= 0) { _toast("Set video duration first", "warn"); return; }
+        if (!profile.media_filename) { _toast("Profile has no media file set", "warn"); return; }
+        if (detecting) return;
+        detecting = true;
+        detectBtn.disabled = true;
+        detectSpinner.style.display = "inline";
+        try {
+            const res = await sourceProfilesApi.detectSegments({
+                profile_id: profile.id, video_duration: totalDur, captioner_type: clipsCaptioner,
+            });
+            suggestions = res.segments || [];
+            if (detNoteEl) detNoteEl.remove();
+            if (suggestions.length) {
+                detNoteEl = _mk("div", { cls: "spe-clips-det-note" },
+                    [`${suggestions.length} suggested boundary(s) shown as gold markers. Auto-segment to apply.`]);
+                canvasWrap.after(detNoteEl);
+            }
+            redraw();
+            _toast(`${suggestions.length} suggested boundary(s)`, "info");
+        } catch (err) {
+            _toast(`Detection failed: ${err.message}`, "error");
+        } finally {
+            detecting = false;
+            detectBtn.disabled = false;
+            detectSpinner.style.display = "none";
+        }
+    }
+
+    async function describeClipAction(i, actionEl, btn) {
+        const clip = clips[i];
+        const prev = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "…";
+        try {
+            const res = await sourceProfilesApi.describeClip({
+                profile_id: profile.id, start_time: clip.start_time, end_time: clip.end_time,
+                captioner_type: clipsCaptioner,
+            });
+            if (res.action) {
+                clips[i] = { ...clips[i], action: res.action };
+                actionEl.value = res.action;
+                commitClip(i);
+                _toast("Action filled", "success");
+            }
+        } catch (err) {
+            _toast(`Describe failed: ${err.message}`, "error");
+        } finally {
+            btn.disabled = false;
+            btn.textContent = prev;
+        }
+    }
 }
 
 function _renderMediaPreview(profile) {
@@ -452,6 +924,14 @@ function _renderDetail(root) {
         }
     };
     renderSubjList();
+
+    // ── Clips section (video only)
+    if ((profile.media_type || "video") === "video") {
+        body.appendChild(_mk("div", { cls: "spe-divider" }));
+        _renderClipsSection(body, profile, (_clips) => {
+            profile.clips = _clips;
+        });
+    }
 
     // ── Analyze section
     _renderAnalyzeSection(body, profile, root, renderSubjList);
@@ -779,7 +1259,8 @@ function _createNewProfile(root) {
     const name = "New Source Profile";
     const id   = _genId(name);
     const profile = {
-        id, name, media_filename: "", media_dir: "input", media_type: "video", subjects: [],
+        id, name, media_filename: "", media_dir: "input", media_type: "video",
+        subjects: [], clips: [], default_segment_duration: null,
     };
     _S.profiles.push(profile);
     _S.selected = id;
