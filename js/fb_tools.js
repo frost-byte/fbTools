@@ -465,11 +465,12 @@ import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
 import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect, setupLoraStackBuilder } from "./nodes/lora.js";
 import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
 import { setupSceneCastBuild } from "./nodes/scene_cast_build.js";
-import { renderCompositionEditor } from "./ui/composition_editor.js";
-import { renderBundleEditor }      from "./ui/bundle_editor.js";
-import { renderCastEditor }        from "./ui/cast_editor.js";
-import { patchNodeForTracking }    from "./utils/run_tracker.js";
-import { renderRunHistory }        from "./ui/run_history.js";
+import { renderCompositionEditor }    from "./ui/composition_editor.js";
+import { renderBundleEditor }         from "./ui/bundle_editor.js";
+import { renderCastEditor }           from "./ui/cast_editor.js";
+import { renderSourceProfileEditor }  from "./ui/source_profile_editor.js";
+import { patchNodeForTracking }       from "./utils/run_tracker.js";
+import { renderRunHistory }           from "./ui/run_history.js";
 
 // Store app ref once so all panels can fire toasts via window._fbtApp
 app.extensionManager.registerSidebarTab({
@@ -505,6 +506,18 @@ app.extensionManager.registerSidebarTab({
     render: (el) => {
         window._fbtApp = app;
         if (!el.querySelector('[data-fbt-editor="cast"]')) renderCastEditor(el);
+    },
+});
+
+app.extensionManager.registerSidebarTab({
+    id: "fbt.source-profiles",
+    icon: "pi pi-video",
+    title: "Source Profiles",
+    tooltip: "Browse and annotate media-first subject profiles",
+    type: "custom",
+    render: (el) => {
+        window._fbtApp = app;
+        if (!el.querySelector('[data-fbt-editor="source-profiles"]')) renderSourceProfileEditor(el);
     },
 });
 
