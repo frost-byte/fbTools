@@ -14434,12 +14434,16 @@ class SceneCastLoad(io.ComfyNode):
 # ── Node: SceneCastBuild ──────────────────────────────────────────────────────
 
 class SceneCastBuild(io.ComfyNode):
-    """Build a Scene Cast inline on the canvas without a saved file.
+    """Build a Scene Cast inline, with optional Source Profile inputs.
 
-    All entries are stored as a single JSON string (cast_entries_json) so the
-    frontend can manage any number of subject → bundle assignments through a
-    DOM table widget with +/− row buttons.  Use the Scene Casts sidebar
-    "Send to Workflow" button to push entries to this node directly.
+    Accepts standalone subject → bundle assignments alongside source-derived
+    subjects from up to three connected SourceProfileLoad nodes.  All connected
+    subjects form the available pool; per-slot assignments and retention modes
+    are encoded in cast_entries_json (managed by the Scene Casts sidebar widget).
+
+    Each entry may be:
+      • Bundle-backed  — subject_id + bundle_id (existing path)
+      • Source-derived — subject_id + source_profile_id + source_subject_id
 
     Outputs the same SCENE_CAST type as SceneCastLoad, so it wires into
     PromptCompositionLoader unchanged.
@@ -14465,6 +14469,24 @@ class SceneCastBuild(io.ComfyNode):
                         "Managed via the Scene Casts sidebar — do not edit by hand."
                     ),
                 ),
+                SourceProfileIOType.Input(
+                    "source_profile_1",
+                    display_name="Source Profile 1",
+                    optional=True,
+                    tooltip="Source profile whose subjects are available as pool options.",
+                ),
+                SourceProfileIOType.Input(
+                    "source_profile_2",
+                    display_name="Source Profile 2",
+                    optional=True,
+                    tooltip="Second source profile.",
+                ),
+                SourceProfileIOType.Input(
+                    "source_profile_3",
+                    display_name="Source Profile 3",
+                    optional=True,
+                    tooltip="Third source profile.",
+                ),
             ],
             outputs=[
                 CastIOType.Output(
@@ -14481,8 +14503,15 @@ class SceneCastBuild(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, cast_entries_json: str = "[]", **_):
-        bundle_mtime = subject_mtime = 0
+    def fingerprint_inputs(
+        cls,
+        cast_entries_json: str = "[]",
+        source_profile_1=None,
+        source_profile_2=None,
+        source_profile_3=None,
+        **_,
+    ):
+        bundle_mtime = subject_mtime = source_mtime = 0
         try:
             bundle_mtime = os.path.getmtime(default_bundle_registry_path())
         except OSError:
@@ -14493,10 +14522,25 @@ class SceneCastBuild(io.ComfyNode):
             )
         except OSError:
             pass
-        return (bundle_mtime, subject_mtime, cast_entries_json)
+        try:
+            source_mtime = os.path.getmtime(default_source_profiles_path())
+        except OSError:
+            pass
+        sp_ids = tuple(
+            p.get("id", "") if isinstance(p, dict) else ""
+            for p in (source_profile_1, source_profile_2, source_profile_3)
+        )
+        return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json) + sp_ids
 
     @classmethod
-    def execute(cls, cast_entries_json: str = "[]", **_) -> io.NodeOutput:
+    def execute(
+        cls,
+        cast_entries_json: str = "[]",
+        source_profile_1=None,
+        source_profile_2=None,
+        source_profile_3=None,
+        **_,
+    ) -> io.NodeOutput:
         try:
             raw = json.loads(cast_entries_json or "[]")
             if not isinstance(raw, list):
@@ -14504,34 +14548,97 @@ class SceneCastBuild(io.ComfyNode):
         except Exception:
             raw = []
 
+        # Build connected source profiles dict: profile_id → profile dict
+        connected_profiles: dict = {}
+        for sp in (source_profile_1, source_profile_2, source_profile_3):
+            if isinstance(sp, dict):
+                pid = sp.get("id", "")
+                if pid:
+                    connected_profiles[pid] = sp
+
+        _RETENTION_BUNDLE = "fully_preserved"
+        _RETENTION_SOURCE = "partially_preserved"
+
         entries = []
         for e in raw:
-            subject_id  = str(e.get("subject_id",  "")).strip()
-            bundle_id   = str(e.get("bundle_id",   "")).strip()
-            visual_mode = e.get("visual_mode", "images")
-            use_audio   = bool(e.get("use_audio", False))
-            if subject_id and bundle_id:
+            subject_id        = str(e.get("subject_id",        "")).strip()
+            source_profile_id = str(e.get("source_profile_id", "")).strip()
+            source_subject_id = str(e.get("source_subject_id", "")).strip()
+            bundle_id         = str(e.get("bundle_id",         "")).strip()
+            retention         = str(e.get("retention",         "")).strip()
+
+            if source_profile_id and source_subject_id:
+                # Source-derived entry — look up in connected profile
+                profile = connected_profiles.get(source_profile_id)
+                if profile is None:
+                    logger.warning(
+                        "SceneCastBuild: source_profile_id %r not connected, skipping",
+                        source_profile_id,
+                    )
+                    continue
+                subject_entry = next(
+                    (s for s in profile.get("subjects", [])
+                     if s.get("id") == source_subject_id),
+                    None,
+                )
+                if subject_entry is None:
+                    logger.warning(
+                        "SceneCastBuild: subject %r not found in profile %r, skipping",
+                        source_subject_id, source_profile_id,
+                    )
+                    continue
+                entries.append({
+                    "subject_id":        subject_id or source_subject_id,
+                    "source_profile_id": source_profile_id,
+                    "source_subject_id": source_subject_id,
+                    "role_description":  subject_entry.get("role_description", ""),
+                    "entity_type":       subject_entry.get("entity_type", "person"),
+                    "source_media_file": profile.get("media_filename", ""),
+                    "source_media_dir":  profile.get("media_dir", "input"),
+                    "source_media_type": profile.get("media_type", "video"),
+                    "retention":         retention or _RETENTION_SOURCE,
+                })
+
+            elif subject_id and bundle_id:
+                # Bundle-backed entry (existing path)
+                visual_mode = e.get("visual_mode", "images")
+                use_audio   = bool(e.get("use_audio", False))
                 entries.append({
                     "subject_id":  subject_id,
                     "bundle_id":   bundle_id,
                     "visual_mode": visual_mode if visual_mode in ("images", "video") else "images",
                     "use_audio":   use_audio,
+                    "retention":   retention or _RETENTION_BUNDLE,
                 })
 
-        cast = {"id": "_inline", "name": "_inline", "entries": entries}
+        cast = {
+            "id":              "_inline",
+            "name":            "_inline",
+            "entries":         entries,
+            "source_profiles": connected_profiles,
+        }
 
         n = len(entries)
-        lines = [f"Inline cast  ({n} {'subject' if n == 1 else 'subjects'})"]
+        ns = len(connected_profiles)
+        lines = [f"Inline cast  ({n} {'subject' if n == 1 else 'subjects'}"
+                 + (f", {ns} source profile(s)" if ns else "") + ")"]
         for e in entries:
-            audio_flag = " + audio" if e["use_audio"] else ""
-            lines.append(
-                f"  • {e['subject_id']} → {e['bundle_id']} [{e['visual_mode']}{audio_flag}]"
-            )
+            ret_str = f" [{e.get('retention', '')}]" if e.get("retention") else ""
+            if e.get("source_profile_id"):
+                etype = e.get("entity_type", "?")
+                role  = e.get("role_description", e.get("subject_id", "?"))
+                lines.append(f"  • [{etype}] {role}{ret_str}")
+            else:
+                audio_flag = " + audio" if e.get("use_audio") else ""
+                lines.append(
+                    f"  • {e['subject_id']} → {e['bundle_id']} [{e['visual_mode']}{audio_flag}]{ret_str}"
+                )
         summary = "\n".join(lines)
 
         send_status_update(
             cls.node_id,
-            f"Inline cast: {n} {'entry' if n == 1 else 'entries'}",
+            f"Inline cast: {n} {'entry' if n == 1 else 'entries'}"
+            + (f" | {ns} source profile(s)" if ns else ""),
         )
         return io.NodeOutput(cast, summary)
 
