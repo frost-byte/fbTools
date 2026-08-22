@@ -89,6 +89,14 @@ from .utils.source_profiles import (
     MEDIA_TYPES as _SOURCE_MEDIA_TYPES,
     MEDIA_DIRS as _SOURCE_MEDIA_DIRS,
 )
+from .utils.source_profile_analysis import (
+    build_prompt as _spa_build_prompt,
+    _parse_vlm_json_response as _spa_parse_response,
+    append_history_entry as _spa_append_history,
+    history_for_profile as _spa_history_for_profile,
+    extract_video_frame as _spa_extract_frame,
+    PASS_TYPES as _SPA_PASS_TYPES,
+)
 from .utils.scene_templates import (
     SceneTemplate,
     load_template as _load_scene_template,
@@ -12388,6 +12396,169 @@ async def _source_profiles_delete(request):
         global _source_profile_reload_counter
         _source_profile_reload_counter += 1
         return web.json_response({"success": True})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/analyze")
+async def _source_profiles_analyze(request: web.Request) -> web.Response:
+    """Run a focused VLM pass on a source profile's media.
+
+    JSON body:
+        profile_id      str   — profile to analyze
+        pass_type       str   — one of PASS_TYPES ("people", "setting", …)
+        prompt_override str   — optional; replaces the template body
+        captioner_type  str   — "qwen_vl" | "qwen_omni" | "gemini_flash" (default: qwen_vl)
+        device          str   — "auto" | "cpu" | "cuda" (default: auto)
+        use_8bit        bool  — load model in 8-bit quantization (default: false)
+        gemini_api_key  str   — required when captioner_type is "gemini_flash"
+
+    Returns:
+        {
+          "candidates": [ {label, role_description, entity_type, notes}, … ],
+          "pass_type":  str,
+          "prompt":     str,
+        }
+    """
+    import tempfile
+
+    from .captioner import caption_image as _caption_image, get_model as _get_model
+
+    _SPA_STATUS_ID = "fbt_SourceProfileAnalysis"
+
+    try:
+        body            = await request.json()
+        profile_id      = str(body.get("profile_id", "")).strip()
+        pass_type       = str(body.get("pass_type", "people")).strip()
+        prompt_override = str(body.get("prompt_override", "")).strip()
+        captioner_type  = str(body.get("captioner_type", "qwen_vl")).strip()
+        device          = str(body.get("device", "auto")).strip()
+        use_8bit        = bool(body.get("use_8bit", False))
+        api_key         = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+    if pass_type not in _SPA_PASS_TYPES:
+        return web.json_response(
+            {"error": f"pass_type must be one of {_SPA_PASS_TYPES}"}, status=400
+        )
+
+    # Load the profile to get the media file
+    try:
+        registry = _load_source_registry(default_source_profiles_path())
+    except Exception as exc:
+        return web.json_response({"error": f"Could not load source profiles: {exc}"}, status=500)
+
+    profile = registry.get_profile(profile_id)
+    if profile is None:
+        return web.json_response({"error": f"Source profile '{profile_id}' not found"}, status=404)
+
+    media_filename = profile.get("media_filename", "")
+    media_dir      = profile.get("media_dir", "input")
+    media_type     = profile.get("media_type", "video")
+
+    if not media_filename:
+        return web.json_response({"error": "Profile has no media_filename set"}, status=400)
+
+    # Resolve absolute path
+    base_dir = get_output_directory() if media_dir == "output" else get_input_directory()
+    abs_media = os.path.join(base_dir, media_filename)
+    if not os.path.exists(abs_media):
+        return web.json_response({"error": f"Media file not found: {abs_media}"}, status=404)
+
+    # Build the analysis prompt
+    prompt = _spa_build_prompt(pass_type, prompt_override)
+
+    send_status_update(
+        _SPA_STATUS_ID,
+        f"Source analysis: preparing {media_type} frame for '{profile_id}' ({pass_type} pass)",
+        source="source_profile_analysis",
+    )
+
+    # For video: extract a representative frame; for image: use directly
+    frame_path = abs_media
+    _tmp_frame = None
+    if media_type == "video":
+        try:
+            _tmp_frame = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            _tmp_frame.close()
+            frame_path = _spa_extract_frame(abs_media, _tmp_frame.name, position_frac=0.10)
+        except Exception as exc:
+            if _tmp_frame and os.path.exists(_tmp_frame.name):
+                os.unlink(_tmp_frame.name)
+            return web.json_response(
+                {"error": f"Could not extract video frame: {exc}"}, status=500
+            )
+
+    try:
+        send_status_update(
+            _SPA_STATUS_ID,
+            f"Source analysis: calling {captioner_type} for {pass_type} pass",
+            source="source_profile_analysis",
+        )
+
+        model, processor = _get_model(captioner_type, device, use_8bit)
+        raw_response = _caption_image(
+            image_path     = Path(frame_path),
+            captioner_type = captioner_type,
+            instruction    = prompt,
+            model          = model,
+            processor      = processor,
+            api_key        = api_key,
+            clean          = False,
+        )
+
+        candidates = _spa_parse_response(raw_response, pass_type)
+
+        # Persist to history
+        _spa_append_history(
+            data_dir   = user_data_dir(),
+            profile_id = profile_id,
+            media_file = media_filename,
+            pass_type  = pass_type,
+            prompt     = prompt,
+            candidates = candidates,
+        )
+
+        send_status_update(
+            _SPA_STATUS_ID,
+            f"Source analysis: {len(candidates)} candidate(s) found ({pass_type} pass)",
+            source="source_profile_analysis",
+        )
+
+        return web.json_response({
+            "candidates": candidates,
+            "pass_type":  pass_type,
+            "prompt":     prompt,
+        })
+
+    except Exception as exc:
+        logger.exception("Source profile analyze error")
+        return web.json_response({"error": str(exc)}, status=500)
+
+    finally:
+        if _tmp_frame and os.path.exists(_tmp_frame.name):
+            try:
+                os.unlink(_tmp_frame.name)
+            except OSError:
+                pass
+
+
+@routes.get("/fbtools/source_profiles/analysis_history")
+async def _source_profiles_analysis_history(request: web.Request) -> web.Response:
+    """Return analysis history entries for a source profile.
+
+    Query params:
+        profile_id  str   — required
+    """
+    profile_id = request.rel_url.query.get("profile_id", "").strip()
+    if not profile_id:
+        return web.json_response({"error": "profile_id parameter required"}, status=400)
+    try:
+        entries = _spa_history_for_profile(user_data_dir(), profile_id)
+        return web.json_response({"entries": entries})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
