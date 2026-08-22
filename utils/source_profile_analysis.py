@@ -1,9 +1,14 @@
-"""LLM-assisted subject decomposition for Source Profiles.
+"""LLM-assisted subject decomposition and segment detection for Source Profiles.
 
-Provides focused, additive analysis passes that ask a VLM to identify
-subjects of a specific entity type within source media.  Each pass
-produces a structured JSON list of candidate subjects that the user
-can accept, edit, or discard before they are committed to the profile.
+Two analysis families:
+
+1. **Subject passes** (existing) — ask a VLM to identify subjects of a
+   specific entity type (people, setting, objects …).  Returns a list of
+   candidate subject dicts that the user can accept into the profile.
+
+2. **Segment analysis** (new) — ask a VLM to detect meaningful action/scene
+   transitions in a video, or describe the action visible in a single clip
+   frame.  Returns boundary timestamps or a one-sentence action description.
 
 No ComfyUI dependencies — all ComfyUI I/O (frame extraction, captioner
 calls, directory helpers) stays in extension.py so this module is fully
@@ -319,3 +324,160 @@ def extract_video_frame(
         f"Could not extract frame from {video_path!r}. "
         "Ensure ffmpeg is on PATH or imageio is installed."
     )
+
+
+# ── Segment / boundary detection ───────────────────────────────────────────────
+
+_SEGMENT_SCHEMA_INSTRUCTION = """
+Return ONLY valid JSON — no markdown, no prose, no code fences:
+{
+  "segments": [
+    {
+      "start_time": <float, seconds>,
+      "end_time":   <float, seconds>,
+      "label":      "short title for this segment (≤8 words)",
+      "action":     "1-2 sentence description of the action in this segment"
+    }
+  ]
+}
+If you cannot identify distinct transitions, return a single segment covering
+the full time range.  Times must be in ascending order with no gaps.
+""".strip()
+
+_CLIP_DESCRIPTION_SCHEMA = """
+Return ONLY valid JSON — no markdown, no prose, no code fences:
+{
+  "action": "1-2 sentences describing what is happening in this frame"
+}
+""".strip()
+
+_DETECT_BOUNDARIES_PROMPT_TEMPLATE = """\
+You are analyzing a series of video frames, each labelled with its timestamp.
+The frames are sampled at regular intervals from a single video clip.
+
+Your task: identify where MEANINGFUL scene or action transitions occur —
+moments where what is happening changes significantly (new shot, different
+action, different set of people visible, clear emotional shift, etc.).
+
+Minor continuous motion (walking, talking) within the same scene is NOT a
+transition.  Only mark a transition when the viewer would naturally feel the
+scene has moved on.
+
+For each segment between transitions, provide:
+- start_time / end_time  (seconds)
+- label  (very short title, ≤8 words)
+- action  (1-2 sentence summary of the action in that segment)
+
+{schema}
+""".strip().format(schema=_SEGMENT_SCHEMA_INSTRUCTION)
+
+_DESCRIBE_CLIP_PROMPT = (
+    "Examine this video frame carefully.  Describe in 1-2 sentences "
+    "what action or situation is visually depicted — focus on what the "
+    "subjects are doing or what is occurring in the scene at this moment.\n\n"
+    + _CLIP_DESCRIPTION_SCHEMA
+)
+
+
+def build_segment_detection_prompt(prompt_override: str = "") -> str:
+    """Return the VLM prompt for boundary detection from a frame strip.
+
+    If prompt_override is non-empty, it is used instead of the template body;
+    the schema instruction is always appended so output remains parseable.
+    """
+    if prompt_override.strip():
+        body = prompt_override.strip()
+        if _SEGMENT_SCHEMA_INSTRUCTION not in body:
+            body = body.rstrip() + "\n\n" + _SEGMENT_SCHEMA_INSTRUCTION
+        return body
+    return _DETECT_BOUNDARIES_PROMPT_TEMPLATE
+
+
+def build_clip_description_prompt(prompt_override: str = "") -> str:
+    """Return the VLM prompt for describing the action in a single clip frame."""
+    if prompt_override.strip():
+        body = prompt_override.strip()
+        if _CLIP_DESCRIPTION_SCHEMA not in body:
+            body = body.rstrip() + "\n\n" + _CLIP_DESCRIPTION_SCHEMA
+        return body
+    return _DESCRIBE_CLIP_PROMPT
+
+
+def _parse_segments_response(raw: str, video_duration: float = 0.0) -> list[dict]:
+    """Parse a VLM segment-detection response into a list of clip dicts.
+
+    Each returned dict has: start_time, end_time, label, action.
+    Invalid / out-of-order entries are discarded.  If the result is empty
+    and video_duration > 0, returns a single segment covering [0, video_duration].
+    """
+    text = raw.strip()
+    m = _FENCE_RE.search(text)
+    if m:
+        text = m.group(1).strip()
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        brace_match = re.search(r"\{.*\}", text, re.DOTALL)
+        if brace_match:
+            try:
+                data = json.loads(brace_match.group(0))
+            except json.JSONDecodeError:
+                data = {}
+        else:
+            data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+
+    raw_segs = data.get("segments", [])
+    if not isinstance(raw_segs, list):
+        raw_segs = []
+
+    segments: list[dict] = []
+    prev_end: float = 0.0
+    for item in raw_segs:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = float(item.get("start_time", prev_end))
+            end   = float(item.get("end_time", start))
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        if start < prev_end - 0.01:  # allow tiny float drift
+            continue
+        segments.append({
+            "start_time": round(start, 3),
+            "end_time":   round(end, 3),
+            "label":      str(item.get("label", f"Segment {len(segments) + 1}")),
+            "action":     str(item.get("action", "")),
+        })
+        prev_end = end
+
+    if not segments and video_duration > 0:
+        segments.append({
+            "start_time": 0.0,
+            "end_time":   round(video_duration, 3),
+            "label":      "Full video",
+            "action":     "",
+        })
+
+    return segments
+
+
+def parse_clip_description_response(raw: str) -> str:
+    """Parse a VLM clip description response into a plain action string."""
+    text = raw.strip()
+    m = _FENCE_RE.search(text)
+    if m:
+        text = m.group(1).strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return str(data.get("action", "")).strip()
+    except json.JSONDecodeError:
+        pass
+    # Fallback: return raw stripped text
+    return text[:300]

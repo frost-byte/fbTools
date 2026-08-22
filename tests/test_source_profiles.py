@@ -472,3 +472,194 @@ def test_registry_save_explicit_path_overrides(tmp_path):
     saved = reg.save(path=path, backup=False)
     assert saved == path
     assert os.path.exists(path)
+
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+
+def test_default_segment_duration_constant():
+    assert sp.DEFAULT_SEGMENT_DURATION == 10.0
+
+def test_default_select_every_nth_constant():
+    assert sp.DEFAULT_SELECT_EVERY_NTH == 2
+
+def test_default_frame_load_cap_constant():
+    assert sp.DEFAULT_FRAME_LOAD_CAP == 120
+
+
+# ── _normalize_clip ────────────────────────────────────────────────────────────
+
+def test_normalize_clip_fills_defaults():
+    c = sp._normalize_clip({"id": "clip_1"})
+    assert c["id"] == "clip_1"
+    assert c["label"] == ""
+    assert c["start_time"] == 0.0
+    assert c["end_time"] == 0.0
+    assert c["select_every_nth"] == sp.DEFAULT_SELECT_EVERY_NTH
+    assert c["frame_load_cap"] == sp.DEFAULT_FRAME_LOAD_CAP
+    assert c["subjects"] == []
+    assert c["action"] == ""
+
+def test_normalize_clip_preserves_values():
+    c = sp._normalize_clip({
+        "id": "c2", "label": "Intro", "start_time": 5.5, "end_time": 15.0,
+        "select_every_nth": 3, "frame_load_cap": 60,
+        "subjects": ["s1", "s2"], "action": "They talk",
+    })
+    assert c["start_time"] == 5.5
+    assert c["end_time"] == 15.0
+    assert c["select_every_nth"] == 3
+    assert c["frame_load_cap"] == 60
+    assert c["subjects"] == ["s1", "s2"]
+    assert c["action"] == "They talk"
+
+
+# ── set_clips / upsert_clip / remove_clip ─────────────────────────────────────
+
+def _reg_with_profile() -> SourceProfileRegistry:
+    r = SourceProfileRegistry()
+    return r.define_profile("p1", media_filename="vid.mp4", media_type="video")
+
+def test_set_clips_replaces_all():
+    reg = _reg_with_profile()
+    clips = [
+        {"id": "c1", "start_time": 0.0, "end_time": 10.0},
+        {"id": "c2", "start_time": 10.0, "end_time": 20.0},
+    ]
+    reg2 = reg.set_clips("p1", clips)
+    assert len(reg2.profiles["p1"]["clips"]) == 2
+    assert reg2.profiles["p1"]["clips"][0]["id"] == "c1"
+
+def test_set_clips_immutable():
+    reg = _reg_with_profile()
+    reg2 = reg.set_clips("p1", [{"id": "c1", "start_time": 0.0, "end_time": 5.0}])
+    assert reg.profiles["p1"]["clips"] == []
+
+def test_upsert_clip_appends_new():
+    reg = _reg_with_profile()
+    reg2 = reg.upsert_clip("p1", {"id": "c1", "start_time": 0.0, "end_time": 10.0})
+    assert len(reg2.profiles["p1"]["clips"]) == 1
+
+def test_upsert_clip_updates_existing():
+    reg = _reg_with_profile()
+    reg2 = reg.upsert_clip("p1", {"id": "c1", "start_time": 0.0, "end_time": 10.0, "action": "v1"})
+    reg3 = reg2.upsert_clip("p1", {"id": "c1", "start_time": 0.0, "end_time": 10.0, "action": "v2"})
+    assert len(reg3.profiles["p1"]["clips"]) == 1
+    assert reg3.profiles["p1"]["clips"][0]["action"] == "v2"
+
+def test_remove_clip_removes_correctly():
+    reg = _reg_with_profile()
+    reg2 = reg.set_clips("p1", [
+        {"id": "c1", "start_time": 0.0, "end_time": 10.0},
+        {"id": "c2", "start_time": 10.0, "end_time": 20.0},
+    ])
+    reg3 = reg2.remove_clip("p1", "c1")
+    ids = [c["id"] for c in reg3.profiles["p1"]["clips"]]
+    assert ids == ["c2"]
+
+def test_remove_clip_noop_for_missing():
+    reg = _reg_with_profile()
+    reg = reg.set_clips("p1", [{"id": "c1", "start_time": 0.0, "end_time": 10.0}])
+    reg2 = reg.remove_clip("p1", "nonexistent")
+    # Profile still has its original clip
+    assert len(reg2.profiles["p1"]["clips"]) == 1
+    assert reg2.profiles["p1"]["clips"][0]["id"] == "c1"
+
+
+# ── auto_partition ─────────────────────────────────────────────────────────────
+
+def test_auto_partition_creates_equal_clips():
+    reg = _reg_with_profile()
+    reg2 = reg.auto_partition("p1", video_duration=30.0, segment_duration=10.0)
+    clips = reg2.profiles["p1"]["clips"]
+    assert len(clips) == 3
+    assert clips[0]["start_time"] == 0.0
+    assert clips[0]["end_time"] == 10.0
+    assert clips[1]["start_time"] == 10.0
+    assert clips[1]["end_time"] == 20.0
+    assert clips[2]["start_time"] == 20.0
+    assert clips[2]["end_time"] == 30.0
+
+def test_auto_partition_last_clip_clamps_to_duration():
+    reg = _reg_with_profile()
+    reg2 = reg.auto_partition("p1", video_duration=25.0, segment_duration=10.0)
+    clips = reg2.profiles["p1"]["clips"]
+    assert len(clips) == 3
+    assert clips[2]["end_time"] == 25.0
+
+def test_auto_partition_uses_profile_default_segment_duration():
+    reg = SourceProfileRegistry()
+    reg = reg.define_profile("p2", media_filename="v.mp4", default_segment_duration=15.0)
+    reg2 = reg.auto_partition("p2", video_duration=30.0)
+    clips = reg2.profiles["p2"]["clips"]
+    assert len(clips) == 2
+    assert clips[0]["end_time"] == 15.0
+
+def test_auto_partition_falls_back_to_global_default():
+    reg = _reg_with_profile()
+    reg2 = reg.auto_partition("p1", video_duration=30.0)  # no segment_duration
+    clips = reg2.profiles["p1"]["clips"]
+    assert len(clips) == 3  # 30 / 10 = 3
+
+def test_auto_partition_noop_for_zero_duration():
+    reg = _reg_with_profile()
+    reg2 = reg.auto_partition("p1", video_duration=0.0)
+    assert reg2 is reg
+
+def test_auto_partition_clip_ids_sequential():
+    reg = _reg_with_profile()
+    reg2 = reg.auto_partition("p1", video_duration=20.0, segment_duration=10.0)
+    clips = reg2.profiles["p1"]["clips"]
+    assert clips[0]["id"] == "clip_1"
+    assert clips[1]["id"] == "clip_2"
+
+
+# ── get_clip / clip_load_params ────────────────────────────────────────────────
+
+def test_get_clip_returns_correct_clip():
+    reg = _reg_with_profile()
+    reg2 = reg.set_clips("p1", [
+        {"id": "c1", "start_time": 0.0, "end_time": 10.0},
+        {"id": "c2", "start_time": 10.0, "end_time": 20.0},
+    ])
+    c = reg2.get_clip("p1", "c2")
+    assert c is not None
+    assert c["start_time"] == 10.0
+
+def test_get_clip_returns_none_missing_profile():
+    reg = _reg_with_profile()
+    assert reg.get_clip("nonexistent", "c1") is None
+
+def test_get_clip_returns_none_missing_clip():
+    reg = _reg_with_profile()
+    reg2 = reg.set_clips("p1", [{"id": "c1", "start_time": 0.0, "end_time": 10.0}])
+    assert reg2.get_clip("p1", "c_missing") is None
+
+def test_clip_load_params_returns_correct_values():
+    reg = _reg_with_profile()
+    reg2 = reg.set_clips("p1", [{
+        "id": "c1", "start_time": 5.0, "end_time": 15.0,
+        "select_every_nth": 3, "frame_load_cap": 60,
+    }])
+    lp = reg2.clip_load_params("p1", "c1")
+    assert lp is not None
+    assert lp["start_time"] == 5.0
+    assert lp["duration"] == 10.0
+    assert lp["select_every_nth"] == 3
+    assert lp["frame_load_cap"] == 60
+    assert lp["force_rate"] == 0
+    assert lp["skip_first_frames"] == 0
+
+def test_clip_load_params_returns_none_for_empty_clip_id():
+    reg = _reg_with_profile()
+    assert reg.clip_load_params("p1", "") is None
+
+def test_clip_load_params_returns_none_for_missing_clip():
+    reg = _reg_with_profile()
+    assert reg.clip_load_params("p1", "nonexistent") is None
+
+def test_clip_load_params_duration_clamped_to_zero():
+    reg = _reg_with_profile()
+    # end_time < start_time → duration = 0
+    reg2 = reg.set_clips("p1", [{"id": "c1", "start_time": 10.0, "end_time": 5.0}])
+    lp = reg2.clip_load_params("p1", "c1")
+    assert lp["duration"] == 0.0
