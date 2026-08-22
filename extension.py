@@ -15776,6 +15776,67 @@ def _resolve_cast_media(
                         "duration":   audio.get("duration", 0.0),
                     }
 
+    # ── Source-derived entries ─────────────────────────────────────────────────
+    # Source profiles are grouped by profile_id; subjects sharing the same
+    # profile reference the same source media, so one video_entries_full entry
+    # is emitted per unique profile (not per subject).
+    source_profiles_data = scene_cast.get("source_profiles", {})
+    seen_profile_ids: set = set()
+
+    for entry in entries:
+        sp_id = entry.get("source_profile_id", "")
+        if not sp_id or sp_id in seen_profile_ids:
+            continue
+        seen_profile_ids.add(sp_id)
+
+        profile = source_profiles_data.get(sp_id)
+        if not profile:
+            continue
+
+        media_type = profile.get("media_type", "video")
+        if media_type != "video":
+            continue  # image-only sources: no video_entries_full entry
+
+        media_file = profile.get("media_filename", "")
+        if not media_file:
+            continue
+
+        media_dir = profile.get("media_dir", "input")
+        abs_file = os.path.join(
+            get_output_directory() if media_dir == "output" else input_dir,
+            media_file,
+        )
+
+        # First source video fills the legacy flat reference_video output
+        if not reference_video:
+            reference_video = abs_file
+
+        # All subject_ids from this profile that appear in the cast
+        sp_subject_ids = [
+            e.get("subject_id") or e.get("source_subject_id", "")
+            for e in entries
+            if e.get("source_profile_id") == sp_id
+        ]
+
+        video_entries_full.append({
+            "subject_id":        sp_subject_ids[0] if sp_subject_ids else "",
+            "subject_ids":       sp_subject_ids,
+            "source_profile_id": sp_id,
+            "video_file":        media_file,
+            "load_params": {
+                "start_time": 0.0, "duration": 0.0,
+                "force_rate": 0, "frame_load_cap": 96,
+                "skip_first_frames": 0, "select_every_nth": 1,
+            },
+            "audio_source":     "none",
+            "audio_path":       "",
+            "audio_start_time": 0.0,
+            "audio_duration":   0.0,
+            "audio_retention":  "timbre",
+            "audio_role":       "",
+            "audio_cache":      "",
+        })
+
     reference_images = _load_subject_images(image_files) if image_files else None
     return {
         "reference_video":    reference_video,

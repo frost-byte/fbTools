@@ -224,12 +224,24 @@ def _build_ref_map(
     retention_markers = scene_instance.get("retention_markers", {})
     ordered_slots = sorted(assignments.keys())
 
-    # Build subject_id → video_entry lookup (first match wins)
+    # Build subject_id → video_entry lookup.
+    # Entries from source profiles carry subject_ids (list) so all co-sourced
+    # subjects map to the same video_entry object, giving them a shared <Video N>.
     video_lookup: dict[str, dict] = {}
     for ve in (video_entries or []):
-        sid = ve.get("subject_id", "")
-        if sid and sid not in video_lookup:
-            video_lookup[sid] = ve
+        sid_list = ve.get("subject_ids")
+        if sid_list:
+            for sid in sid_list:
+                if sid and sid not in video_lookup:
+                    video_lookup[sid] = ve
+        else:
+            sid = ve.get("subject_id", "")
+            if sid and sid not in video_lookup:
+                video_lookup[sid] = ve
+
+    # Track which video_entries already have a video_num so co-sourced subjects
+    # share the same ordinal rather than each incrementing the counter.
+    _video_entry_num: dict[int, int] = {}  # id(ve) → video_num
 
     # Pre-assign audio ordinals in native ref_items order so <Audio N> in the
     # prompt matches what MiniMaxH3ReferenceToVideo assigns:
@@ -291,9 +303,14 @@ def _build_ref_map(
         soundtrack_retention: str = "timbre"
         soundtrack_role: str = ""
         if ve:
-            video_num = video_counter
+            ve_key = id(ve)
+            if ve_key in _video_entry_num:
+                video_num = _video_entry_num[ve_key]
+            else:
+                video_num = video_counter
+                _video_entry_num[ve_key] = video_num
+                video_counter += 1
             video_file = ve.get("video_file", "")
-            video_counter += 1
             if ve.get("audio_source") == "extract_from_visual":
                 soundtrack_num = pre_soundtrack_nums.get(subject_id)
                 soundtrack_retention = ve.get("audio_retention", "timbre")
@@ -345,7 +362,10 @@ def _build_ref_map(
             "soundtrack_num": soundtrack_num,
             "soundtrack_retention": soundtrack_retention,
             "soundtrack_role": soundtrack_role,
-            "retention_marker": retention_markers.get(slot_id, "fully_preserved"),
+            "retention_marker": (
+                retention_markers.get(slot_id)
+                or subject.get("_cast_retention", "fully_preserved")
+            ),
         }
         subject_counter += 1
 
@@ -557,14 +577,25 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     user_flags: list[str] = scene_instance.get("task_flags") or []
     active_flags: set[str] = set(user_flags)
 
+    # Build video_num → [subject_label, …] map for shared-video role lines.
+    # Multiple subjects from the same source profile share one <Video N>; the
+    # video role line must list all co-sourced subjects ("… for <Subject 1> and <Subject 2>").
+    _vnum_to_labels: dict[int, list[str]] = {}
+    for _sid in ordered_slots:
+        _info = ref_map[_sid]
+        _vn = _info.get("video_num")
+        if _vn is not None:
+            _vnum_to_labels.setdefault(_vn, []).append(_info["subject_label"])
+
     # ── subject_definitions ────────────────────────────────────────────────────
     # Format (per MiniMax best practice):
     #   Subject lines:  "<Subject N> is [summary] from <Video N> / from the
     #                   character sheet(s) contained in <Picture N>, with [details]."
-    #   Video lines:    "<Video N> is the continuation starting point…" (task-aware)
+    #   Video lines:    "<Video N> is the visual identity reference for <Subject 1> and <Subject 2>."
     #   Audio lines:    "<Audio N> is the voice-timbre reference for <Subject N> (SN)…"
     sd: list[str] = []
     video_sd_lines: list[str] = []
+    video_sd_emitted: set[int] = set()  # guard against duplicate <Video N> lines
     audio_sd_lines: list[str] = []
 
     for slot_id in ordered_slots:
@@ -605,16 +636,21 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             summary_body = re.sub(r"^an? ", "the ", summary_body, count=1)
         sd.append(f"{label} is {summary_body}{ref_anchor}{detail_phrase}.")
 
-        # Standalone video role line (task-flag-aware)
+        # Standalone video role line (task-flag-aware).
+        # Emit only once per video_num — co-sourced subjects share one line.
         if info["video_num"] is not None:
             vnum = info["video_num"]
-            if "video continuation" in active_flags:
-                video_role = "is the continuation starting point for the target video"
-            elif "video editing" in active_flags:
-                video_role = "is the source video being edited"
-            else:
-                video_role = f"is the visual identity reference for {label}"
-            video_sd_lines.append(f"<Video {vnum}> {video_role}")
+            if vnum not in video_sd_emitted:
+                video_sd_emitted.add(vnum)
+                if "video continuation" in active_flags:
+                    video_role = "is the continuation starting point for the target video"
+                elif "video editing" in active_flags:
+                    video_role = "is the source video being edited"
+                else:
+                    co_labels = _vnum_to_labels.get(vnum, [label])
+                    targets = _join_labels(co_labels)
+                    video_role = f"is the visual identity reference for {targets}"
+                video_sd_lines.append(f"<Video {vnum}> {video_role}")
 
         # Soundtrack audio line (extract_from_visual — audio from the video)
         if info["soundtrack_num"] is not None:
@@ -834,11 +870,17 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         ra.append(f"{label} ({appears_clause}): {subj_retention} - {preserve_desc}.")
 
     # Video entries: "<Video N> (role): fully_preserved - ..."
+    # Deduplicate by video_num — co-sourced subjects share one video line.
+    _ra_video_emitted: set[int] = set()
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
         if info["video_num"] is not None:
             vnum = info["video_num"]
-            label = info["subject_label"]
+            if vnum in _ra_video_emitted:
+                continue
+            _ra_video_emitted.add(vnum)
+            co_labels = _vnum_to_labels.get(vnum, [info["subject_label"]])
+            targets = _join_labels(co_labels)
             if "video continuation" in active_flags:
                 role_clause = "continuation starting point"
                 preserve_desc = (
@@ -852,11 +894,14 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                     f"the cut structure and pacing serve as the primary reference"
                 )
             else:
-                role_clause = f"visual identity of {label}"
+                role_clause = f"visual identity of {targets}"
+                _plural = len(co_labels) > 1
+                _whose  = "their" if _plural else "the subject's"
+                _who    = "the people" if _plural else "the person"
                 preserve_desc = (
-                    f"<Video {vnum}> defines the visual identity of {label}; "
-                    f"the subject's appearance in the target video must fully match "
-                    f"the person shown in <Video {vnum}>"
+                    f"<Video {vnum}> defines the visual identity of {targets}; "
+                    f"{_whose} appearance in the target video "
+                    f"must fully match {_who} shown in <Video {vnum}>"
                 )
             ra.append(f"<Video {vnum}> ({role_clause}): fully_preserved - {preserve_desc}.")
 

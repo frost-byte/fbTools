@@ -257,8 +257,10 @@ def apply_cast_to_subjects(
         if i >= len(ordered_slots):
             break
 
-        subject_id = entry.get("subject_id", "")
-        bundle_id  = entry.get("bundle_id", "")
+        subject_id        = entry.get("subject_id", "")
+        bundle_id         = entry.get("bundle_id", "")
+        source_profile_id = entry.get("source_profile_id", "")
+        source_subject_id = entry.get("source_subject_id", "")
 
         # Blank row — keep the composition's original subject for this position
         if not subject_id:
@@ -266,6 +268,30 @@ def apply_cast_to_subjects(
 
         slot = ordered_slots[i]
 
+        # ── Source-derived entry ──────────────────────────────────────────────
+        # Build a synthetic subject from the source profile annotation rather
+        # than loading from subject_registry or applying bundle enrichment.
+        if source_profile_id and source_subject_id:
+            role_description = entry.get("role_description", "")
+            entity_type      = entry.get("entity_type", "person")
+            retention        = entry.get("retention", "partially_preserved")
+            enriched[slot] = {
+                "subject_id":        subject_id,
+                "name":              role_description or subject_id,
+                "source_profile_id": source_profile_id,
+                "source_subject_id": source_subject_id,
+                "entity_type":       entity_type,
+                "appearance": {
+                    "summary": role_description,
+                },
+                "voice": {},
+                "character_sheet_images": [],
+                "concept_id": "",
+                "_cast_retention": retention,
+            }
+            continue
+
+        # ── Bundle-backed entry ───────────────────────────────────────────────
         # Replace the slot's subject when it differs from what the composition defined
         current_sid = enriched.get(slot, {}).get("subject_id", "")
         if subject_id != current_sid and subject_registry is not None:
