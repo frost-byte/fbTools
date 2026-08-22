@@ -268,3 +268,101 @@ def test_append_does_not_mutate_candidates(tmp_path):
     cands[0]["label"] = "mutated"
     entries = load_history(str(tmp_path))
     assert entries[0]["candidates"][0]["label"] == "x"
+
+
+# ── _parse_segments_response ───────────────────────────────────────────────────
+
+_parse_segments = spa._parse_segments_response
+_parse_clip_desc = spa.parse_clip_description_response
+
+
+def _seg_json(segments):
+    return json.dumps({"segments": segments})
+
+
+def test_parse_segments_basic():
+    raw = _seg_json([
+        {"start_time": 0.0, "end_time": 10.0, "label": "Intro", "action": "They walk in"},
+        {"start_time": 10.0, "end_time": 20.0, "label": "Chat", "action": "They sit"},
+    ])
+    segs = _parse_segments(raw)
+    assert len(segs) == 2
+    assert segs[0]["label"] == "Intro"
+    assert segs[1]["start_time"] == 10.0
+
+def test_parse_segments_discards_out_of_order():
+    raw = _seg_json([
+        {"start_time": 0.0, "end_time": 10.0, "label": "A", "action": ""},
+        {"start_time": 5.0, "end_time": 15.0, "label": "B", "action": ""},
+    ])
+    segs = _parse_segments(raw)
+    assert len(segs) == 1
+    assert segs[0]["label"] == "A"
+
+def test_parse_segments_discards_zero_length():
+    raw = _seg_json([
+        {"start_time": 5.0, "end_time": 5.0, "label": "Zero", "action": ""},
+        {"start_time": 5.0, "end_time": 15.0, "label": "Real", "action": "ok"},
+    ])
+    segs = _parse_segments(raw)
+    assert len(segs) == 1
+    assert segs[0]["label"] == "Real"
+
+def test_parse_segments_fallback_when_empty_with_duration():
+    segs = _parse_segments("{}", video_duration=30.0)
+    assert len(segs) == 1
+    assert segs[0]["start_time"] == 0.0
+    assert segs[0]["end_time"] == 30.0
+
+def test_parse_segments_no_fallback_when_no_duration():
+    segs = _parse_segments("{}")
+    assert segs == []
+
+def test_parse_segments_strips_code_fences():
+    inner = json.dumps({"segments": [
+        {"start_time": 0.0, "end_time": 5.0, "label": "S", "action": "a"}
+    ]})
+    raw = f"```json\n{inner}\n```"
+    segs = _parse_segments(raw)
+    assert len(segs) == 1
+
+def test_parse_segments_rounds_times():
+    raw = _seg_json([{"start_time": 0.0, "end_time": 9.9999999, "label": "x", "action": ""}])
+    segs = _parse_segments(raw)
+    assert segs[0]["end_time"] == 10.0
+
+def test_parse_segments_handles_invalid_json():
+    segs = _parse_segments("not json at all", video_duration=5.0)
+    assert len(segs) == 1
+    assert segs[0]["end_time"] == 5.0
+
+def test_parse_segments_default_label_when_missing():
+    raw = _seg_json([{"start_time": 0.0, "end_time": 10.0, "action": "run"}])
+    segs = _parse_segments(raw)
+    assert "Segment" in segs[0]["label"]
+
+
+# ── parse_clip_description_response ───────────────────────────────────────────
+
+def test_parse_clip_desc_extracts_action():
+    raw = json.dumps({"action": "Two people shake hands."})
+    assert _parse_clip_desc(raw) == "Two people shake hands."
+
+def test_parse_clip_desc_strips_fences():
+    inner = json.dumps({"action": "A car pulls up."})
+    raw = f"```json\n{inner}\n```"
+    assert _parse_clip_desc(raw) == "A car pulls up."
+
+def test_parse_clip_desc_fallback_to_raw():
+    raw = "They are talking and laughing."
+    result = _parse_clip_desc(raw)
+    assert result == raw
+
+def test_parse_clip_desc_truncates_long_fallback():
+    raw = "x" * 400
+    result = _parse_clip_desc(raw)
+    assert len(result) <= 300
+
+def test_parse_clip_desc_empty_action_field():
+    raw = json.dumps({"action": ""})
+    assert _parse_clip_desc(raw) == ""

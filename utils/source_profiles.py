@@ -27,6 +27,11 @@ _EMPTY_DATA: dict = {"version": 1, "profiles": {}}
 
 # ── Internal normalisation ─────────────────────────────────────────────────────
 
+DEFAULT_SEGMENT_DURATION: float = 10.0
+DEFAULT_SELECT_EVERY_NTH: int   = 2
+DEFAULT_FRAME_LOAD_CAP:   int   = 120
+
+
 def _normalize_subject(entry: dict) -> dict:
     return {
         "id":               str(entry.get("id", "")),
@@ -37,14 +42,30 @@ def _normalize_subject(entry: dict) -> dict:
     }
 
 
-def _normalize_profile(pid: str, entry: dict) -> dict:
+def _normalize_clip(entry: dict) -> dict:
     return {
-        "id":             pid,
-        "name":           str(entry.get("name", pid)),
-        "media_filename": str(entry.get("media_filename", "")),
-        "media_dir":      str(entry.get("media_dir", "input")),
-        "media_type":     str(entry.get("media_type", "video")),
-        "subjects":       [_normalize_subject(s) for s in entry.get("subjects", []) if s],
+        "id":               str(entry.get("id", "")),
+        "label":            str(entry.get("label", "")),
+        "start_time":       float(entry.get("start_time", 0.0)),
+        "end_time":         float(entry.get("end_time", 0.0)),
+        "select_every_nth": int(entry.get("select_every_nth", DEFAULT_SELECT_EVERY_NTH)),
+        "frame_load_cap":   int(entry.get("frame_load_cap", DEFAULT_FRAME_LOAD_CAP)),
+        "subjects":         [str(s) for s in entry.get("subjects", []) if s],
+        "action":           str(entry.get("action", "")),
+    }
+
+
+def _normalize_profile(pid: str, entry: dict) -> dict:
+    seg_dur = entry.get("default_segment_duration")
+    return {
+        "id":                       pid,
+        "name":                     str(entry.get("name", pid)),
+        "media_filename":           str(entry.get("media_filename", "")),
+        "media_dir":                str(entry.get("media_dir", "input")),
+        "media_type":               str(entry.get("media_type", "video")),
+        "subjects":                 [_normalize_subject(s) for s in entry.get("subjects", []) if s],
+        "clips":                    [_normalize_clip(c) for c in entry.get("clips", []) if c],
+        "default_segment_duration": float(seg_dur) if seg_dur is not None else None,
     }
 
 
@@ -88,22 +109,106 @@ class SourceProfileRegistry:
         media_filename: str = "",
         media_dir: str = "input",
         media_type: str = "video",
+        default_segment_duration: float | None = None,
     ) -> "SourceProfileRegistry":
         """Return a NEW registry with the profile created or updated.
 
-        Existing subjects within the profile are preserved on update.
+        Existing subjects and clips within the profile are preserved on update.
         """
         new_reg = copy.deepcopy(self)
         existing = new_reg.profiles.get(profile_id, {})
         new_reg.profiles[profile_id] = {
-            "id":             profile_id,
-            "name":           name or profile_id,
-            "media_filename": media_filename,
-            "media_dir":      media_dir if media_dir in MEDIA_DIRS else "input",
-            "media_type":     media_type if media_type in MEDIA_TYPES else "video",
-            "subjects":       existing.get("subjects", []),
+            "id":                       profile_id,
+            "name":                     name or profile_id,
+            "media_filename":           media_filename,
+            "media_dir":                media_dir if media_dir in MEDIA_DIRS else "input",
+            "media_type":               media_type if media_type in MEDIA_TYPES else "video",
+            "subjects":                 existing.get("subjects", []),
+            "clips":                    existing.get("clips", []),
+            "default_segment_duration": default_segment_duration,
         }
         return new_reg
+
+    def set_clips(
+        self,
+        profile_id: str,
+        clips: list[dict],
+    ) -> "SourceProfileRegistry":
+        """Return a NEW registry with the profile's clips replaced entirely."""
+        new_reg = copy.deepcopy(self)
+        if profile_id not in new_reg.profiles:
+            new_reg.profiles[profile_id] = _normalize_profile(profile_id, {})
+        new_reg.profiles[profile_id]["clips"] = [_normalize_clip(c) for c in clips if c]
+        return new_reg
+
+    def upsert_clip(
+        self,
+        profile_id: str,
+        clip: dict,
+    ) -> "SourceProfileRegistry":
+        """Return a NEW registry with a single clip added or updated (matched by id)."""
+        new_reg = copy.deepcopy(self)
+        if profile_id not in new_reg.profiles:
+            new_reg.profiles[profile_id] = _normalize_profile(profile_id, {})
+        norm = _normalize_clip(clip)
+        clips: list = new_reg.profiles[profile_id].setdefault("clips", [])
+        for i, c in enumerate(clips):
+            if c.get("id") == norm["id"]:
+                clips[i] = norm
+                return new_reg
+        clips.append(norm)
+        return new_reg
+
+    def remove_clip(self, profile_id: str, clip_id: str) -> "SourceProfileRegistry":
+        """Return a NEW registry with the clip removed. No-op if not found."""
+        if profile_id not in self.profiles:
+            return self
+        new_reg = copy.deepcopy(self)
+        p = new_reg.profiles[profile_id]
+        p["clips"] = [c for c in p.get("clips", []) if c.get("id") != clip_id]
+        return new_reg
+
+    def auto_partition(
+        self,
+        profile_id: str,
+        video_duration: float,
+        segment_duration: float | None = None,
+        select_every_nth: int = DEFAULT_SELECT_EVERY_NTH,
+        frame_load_cap: int = DEFAULT_FRAME_LOAD_CAP,
+        subject_ids: list[str] | None = None,
+    ) -> "SourceProfileRegistry":
+        """Auto-generate equal-duration clips and replace the profile's clip list.
+
+        Clips are numbered from 1.  The last clip extends to video_duration
+        even if it is shorter than segment_duration.  Does nothing if
+        video_duration <= 0.
+        """
+        if video_duration <= 0:
+            return self
+        dur = (
+            segment_duration
+            if segment_duration and segment_duration > 0
+            else (self.profiles.get(profile_id, {}).get("default_segment_duration") or DEFAULT_SEGMENT_DURATION)
+        )
+        subs = subject_ids or [s["id"] for s in self.profiles.get(profile_id, {}).get("subjects", [])]
+        clips: list[dict] = []
+        t = 0.0
+        idx = 1
+        while t < video_duration:
+            end = min(t + dur, video_duration)
+            clips.append({
+                "id":               f"clip_{idx}",
+                "label":            f"Segment {idx}",
+                "start_time":       round(t, 3),
+                "end_time":         round(end, 3),
+                "select_every_nth": select_every_nth,
+                "frame_load_cap":   frame_load_cap,
+                "subjects":         list(subs),
+                "action":           "",
+            })
+            t += dur
+            idx += 1
+        return self.set_clips(profile_id, clips)
 
     def define_subject(
         self,
@@ -161,6 +266,36 @@ class SourceProfileRegistry:
 
     def get_profile(self, profile_id: str) -> dict | None:
         return self.profiles.get(profile_id)
+
+    def get_clip(self, profile_id: str, clip_id: str) -> dict | None:
+        """Return the clip dict for the given profile + clip_id, or None."""
+        profile = self.profiles.get(profile_id)
+        if not profile:
+            return None
+        for c in profile.get("clips", []):
+            if c.get("id") == clip_id:
+                return c
+        return None
+
+    def clip_load_params(self, profile_id: str, clip_id: str) -> dict | None:
+        """Return load_params dict for the given clip, ready for _h3_load_video_frames.
+
+        Returns None if the clip_id is empty or not found.
+        """
+        if not clip_id:
+            return None
+        clip = self.get_clip(profile_id, clip_id)
+        if not clip:
+            return None
+        duration = max(0.0, clip["end_time"] - clip["start_time"])
+        return {
+            "start_time":       clip["start_time"],
+            "duration":         duration,
+            "force_rate":       0,
+            "frame_load_cap":   clip.get("frame_load_cap", DEFAULT_FRAME_LOAD_CAP),
+            "skip_first_frames": 0,
+            "select_every_nth": clip.get("select_every_nth", DEFAULT_SELECT_EVERY_NTH),
+        }
 
     def get_subject(self, profile_id: str, subject_id: str) -> dict | None:
         profile = self.profiles.get(profile_id)

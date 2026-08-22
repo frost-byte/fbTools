@@ -90,6 +90,10 @@ from .utils.source_profiles import (
     MEDIA_DIRS as _SOURCE_MEDIA_DIRS,
 )
 from .utils.source_profile_analysis import (
+    build_segment_detection_prompt as _spa_build_segment_prompt,
+    build_clip_description_prompt as _spa_build_clip_desc_prompt,
+    _parse_segments_response as _spa_parse_segments,
+    parse_clip_description_response as _spa_parse_clip_desc,
     build_prompt as _spa_build_prompt,
     _parse_vlm_json_response as _spa_parse_response,
     append_history_entry as _spa_append_history,
@@ -12354,12 +12358,14 @@ async def _source_profiles_save(request):
             return web.json_response({"error": "Profile 'id' is required"}, status=400)
         path = default_source_profiles_path()
         registry = _load_source_registry(path)
+        seg_dur_raw = data.get("default_segment_duration")
         registry = registry.define_profile(
             profile_id=pid,
             name=data.get("name", pid),
             media_filename=data.get("media_filename", ""),
             media_dir=data.get("media_dir", "input"),
             media_type=data.get("media_type", "video"),
+            default_segment_duration=float(seg_dur_raw) if seg_dur_raw is not None else None,
         )
         for s in data.get("subjects", []):
             sid = s.get("id", "").strip()
@@ -12372,6 +12378,8 @@ async def _source_profiles_save(request):
                     entity_type=s.get("entity_type", "person"),
                     notes=s.get("notes", ""),
                 )
+        if "clips" in data:
+            registry = registry.set_clips(pid, data["clips"])
         _save_source_registry(registry, path)
         global _source_profile_reload_counter
         _source_profile_reload_counter += 1
@@ -12560,6 +12568,343 @@ async def _source_profiles_analysis_history(request: web.Request) -> web.Respons
         entries = _spa_history_for_profile(user_data_dir(), profile_id)
         return web.json_response({"entries": entries})
     except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/detect_segments")
+async def _source_profiles_detect_segments(request: web.Request) -> web.Response:
+    """Run VLM boundary detection on a source profile's video.
+
+    Extracts one frame per interval_seconds across the full duration,
+    composites them into a labelled contact sheet, then asks the VLM
+    to identify meaningful action transitions.
+
+    JSON body:
+        profile_id          str   — required
+        video_duration      float — required (caller probes via /fbtools/media/info)
+        interval_seconds    float — frame sampling interval for the contact sheet
+                                    (default: min(segment_duration/2, 5.0))
+        prompt_override     str   — optional full prompt replacement
+        captioner_type      str   — "qwen_vl" | "qwen_omni" | "gemini_flash"
+        device              str   — "auto" | "cpu" | "cuda"
+        use_8bit            bool
+        gemini_api_key      str
+
+    Returns:
+        { "segments": [{start_time, end_time, label, action}, …] }
+    """
+    import tempfile
+
+    from .captioner import caption_image as _caption_image, get_model as _get_model
+
+    try:
+        body             = await request.json()
+        profile_id       = str(body.get("profile_id", "")).strip()
+        video_duration   = float(body.get("video_duration", 0.0))
+        interval_seconds = float(body.get("interval_seconds", 0.0)) or 0.0
+        prompt_override  = str(body.get("prompt_override", "")).strip()
+        captioner_type   = str(body.get("captioner_type", "qwen_vl")).strip()
+        device           = str(body.get("device", "auto")).strip()
+        use_8bit         = bool(body.get("use_8bit", False))
+        api_key          = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+    if video_duration <= 0:
+        return web.json_response({"error": "video_duration must be > 0"}, status=400)
+
+    registry = _load_source_registry(default_source_profiles_path())
+    profile  = registry.get_profile(profile_id)
+    if profile is None:
+        return web.json_response({"error": f"Source profile '{profile_id}' not found"}, status=404)
+
+    media_filename = profile.get("media_filename", "")
+    media_dir      = profile.get("media_dir", "input")
+    if not media_filename:
+        return web.json_response({"error": "Profile has no media_filename set"}, status=400)
+
+    base_dir    = get_output_directory() if media_dir == "output" else get_input_directory()
+    video_path  = os.path.join(base_dir, media_filename)
+    if not os.path.exists(video_path):
+        return web.json_response({"error": f"Video not found: {media_filename}"}, status=404)
+
+    # Default interval: sample every ~2s (≤30 frames for a 60s video)
+    seg_dur = profile.get("default_segment_duration") or 10.0
+    if not interval_seconds:
+        interval_seconds = max(1.0, min(seg_dur / 2.0, 5.0))
+
+    # Extract frames at regular timestamps
+    timestamps = []
+    t = interval_seconds / 2.0  # start at midpoint of first interval
+    while t < video_duration:
+        timestamps.append(t)
+        t += interval_seconds
+    if not timestamps:
+        timestamps = [video_duration / 2.0]
+
+    _tmp_frames: list[str] = []
+    try:
+        # Build a contact-sheet image: N frames tiled horizontally
+        frame_paths: list[str] = []
+        for ts in timestamps[:30]:  # cap at 30 frames for VLM context
+            tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            tmp.close()
+            _tmp_frames.append(tmp.name)
+            frac = ts / video_duration
+            try:
+                _spa_extract_frame(video_path, tmp.name, position_frac=frac)
+                frame_paths.append(tmp.name)
+            except Exception:
+                pass  # skip unextractable frames
+
+        if not frame_paths:
+            return web.json_response({"error": "Could not extract any frames"}, status=500)
+
+        # Compose into a contact sheet with timestamp labels via PIL
+        contact_path = tempfile.mktemp(suffix=".jpg")
+        _tmp_frames.append(contact_path)
+        try:
+            from PIL import Image as _PIL_Image, ImageDraw as _PIL_Draw, ImageFont as _PIL_Font
+            imgs = [_PIL_Image.open(p).convert("RGB") for p in frame_paths]
+            # Scale to uniform thumbnail size
+            thumb_w, thumb_h = 320, 180
+            imgs = [img.resize((thumb_w, thumb_h)) for img in imgs]
+            n_cols = min(len(imgs), 6)
+            n_rows = (len(imgs) + n_cols - 1) // n_cols
+            sheet = _PIL_Image.new("RGB", (thumb_w * n_cols, (thumb_h + 20) * n_rows), (30, 30, 30))
+            draw  = _PIL_Draw.Draw(sheet)
+            for i, (img, ts) in enumerate(zip(imgs, timestamps[:len(imgs)])):
+                row, col = divmod(i, n_cols)
+                x = col * thumb_w
+                y = row * (thumb_h + 20)
+                sheet.paste(img, (x, y))
+                draw.text((x + 4, y + thumb_h + 2), f"{ts:.1f}s", fill=(200, 200, 200))
+            sheet.save(contact_path, quality=85)
+        except Exception as pil_exc:
+            # Fallback: just use the first frame
+            import shutil as _shutil
+            _shutil.copy2(frame_paths[0], contact_path)
+
+        prompt = _spa_build_segment_prompt(prompt_override)
+        model  = _get_model(captioner_type, device=device, use_8bit=use_8bit, api_key=api_key)
+        raw    = _caption_image(model, contact_path, prompt)
+        segs   = _spa_parse_segments(raw, video_duration)
+        return web.json_response({"segments": segs})
+
+    except Exception as exc:
+        logger.exception("detect_segments failed for profile %r", profile_id)
+        return web.json_response({"error": str(exc)}, status=500)
+    finally:
+        for p in _tmp_frames:
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except OSError:
+                pass
+
+
+@routes.post("/fbtools/source_profiles/describe_clip")
+async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
+    """Run VLM to generate an action description for a single clip frame.
+
+    Extracts a frame at the clip midpoint and asks the VLM to describe
+    what action is happening at that moment.
+
+    JSON body:
+        profile_id      str
+        start_time      float   — clip start (seconds)
+        end_time        float   — clip end (seconds)
+        prompt_override str     — optional
+        captioner_type  str
+        device          str
+        use_8bit        bool
+        gemini_api_key  str
+
+    Returns:
+        { "action": "1-2 sentence action description" }
+    """
+    import tempfile
+
+    from .captioner import caption_image as _caption_image, get_model as _get_model
+
+    try:
+        body            = await request.json()
+        profile_id      = str(body.get("profile_id", "")).strip()
+        start_time      = float(body.get("start_time", 0.0))
+        end_time        = float(body.get("end_time", 0.0))
+        prompt_override = str(body.get("prompt_override", "")).strip()
+        captioner_type  = str(body.get("captioner_type", "qwen_vl")).strip()
+        device          = str(body.get("device", "auto")).strip()
+        use_8bit        = bool(body.get("use_8bit", False))
+        api_key         = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+
+    registry = _load_source_registry(default_source_profiles_path())
+    profile  = registry.get_profile(profile_id)
+    if profile is None:
+        return web.json_response({"error": f"Source profile '{profile_id}' not found"}, status=404)
+
+    media_filename = profile.get("media_filename", "")
+    media_dir      = profile.get("media_dir", "input")
+    if not media_filename:
+        return web.json_response({"error": "Profile has no media_filename set"}, status=400)
+
+    base_dir   = get_output_directory() if media_dir == "output" else get_input_directory()
+    video_path = os.path.join(base_dir, media_filename)
+    if not os.path.exists(video_path):
+        return web.json_response({"error": f"Video not found: {media_filename}"}, status=404)
+
+    midpoint = (start_time + end_time) / 2.0 if end_time > start_time else start_time
+
+    _tmp_frame: "tempfile.NamedTemporaryFile | None" = None
+    try:
+        _tmp_frame = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        _tmp_frame.close()
+        # Determine video duration for frac calculation via ffprobe
+        import subprocess
+        _dur: float = 0.0
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            _dur = float(result.stdout.strip())
+        except Exception:
+            pass
+        frac = (midpoint / _dur) if _dur > 0 else 0.1
+        _spa_extract_frame(video_path, _tmp_frame.name, position_frac=max(0.0, min(1.0, frac)))
+
+        prompt = _spa_build_clip_desc_prompt(prompt_override)
+        model  = _get_model(captioner_type, device=device, use_8bit=use_8bit, api_key=api_key)
+        raw    = _caption_image(model, _tmp_frame.name, prompt)
+        action = _spa_parse_clip_desc(raw)
+        return web.json_response({"action": action})
+
+    except Exception as exc:
+        logger.exception("describe_clip failed for profile %r", profile_id)
+        return web.json_response({"error": str(exc)}, status=500)
+    finally:
+        if _tmp_frame and os.path.exists(_tmp_frame.name):
+            try:
+                os.unlink(_tmp_frame.name)
+            except OSError:
+                pass
+
+
+@routes.post("/fbtools/source_profiles/auto_partition")
+async def _source_profiles_auto_partition(request: web.Request) -> web.Response:
+    """Auto-partition a source profile's video into equal-duration clips.
+
+    JSON body:
+        profile_id       str
+        video_duration   float   — total video length in seconds
+        segment_duration float   — segment length (0 = use profile default or 10s)
+
+    Returns: { "profile": <updated profile dict> }
+    """
+    try:
+        body             = await request.json()
+        profile_id       = str(body.get("profile_id", "")).strip()
+        video_duration   = float(body.get("video_duration", 0.0))
+        segment_duration = float(body.get("segment_duration", 0.0)) or None
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+    if video_duration <= 0:
+        return web.json_response({"error": "video_duration must be > 0"}, status=400)
+
+    try:
+        path     = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        if not registry.get_profile(profile_id):
+            return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
+        registry = registry.auto_partition(
+            profile_id, video_duration, segment_duration=segment_duration
+        )
+        _save_source_registry(registry, path)
+        return web.json_response({"profile": registry.get_profile(profile_id)})
+    except Exception as exc:
+        logger.exception("auto_partition failed for profile %r", profile_id)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/upsert_clip")
+async def _source_profiles_upsert_clip(request: web.Request) -> web.Response:
+    """Add or update a single clip within a source profile.
+
+    JSON body:
+        profile_id  str
+        clip        { id, label, start_time, end_time, select_every_nth,
+                      frame_load_cap, subjects, action }
+
+    Returns: { "profile": <updated profile dict> }
+    """
+    try:
+        body       = await request.json()
+        profile_id = str(body.get("profile_id", "")).strip()
+        clip       = body.get("clip")
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+    if not isinstance(clip, dict) or not clip.get("id"):
+        return web.json_response({"error": "clip must be an object with an id field"}, status=400)
+
+    try:
+        path     = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        if not registry.get_profile(profile_id):
+            return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
+        registry = registry.upsert_clip(profile_id, clip)
+        _save_source_registry(registry, path)
+        return web.json_response({"profile": registry.get_profile(profile_id)})
+    except Exception as exc:
+        logger.exception("upsert_clip failed for profile %r", profile_id)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/remove_clip")
+async def _source_profiles_remove_clip(request: web.Request) -> web.Response:
+    """Remove a clip from a source profile.
+
+    JSON body:
+        profile_id  str
+        clip_id     str
+
+    Returns: { "profile": <updated profile dict> }
+    """
+    try:
+        body       = await request.json()
+        profile_id = str(body.get("profile_id", "")).strip()
+        clip_id    = str(body.get("clip_id", "")).strip()
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+    if not clip_id:
+        return web.json_response({"error": "clip_id is required"}, status=400)
+
+    try:
+        path     = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        if not registry.get_profile(profile_id):
+            return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
+        registry = registry.remove_clip(profile_id, clip_id)
+        _save_source_registry(registry, path)
+        return web.json_response({"profile": registry.get_profile(profile_id)})
+    except Exception as exc:
+        logger.exception("remove_clip failed for profile %r", profile_id)
         return web.json_response({"error": str(exc)}, status=500)
 
 
@@ -14646,17 +14991,38 @@ class SceneCastBuild(io.ComfyNode):
                     optional=True,
                     tooltip="Source profile whose subjects are available as pool options.",
                 ),
+                io.String.Input(
+                    "clip_id_1",
+                    display_name="Clip ID 1",
+                    default="",
+                    tooltip=(
+                        "Optional clip ID from Source Profile 1. "
+                        "When set, only frames within that clip's time window are loaded."
+                    ),
+                ),
                 SourceProfileIOType.Input(
                     "source_profile_2",
                     display_name="Source Profile 2",
                     optional=True,
                     tooltip="Second source profile.",
                 ),
+                io.String.Input(
+                    "clip_id_2",
+                    display_name="Clip ID 2",
+                    default="",
+                    tooltip="Optional clip ID from Source Profile 2.",
+                ),
                 SourceProfileIOType.Input(
                     "source_profile_3",
                     display_name="Source Profile 3",
                     optional=True,
                     tooltip="Third source profile.",
+                ),
+                io.String.Input(
+                    "clip_id_3",
+                    display_name="Clip ID 3",
+                    default="",
+                    tooltip="Optional clip ID from Source Profile 3.",
                 ),
             ],
             outputs=[
@@ -14680,6 +15046,9 @@ class SceneCastBuild(io.ComfyNode):
         source_profile_1=None,
         source_profile_2=None,
         source_profile_3=None,
+        clip_id_1: str = "",
+        clip_id_2: str = "",
+        clip_id_3: str = "",
         **_,
     ):
         bundle_mtime = subject_mtime = source_mtime = 0
@@ -14701,7 +15070,8 @@ class SceneCastBuild(io.ComfyNode):
             p.get("id", "") if isinstance(p, dict) else ""
             for p in (source_profile_1, source_profile_2, source_profile_3)
         )
-        return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json) + sp_ids
+        return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json,
+                clip_id_1, clip_id_2, clip_id_3) + sp_ids
 
     @classmethod
     def execute(
@@ -14710,6 +15080,9 @@ class SceneCastBuild(io.ComfyNode):
         source_profile_1=None,
         source_profile_2=None,
         source_profile_3=None,
+        clip_id_1: str = "",
+        clip_id_2: str = "",
+        clip_id_3: str = "",
         **_,
     ) -> io.NodeOutput:
         try:
@@ -14782,11 +15155,25 @@ class SceneCastBuild(io.ComfyNode):
                     "retention":   retention or _RETENTION_BUNDLE,
                 })
 
+        # Map profile_id → clip_id for the three source profile slots
+        clip_ids: dict = {}
+        sp_clip_pairs = [
+            (source_profile_1, clip_id_1),
+            (source_profile_2, clip_id_2),
+            (source_profile_3, clip_id_3),
+        ]
+        for sp, cid in sp_clip_pairs:
+            if isinstance(sp, dict) and cid and cid.strip():
+                pid = sp.get("id", "")
+                if pid:
+                    clip_ids[pid] = cid.strip()
+
         cast = {
             "id":              "_inline",
             "name":            "_inline",
             "entries":         entries,
             "source_profiles": connected_profiles,
+            "clip_ids":        clip_ids,
         }
 
         n = len(entries)
@@ -15989,16 +16376,33 @@ def _resolve_cast_media(
             if e.get("source_profile_id") == sp_id
         ]
 
+        # Resolve clip load_params if a clip_id was specified for this profile
+        clip_ids_map = scene_cast.get("clip_ids", {})
+        clip_id = clip_ids_map.get(sp_id, "")
+        load_params: dict
+        if clip_id:
+            _sp_path = default_source_profiles_path()
+            _sp_reg = _load_source_registry(_sp_path)
+            _clip_lp = _sp_reg.clip_load_params(sp_id, clip_id)
+            load_params = _clip_lp if _clip_lp else {
+                "start_time": 0.0, "duration": 0.0,
+                "force_rate": 0, "frame_load_cap": 96,
+                "skip_first_frames": 0, "select_every_nth": 1,
+            }
+        else:
+            load_params = {
+                "start_time": 0.0, "duration": 0.0,
+                "force_rate": 0, "frame_load_cap": 96,
+                "skip_first_frames": 0, "select_every_nth": 1,
+            }
+
         video_entries_full.append({
             "subject_id":        sp_subject_ids[0] if sp_subject_ids else "",
             "subject_ids":       sp_subject_ids,
             "source_profile_id": sp_id,
+            "clip_id":           clip_id,
             "video_file":        media_file,
-            "load_params": {
-                "start_time": 0.0, "duration": 0.0,
-                "force_rate": 0, "frame_load_cap": 96,
-                "skip_first_frames": 0, "select_every_nth": 1,
-            },
+            "load_params":       load_params,
             "audio_source":     "none",
             "audio_path":       "",
             "audio_start_time": 0.0,
