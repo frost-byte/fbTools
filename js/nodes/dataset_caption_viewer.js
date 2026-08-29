@@ -237,7 +237,6 @@ function createViewerUI(node) {
     instruction: "",
     trigger_word: "",
     clean_caption: true,
-    gemini_api_key: "",
   };
 
   function syncStateFromWidgets() {
@@ -251,7 +250,6 @@ function createViewerUI(node) {
     state.instruction = String(safeWidgetValue(node, "instruction", state.instruction));
     state.trigger_word = String(safeWidgetValue(node, "trigger_word", state.trigger_word));
     state.clean_caption = Boolean(safeWidgetValue(node, "clean_caption", state.clean_caption));
-    state.gemini_api_key = String(safeWidgetValue(node, "gemini_api_key", state.gemini_api_key));
   }
 
   function applyViewerData(viewerData) {
@@ -442,7 +440,6 @@ function createViewerUI(node) {
               instruction: state.instruction,
               trigger_word: state.trigger_word,
               clean_caption: state.clean_caption,
-              gemini_api_key: state.gemini_api_key,
           });
           if (!data?.ok) {
             throw new Error(data?.error || "Re-caption failed");

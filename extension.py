@@ -786,7 +786,7 @@ class DatasetCaptioner(io.ComfyNode):
                     default="llm_client",
                     tooltip=(
                         "llm_client: uses the model loaded in the fbTools Compose -> LLM panel. "
-                        "gemini_flash: uses the Gemini Flash API (requires gemini_api_key)."
+                        "gemini_flash: uses the Gemini Flash API (set GEMINI_API_KEY env var — see docs)."
                     ),
                 ),
                 io.String.Input(
@@ -833,14 +833,6 @@ class DatasetCaptioner(io.ComfyNode):
                     optional=True,
                     tooltip="Strip common VLM boilerplate phrases from output.",
                 ),
-                io.String.Input(
-                    "gemini_api_key",
-                    display_name="Gemini API Key",
-                    default="",
-                    multiline=False,
-                    optional=True,
-                    tooltip="Required only for gemini_flash. Can also be set via GEMINI_API_KEY env var.",
-                ),
             ],
             outputs=[
                 io.String.Output("dataset_path",  display_name="Dataset Path"),
@@ -860,11 +852,10 @@ class DatasetCaptioner(io.ComfyNode):
         recursive: bool = False,
         override_existing: bool = False,
         clean_caption: bool = True,
-        gemini_api_key: str = "",
     ) -> io.NodeOutput:
         input_dir = _resolve_dataset_input_directory(input_directory)
         output_dir = _resolve_dataset_output_directory(output_directory)
-        api_key    = gemini_api_key.strip() or os.environ.get("GEMINI_API_KEY", "")
+        api_key    = os.environ.get("GEMINI_API_KEY", "")
 
         if not input_dir.is_dir():
             raise ValueError(f"input_directory does not exist: {input_dir}")
@@ -901,7 +892,6 @@ class DatasetCaptioner(io.ComfyNode):
                     str(img_path),
                     instruction,
                     captioner_type=captioner_type,
-                    api_key=api_key,
                     clean=clean_caption,
                 )
                 if trigger_word.strip():
@@ -8632,7 +8622,6 @@ async def recaption_single(request: web.Request) -> web.Response:
         "device":         "auto",
         "use_8bit":       false,
         "clean_caption":  true,
-        "gemini_api_key": ""
     }
     """
     try:
@@ -8643,7 +8632,6 @@ async def recaption_single(request: web.Request) -> web.Response:
         instruction    = body.get("instruction", "Describe this image in detail.")
         trigger_word   = body.get("trigger_word", "")
         clean          = bool(body.get("clean_caption", True))
-        api_key        = body.get("gemini_api_key", "") or os.environ.get("GEMINI_API_KEY", "")
 
         send_status_update(
             DATASET_CAPTION_STATUS_ID,
@@ -8654,7 +8642,6 @@ async def recaption_single(request: web.Request) -> web.Response:
             str(image_path),
             instruction,
             captioner_type=captioner_type,
-            api_key=api_key,
             clean=clean,
         )
         if trigger_word.strip():
@@ -13112,15 +13099,14 @@ def _run_vision_inference(
     captioner_type: str = "auto",
     device: str = "auto",
     use_8bit: "bool | None" = None,
-    api_key: str = "",
     clean: bool = False,
 ) -> str:
     """Run a single-image VLM call through the active backend.
 
     Two explicit paths — no silent fallback loading:
 
-    1. gemini_flash  — captioner.py Gemini API path. Pass
-                       captioner_type="gemini_flash" and a valid api_key.
+    1. gemini_flash  — captioner.py Gemini API path. Reads the API key from
+                       the GEMINI_API_KEY environment variable.
     2. llm_client    — the primary path for all other captioner_type values
                        ("auto", "llm_client", etc.).  The user loads a model
                        via the Compose -> LLM panel before calling this.
@@ -13136,6 +13122,7 @@ def _run_vision_inference(
     from .captioner import caption_image_gemini as _cap_gemini, clean_caption_text as _cap_clean
 
     if captioner_type == "gemini_flash":
+        api_key = os.environ.get("GEMINI_API_KEY", "")
         return _cap_gemini(_Path(image_path), prompt, api_key, clean=clean)
 
     st = _llm_client.backend_status()
@@ -13165,7 +13152,6 @@ def _run_vision_inference_clip(
     sample_fps: float,
     raw_fps: float,
     prompt: str,
-    api_key: str = "",
 ) -> str:
     """Run a multi-frame VLM call, routing by the loaded model's capabilities.
 
@@ -13221,9 +13207,8 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
         profile_id        str   — profile to analyze
         pass_type         str   — one of PASS_TYPES ("people", "setting", …)
         prompt_override   str   — optional; replaces the template body
-        captioner_type    str   — "gemini_flash" uses Gemini API; everything else
-                                  routes through the LLM panel model
-        gemini_api_key    str   — required when captioner_type is "gemini_flash"
+        captioner_type    str   — "gemini_flash" uses Gemini API (reads GEMINI_API_KEY
+                                  env var); everything else routes through the LLM panel model
         start_time        float — clip start in seconds (omit for single-frame mode)
         end_time          float — clip end in seconds   (omit for single-frame mode)
         select_every_nth  int   — frame sampling stride (default: clip's own value or 1)
@@ -13248,7 +13233,7 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
         pass_type        = str(body.get("pass_type", "people")).strip()
         prompt_override  = str(body.get("prompt_override", "")).strip()
         captioner_type   = str(body.get("captioner_type", "auto")).strip()
-        api_key          = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
+        api_key          = os.environ.get("GEMINI_API_KEY", "")
         _raw_start       = body.get("start_time")
         _raw_end         = body.get("end_time")
         start_time       = float(_raw_start) if _raw_start is not None else None
@@ -13333,7 +13318,7 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
                 try:
                     sheet.save(tmp.name, quality=85)
                     tmp.close()
-                    raw_response = _run_vision_inference(tmp.name, prompt, captioner_type="gemini_flash", api_key=api_key)
+                    raw_response = _run_vision_inference(tmp.name, prompt, captioner_type="gemini_flash")
                 finally:
                     try: os.unlink(tmp.name)
                     except Exception: pass
@@ -13372,7 +13357,6 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
             raw_response = _run_vision_inference(
                 str(frame_path), prompt,
                 captioner_type=captioner_type,
-                api_key=api_key,
             )
         finally:
             if _tmp_frame and os.path.exists(_tmp_frame.name):
@@ -13447,7 +13431,6 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
         captioner_type      str   — "qwen_vl" | "qwen_omni" | "gemini_flash"
         device              str   — "auto" | "cpu" | "cuda"
         use_8bit            bool
-        gemini_api_key      str
 
     Returns:
         { "segments": [{start_time, end_time, label, action}, …], "raw_response": str }
@@ -13465,7 +13448,7 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
         device           = str(body.get("device", "auto")).strip()
         _use_8bit_raw    = body.get("use_8bit")
         use_8bit         = bool(_use_8bit_raw) if _use_8bit_raw is not None else None
-        api_key          = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
+        api_key          = os.environ.get("GEMINI_API_KEY", "")
     except Exception as exc:
         return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
 
@@ -13549,7 +13532,7 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
         prompt = _spa_build_segment_prompt(prompt_override, flags)
         raw    = _run_vision_inference(
             contact_path, prompt,
-            captioner_type=captioner_type, device=device, use_8bit=use_8bit, api_key=api_key,
+            captioner_type=captioner_type, device=device, use_8bit=use_8bit,
         )
         segs   = _spa_parse_segments(raw, video_duration)
         return web.json_response({"segments": segs, "raw_response": raw or ""})
@@ -13581,7 +13564,6 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         captioner_type  str
         device          str
         use_8bit        bool
-        gemini_api_key  str
 
     Returns:
         { "action": "1-2 sentence action description" }
@@ -13598,7 +13580,7 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         device          = str(body.get("device", "auto")).strip()
         _use_8bit_raw   = body.get("use_8bit")
         use_8bit        = bool(_use_8bit_raw) if _use_8bit_raw is not None else None
-        api_key         = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
+        api_key         = os.environ.get("GEMINI_API_KEY", "")
         # Optional subject context: [{slot, name, appearance}] → list[tuple[str,str,str]]
         raw_subjects    = body.get("subjects") or []
         subjects: list[tuple[str, str, str]] = [
@@ -13653,7 +13635,7 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         prompt = _spa_build_clip_desc_prompt(prompt_override, subjects=subjects or None)
         raw    = _run_vision_inference(
             _tmp_frame.name, prompt,
-            captioner_type=captioner_type, device=device, use_8bit=use_8bit, api_key=api_key,
+            captioner_type=captioner_type, device=device, use_8bit=use_8bit,
         )
         action = _spa_parse_clip_desc(raw)
         return web.json_response({"action": action})
