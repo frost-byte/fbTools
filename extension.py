@@ -13093,6 +13093,9 @@ async def _source_profiles_delete(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+_SPA_STATUS_ID = "fbt_SourceProfileAnalysis"
+
+
 def _run_vision_inference(
     image_path: str,
     prompt: str,
@@ -13274,8 +13277,6 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
         }
     """
     import tempfile
-
-    _SPA_STATUS_ID = "fbt_SourceProfileAnalysis"
 
     try:
         body             = await request.json()
