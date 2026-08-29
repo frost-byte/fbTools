@@ -86,7 +86,7 @@ _PRESETS: dict[str, dict] = {
 @app.cls(
     gpu="L40S",
     timeout=600,
-    container_idle_timeout=300,
+    scaledown_window=300,
     volumes={_CACHE: _vol},
 )
 class VisionLLM:
