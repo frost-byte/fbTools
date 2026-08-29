@@ -13100,30 +13100,53 @@ def _run_vision_inference(
     device: str = "auto",
     use_8bit: "bool | None" = None,
     clean: bool = False,
+    profile_id: str = "",
+    operation: str = "analyze",
 ) -> str:
     """Run a single-image VLM call through the active backend.
 
-    Two explicit paths — no silent fallback loading:
+    Three explicit paths — no silent fallback:
 
-    1. gemini_flash  — captioner.py Gemini API path. Reads the API key from
-                       the GEMINI_API_KEY environment variable.
-    2. llm_client    — the primary path for all other captioner_type values
-                       ("auto", "llm_client", etc.).  The user loads a model
-                       via the Compose -> LLM panel before calling this.
-                       Raises RuntimeError if no vision-capable model is loaded
-                       rather than silently falling back to captioner.py.
+    1. gemini_flash  — captioner.py Gemini API path. Reads GEMINI_API_KEY env var.
+    2. modal         — Modal cloud VisionLLM. Must be activated via the LLM panel.
+    3. llm_client    — local model loaded in the Compose → LLM panel (all other values).
 
     device / use_8bit are accepted for signature compatibility but ignored on
-    the llm_client path (model loading is managed by the LLM panel).
+    the llm_client and modal paths.
 
     clean=True strips common VLM boilerplate from the returned text.
+    Every call is recorded in the VLM activity log.
     """
     from pathlib import Path as _Path
     from .captioner import caption_image_gemini as _cap_gemini, clean_caption_text as _cap_clean
 
     if captioner_type == "gemini_flash":
         api_key = os.environ.get("GEMINI_API_KEY", "")
-        return _cap_gemini(_Path(image_path), prompt, api_key, clean=clean)
+        text = _cap_gemini(_Path(image_path), prompt, api_key, clean=clean)
+        _vlm_log.record(user_data_dir(), "gemini", "gemini-flash", operation, profile_id)
+        return text
+
+    if captioner_type == "modal":
+        if not _modal_client.is_active():
+            raise RuntimeError(
+                "Modal backend is not active. Activate it in the LLM panel first."
+            )
+        from PIL import Image as _PIL_Image
+
+        def _status_cb(msg: str) -> None:
+            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
+
+        result = _modal_client.generate(
+            prompt,
+            images=[_PIL_Image.open(image_path).convert("RGB")],
+            status_callback=_status_cb,
+        )
+        if not result.get("success"):
+            raise RuntimeError(result.get("message") or "Modal generate returned no text")
+        text = result.get("text", "")
+        _vlm_log.record(user_data_dir(), "modal", _modal_client.backend_status()["model_key"], operation, profile_id)
+        from .captioner import clean_caption_text as _cc
+        return _cc(text) if clean else text
 
     st = _llm_client.backend_status()
     if not st.get("loaded_model"):
@@ -13143,6 +13166,7 @@ def _run_vision_inference(
     if not result.get("success"):
         raise RuntimeError(result.get("error") or "llm_client.generate returned no text")
     text = result.get("text", "")
+    _vlm_log.record(user_data_dir(), "local", st.get("loaded_model", ""), operation, profile_id)
     return _cap_clean(text) if clean else text
 
 
@@ -13152,16 +13176,52 @@ def _run_vision_inference_clip(
     sample_fps: float,
     raw_fps: float,
     prompt: str,
+    captioner_type: str = "auto",
+    profile_id: str = "",
+    operation: str = "detect_segments",
 ) -> str:
-    """Run a multi-frame VLM call, routing by the loaded model's capabilities.
+    """Run a multi-frame VLM call, routing by captioner_type and model capabilities.
 
-    - native_video (Qwen2.5-VL / Omni): frames are passed as a video sequence
-      with temporal RoPE metadata so the model reasons over time properly.
-    - vision-only (HF or GGUF): frames are composited into a labelled contact
-      sheet and passed as a single image.
+    Three explicit paths — no silent fallback:
 
-    Raises RuntimeError if no vision-capable model is loaded.
+    1. modal      — Modal cloud VisionLLM; uses native_video if the active model
+                    supports it, otherwise contact-sheet fallback.
+    2. llm_client — local model; routes by native_video capability.
+
+    (gemini_flash is handled at the call site with a contact sheet + image path.)
+
+    Raises RuntimeError if the required backend is unavailable.
+    Every call is recorded in the VLM activity log.
     """
+    if captioner_type == "modal":
+        if not _modal_client.is_active():
+            raise RuntimeError(
+                "Modal backend is not active. Activate it in the LLM panel first."
+            )
+        st = _modal_client.backend_status()
+
+        def _status_cb(msg: str) -> None:
+            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
+
+        if st.get("native_video"):
+            result = _modal_client.generate(
+                prompt,
+                video_frames=frames,
+                video_meta={"sample_fps": sample_fps, "raw_fps": raw_fps},
+                status_callback=_status_cb,
+            )
+        else:
+            sheet = _spa_build_contact_sheet(frames, timestamps)
+            result = _modal_client.generate(
+                prompt,
+                images=[sheet],
+                status_callback=_status_cb,
+            )
+        if not result.get("success"):
+            raise RuntimeError(result.get("message") or "Modal generate returned no text")
+        _vlm_log.record(user_data_dir(), "modal", st["model_key"], operation, profile_id)
+        return result.get("text", "")
+
     st = _llm_client.backend_status()
     if not st.get("loaded_model"):
         raise RuntimeError(
@@ -13180,22 +13240,12 @@ def _run_vision_inference_clip(
         )
     else:
         # Contact-sheet fallback for image-only vision models and GGUF
-        import tempfile
         sheet = _spa_build_contact_sheet(frames, timestamps)
-        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-        try:
-            sheet.save(tmp.name, quality=85)
-            tmp.close()
-            result = _llm_client.generate(prompt, images=[sheet])
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
+        result = _llm_client.generate(prompt, images=[sheet])
 
     if not result.get("success"):
         raise RuntimeError(result.get("error") or result.get("message") or "llm_client returned no text")
-    from .captioner import clean_caption_text as _cap_clean
+    _vlm_log.record(user_data_dir(), "local", st.get("loaded_model", ""), operation, profile_id)
     return result.get("text", "")
 
 
@@ -13311,20 +13361,25 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
 
         try:
             if captioner_type == "gemini_flash":
-                # For Gemini, use a contact sheet (API doesn't support video_frames path)
+                # Gemini API doesn't support video_frames — use a contact sheet
                 sheet = _spa_build_contact_sheet(pil_frames, timestamps)
                 import tempfile as _tf
                 tmp = _tf.NamedTemporaryFile(suffix=".jpg", delete=False)
                 try:
                     sheet.save(tmp.name, quality=85)
                     tmp.close()
-                    raw_response = _run_vision_inference(tmp.name, prompt, captioner_type="gemini_flash")
+                    raw_response = _run_vision_inference(
+                        tmp.name, prompt, captioner_type="gemini_flash",
+                        profile_id=profile_id, operation=pass_type,
+                    )
                 finally:
                     try: os.unlink(tmp.name)
                     except Exception: pass
             else:
                 raw_response = _run_vision_inference_clip(
                     pil_frames, timestamps, sample_fps, raw_fps, prompt,
+                    captioner_type=captioner_type,
+                    profile_id=profile_id, operation=pass_type,
                 )
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
@@ -13357,6 +13412,8 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
             raw_response = _run_vision_inference(
                 str(frame_path), prompt,
                 captioner_type=captioner_type,
+                profile_id=profile_id,
+                operation=pass_type,
             )
         finally:
             if _tmp_frame and os.path.exists(_tmp_frame.name):
@@ -13533,6 +13590,7 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
         raw    = _run_vision_inference(
             contact_path, prompt,
             captioner_type=captioner_type, device=device, use_8bit=use_8bit,
+            profile_id=profile_id, operation="detect_segments",
         )
         segs   = _spa_parse_segments(raw, video_duration)
         return web.json_response({"segments": segs, "raw_response": raw or ""})
@@ -13636,6 +13694,7 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         raw    = _run_vision_inference(
             _tmp_frame.name, prompt,
             captioner_type=captioner_type, device=device, use_8bit=use_8bit,
+            profile_id=profile_id, operation="describe_clip",
         )
         action = _spa_parse_clip_desc(raw)
         return web.json_response({"action": action})
@@ -16427,6 +16486,8 @@ async def _compositions_settings_post(request):
 
 from .utils.llm_scanner import scan_llm_dirs as _llm_scan_dirs, DEFAULT_MODEL as _LLM_DEFAULT_MODEL
 from .utils import llm_client as _llm_client
+from .utils import modal_vision_client as _modal_client
+from .utils import vlm_activity_log as _vlm_log
 import asyncio
 
 
@@ -16829,6 +16890,76 @@ async def _llm_describe_history_add(request):
 @routes.post("/fbtools/llm/describe_history/delete")
 async def _llm_describe_history_delete(request):
     return await _llm_history_delete(request)
+
+
+# ── Modal backend control routes ──────────────────────────────────────────────
+
+@routes.get("/fbtools/modal/status")
+async def _modal_status(request):
+    """Return Modal backend status (active model, availability)."""
+    try:
+        st = _modal_client.backend_status()
+        st["presets"] = _modal_client.PRESET_MODELS
+        return web.json_response(st)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/modal/activate")
+async def _modal_activate(request):
+    """Activate the Modal backend.  Body: { model_key, quantize }."""
+    try:
+        body      = await request.json()
+        model_key = str(body.get("model_key", "qwen2.5-vl-7b")).strip()
+        quantize  = bool(body.get("quantize", True))
+        result    = _modal_client.activate(model_key, quantize)
+        if result["success"]:
+            _vlm_log.record(user_data_dir(), "modal", model_key, "activate")
+        return web.json_response(result, status=200 if result["success"] else 503)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/modal/deactivate")
+async def _modal_deactivate(request):
+    """Deactivate the Modal backend (clears local state only)."""
+    try:
+        result = _modal_client.deactivate()
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── VLM activity log routes ────────────────────────────────────────────────────
+
+@routes.get("/fbtools/vlm/activity")
+async def _vlm_activity_list(request):
+    """Return recent VLM activity entries.  Query params: n (int), backend (str)."""
+    try:
+        params  = request.rel_url.query
+        n       = int(params.get("n", 100))
+        backend = params.get("backend", "")
+        entries = _vlm_log.recent(user_data_dir(), n=min(n, 500))
+        if backend:
+            entries = [e for e in entries if e.get("backend") == backend]
+        return web.json_response({"entries": entries})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/vlm/model_history")
+async def _vlm_model_history(request):
+    """Return deduplicated model IDs for a backend, most recent first.
+    Query param: backend (str, required).
+    """
+    try:
+        backend = request.rel_url.query.get("backend", "")
+        if not backend:
+            return web.json_response({"error": "backend param required"}, status=400)
+        history = _vlm_log.model_history(user_data_dir(), backend)
+        return web.json_response({"model_ids": history})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 @routes.post("/fbtools/llm/download/default")
