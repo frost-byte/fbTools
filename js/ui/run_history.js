@@ -1,11 +1,20 @@
 /**
  * Run History sidebar panel.
  *
- * Merges two data sources per run:
- *  - /history: static widget values from nodes tagged [track: Label]
+ * Merges three data sources per run:
+ *  - /history nodesDict: static widget values from nodes tagged [track: Label]
+ *  - /history extra_pnginfo.workflow: widget values from subgraph containers tagged [track: Label]
  *  - /fbtools/run_tracker/runs: runtime values captured by RunMetaCapture nodes
  *
  * Runs are keyed by prompt_id (GUID) so both sources can be linked.
+ *
+ * Subgraph nodes never appear in the API-format prompt[2] (nodesDict) because
+ * the frontend expands them into their inner nodes before submission.  When an
+ * inner node receives a value from the subgraph's exposed interface, that input
+ * becomes a connection reference in the API format and is filtered out by
+ * extractWidgetValues().  To capture subgraph-exposed widgets the tracker also
+ * scans the workflow JSON stored in extra_pnginfo.workflow, where subgraph
+ * container nodes appear with their widget values intact.
  */
 
 const TRACK_RE = /\[track:\s*([^\]]*)\]/;
@@ -26,6 +35,64 @@ function extractWidgetValues(inputs) {
     return Object.fromEntries(
         Object.entries(inputs || {}).filter(([, v]) => !isConnectionRef(v))
     );
+}
+
+/**
+ * Scan the workflow JSON (extra_pnginfo.workflow) for nodes tagged [track: Label]
+ * that are NOT already captured from nodesDict.  Subgraph container nodes only
+ * exist here — the API-format prompt expands them away.
+ *
+ * Widget values in the workflow format are stored as a positional `widgets_values`
+ * array.  We attempt to name them using any `widget.name` metadata on the node's
+ * inputs array (present in newer ComfyUI workflow format).  When that isn't
+ * available we fall back to:
+ *   - single value  → key "value"
+ *   - multiple      → keys "value_0", "value_1", …
+ *
+ * @param {object|null} wf               The workflow JSON object.
+ * @param {Set<string>} capturedLabels   Labels already found in nodesDict (skip them).
+ * @returns {Array}                      Array of {label, class_type, rawInputs, widgets}.
+ */
+function extractWorkflowTrackedNodes(wf, capturedLabels) {
+    const result = [];
+    const nodes = wf?.nodes;
+    if (!Array.isArray(nodes)) return result;
+
+    for (const node of nodes) {
+        const label = getTrackLabel(node.title || "");
+        if (!label) continue;
+        if (capturedLabels.has(label)) continue; // API-format version is better
+
+        const widgetValues = node.widgets_values || [];
+        if (!widgetValues.length) continue;
+
+        // Newer ComfyUI workflow format: inputs entries that have a `widget` key
+        // are widget inputs (not wire connections), with a name we can reuse.
+        const widgetInputs = (node.inputs || []).filter(inp => inp.widget);
+
+        const widgets = {};
+        if (widgetInputs.length === widgetValues.length && widgetInputs.length > 0) {
+            widgetInputs.forEach((inp, i) => {
+                const key = inp.widget?.name || inp.name || `value_${i}`;
+                widgets[key] = widgetValues[i];
+            });
+        } else if (widgetValues.length === 1) {
+            widgets["value"] = widgetValues[0];
+        } else {
+            widgetValues.forEach((v, i) => { widgets[`value_${i}`] = v; });
+        }
+
+        if (Object.keys(widgets).length > 0) {
+            result.push({
+                label,
+                class_type: node.type || "",
+                rawInputs: {},
+                widgets,
+                fromWorkflow: true, // diagnostic — not shown in UI
+            });
+        }
+    }
+    return result;
 }
 
 // Mirror the backend's _fv(): 2 decimal places, trailing zeros stripped.
@@ -149,7 +216,11 @@ function parseRuns(historyData, captureMap) {
         const startMsg = msgs.find(m => Array.isArray(m) && m[0] === "execution_start");
         const ts = startMsg?.[1]?.timestamp ?? null;
 
-        // Static tracked nodes (title-tag based)
+        // Static tracked nodes — scan the API-format prompt (nodesDict).
+        // Regular nodes appear here with named widget values.
+        // Subgraph container nodes are ABSENT — they expand into inner nodes
+        // before submission; inner nodes receive exposed inputs as connection
+        // references which extractWidgetValues() filters out.
         const trackedNodes = [];
         for (const [nodeId, nodeDef] of Object.entries(nodesDict || {})) {
             const title = nodeDef?._meta?.title || "";
@@ -163,6 +234,14 @@ function parseRuns(historyData, captureMap) {
                 widgets: extractWidgetValues(rawInputs),
             });
         }
+
+        // Workflow-format tracked nodes — scan extra_pnginfo.workflow for nodes
+        // tagged [track:] that are absent from nodesDict (subgraphs being the
+        // primary case).  Widget values come from the positional widgets_values
+        // array present in the workflow JSON.
+        const capturedLabels = new Set(trackedNodes.map(n => n.label));
+        const workflowTracked = extractWorkflowTrackedNodes(wf, capturedLabels);
+        trackedNodes.push(...workflowTracked);
 
         // Runtime captures from RunMetaCapture nodes
         const captures = captureMap[promptId]?.captures ?? [];
@@ -274,7 +353,7 @@ function renderRun(run) {
 
 export function renderRunHistory(rootEl) {
     rootEl.innerHTML = "";
-    rootEl.className = "fbt-rh-panel";
+    rootEl.classList.add("fbt-rh-panel");
 
     const toolbar = mk("div", "fbt-rh-toolbar");
     toolbar.appendChild(txt("span", "fbt-rh-panel-title", "Run History"));

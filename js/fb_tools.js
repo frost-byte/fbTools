@@ -31,8 +31,6 @@ const NODE_WIDGET_MAP = {
     ],
     [`${EXT_PREFIX}StoryEdit`]: [
         { widget_index: 1, widget_name: "selected_prompt_in" },
-        { widget_index: 2, widget_name: "story_json_in" },
-        { widget_index: 4, widget_name: "story_scene_selector", widget_type: "combo" },
     ],
     [`${EXT_PREFIX}LibberManager`]: [
         // text[0]=keys_json, text[1]=lib_dict_json, text[2]=status
@@ -312,7 +310,8 @@ function clearTab() {
 
 function handleNodes() {
     const nodeData = serializedNodes();
-    displayNodesInTab(nodeData);
+    if (!nodeData || (Array.isArray(nodeData) && !nodeData.length)) return;
+    updateNodeInspector(nodeData);
     if (navigator.clipboard) {
         navigator.clipboard.writeText(JSON.stringify(nodeData, null, 2));
     }
@@ -368,79 +367,6 @@ function updateNodeInputs(node, textArray, nodeName) {
     });
 }
 
-// Derive scene selector options from the story JSON or an explicit options JSON payload, then update the combo widget.
-function updateStorySceneSelector(node, storyJsonText, optionsJsonText) {
-    let options = null;
-
-    // Priority 1: explicit options payload (text[3] from StoryEdit)
-    const optionsJson = optionsJsonText || node.widgets?.find((w) => w.name === "story_scene_selector_options")?.value;
-    if (!options && optionsJson && typeof optionsJson === "string") {
-        try {
-            const parsed = JSON.parse(optionsJson);
-            if (Array.isArray(parsed) && parsed.length) {
-                options = parsed;
-            }
-        } catch (err) {
-            console.warn("fbTools -> StoryEdit: failed to parse selector options JSON", err);
-        }
-    }
-
-    // Priority 2: derive from story JSON when options not provided
-    if (!options || !options.length) {
-        const storyJson = storyJsonText || node.widgets?.find((w) => w.name === "story_json_in")?.value;
-        if (storyJson && typeof storyJson === "string") {
-            try {
-                const data = JSON.parse(storyJson);
-                if (Array.isArray(data?.scenes)) {
-                    const scenes = [...data.scenes].sort((a, b) => (a?.scene_order ?? 0) - (b?.scene_order ?? 0));
-                    options = scenes.map((scene, idx) => `${idx}: ${scene?.scene_name || "scene"}`);
-                }
-            } catch (err) {
-                console.warn("fbTools -> StoryEdit: failed to parse story_json for selector options", err);
-            }
-        }
-    }
-
-    if (!options || !options.length) return;
-
-    const widget = node.widgets?.find((w) => w.name === "story_scene_selector");
-    if (!widget) return;
-
-    const currentOptions = (widget.options && widget.options.values) || widget.options || [];
-    const sameOptions =
-        Array.isArray(currentOptions) &&
-        currentOptions.length === options.length &&
-        currentOptions.every((val, idx) => val === options[idx]);
-
-    const nextValue = options.includes(widget.value) ? widget.value : options[0];
-
-    if (!sameOptions) {
-        if (widget.options && typeof widget.options === "object") {
-            widget.options.values = options;
-        } else {
-            widget.options = { values: options };
-        }
-        widget.options_values = options;
-
-        if (widget.inputEl && widget.inputEl.tagName === "SELECT") {
-            widget.inputEl.innerHTML = "";
-            options.forEach((opt) => {
-                const optionEl = document.createElement("option");
-                optionEl.value = opt;
-                optionEl.textContent = opt;
-                widget.inputEl.appendChild(optionEl);
-            });
-        }
-    }
-
-    if (widget.value !== nextValue) {
-        widget.value = nextValue;
-        if (widget.inputEl) {
-            widget.inputEl.value = nextValue;
-        }
-    }
-}
-
 // Normalize node resize/refresh after widget updates
 function scheduleNodeRefresh(node, app) {
     requestAnimationFrame(() => {
@@ -465,8 +391,10 @@ import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
 import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect, setupLoraStackBuilder } from "./nodes/lora.js";
 import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
 import { setupSceneCastBuild } from "./nodes/scene_cast_build.js";
+import { setupSourceProfileClipPrompt } from "./nodes/source_profile_clip_prompt.js";
 import { renderFbtPanel } from "./ui/fbt_panel.js";
 import { patchNodeForTracking } from "./utils/run_tracker.js";
+import { updateNodeInspector } from "./ui/node_inspector.js";
 
 // Single sidebar entry — hosts Compose, Bundles, Casts, Sources, History tabs
 // with a persistent LLM status bar and lazy tab mounting.
@@ -507,35 +435,6 @@ app.registerExtension({
             console.error("fb_tools -> Failed to load JSONView:", e);
         });
     },
-    bottomPanelTabs: [
-        {
-            id: "fb_tools",
-            title: "FB Tools",
-            icon: "pi pi-wrench",
-            type: "custom",
-            render: (element) => {
-                Object.assign(element.style, {
-                    display: "flex",
-                    flexDirection: "column",
-                    height: "100%",
-                    minHeight: "0",
-                    overflow: "hidden",
-                });
-                const container = document.createElement("div");
-                container.id = tabContainerId;
-                container.innerHTML = `<div style="padding: 1rem;"><i>Select a node and click the 'view json' button to display its json here. (and copy it to the clipboard)</i></div>`;
-                Object.assign(container.style, {
-                    flex: "1 1 auto",
-                    minHeight: "0",
-                    padding: "8px",
-                    overflow: "auto",
-                    overscrollBehavior: "contain",
-                });
-                element.appendChild(container);
-                handleNodes();
-            }
-        },
-    ],
     commands: [{
         id: "fb_tools.extract-node-json",
         label: "Extract Node as JSON",
@@ -630,6 +529,9 @@ app.registerExtension({
         // Scene Cast nodes
         else if (isNode("SceneCastBuild")) {
             setupSceneCastBuild(nodeType, nodeData, app);
+        }
+        else if (isNode("SourceProfileClipPrompt")) {
+            setupSourceProfileClipPrompt(nodeType, nodeData, app);
         }
 
         // Add context menu for frost-byte nodes only.

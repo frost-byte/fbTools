@@ -58,6 +58,17 @@ function _insertPath(node, parts, fullPath) {
  *
  * @returns {{ el: HTMLElement, rebuild: (opts?: object) => void, getDir: () => string }}
  */
+/**
+ * Prevent ComfyUI global keyboard shortcuts (w=workflows, a=assets, etc.) from
+ * firing while the user is typing in a text input inside the panel.
+ * Call this on every <input> or <textarea> you add to a panel/modal.
+ */
+export function trapKeys(el) {
+    el.addEventListener("keydown",  e => e.stopPropagation());
+    el.addEventListener("keyup",    e => e.stopPropagation());
+    el.addEventListener("keypress", e => e.stopPropagation());
+}
+
 export function buildFileTree({
     inputFiles  = [],
     outputFiles = [],
@@ -72,6 +83,7 @@ export function buildFileTree({
     let _inputFiles  = inputFiles;
     let _outputFiles = outputFiles;
     let _activeDir   = initialDir;
+    let _searchQuery = "";
 
     const treeEl = _mk("div", { cls: "fbt-be-tree" });
 
@@ -146,6 +158,47 @@ export function buildFileTree({
             return;
         }
 
+        // Search mode — flat list of matches, no tree hierarchy
+        if (_searchQuery) {
+            const q = _searchQuery.toLowerCase();
+            const matches = files.filter(f => f.toLowerCase().includes(q));
+            if (!matches.length) {
+                treeEl.appendChild(_mk("div", {
+                    cls:         "fbt-be-media-empty",
+                    textContent: `No matches for "${_searchQuery}"`,
+                }));
+                return;
+            }
+            matches.forEach(path => {
+                const name   = path.split("/").pop();
+                const fileEl = _mk("div", { cls: "fbt-be-tree-file fbt-be-tree-file-flat" });
+                fileEl.dataset.treePath = path;
+                fileEl.dataset.treeDir  = _activeDir;
+                if (isSelected(path, _activeDir)) fileEl.classList.add("fbt-be-tree-file-cur");
+                fileEl.appendChild(
+                    _mk("span", { cls: "fbt-be-tree-file-name", textContent: name, title: path })
+                );
+                if (path.includes("/")) {
+                    fileEl.appendChild(
+                        _mk("span", { cls: "fbt-be-tree-file-subpath",
+                                      textContent: path.slice(0, path.lastIndexOf("/") + 1) })
+                    );
+                }
+                if (onHover) {
+                    fileEl.addEventListener("mouseenter", () => onHover(path, _activeDir));
+                    if (onHoverOut) fileEl.addEventListener("mouseleave", onHoverOut);
+                }
+                fileEl.addEventListener("click", () => {
+                    treeEl.querySelectorAll(".fbt-be-tree-file-cur")
+                          .forEach(e => e.classList.remove("fbt-be-tree-file-cur"));
+                    fileEl.classList.add("fbt-be-tree-file-cur");
+                    onSelect(path, _activeDir);
+                });
+                treeEl.appendChild(fileEl);
+            });
+            return;
+        }
+
         const root = { dirs: new Map(), files: [] };
         files.forEach(f => _insertPath(root, f.split("/"), f));
         treeEl.appendChild(_renderNode(root, 0));
@@ -173,9 +226,26 @@ export function buildFileTree({
 
     _rebuildTree();
 
+    // ── Search input ──────────────────────────────────────────────────────────
+    const searchEl = _mk("input", {
+        cls:         "fbt-be-tree-search",
+        type:        "text",
+        placeholder: "Filter…",
+    });
+    // Stop ComfyUI global shortcuts (w=workflows, a=assets, etc.) from firing
+    // while the user is typing in this field.
+    searchEl.addEventListener("keydown",  e => e.stopPropagation());
+    searchEl.addEventListener("keyup",    e => e.stopPropagation());
+    searchEl.addEventListener("keypress", e => e.stopPropagation());
+    searchEl.addEventListener("input", () => {
+        _searchQuery = searchEl.value.trim();
+        _rebuildTree();
+    });
+
     // ── Wrapper ───────────────────────────────────────────────────────────────
     const wrap = _mk("div", { cls: "fbt-be-file-tree-wrap" });
     wrap.appendChild(tabRow);
+    wrap.appendChild(searchEl);
     wrap.appendChild(treeEl);
 
     return {

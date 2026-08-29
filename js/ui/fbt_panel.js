@@ -19,6 +19,7 @@ import { renderBundleEditor }        from "./bundle_editor.js";
 import { renderCastEditor }          from "./cast_editor.js";
 import { renderSourceProfileEditor } from "./source_profile_editor.js";
 import { renderRunHistory }          from "./run_history.js";
+import { renderNodeInspector }       from "./node_inspector.js";
 
 // ── Shared LLM state ───────────────────────────────────────────────────────────
 // Any tab can read fbtLlm to see what's currently loaded without its own fetch.
@@ -47,7 +48,7 @@ function _mk(tag, props = {}, children = []) {
 // ── CSS ────────────────────────────────────────────────────────────────────────
 
 const _CSS = `
-.fbt-panel { display:flex; flex-direction:column; height:100%; overflow:hidden; font-size:13px; }
+.fbt-panel { display:flex; flex-direction:column; height:100%; flex:1; min-height:0; overflow:hidden; font-size:13px; }
 
 /* Header */
 .fbt-panel-hdr {
@@ -100,10 +101,12 @@ const _CSS = `
 .fbt-tab .pi { font-size:14px; }
 .fbt-tab-lbl { font-size:9px; text-transform:uppercase; letter-spacing:.04em; line-height:1; }
 
-/* Content panes */
-.fbt-tab-contents { flex:1; min-height:0; position:relative; }
-.fbt-tab-content  { position:absolute; inset:0; display:flex; flex-direction:column; overflow:hidden; }
-.fbt-tab-content.fbt-hidden { display:none; }
+/* Content panes — pure flex chain, no absolute positioning needed.
+   Visibility is controlled via inline display style (not a class) so that
+   render functions which set their own inline display can't accidentally
+   override the hide logic. */
+.fbt-tab-contents { flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
+.fbt-tab-content  { flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
 `;
 
 function _injectCSS() {
@@ -137,6 +140,8 @@ function _handleLlmPush(loaded, vision, nativeVideo) {
     fbtLlm.vision      = vision      ?? false;
     fbtLlm.nativeVideo = nativeVideo ?? false;
     _syncStatusBar();
+    // Broadcast to any node handlers listening (e.g. DatasetCaptioner status line)
+    document.dispatchEvent(new CustomEvent("fbt:llm-status", { detail: { ...fbtLlm } }));
 }
 
 // Async pull — used on panel open and tab switch to reconcile if composition
@@ -158,6 +163,7 @@ const TABS = [
     { id: "casts",        label: "Casts",    icon: "pi pi-users",     render: renderCastEditor },
     { id: "sources",      label: "Sources",  icon: "pi pi-video",     render: renderSourceProfileEditor },
     { id: "history",      label: "History",  icon: "pi pi-history",   render: renderRunHistory },
+    { id: "inspector",    label: "Inspect",  icon: "pi pi-code",      render: renderNodeInspector },
 ];
 
 // ── Panel ──────────────────────────────────────────────────────────────────────
@@ -215,23 +221,32 @@ export function renderFbtPanel(container) {
         strip.appendChild(btn);
         tabBtns[tab.id] = btn;
 
-        const pane = _mk("div", { cls: "fbt-tab-content" + (i !== 0 ? " fbt-hidden" : "") });
+        const pane = _mk("div", { cls: "fbt-tab-content" });
+        if (i !== 0) pane.style.display = "none";
         contents.appendChild(pane);
         contentEls[tab.id] = pane;
     });
 
     function activateTab(id) {
         const alreadyActive = id === activeId && mounted[id];
-        // Always show/hide even if same tab (defensive)
+        // Use inline display to override any inline styles set by render functions
         Object.values(tabBtns).forEach(b => b.classList.remove("active"));
-        Object.values(contentEls).forEach(p => p.classList.add("fbt-hidden"));
+        Object.values(contentEls).forEach(p => { p.style.display = "none"; });
         tabBtns[id].classList.add("active");
-        contentEls[id].classList.remove("fbt-hidden");
+        contentEls[id].style.display = "";  // clear inline → CSS flex takes over
         activeId = id;
 
-        // Lazy mount: call render exactly once
+        // Lazy mount: call render exactly once.
+        // Render functions may be async; we don't await but errors surface in console.
         if (!mounted[id]) {
-            TABS.find(t => t.id === id).render(contentEls[id]);
+            try {
+                const result = TABS.find(t => t.id === id).render(contentEls[id]);
+                if (result instanceof Promise) {
+                    result.catch(err => console.error(`[fbTools] Tab "${id}" render error:`, err));
+                }
+            } catch (err) {
+                console.error(`[fbTools] Tab "${id}" render error:`, err);
+            }
             mounted[id] = true;
         }
 
@@ -245,6 +260,10 @@ export function renderFbtPanel(container) {
 
     // Wire the synchronous push from composition_editor
     window._fbtUpdateLlmStatus = _handleLlmPush;
+    // Read-only accessor for other tabs that need to check LLM state
+    window._fbtGetLlmStatus = () => ({ ...fbtLlm });
+    // Programmatic tab activation — used by node_inspector.js to switch to Inspector tab
+    window._fbtActivateTab = activateTab;
 
     // Initial status fetch
     _fetchLlmStatus();

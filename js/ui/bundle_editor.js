@@ -11,7 +11,7 @@ import { bundlesApi }    from "../api/bundles.js";
 import { llmApi }        from "../api/llm.js";
 import { compositionsApi } from "../api/compositions.js";
 import { makeEntry, buildHistorySection } from "../utils/llm_history.js";
-import { buildFileTree } from "./file_tree.js";
+import { buildFileTree, trapKeys } from "./file_tree.js";
 
 const BUNDLE_PAGE_SIZE = 10;
 
@@ -24,10 +24,10 @@ const _S = {
     subjects:     [],   // [{id, name, appearance_summary}]
     mediaImages:       [],   // input dir images (recursive)
     mediaImagesOutput: [],   // output dir images (recursive)
-    mediaVideos:       [],   // filenames from /fbtools/media/list?type=video (input)
-    mediaVideosOutput: [],   // filenames from /fbtools/media/list?type=video (output)
-    mediaAudio:        [],   // filenames from /fbtools/media/list?type=audio (input)
-    mediaAudioOutput:  [],   // filenames from /fbtools/media/list?type=audio (output)
+    mediaVideos:       [],   // input dir videos (recursive)
+    mediaVideosOutput: [],   // output dir videos (recursive)
+    mediaAudio:        [],   // input dir audio (recursive)
+    mediaAudioOutput:  [],   // output dir audio (recursive)
     settings:     {},   // global composition settings (audio processing defaults, etc.)
     filterSubject:  "",
     filterText:     "",
@@ -109,10 +109,10 @@ async function _loadAll() {
         bundlesApi.listSubjects(),
         bundlesApi.listMedia("image", true),              // input dir, recursive
         bundlesApi.listMedia("image", true, "output"),    // output dir, recursive
-        bundlesApi.listMedia("video"),
-        bundlesApi.listMedia("video", false, "output"),   // output dir videos
-        bundlesApi.listMedia("audio"),
-        bundlesApi.listMedia("audio", false, "output"),   // output dir audio
+        bundlesApi.listMedia("video", true),              // input dir, recursive
+        bundlesApi.listMedia("video", true,  "output"),   // output dir, recursive
+        bundlesApi.listMedia("audio", true),              // input dir, recursive
+        bundlesApi.listMedia("audio", true,  "output"),   // output dir, recursive
         llmApi.status(),
         compositionsApi.getSettings(),
     ]);
@@ -346,44 +346,49 @@ function _renderForm() {
 
     // ── Visual ─────────────────────────────────────────────────────────────────
 
-    const visualPickerWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
+    // Both image and video sections are always visible — a single bundle can
+    // carry both.  visual.type is the "default mode" preference used to
+    // pre-fill the Mode picker in Scene Cast Build; the cast entry can override it.
+    let _llmEl = null;
 
-    const visualToggle = _buildToggle(
+    const imgPickerWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
+    const vidPickerWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
+
+    // Default-mode toggle (images | video) — sets visual.type only.
+    const defaultModeToggle = _buildToggle(
         ["images", "video"],
         ["Images", "Video"],
         b.visual.type,
-        val => {
-            b.visual.type = val;
-            _rebuildVisualPicker();
-            if (val === "images" && b.audio.source === "extract_from_visual") {
-                b.audio.source = "none";
-                audioSourceEl.value = "none";
-                _rebuildAudioPicker();
-            }
-        }
+        val => { b.visual.type = val; }
     );
 
-    // _llmEl is set below after the analyzer is built; the closure captures it by reference
-    // so _rebuildVisualPicker can pass the refresh callback even though _llmEl is null now.
-    let _llmEl = null;
+    const visualSec = _mk("div", { cls: "fbt-be-section" });
+    visualSec.appendChild(_mk("div", { cls: "fbt-be-sec-label", textContent: "Visual" }));
 
-    const _rebuildVisualPicker = () => {
-        visualPickerWrap.innerHTML = "";
-        if (b.visual.type === "video") {
-            _buildVideoPicker(visualPickerWrap, b);
-        } else {
-            _buildImageList(visualPickerWrap, b, () => _llmEl?._refreshPool?.());
-        }
-    };
-    _rebuildVisualPicker();
+    // Images subsection
+    const imgSubLabel = _mk("div", { cls: "fbt-be-sec-sublabel", textContent: "Images" });
+    visualSec.appendChild(imgSubLabel);
+    visualSec.appendChild(imgPickerWrap);
 
-    const visualSec = _mk("div", { cls: "fbt-be-section" }, [
-        _mk("div", { cls: "fbt-be-sec-label", textContent: "Visual" }),
-        visualToggle,
-        visualPickerWrap,
+    // Video subsection
+    const vidSubLabel = _mk("div", { cls: "fbt-be-sec-sublabel", textContent: "Video" });
+    visualSec.appendChild(vidSubLabel);
+    visualSec.appendChild(vidPickerWrap);
+
+    // Default mode row — shown below both sections
+    const defaultModeRow = _mk("div", { cls: "fbt-be-default-mode-row" }, [
+        _mk("span", { cls: "fbt-be-default-mode-label", textContent: "Default mode:" }),
+        defaultModeToggle,
     ]);
+    visualSec.appendChild(defaultModeRow);
 
     // ── Audio ──────────────────────────────────────────────────────────────────
+
+    // Build picker contents — both sections always rendered.
+    // _llmEl is null here but captured by reference; it will be set by the time
+    // the LLM pool refresh callback is invoked.
+    _buildImageList(imgPickerWrap, b, () => _llmEl?._refreshPool?.());
+    _buildVideoPicker(vidPickerWrap, b);
 
     const audioPickerWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
 
@@ -404,10 +409,11 @@ function _renderForm() {
 
     const _rebuildAudioPicker = () => {
         audioPickerWrap.innerHTML = "";
-        if (b.audio.source === "extract_from_visual" && b.visual.type !== "video") {
+        // "Extract from video" requires the bundle to have a video file.
+        if (b.audio.source === "extract_from_visual" && !b.visual.file) {
             audioPickerWrap.appendChild(_mk("div", {
                 cls: "fbt-be-warn",
-                textContent: "Switch visual to Video first, or choose a separate audio file.",
+                textContent: "Set a video file in the Video section first, or choose a separate audio file.",
             }));
         } else if (b.audio.source === "extract_from_visual") {
             _buildFrameParamSection(audioPickerWrap, b.audio, { title: "Frame sampling (legacy VHS path)" });
@@ -1011,6 +1017,49 @@ function _buildImageList(wrap, b, onFilesChange = null) {
         selPreviewImg.src = "";
     };
 
+    // ── Thumbnail strip ────────────────────────────────────────────────────────
+    // Shows all selected images as small clickable squares; active one is highlighted.
+    // Defined here (before listEl/_syncSelHighlight) because rebuildList() calls it.
+    const thumbsEl = _mk("div", { cls: "fbt-be-img-thumbs" });
+
+    const rebuildThumbs = () => {
+        thumbsEl.innerHTML = "";
+        b.visual.files.forEach((entry, i) => {
+            const f = _vfFile(entry);
+            const fileFolder = _S.mediaImagesOutput.includes(f) ? "output" : "input";
+            const thumb = _mk("div", { cls: "fbt-be-img-thumb" });
+            if (i === selIdx) thumb.classList.add("fbt-be-img-thumb-active");
+
+            const img = document.createElement("img");
+            img.src    = _viewUrl(f, fileFolder);
+            img.alt    = f.split("/").pop();
+            img.title  = f.split("/").pop();
+            thumb.appendChild(img);
+
+            const del = _mk("button", {
+                cls: "fbt-be-img-thumb-del", textContent: "✕", title: "Remove image",
+            });
+            del.addEventListener("click", e => {
+                e.stopPropagation();
+                b.visual.files.splice(i, 1);
+                if (selIdx >= b.visual.files.length) selIdx = Math.max(0, b.visual.files.length - 1);
+                rebuildList();
+                onFilesChange?.();
+            });
+            thumb.appendChild(del);
+
+            thumb.addEventListener("click", () => {
+                selIdx = i;
+                thumbsEl.querySelectorAll(".fbt-be-img-thumb").forEach((t, j) =>
+                    t.classList.toggle("fbt-be-img-thumb-active", j === i));
+                _syncSelHighlight();
+                _showSelPreview(f, fileFolder);
+            });
+
+            thumbsEl.appendChild(thumb);
+        });
+    };
+
     // ── Browse preview ─────────────────────────────────────────────────────────
     // Updates dynamically as the user hovers items in the tree browser.
     const browsePreviewImg = _mk("img", { cls: "fbt-be-img-preview", alt: "" });
@@ -1039,9 +1088,16 @@ function _buildImageList(wrap, b, onFilesChange = null) {
         }
     };
 
+    const _vfFile = v => (typeof v === "string" ? v : (v?.file ?? ""));
+    const _vfRole = v => (typeof v === "string" ? "character sheet" : (v?.role ?? "character sheet"));
+    const _vfIncludes = path => b.visual.files.some(v => _vfFile(v) === path);
+
+    // Normalize existing entries to {file, role} on first render (legacy plain strings)
+    b.visual.files = b.visual.files.map(v => typeof v === "string" ? { file: v, role: "character sheet" } : v);
+
     const _syncTree = () => {
         treeEl.querySelectorAll("[data-path]").forEach(el => {
-            el.classList.toggle("fbt-be-tree-file-sel", b.visual.files.includes(el.dataset.path));
+            el.classList.toggle("fbt-be-tree-file-sel", _vfIncludes(el.dataset.path));
         });
     };
 
@@ -1078,13 +1134,13 @@ function _buildImageList(wrap, b, onFilesChange = null) {
             const fileEl = _mk("div", { cls: "fbt-be-tree-file" });
             fileEl.dataset.path = path;
             fileEl.style.paddingLeft = (indent + 16) + "px";
-            fileEl.classList.toggle("fbt-be-tree-file-sel", b.visual.files.includes(path));
+            fileEl.classList.toggle("fbt-be-tree-file-sel", _vfIncludes(path));
             fileEl.appendChild(_mk("span", { cls: "fbt-be-tree-file-name", textContent: name, title: path }));
 
             fileEl.addEventListener("mouseenter", () => _showBrowsePreview(path, folder));
             fileEl.addEventListener("click", () => {
-                if (!b.visual.files.includes(path)) {
-                    b.visual.files.push(path);
+                if (!_vfIncludes(path)) {
+                    b.visual.files.push({ file: path, role: "character sheet" });
                     selIdx = b.visual.files.length - 1;
                     rebuildList();
                     onFilesChange?.();
@@ -1151,7 +1207,8 @@ function _buildImageList(wrap, b, onFilesChange = null) {
             _hideSelPreview();
         } else {
             selIdx = Math.max(0, Math.min(selIdx, b.visual.files.length - 1));
-            b.visual.files.forEach((f, i) => {
+            b.visual.files.forEach((entry, i) => {
+                const f = _vfFile(entry);
                 const row = _mk("div", { cls: "fbt-be-img-row" });
                 if (i === selIdx) row.classList.add("fbt-be-img-row-active");
 
@@ -1166,6 +1223,17 @@ function _buildImageList(wrap, b, onFilesChange = null) {
                     _showSelPreview(f, fileFolder);
                 });
                 row.appendChild(nameEl);
+
+                const roleSel = document.createElement("select");
+                roleSel.className = "fbt-ce-select fbt-be-sheet-role-sel";
+                SHEET_ROLES.forEach(r => {
+                    const o = document.createElement("option");
+                    o.value = r; o.textContent = r;
+                    if (r === _vfRole(entry)) o.selected = true;
+                    roleSel.appendChild(o);
+                });
+                roleSel.addEventListener("change", () => { b.visual.files[i] = { file: f, role: roleSel.value }; });
+                row.appendChild(roleSel);
 
                 const btns = _mk("span", { cls: "fbt-be-img-btns" });
                 if (i > 0) {
@@ -1204,11 +1272,12 @@ function _buildImageList(wrap, b, onFilesChange = null) {
             });
 
             // Keep selected preview in sync with selIdx
-            const selFile   = b.visual.files[selIdx];
+            const selFile   = _vfFile(b.visual.files[selIdx]);
             const selFolder = _S.mediaImagesOutput.includes(selFile) ? "output" : "input";
             _showSelPreview(selFile, selFolder);
         }
         _syncTree();
+        rebuildThumbs();
     };
 
     rebuildList();
@@ -1222,8 +1291,9 @@ function _buildImageList(wrap, b, onFilesChange = null) {
 
     // ── Outer layout ───────────────────────────────────────────────────────────
     const outer = _mk("div", { cls: "fbt-be-img-section" });
-    outer.appendChild(listEl);
+    outer.appendChild(thumbsEl);
     outer.appendChild(selPreviewImg);
+    outer.appendChild(listEl);
     outer.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: "Browse library" }));
     outer.appendChild(tabRow);
     outer.appendChild(browseHoverWrap);
@@ -1546,7 +1616,8 @@ function _buildAppearanceAnalyzer(b, appearEl) {
         };
 
         const rebuildPool = () => {
-            const pool = b.visual.files?.length ? b.visual.files : _S.mediaImages;
+            const rawPool = b.visual.files?.length ? b.visual.files : _S.mediaImages;
+            const pool = rawPool.map(v => (typeof v === "string" ? v : (v?.file ?? "")));
             const prev = imgSel.value;
             imgSel.innerHTML = "";
             const blank = document.createElement("option");
@@ -1737,6 +1808,8 @@ function _startNewSubject() {
         voice: { description: "", language: "English", audio_reference_file: "" },
         character_sheet_images: [],
         concept_id: "",
+        pronoun_style: "neutral",
+        short_name: "",
     };
     _S.subjectIsNew = true;
     _renderSubjectForm();
@@ -1877,9 +1950,37 @@ function _renderSubjectForm() {
         placeholder: "Concept ID (optional)", value: s.concept_id || "" });
     conceptEl.addEventListener("input", () => { s.concept_id = conceptEl.value.trim(); });
 
+    const PRONOUN_STYLES = [
+        ["neutral",   "they/their (default, non-binary or unknown)"],
+        ["feminine",  "she/her"],
+        ["masculine", "he/his"],
+        ["object",    "it/its (props, objects)"],
+        ["location",  "the [name]'s (rooms, environments)"],
+    ];
+    const pronounEl = document.createElement("select");
+    pronounEl.className = "fbt-ce-select";
+    PRONOUN_STYLES.forEach(([val, lbl]) => {
+        const o = document.createElement("option");
+        o.value = val; o.textContent = lbl;
+        if (val === (s.pronoun_style || "neutral")) o.selected = true;
+        pronounEl.appendChild(o);
+    });
+    pronounEl.addEventListener("change", () => {
+        s.pronoun_style = pronounEl.value;
+        shortNameRow.style.display = pronounEl.value === "location" ? "" : "none";
+    });
+    const shortNameEl = _mk("input", { cls: "fbt-ce-input", type: "text",
+        placeholder: "e.g. room, hallway, courtyard",
+        value: s.short_name || "" });
+    shortNameEl.addEventListener("input", () => { s.short_name = shortNameEl.value.trim(); });
+    const shortNameRow = _formRow("Short name", shortNameEl);
+    shortNameRow.style.display = (s.pronoun_style === "location") ? "" : "none";
+
     form.appendChild(_formRow("Name",    nameEl));
     form.appendChild(_formRow("ID",      idEl));
     form.appendChild(_formRow("Concept", conceptEl));
+    form.appendChild(_formRow("Pronouns", pronounEl));
+    form.appendChild(shortNameRow);
 
     // ── Appearance section ─────────────────────────────────────────────────────
     const appearSec = _mk("div", { cls: "fbt-be-section" });
@@ -1963,15 +2064,17 @@ function _renderSubjectForm() {
     SHEET_ROLES.forEach(r => {
         const o = document.createElement("option"); o.value = r; o.textContent = r; addRoleSel.appendChild(o);
     });
+    const _commitPendingImage = () => {
+        const fname = addInput.value.trim();
+        if (!fname) return;
+        s.character_sheet_images.push({ file: fname, role: addRoleSel.value });
+        addInput.value = "";
+        _renderSheetList();
+    };
     const addBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "+ Add",
-        onclick: () => {
-            const fname = addInput.value.trim();
-            if (!fname) return;
-            s.character_sheet_images.push({ file: fname, role: addRoleSel.value });
-            addInput.value = "";
-            _renderSheetList();
-        },
+        onclick: _commitPendingImage,
     });
+    addInput.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); _commitPendingImage(); } });
     sheetSec.appendChild(sheetListEl);
     sheetSec.appendChild(_mk("div", { cls: "fbt-be-sheet-add-row" }, [addInput, addDl, addRoleSel, addBtn]));
     form.appendChild(sheetSec);
@@ -1989,19 +2092,20 @@ function _renderSubjectForm() {
         placeholder: "Language (e.g. English)", value: s.voice.language || "" });
     voiceLangEl.addEventListener("input", () => { s.voice.language = voiceLangEl.value.trim(); });
 
-    const voiceAudioSel = document.createElement("select");
-    voiceAudioSel.className = "fbt-ce-select";
-    [{ v: "", l: "— no audio reference —" }, ..._S.mediaAudio.map(f => ({ v: f, l: f }))].forEach(({ v, l }) => {
-        const o = document.createElement("option");
-        o.value = v; o.textContent = l;
-        if (v === (s.voice.audio_reference_file || "")) o.selected = true;
-        voiceAudioSel.appendChild(o);
+    const audUid      = Math.random().toString(36).slice(2, 8);
+    const voiceAudioEl = _mk("input", { cls: "fbt-ce-input", type: "text",
+        placeholder: "Audio filename…", list: `fbt-aud-dl-${audUid}`,
+        value: s.voice.audio_reference_file || "" });
+    const voiceAudioDl = _mk("datalist", { id: `fbt-aud-dl-${audUid}` });
+    [..._S.mediaAudio, ..._S.mediaAudioOutput].forEach(f => {
+        const o = document.createElement("option"); o.value = f; voiceAudioDl.appendChild(o);
     });
-    voiceAudioSel.addEventListener("change", () => { s.voice.audio_reference_file = voiceAudioSel.value; });
+    voiceAudioEl.addEventListener("input", () => { s.voice.audio_reference_file = voiceAudioEl.value.trim(); });
 
     voiceSec.appendChild(_formRow("Description", voiceDescEl));
     voiceSec.appendChild(_formRow("Language",    voiceLangEl));
-    voiceSec.appendChild(_formRow("Audio ref.",  voiceAudioSel));
+    voiceSec.appendChild(_formRow("Audio ref.",  voiceAudioEl));
+    voiceSec.appendChild(voiceAudioDl);
     form.appendChild(voiceSec);
 
     // ── LLM Appearance Analysis (optional) ─────────────────────────────────────
@@ -2054,7 +2158,7 @@ function _renderSubjectForm() {
     const warnEl = _mk("div", { cls: "fbt-be-warn", style: { display: "none" } });
     const btnRow = _mk("div", { cls: "fbt-be-btn-row" });
     btnRow.appendChild(_mk("button", { cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Save",
-        onclick: () => _onSaveSubject(s, warnEl) }));
+        onclick: () => { _commitPendingImage(); _onSaveSubject(s, warnEl); } }));
     btnRow.appendChild(_mk("button", { cls: "fbt-ce-btn", textContent: "Cancel",
         onclick: () => _cancelSubjectEdit() }));
     if (!_S.subjectIsNew) {
@@ -2201,6 +2305,11 @@ export async function renderBundleEditor(el) {
 
     const panel = _mk("div", { cls: "fbt-be-panel" });
     panel.dataset.fbtEditor = "bundle";
+    // Prevent ComfyUI global keyboard shortcuts (w/a/etc.) from firing while
+    // the user types in any input field inside this panel.
+    panel.addEventListener("keydown",  e => e.stopPropagation());
+    panel.addEventListener("keyup",    e => e.stopPropagation());
+    panel.addEventListener("keypress", e => e.stopPropagation());
     _dom.content    = _mk("div", { cls: "fbt-be-content" });
     _dom.pagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
 

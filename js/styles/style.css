@@ -2159,6 +2159,28 @@ body.fbt-llm-loaded
     color: var(--p-surface-400, #888);
 }
 
+.fbt-be-sec-sublabel {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--p-surface-300, #aaa);
+    margin-top: 4px;
+}
+
+.fbt-be-default-mode-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-color, #333);
+}
+
+.fbt-be-default-mode-label {
+    font-size: 11px;
+    color: var(--p-surface-400, #888);
+    flex-shrink: 0;
+}
+
 .fbt-be-toggle-row {
     display: flex;
     gap: 0;
@@ -2299,6 +2321,76 @@ body.fbt-llm-loaded
     text-decoration: underline;
 }
 
+/* ── Thumbnail strip ─────────────────────────────────────────────────────────── */
+
+.fbt-be-img-thumbs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 2px 0 4px;
+    min-height: 0;
+}
+
+.fbt-be-img-thumb {
+    position: relative;
+    width: 68px;
+    height: 68px;
+    flex-shrink: 0;
+    border: 2px solid var(--border-color, #333);
+    border-radius: 4px;
+    overflow: hidden;
+    cursor: pointer;
+    background: var(--comfy-input-bg, #1a1a1a);
+    transition: border-color 0.1s;
+}
+
+.fbt-be-img-thumb:hover {
+    border-color: var(--p-surface-400, #888);
+}
+
+.fbt-be-img-thumb.fbt-be-img-thumb-active {
+    border-color: var(--p-primary-400, #4af);
+    box-shadow: 0 0 0 1px var(--p-primary-400, #4af);
+}
+
+.fbt-be-img-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    pointer-events: none;
+}
+
+.fbt-be-img-thumb-del {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 17px;
+    height: 17px;
+    font-size: 9px;
+    line-height: 1;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(200, 50, 50, 0.9);
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s;
+    z-index: 1;
+}
+
+.fbt-be-img-thumb:hover .fbt-be-img-thumb-del {
+    opacity: 1;
+}
+
+.fbt-be-img-thumb-del:hover {
+    background: rgba(220, 30, 30, 1);
+}
+
 /* ── Image tree browser ─────────────────────────────────────────────────────── */
 
 .fbt-be-tree-tab-row {
@@ -2329,6 +2421,42 @@ body.fbt-llm-loaded
 .fbt-be-tree-tab.active {
     color: var(--p-primary-400, #4af);
     border-bottom-color: var(--p-primary-400, #4af);
+}
+
+.fbt-be-tree-search {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 3px 6px;
+    margin: 3px 0 2px;
+    font-size: 11px;
+    background: var(--comfy-input-bg, #1a1a1a);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 3px;
+    color: var(--fg-color, #ddd);
+    outline: none;
+}
+
+.fbt-be-tree-search:focus {
+    border-color: var(--p-blue-400, #60a5fa);
+}
+
+.fbt-be-tree-search::placeholder {
+    color: var(--p-surface-400, #666);
+}
+
+.fbt-be-tree-file-flat {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.fbt-be-tree-file-subpath {
+    font-size: 10px;
+    color: var(--p-surface-400, #777);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-left: 16px;
 }
 
 .fbt-be-tree {
