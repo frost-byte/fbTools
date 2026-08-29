@@ -35,7 +35,45 @@ const PASS_LABELS = {
     custom:     "Custom",
 };
 
-const CAPTIONER_TYPES = ["qwen_vl", "qwen_omni", "gemini_flash"];
+const CAPTIONER_TYPES = ["auto", "qwen_vl", "qwen_omni", "gemini_flash"];
+
+const PASS_DEFAULT_PROMPTS = {
+    people:
+        "Examine this image carefully. Identify every distinct person visible.\n\n" +
+        "For each person:\n" +
+        "- Disambiguate them by position, clothing colour, or prominent feature " +
+        "(e.g. 'woman in blue top, stage left', 'man seated at table, background right').\n" +
+        "- role_description: 1-2 sentences describing their appearance and position in the scene.\n" +
+        "- entity_type must be 'person'.",
+    setting:
+        "Examine the environment and setting of this image. Identify the location and its " +
+        "distinct visual elements — room type, architecture, furniture layout, lighting quality, " +
+        "colour palette, time of day, weather if visible.\n\n" +
+        "Treat the overall setting as one subject labelled by the most specific location name " +
+        "you can give ('corner booth in a dimly-lit diner', not just 'restaurant').\n" +
+        "If distinct sub-zones are visible (foreground vs background, stage vs audience), " +
+        "list them as separate subjects.\n" +
+        "entity_type must be 'location'.",
+    soundscape:
+        "This image is a frame from a video. Based on the visual cues visible — " +
+        "instruments, speakers, crowds, machinery, natural environment, signage — " +
+        "infer what audio layers are likely present in the original video.\n\n" +
+        "List each distinct audio layer as a separate subject " +
+        "(e.g. 'ambient cafe chatter', 'acoustic guitar performance', 'traffic from open window').\n" +
+        "entity_type must be 'soundscape'.",
+    objects:
+        "Examine this image for significant objects and props. Focus on items that are " +
+        "visually prominent, narratively important, or that a director would specifically " +
+        "reference when describing the scene (e.g. 'the red suitcase', 'the vintage typewriter', " +
+        "'the chess board on the table').\n\n" +
+        "Exclude generic furniture unless it is a featured prop. " +
+        "entity_type must be 'object'.",
+    animals:
+        "Examine this image for any animals. Identify each distinct animal visible, " +
+        "including pets, wildlife, birds, fish in tanks, insects if prominent.\n\n" +
+        "entity_type must be 'animal'.",
+    custom: "(No default — enter your full prompt above.)",
+};
 
 const CLIP_COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#ec4899"];
 
@@ -47,17 +85,23 @@ const _S = {
     mediaImages:    [],
     mediaVideosOut: [],
     mediaImagesOut: [],
+    lorasList:      [],     // LoRA filenames from /fbtools/loras/list
     filterText:     "",
     selected:       null,   // profile id currently open in detail view
     editingSubject: null,   // {idx, data} or null (new = idx === -1)
     analyzeOpen:    false,
     analyzePassType: "people",
     analyzePromptOverride: "",
-    analyzeCaptioner: "qwen_vl",
+    analyzeCaptioner: "auto",
     analyzeRunning:  false,
     analyzeCandidates: [],
     analyzeHistory:  [],
+    analyzeClipIdx:  null,   // index into profile.clips, or null for single-frame mode
+    analyzeMaxFrames: 20,
+    analyzeSelectNth: 1,
     historyOpen:     false,
+    settingsOpen:    true,
+    subjectsOpen:    true,
 };
 
 const _dom = {};
@@ -109,18 +153,20 @@ function _allMedia(type, dir) {
 // ── Data load ─────────────────────────────────────────────────────────────────
 
 async function _loadAll() {
-    const [pr, vIn, vOut, iIn, iOut] = await Promise.allSettled([
+    const [pr, vIn, vOut, iIn, iOut, lorasRes] = await Promise.allSettled([
         sourceProfilesApi.list(),
-        bundlesApi.listMedia("video", false, "input"),
-        bundlesApi.listMedia("video", false, "output"),
-        bundlesApi.listMedia("image", false, "input"),
-        bundlesApi.listMedia("image", false, "output"),
+        bundlesApi.listMedia("video", true, "input"),
+        bundlesApi.listMedia("video", true, "output"),
+        bundlesApi.listMedia("image", true, "input"),
+        bundlesApi.listMedia("image", true, "output"),
+        fetch("/fbtools/loras/list").then(r => r.json()),
     ]);
     _S.profiles       = pr.value?.profiles    ?? [];
     _S.mediaVideos    = vIn.value?.files      ?? [];
     _S.mediaVideosOut = vOut.value?.files     ?? [];
     _S.mediaImages    = iIn.value?.files      ?? [];
     _S.mediaImagesOut = iOut.value?.files     ?? [];
+    _S.lorasList      = lorasRes.value?.loras ?? [];
 }
 
 async function _loadHistory(profileId) {
@@ -270,10 +316,45 @@ const _CSS = `
     border:1px solid var(--p-surface-border,#555);
     background:var(--p-surface-ground,#1a1a1a); color:var(--p-text-color,#eee); font-size:12px;
     resize:vertical; margin-bottom:6px; }
+.spe-clip-field-label { font-size:11px; color:var(--p-text-muted-color,#888); margin-bottom:2px; }
 .spe-clip-subj-list { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
 .spe-clip-subj-check { display:flex; align-items:center; gap:4px; font-size:11px;
     cursor:pointer; color:var(--p-text-color,#eee); }
 .spe-clips-det-note { font-size:11px; color:#fbbf24; margin-top:4px; }
+.spe-clips-llm-note { font-size:11px; color:var(--p-text-muted-color,#888); flex:1; }
+.spe-clip-nav { display:flex; align-items:center; justify-content:center; gap:8px; margin-bottom:6px; }
+.spe-clip-nav-label { font-size:12px; color:var(--p-text-muted-color,#888); min-width:60px; text-align:center; }
+
+/* Clip LoRA editor */
+.spe-lora-section { margin-top:6px; border-top:1px solid var(--p-surface-border,#333); padding-top:6px; }
+.spe-lora-header { display:flex; align-items:center; justify-content:space-between;
+    font-size:11px; color:var(--p-text-muted-color,#888); margin-bottom:4px; }
+.spe-lora-header span { font-weight:600; }
+.spe-lora-row { display:flex; gap:4px; align-items:center; margin-bottom:3px; }
+.spe-lora-name { flex:1; padding:3px 5px; border-radius:3px; font-size:11px;
+    border:1px solid var(--p-surface-border,#555);
+    background:var(--p-surface-ground,#1a1a1a); color:var(--p-text-color,#eee); }
+.spe-lora-strength { width:56px; padding:3px 5px; border-radius:3px; font-size:11px;
+    border:1px solid var(--p-surface-border,#555);
+    background:var(--p-surface-ground,#1a1a1a); color:var(--p-text-color,#eee); }
+.spe-lora-rm { background:transparent; border:none; color:var(--p-red-400,#f87171);
+    cursor:pointer; font-size:13px; padding:0 3px; line-height:1; }
+.spe-lora-rm:hover { color:var(--p-red-300,#fca5a5); }
+.spe-lora-empty { font-size:11px; color:var(--p-text-muted-color,#666);
+    font-style:italic; margin-bottom:3px; }
+.spe-lora-add { background:transparent; border:1px dashed var(--p-surface-border,#444);
+    border-radius:3px; width:100%; padding:2px 0; font-size:11px;
+    color:var(--p-blue-400,#60a5fa); cursor:pointer; margin-top:2px; }
+.spe-lora-add:hover { border-color:var(--p-blue-400,#60a5fa); }
+
+/* LoRA name dropdown (fixed-position, appended to body) */
+.spe-lora-dropdown { position:fixed; background:var(--p-surface-d,#2a2a2a);
+    border:1px solid var(--p-surface-border,#555); border-radius:4px;
+    max-height:200px; overflow-y:auto; z-index:9999; box-shadow:0 4px 12px rgba(0,0,0,.4); }
+.spe-lora-dd-item { padding:4px 8px; font-size:11px; cursor:pointer;
+    color:var(--p-text-color,#eee); white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; }
+.spe-lora-dd-item:hover, .spe-lora-dd-item.active { background:var(--p-primary-color,#3b82f6); color:#fff; }
 `;
 
 function _injectCSS() {
@@ -299,7 +380,7 @@ function _fmtT(sec) {
     return (Math.round(sec * 10) / 10).toFixed(1) + "s";
 }
 
-function _drawTimeline(canvas, clips, suggestions, totalDuration) {
+function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1, dirtyIds = null) {
     const W = canvas.width;
     const H = canvas.height;
     const ctx = canvas.getContext("2d");
@@ -317,15 +398,34 @@ function _drawTimeline(canvas, clips, suggestions, totalDuration) {
         const x1 = toX(clip.start_time);
         const x2 = toX(clip.end_time);
         const col = CLIP_COLORS[i % CLIP_COLORS.length];
-        ctx.fillStyle = col + "33";
+        const isActive = i === activeIdx;
+        ctx.fillStyle = isActive ? col + "55" : col + "22";
         ctx.fillRect(x1, BAND_TOP, x2 - x1, BAND_BOT - BAND_TOP);
         ctx.strokeStyle = col;
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = isActive ? 2.5 : 1;
         ctx.strokeRect(x1 + 0.5, BAND_TOP + 0.5, x2 - x1 - 1, BAND_BOT - BAND_TOP - 1);
+        // Active indicator: small filled triangle above the band
+        if (isActive) {
+            const mid = (x1 + x2) / 2;
+            ctx.fillStyle = col;
+            ctx.beginPath();
+            ctx.moveTo(mid - 5, BAND_TOP - 1);
+            ctx.lineTo(mid + 5, BAND_TOP - 1);
+            ctx.lineTo(mid, BAND_TOP + 6);
+            ctx.closePath();
+            ctx.fill();
+        }
+        // Dirty indicator: small amber dot inside band bottom-right
+        if (dirtyIds?.has(clip.id)) {
+            ctx.fillStyle = "#f59e0b";
+            ctx.beginPath();
+            ctx.arc(x2 - 6, BAND_BOT - 5, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
         // Label
         const label = clip.label || `Clip ${i + 1}`;
-        ctx.fillStyle = "#ddd";
-        ctx.font = "10px sans-serif";
+        ctx.fillStyle = isActive ? "#fff" : "#aaa";
+        ctx.font = isActive ? "bold 10px sans-serif" : "10px sans-serif";
         ctx.textAlign = "center";
         const mid = (x1 + x2) / 2;
         const maxW = x2 - x1 - 6;
@@ -376,7 +476,172 @@ function _drawTimeline(canvas, clips, suggestions, totalDuration) {
     }
 }
 
-function _renderClipsSection(container, profile, onClipsChanged) {
+// ── Clip LoRA editor ──────────────────────────────────────────────────────────
+
+function _loraDisplayName(val) {
+    return val ? val.replace(/\.[^.]+$/, "").split(/[\\/]/).pop() : "";
+}
+
+function _makeLoraNameInput(currentValue, onChange) {
+    let selected = currentValue || "";
+    let dropdown = null;
+
+    const wrap  = _mk("div", { style: { flex: "1", position: "relative" } });
+    const input = _mk("input", {
+        cls: "spe-lora-name",
+        type: "text",
+        placeholder: "— select LoRA —",
+        value: _loraDisplayName(selected),
+        autocomplete: "off",
+    });
+    input.setAttribute("spellcheck", "false");
+    wrap.appendChild(input);
+
+    function _close() {
+        dropdown?.remove();
+        dropdown = null;
+        input.value = _loraDisplayName(selected);
+    }
+
+    function _open(query) {
+        dropdown?.remove();
+        const q = query.trim().toLowerCase();
+        const matches = q
+            ? _S.lorasList.filter(n => n.toLowerCase().includes(q))
+            : _S.lorasList;
+
+        const list = _mk("div", { cls: "spe-lora-dropdown" });
+        if (!q) {
+            const none = _mk("div", { cls: "spe-lora-dd-item" + (!selected ? " active" : ""),
+                textContent: "— none —" });
+            none.addEventListener("mousedown", e => {
+                e.preventDefault();
+                selected = "";
+                _close();
+                onChange("");
+            });
+            list.appendChild(none);
+        }
+        if (!matches.length && q) {
+            list.appendChild(_mk("div", { cls: "spe-lora-dd-item", textContent: "No matches" }));
+        }
+        matches.forEach(n => {
+            const item = _mk("div", {
+                cls: "spe-lora-dd-item" + (n === selected ? " active" : ""),
+                title: n,
+                textContent: _loraDisplayName(n),
+            });
+            item.addEventListener("mousedown", e => {
+                e.preventDefault();
+                selected = n;
+                _close();
+                onChange(n);
+            });
+            list.appendChild(item);
+        });
+
+        const rect = input.getBoundingClientRect();
+        Object.assign(list.style, {
+            left:  `${rect.left}px`,
+            top:   `${rect.bottom + 2}px`,
+            width: `${Math.max(rect.width, 180)}px`,
+        });
+        document.body.appendChild(list);
+        dropdown = list;
+        list.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+    }
+
+    input.addEventListener("focus",  ()  => _open(""));
+    input.addEventListener("input",  ()  => _open(input.value));
+    input.addEventListener("blur",   ()  => setTimeout(_close, 150));
+    input.addEventListener("keydown", e => {
+        if (!dropdown) return;
+        const items = Array.from(dropdown.querySelectorAll(".spe-lora-dd-item"));
+        let idx = items.findIndex(el => el.classList.contains("active"));
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            items[idx]?.classList.remove("active");
+            items[Math.min(idx + 1, items.length - 1)]?.classList.add("active");
+            dropdown.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            items[idx]?.classList.remove("active");
+            items[Math.max(idx - 1, 0)]?.classList.add("active");
+            dropdown.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+        } else if (e.key === "Enter") {
+            e.preventDefault();
+            dropdown.querySelector(".active")?.dispatchEvent(new MouseEvent("mousedown"));
+        } else if (e.key === "Escape") {
+            e.stopPropagation();
+            _close();
+        }
+    });
+
+    return wrap;
+}
+
+function _buildClipLoraSection(clip, onCommit) {
+    const section = _mk("div", { cls: "spe-lora-section" });
+    const header  = _mk("div", { cls: "spe-lora-header" }, [
+        _mk("span", {}, ["LoRAs"]),
+    ]);
+
+    const listEl = _mk("div");
+    section.appendChild(header);
+    section.appendChild(listEl);
+
+    function _rebuild() {
+        listEl.innerHTML = "";
+        const loras = clip.loras || [];
+        if (!loras.length) {
+            listEl.appendChild(_mk("div", { cls: "spe-lora-empty" }, ["No LoRAs attached."]));
+        }
+        loras.forEach((entry, i) => {
+            const nameWrap = _makeLoraNameInput(entry.name, val => {
+                loras[i] = { ...loras[i], name: val };
+                clip.loras = loras;
+                onCommit();
+            });
+
+            const strengthInp = _mk("input", {
+                cls: "spe-lora-strength",
+                type: "number", min: 0, max: 2, step: 0.05,
+                value: entry.strength_model ?? 1.0,
+                title: "Strength (applied to both model and clip)",
+            });
+            strengthInp.addEventListener("change", () => {
+                const v = parseFloat(strengthInp.value) || 1.0;
+                loras[i] = { ...loras[i], strength_model: v, strength_clip: v };
+                clip.loras = loras;
+                onCommit();
+            });
+
+            const rmBtn = _mk("button", { cls: "spe-lora-rm", title: "Remove", textContent: "✕" });
+            rmBtn.addEventListener("click", () => {
+                loras.splice(i, 1);
+                clip.loras = loras;
+                onCommit();
+                _rebuild();
+            });
+
+            listEl.appendChild(_mk("div", { cls: "spe-lora-row" }, [nameWrap, strengthInp, rmBtn]));
+        });
+
+        const addBtn = _mk("button", { cls: "spe-lora-add", textContent: "+ Add LoRA" });
+        addBtn.addEventListener("click", () => {
+            loras.push({ name: "", strength_model: 1.0, strength_clip: 1.0 });
+            clip.loras = loras;
+            onCommit();
+            _rebuild();
+        });
+        listEl.appendChild(addBtn);
+    }
+
+    _rebuild();
+    return section;
+}
+
+function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, onSelect = null) {
     const wrap = _mk("div", { cls: "spe-clips" });
     container.appendChild(wrap);
 
@@ -384,8 +649,12 @@ function _renderClipsSection(container, profile, onClipsChanged) {
     let suggestions = [];
     let detecting = false;
     let autoSegRunning = false;
-    let clipsCaptioner = "qwen_vl";
+    let useGeminiForClips = false;  // when true, sends captioner_type="gemini_flash"
     let videoDuration = 0;
+    let activeClipIdx = 0;
+    let detectFlags = { camera_cuts: true, subject_changes: false, lower_threshold: false };
+    let detectPromptOverride = "";
+    let lastRawResponse = "";
     let hiddenVideo = null;
     let clips = [...(profile.clips || [])];
 
@@ -430,6 +699,21 @@ function _renderClipsSection(container, profile, onClipsChanged) {
     segDurInput = _mk("input", { type: "number", placeholder: "10", min: 1, step: 0.5,
         value: (profile.default_segment_duration ?? 10).toFixed(1) });
 
+    // Proxy short-edge selector — must be a multiple of 32 for H3 compatibility
+    const _PROXY_EDGES = [480, 576, 640, 768, 1080];
+    const proxyEdgeSel = _mk("select", { cls: "spe-clip-sel",
+        title: "Proxy video resolution (shorter edge). Must be a multiple of 32. Lower = faster; 768 recommended for H3 reference." });
+    _PROXY_EDGES.forEach(v => {
+        const o = _mk("option", { value: String(v) }, [String(v) + "px"]);
+        if (v === (profile.proxy_short_edge ?? 768)) o.selected = true;
+        proxyEdgeSel.appendChild(o);
+    });
+    proxyEdgeSel.addEventListener("change", () => {
+        profile.proxy_short_edge = parseInt(proxyEdgeSel.value, 10);
+        // Persist immediately so the next proxy build uses the new value
+        sourceProfilesApi.save(profile).catch(err => _toast(`Save failed: ${err.message}`, "error"));
+    });
+
     const autoSegBtn = _mk("button", { cls: "spe-btn sm", onclick: runAutoSegment }, ["Auto-segment"]);
 
     body.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
@@ -437,23 +721,77 @@ function _renderClipsSection(container, profile, onClipsChanged) {
         _mk("label", {}, ["Seg (s):"]), segDurInput,
         autoSegBtn,
     ]));
+    body.appendChild(_mk("div", { cls: "spe-clips-toolbar", style: { marginTop: "4px" } }, [
+        _mk("label", { title: "Proxy resolution — shorter edge in pixels (must be ÷32)" }, ["Proxy edge:"]),
+        proxyEdgeSel,
+    ]));
 
-    // Detect row
-    const captEl = _mk("select");
-    CAPTIONER_TYPES.forEach(c => {
-        const o = _mk("option", { value: c }, [c]);
-        if (c === clipsCaptioner) o.selected = true;
-        captEl.appendChild(o);
-    });
-    captEl.onchange = () => { clipsCaptioner = captEl.value; };
+    // Detect row — status note shows which backend will be used
+    const llmStatus = window._fbtGetLlmStatus?.() || {};
+    const llmName   = llmStatus.loaded || null;
+    const llmNote   = _mk("span", { cls: "spe-clips-llm-note" },
+        [llmName && llmStatus.vision
+            ? `LLM: ${llmName.length > 24 ? llmName.slice(0, 22) + "…" : llmName} ✓`
+            : "LLM: none — will use qwen_vl (8-bit)"]);
+
+    const geminiCb  = _mk("input", { type: "checkbox", id: "spe-gemini-cb-" + (profile.id || "new") });
+    geminiCb.onchange = () => { useGeminiForClips = geminiCb.checked; };
+    const geminiLbl = _mk("label", { htmlFor: geminiCb.id, style: { fontSize: "11px" } }, ["Gemini"]);
 
     const detectBtn = _mk("button", { cls: "spe-btn sm ghost", onclick: runDetect }, ["Detect boundaries"]);
     const detectSpinner = _mk("span", { style: { fontSize: "11px", color: "#888", display: "none" } }, [" Detecting…"]);
     let detNoteEl = null;
 
     body.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
-        _mk("label", {}, ["Captioner:"]), captEl, detectBtn, detectSpinner,
+        llmNote, geminiCb, geminiLbl, detectBtn, detectSpinner,
     ]));
+
+    // Detect flags row
+    const _mkFlagCb = (key, label, defaultOn) => {
+        const cb  = _mk("input", { type: "checkbox", id: `spe-flag-${key}-${profile.id || "new"}` });
+        cb.checked = defaultOn;
+        cb.onchange = () => { detectFlags[key] = cb.checked; };
+        const lbl = _mk("label", { htmlFor: cb.id, style: { fontSize: "11px" } }, [label]);
+        return [cb, lbl];
+    };
+    const [camCb, camLbl]     = _mkFlagCb("camera_cuts",    "Camera cuts",     true);
+    const [subjCb, subjLbl]   = _mkFlagCb("subject_changes","Subject changes",  false);
+    const [lowCb, lowLbl]     = _mkFlagCb("lower_threshold","More boundaries",  false);
+    body.appendChild(_mk("div", { cls: "spe-clips-toolbar", style: { flexWrap: "wrap", gap: "6px" } }, [
+        _mk("span", { style: { fontSize: "11px", color: "#888" } }, ["Flags:"]),
+        camCb, camLbl, subjCb, subjLbl, lowCb, lowLbl,
+    ]));
+
+    // Prompt override textarea (collapsible)
+    const promptToggle = _mk("button", { cls: "spe-btn sm ghost", style: { fontSize: "11px" } }, ["▸ Prompt override"]);
+    const promptWrap   = _mk("div", { style: { display: "none", marginTop: "4px" } });
+    const promptTa     = _mk("textarea", { placeholder: "Leave empty to use flags above…",
+        rows: 4, style: { width: "100%", fontSize: "11px", resize: "vertical",
+                          background: "var(--bg2)", color: "var(--fg)", border: "1px solid var(--border)",
+                          borderRadius: "4px", padding: "4px", boxSizing: "border-box" } });
+    promptTa.oninput = () => { detectPromptOverride = promptTa.value; };
+    promptWrap.appendChild(promptTa);
+    promptToggle.onclick = () => {
+        const open = promptWrap.style.display === "none";
+        promptWrap.style.display = open ? "block" : "none";
+        promptToggle.textContent = (open ? "▾ " : "▸ ") + "Prompt override";
+    };
+    body.appendChild(_mk("div", { style: { padding: "2px 0" } }, [promptToggle, promptWrap]));
+
+    // Raw response section (shown after detection)
+    const rawWrap = _mk("div", { style: { display: "none", marginTop: "6px" } });
+    const rawToggle = _mk("button", { cls: "spe-btn sm ghost", style: { fontSize: "11px" } }, ["▸ Raw VLM response"]);
+    const rawPre    = _mk("pre", { style: { fontSize: "10px", whiteSpace: "pre-wrap", wordBreak: "break-all",
+        maxHeight: "180px", overflowY: "auto", background: "var(--bg2)", padding: "6px",
+        border: "1px solid var(--border)", borderRadius: "4px", marginTop: "4px", display: "none" } });
+    rawToggle.onclick = () => {
+        const open = rawPre.style.display === "none";
+        rawPre.style.display = open ? "block" : "none";
+        rawToggle.textContent = (open ? "▾ " : "▸ ") + "Raw VLM response";
+    };
+    rawWrap.appendChild(rawToggle);
+    rawWrap.appendChild(rawPre);
+    body.appendChild(rawWrap);
 
     // ── Timeline canvas ───────────────────────────────────────────────────────
     const canvasWrap = _mk("div", { cls: "spe-timeline-wrap" });
@@ -472,6 +810,30 @@ function _renderClipsSection(container, profile, onClipsChanged) {
     body.appendChild(addClipBtn);
 
     // ── Toggle ────────────────────────────────────────────────────────────────
+    // ── Build-all-proxies button (sits in the title row) ─────────────────────
+    const buildAllBtn = _mk("button", { cls: "spe-btn sm ghost",
+        title: "Pre-build proxies for all clips in this profile",
+        style: { marginRight: "4px" },
+        onclick: async e => {
+            e.stopPropagation();
+            buildAllBtn.disabled = true;
+            buildAllBtn.textContent = "building…";
+            try {
+                const res = await sourceProfilesApi.prebuildProxies({ profile_id: profile.id });
+                const n = res.clip_count || 0;
+                _toast(`Building ${n} proxy clip${n !== 1 ? "s" : ""} in background`, "info");
+                // Refresh status after estimated completion time (rough: 5s/clip)
+                const delay = Math.max(4000, n * 5000);
+                setTimeout(() => _refreshProxyStatus(), delay);
+            } catch (err) {
+                _toast(`Proxy build failed: ${err.message}`, "error");
+            } finally {
+                buildAllBtn.disabled = false;
+                buildAllBtn.textContent = "build proxies";
+            }
+        } }, ["build proxies"]);
+    titleRow.insertBefore(buildAllBtn, chevron);
+
     titleRow.onclick = () => {
         clipsOpen = !clipsOpen;
         body.classList.toggle("collapsed", !clipsOpen);
@@ -479,6 +841,7 @@ function _renderClipsSection(container, profile, onClipsChanged) {
         if (clipsOpen) {
             probeDuration();
             requestAnimationFrame(redraw);
+            _refreshProxyStatus();
         } else {
             if (hiddenVideo) { hiddenVideo.remove(); hiddenVideo = null; }
         }
@@ -487,7 +850,7 @@ function _renderClipsSection(container, profile, onClipsChanged) {
     // ── Redraw ────────────────────────────────────────────────────────────────
     function redraw() {
         canvas.width = canvas.offsetWidth || 380;
-        _drawTimeline(canvas, clips, suggestions, getTotalDuration());
+        _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx, new Set(clips.filter(_isProxyDirty).map(c => c.id)));
         renderClipList();
     }
 
@@ -509,12 +872,27 @@ function _renderClipsSection(container, profile, onClipsChanged) {
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const totalDur = getTotalDuration() || 1;
-        let over = false;
+        let overHandle = false;
         for (let i = 1; i < clips.length; i++) {
             const hx = (clips[i].start_time / totalDur) * canvas.offsetWidth;
-            if (Math.abs(x - hx) <= 8) { over = true; break; }
+            if (Math.abs(x - hx) <= 8) { overHandle = true; break; }
         }
-        canvas.style.cursor = over ? "col-resize" : "default";
+        if (overHandle) {
+            canvas.style.cursor = "col-resize";
+        } else {
+            // Show pointer when hovering over any clip band
+            const BAND_TOP = 10, BAND_BOT = canvas.height - 20;
+            const y = e.clientY - rect.top;
+            let overBand = false;
+            if (y >= BAND_TOP && y <= BAND_BOT) {
+                for (let i = 0; i < clips.length; i++) {
+                    const x1 = (clips[i].start_time / totalDur) * canvas.offsetWidth;
+                    const x2 = (clips[i].end_time / totalDur) * canvas.offsetWidth;
+                    if (x >= x1 && x <= x2) { overBand = true; break; }
+                }
+            }
+            canvas.style.cursor = overBand ? "pointer" : "default";
+        }
         if (!_drag) return;
         const i = _drag.i;
         const t = Math.round(((x / canvas.offsetWidth) * totalDur) * 10) / 10;
@@ -525,23 +903,131 @@ function _renderClipsSection(container, profile, onClipsChanged) {
           : j === i     ? { ...c, start_time: clamped }
           : c);
         canvas.width = canvas.offsetWidth;
-        _drawTimeline(canvas, clips, suggestions, totalDur);
+        _drawTimeline(canvas, clips, suggestions, totalDur, activeClipIdx, new Set(clips.filter(_isProxyDirty).map(c => c.id)));
     });
 
-    const endDrag = () => {
+    canvas.addEventListener("mouseup", e => {
+        if (_drag) {
+            // End boundary drag
+            const dragI = _drag.i;
+            _drag = null;
+            profile.clips = clips;
+            onClipsChanged(clips);
+            [dragI - 1, dragI].forEach(j => { if (clips[j]) _markTimesDirty(j); });
+            renderClipList();
+            return;
+        }
+        // No drag — treat as a click to select a clip band
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const totalDur = getTotalDuration() || 1;
+        for (let i = 0; i < clips.length; i++) {
+            const x1 = (clips[i].start_time / totalDur) * canvas.offsetWidth;
+            const x2 = (clips[i].end_time / totalDur) * canvas.offsetWidth;
+            if (x >= x1 && x <= x2) {
+                activeClipIdx = i;
+                redraw();
+                onSelect?.(clips[i].start_time);
+                break;
+            }
+        }
+    });
+    canvas.addEventListener("mouseleave", () => {
         if (!_drag) return;
+        const dragI = _drag.i;
         _drag = null;
         profile.clips = clips;
         onClipsChanged(clips);
+        [dragI - 1, dragI].forEach(j => { if (clips[j]) _markTimesDirty(j); });
         renderClipList();
-    };
-    canvas.addEventListener("mouseup", endDrag);
-    canvas.addEventListener("mouseleave", endDrag);
+    });
 
-    // ── Clip list render ──────────────────────────────────────────────────────
+    // ── Proxy status helpers ──────────────────────────────────────────────────
+    let _proxyStatusMap = {}; // clip_id → { fresh: bool }
+
+    // A clip is dirty when its timing was changed after the proxy was last built.
+    // Both timestamps are ISO strings stored on the clip object itself and
+    // persisted via _persistClip, so the state survives panel close/reopen.
+    function _isProxyDirty(clip) {
+        if (!clip.times_changed_at) return false;
+        if (!clip.proxy_built_at)   return true;
+        return clip.times_changed_at > clip.proxy_built_at;
+    }
+
+    // Mark a clip's timing as changed and persist the timestamp immediately.
+    function _markTimesDirty(idx) {
+        const now = new Date().toISOString();
+        clips[idx] = { ...clips[idx], times_changed_at: now };
+        profile.clips = clips;
+        _persistClip(clips[idx]);
+    }
+
+    async function _refreshProxyStatus() {
+        if (!profile.id) return;
+        try {
+            const res = await sourceProfilesApi.proxyStatus(profile.id);
+            _proxyStatusMap = {};
+            const now = new Date().toISOString();
+            (res.clips || []).forEach(c => {
+                _proxyStatusMap[c.clip_id] = c;
+                if (c.fresh) {
+                    const idx = clips.findIndex(cl => cl.id === c.clip_id);
+                    if (idx >= 0 && !_isProxyDirty(clips[idx])) {
+                        clips[idx] = { ...clips[idx], proxy_built_at: now };
+                        profile.clips = clips;
+                        _persistClip(clips[idx]);
+                    }
+                }
+            });
+            renderClipList();
+        } catch { /* silent — proxy status is informational */ }
+    }
+
+    function _isProxyDirtyById(clip_id) {
+        const clip = clips.find(c => c.id === clip_id);
+        return clip ? _isProxyDirty(clip) : false;
+    }
+
+    function _proxyBadgeEl(clip_id) {
+        const dirty = _isProxyDirtyById(clip_id);
+        const info  = _proxyStatusMap[clip_id];
+        const span  = _mk("span", { style: {
+            fontSize: "9px", padding: "1px 5px", borderRadius: "3px",
+            fontWeight: "600", letterSpacing: "0.04em",
+            background: dirty          ? "var(--p-amber-800,#78350f)"
+                       : info == null  ? "transparent"
+                       : info.fresh    ? "var(--p-green-800,#166534)"
+                                       : "var(--p-surface-600,#555)",
+            color:      dirty          ? "var(--p-amber-300,#fcd34d)"
+                       : info == null  ? "transparent"
+                       : info.fresh    ? "var(--p-green-300,#86efac)"
+                                       : "var(--p-surface-200,#ccc)",
+        }}, [dirty ? "needs rebuild" : info == null ? "" : info.fresh ? "proxy ready" : "no proxy"]);
+        return span;
+    }
+
+    // ── Clip list render — shows one clip at a time ───────────────────────────
     function renderClipList() {
         listEl.innerHTML = "";
-        clips.forEach((clip, i) => {
+        if (!clips.length) return;
+
+        // Clamp in case clips were removed
+        activeClipIdx = Math.max(0, Math.min(activeClipIdx, clips.length - 1));
+        const i = activeClipIdx;
+
+        // Nav bar: ← Segment N / M →
+        const prevBtn = _mk("button", { cls: "spe-btn sm ghost" }, ["←"]);
+        const nextBtn = _mk("button", { cls: "spe-btn sm ghost" }, ["→"]);
+        if (i === 0)               prevBtn.disabled = true;
+        if (i === clips.length - 1) nextBtn.disabled = true;
+        const navLabel = _mk("span", { cls: "spe-clip-nav-label" },
+            [`${clips[i].label || "Segment " + (i + 1)}  (${i + 1}/${clips.length})`]);
+        prevBtn.onclick = () => { activeClipIdx = Math.max(0, i - 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
+        nextBtn.onclick = () => { activeClipIdx = Math.min(clips.length - 1, i + 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
+        listEl.appendChild(_mk("div", { cls: "spe-clip-nav" }, [prevBtn, navLabel, nextBtn]));
+
+        {   // single-clip block (braces preserve the original forEach-scoped variable names)
+            const clip = clips[i];
             const color = CLIP_COLORS[i % CLIP_COLORS.length];
             const subjects = profile.subjects || [];
 
@@ -556,7 +1042,12 @@ function _renderClipsSection(container, profile, onClipsChanged) {
             const applyTimes = () => {
                 const s = parseFloat(startEl.value) || 0;
                 const e = parseFloat(endEl.value)   || 0;
-                if (e > s) { clips[i] = { ...clips[i], start_time: s, end_time: e }; commitClip(i); }
+                if (e > s) {
+                    clips[i] = { ...clips[i], start_time: s, end_time: e };
+                    _markTimesDirty(i);
+                    commitClip(i);
+                    renderClipList();
+                }
             };
             startEl.onchange = applyTimes; endEl.onchange = applyTimes;
 
@@ -571,19 +1062,52 @@ function _renderClipsSection(container, profile, onClipsChanged) {
             const describeBtn = _mk("button", { cls: "spe-btn sm ghost",
                 onclick: () => describeClipAction(i, actionEl, describeBtn) }, ["Describe"]);
 
+            const soundscapeEl = _mk("textarea", { cls: "spe-clip-ta", rows: 2,
+                placeholder: "Overall soundscape (ambient audio, room tone, environment sounds…)" });
+            soundscapeEl.value = clip.overall_soundscape || "";
+            soundscapeEl.onchange = () => { clips[i] = { ...clips[i], overall_soundscape: soundscapeEl.value }; commitClip(i); };
+
+            const musicEl = _mk("textarea", { cls: "spe-clip-ta", rows: 2,
+                placeholder: "Non-diegetic music (score, background music not heard by characters…)" });
+            musicEl.value = clip.non_diegetic_music || "";
+            musicEl.onchange = () => { clips[i] = { ...clips[i], non_diegetic_music: musicEl.value }; commitClip(i); };
+
             const subjWrap = _mk("div", { cls: "spe-clip-subj-list" });
+            const CLIP_SLOTS = ["A", "B", "C", "D"];
+            const slotSpans = {};  // subjectId → span element showing "{A}" etc.
+
+            const updateSlotLabels = () => {
+                const tagged = clips[i].subjects || [];
+                subjects.forEach(s => {
+                    const span = slotSpans[s.id];
+                    if (!span) return;
+                    const idx = tagged.indexOf(s.id);
+                    span.textContent = (idx >= 0 && idx < 4) ? ` {${CLIP_SLOTS[idx]}}` : "";
+                });
+            };
+
             subjects.forEach(s => {
                 const cb = _mk("input", { type: "checkbox" });
                 cb.checked = (clip.subjects || []).includes(s.id);
+                const slotSpan = _mk("span", { style: { opacity: "0.6", fontFamily: "monospace", fontSize: "10px" } });
+                slotSpans[s.id] = slotSpan;
                 cb.onchange = () => {
                     const cur = new Set(clips[i].subjects || []);
                     if (cb.checked) cur.add(s.id); else cur.delete(s.id);
                     clips[i] = { ...clips[i], subjects: [...cur] };
                     commitClip(i);
+                    updateSlotLabels();
                 };
                 subjWrap.appendChild(_mk("label", { cls: "spe-clip-subj-check" },
-                    [cb, " " + (s.label || s.id)]));
+                    [cb, " " + (s.label || s.id), slotSpan]));
             });
+            updateSlotLabels();
+
+            const loraSection = _buildClipLoraSection(clips[i], () => commitClip(i));
+
+            const dlgCb = _mk("input", { type: "checkbox" });
+            dlgCb.checked = clip.allows_dialogue !== false;
+            dlgCb.onchange = () => { clips[i] = { ...clips[i], allows_dialogue: dlgCb.checked }; commitClip(i); };
 
             const clipBody = _mk("div", { cls: "spe-clip-card-body" }, [
                 _mk("div", { cls: "spe-clip-row", style: { marginBottom: "6px" } }, [labelInp]),
@@ -593,54 +1117,86 @@ function _renderClipsSection(container, profile, onClipsChanged) {
                 actionEl,
                 subjects.length ? subjWrap : null,
                 _mk("div", { style: { display: "flex", gap: "4px" } }, [describeBtn]),
+                _mk("div", { cls: "spe-clip-field-label", textContent: "Overall soundscape" }),
+                soundscapeEl,
+                _mk("div", { cls: "spe-clip-field-label", textContent: "Non-diegetic music" }),
+                musicEl,
+                _mk("label", { cls: "spe-clip-subj-check", style: { marginTop: "4px" }, title: "When off, dialogue from cast entries is ignored for this segment" }, [dlgCb, " Allows dialogue"]),
+                loraSection,
             ]);
 
-            let cardOpen = true;
+            const proxyBadge = _proxyBadgeEl(clip.id);
+            const buildProxyBtn = _mk("button", { cls: "spe-btn sm ghost",
+                title: "Pre-build proxy for this clip",
+                onclick: async e => {
+                    e.stopPropagation();
+                    buildProxyBtn.disabled = true;
+                    buildProxyBtn.textContent = "…";
+                    try {
+                        await sourceProfilesApi.prebuildProxies({ profile_id: profile.id, clip_id: clip.id });
+                        setTimeout(() => _refreshProxyStatus(), 3000);
+                        setTimeout(() => _refreshProxyStatus(), 8000);
+                    } catch (err) {
+                        _toast(`Proxy build failed: ${err.message}`, "error");
+                    } finally {
+                        buildProxyBtn.disabled = false;
+                        buildProxyBtn.textContent = "proxy";
+                    }
+                } }, ["proxy"]);
             const head = _mk("div", { cls: "spe-clip-card-head" }, [
                 _mk("span", { cls: "spe-clip-color-dot", style: { background: color } }),
                 _mk("span", { style: { flex: "1", fontWeight: "600", fontSize: "12px" } },
                     [clip.label || `Clip ${i + 1}`]),
                 _mk("span", { style: { color: "#888", fontSize: "11px" } },
                     [`${clip.start_time.toFixed(1)}–${clip.end_time.toFixed(1)}s`]),
+                proxyBadge,
+                buildProxyBtn,
                 _mk("button", { cls: "spe-btn sm danger",
                     onclick: e => { e.stopPropagation(); removeClip(i); } }, ["×"]),
             ]);
-            head.addEventListener("click", e => {
-                if (e.target.closest(".spe-btn")) return;
-                cardOpen = !cardOpen;
-                clipBody.classList.toggle("collapsed", !cardOpen);
-            });
 
             listEl.appendChild(_mk("div", { cls: "spe-clip-card" }, [head, clipBody]));
-        });
+        }
     }
 
     // ── Operations ────────────────────────────────────────────────────────────
+    function _persistClip(clip) {
+        sourceProfilesApi.upsertClip({ profile_id: profile.id, clip })
+            .catch(err => _toast(`Clip save failed: ${err.message}`, "error"));
+    }
+
     function commitClip(i) {
         profile.clips = clips;
         onClipsChanged(clips);
         canvas.width = canvas.offsetWidth;
-        _drawTimeline(canvas, clips, suggestions, getTotalDuration());
+        _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx, new Set(clips.filter(_isProxyDirty).map(c => c.id)));
+        _persistClip(clips[i]);
     }
 
     function removeClip(i) {
+        const clipId = clips[i].id;
         clips = clips.filter((_, j) => j !== i);
         profile.clips = clips;
         onClipsChanged(clips);
         redraw();
+        sourceProfilesApi.removeClip({ profile_id: profile.id, clip_id: clipId })
+            .catch(err => _toast(`Clip remove failed: ${err.message}`, "error"));
     }
 
     function addNewClip() {
         const lastEnd = clips.length ? clips[clips.length - 1].end_time : 0;
         const segDur  = parseFloat(segDurInput.value) || (profile.default_segment_duration ?? 10);
-        clips.push({
+        const newClip = {
             id: _genClipId(), label: `Clip ${clips.length + 1}`,
             start_time: lastEnd, end_time: lastEnd + segDur,
             select_every_nth: 2, frame_load_cap: 120, subjects: [], action: "",
-        });
+        };
+        clips.push(newClip);
+        activeClipIdx = clips.length - 1;  // jump to the new clip
         profile.clips = clips;
         onClipsChanged(clips);
         redraw();
+        _persistClip(newClip);
     }
 
     async function runAutoSegment() {
@@ -651,6 +1207,7 @@ function _renderClipsSection(container, profile, onClipsChanged) {
         autoSegBtn.disabled = true;
         autoSegBtn.textContent = "…";
         try {
+            await onEnsureSaved?.();
             const segDur = parseFloat(segDurInput.value) || (profile.default_segment_duration ?? 10);
             const res = await sourceProfilesApi.autoPartition({
                 profile_id: profile.id, video_duration: totalDur, segment_duration: segDur,
@@ -678,16 +1235,25 @@ function _renderClipsSection(container, profile, onClipsChanged) {
         detectBtn.disabled = true;
         detectSpinner.style.display = "inline";
         try {
+            await onEnsureSaved?.();
             const res = await sourceProfilesApi.detectSegments({
-                profile_id: profile.id, video_duration: totalDur, captioner_type: clipsCaptioner,
+                profile_id:      profile.id,
+                video_duration:  totalDur,
+                prompt_override: detectPromptOverride.trim(),
+                flags:           detectPromptOverride.trim() ? null : { ...detectFlags },
+                ...(useGeminiForClips ? { captioner_type: "gemini_flash" } : {}),
             });
             suggestions = res.segments || [];
+            lastRawResponse = res.raw_response || "";
             if (detNoteEl) detNoteEl.remove();
             if (suggestions.length) {
                 detNoteEl = _mk("div", { cls: "spe-clips-det-note" },
                     [`${suggestions.length} suggested boundary(s) shown as gold markers. Auto-segment to apply.`]);
                 canvasWrap.after(detNoteEl);
             }
+            // Show raw response section
+            rawPre.textContent = lastRawResponse;
+            rawWrap.style.display = "block";
             redraw();
             _toast(`${suggestions.length} suggested boundary(s)`, "info");
         } catch (err) {
@@ -704,10 +1270,30 @@ function _renderClipsSection(container, profile, onClipsChanged) {
         const prev = btn.textContent;
         btn.disabled = true;
         btn.textContent = "…";
+
+        // Map the subjects tagged in this clip to slot letters (A, B, C, D).
+        // The VLM will use {A}, {B} etc. instead of repeating appearance inline.
+        const SLOTS = ["A", "B", "C", "D"];
+        const taggedIds = clip.subjects || [];
+        const allSubjects = profile.subjects || [];
+        const subjects = taggedIds
+            .map(id => allSubjects.find(s => s.id === id))
+            .filter(Boolean)
+            .slice(0, 4)
+            .map((s, idx) => ({
+                slot:       SLOTS[idx],
+                name:       s.label || s.id,
+                appearance: s.role_description || "",
+            }));
+
         try {
+            await onEnsureSaved?.();
             const res = await sourceProfilesApi.describeClip({
-                profile_id: profile.id, start_time: clip.start_time, end_time: clip.end_time,
-                captioner_type: clipsCaptioner,
+                profile_id: profile.id,
+                start_time: clip.start_time,
+                end_time:   clip.end_time,
+                subjects,
+                ...(useGeminiForClips ? { captioner_type: "gemini_flash" } : {}),
             });
             if (res.action) {
                 clips[i] = { ...clips[i], action: res.action };
@@ -722,6 +1308,8 @@ function _renderClipsSection(container, profile, onClipsChanged) {
             btn.textContent = prev;
         }
     }
+
+    return { redraw };
 }
 
 function _renderMediaPreview(profile) {
@@ -731,7 +1319,18 @@ function _renderMediaPreview(profile) {
     if (type === "video") {
         const v = _mk("video", { controls: true, preload: "metadata" });
         v.src = _mediaUrl(fn, dir);
+        const timeEl = _mk("div", { style: {
+            fontFamily: "monospace", fontSize: "12px", textAlign: "center",
+            color: "var(--fg)", opacity: "0.7", marginTop: "2px",
+        }}, ["0:00.00"]);
+        v.addEventListener("timeupdate", () => {
+            const t = v.currentTime;
+            const m = Math.floor(t / 60);
+            const s = (t % 60).toFixed(2).padStart(5, "0");
+            timeEl.textContent = `${m}:${s}`;
+        });
         wrap.appendChild(v);
+        wrap.appendChild(timeEl);
     } else {
         const img = _mk("img", { alt: fn });
         img.src = _mediaUrl(fn, dir);
@@ -756,6 +1355,33 @@ function _renderSubjectForm(container, initial = {}, onSave, onCancel) {
     const notesEl = _mk("textarea", { placeholder: "Internal notes (not used in prompt)", rows: 2 });
     notesEl.value = initial.notes || "";
 
+    const PRONOUN_STYLES = [
+        ["neutral",   "they/their (default, non-binary or unknown)"],
+        ["feminine",  "she/her"],
+        ["masculine", "he/his"],
+        ["object",    "it/its (props, objects)"],
+        ["location",  "the [name]'s (rooms, environments)"],
+    ];
+    const pronounEl = document.createElement("select");
+    pronounEl.className = "spe-select";
+    PRONOUN_STYLES.forEach(([val, lbl]) => {
+        const o = document.createElement("option");
+        o.value = val; o.textContent = lbl;
+        if (val === (initial.pronoun_style || "neutral")) o.selected = true;
+        pronounEl.appendChild(o);
+    });
+    const shortNameEl = _mk("input", {
+        type: "text", placeholder: "e.g. room, hallway, courtyard",
+        value: initial.short_name || "",
+    });
+    const shortNameRow = _mk("div", { cls: "spe-form-row" }, [
+        _mk("label", {}, ["Short name (for 'the …' reference)"]), shortNameEl,
+    ]);
+    shortNameRow.style.display = pronounEl.value === "location" ? "" : "none";
+    pronounEl.addEventListener("change", () => {
+        shortNameRow.style.display = pronounEl.value === "location" ? "" : "none";
+    });
+
     container.appendChild(_mk("div", { cls: "spe-form-row" }, [
         _mk("label", {}, ["Label (brief identifier)"]), labelEl,
     ]));
@@ -765,6 +1391,10 @@ function _renderSubjectForm(container, initial = {}, onSave, onCancel) {
     container.appendChild(_mk("div", { cls: "spe-form-row" }, [
         _mk("label", {}, ["Entity type"]), typeEl,
     ]));
+    container.appendChild(_mk("div", { cls: "spe-form-row" }, [
+        _mk("label", {}, ["Pronoun style"]), pronounEl,
+    ]));
+    container.appendChild(shortNameRow);
     container.appendChild(_mk("div", { cls: "spe-form-row" }, [
         _mk("label", {}, ["Notes (internal)"]), notesEl,
     ]));
@@ -776,6 +1406,8 @@ function _renderSubjectForm(container, initial = {}, onSave, onCancel) {
                 label:            labelEl.value.trim(),
                 role_description: roleEl.value.trim(),
                 entity_type:      typeEl.value,
+                pronoun_style:    pronounEl.value,
+                short_name:       shortNameEl.value.trim(),
                 notes:            notesEl.value.trim(),
             });
         }}, ["Save subject"]),
@@ -784,10 +1416,26 @@ function _renderSubjectForm(container, initial = {}, onSave, onCancel) {
 
 // ── Detail view ────────────────────────────────────────────────────────────────
 
-function _renderDetail(root) {
+async function _renderDetail(root) {
     root.innerHTML = "";
-    const profile = _profile();
+    let profile = _profile();
     if (!profile) return;
+
+    // List endpoint returns summary only (no subjects/clips arrays).
+    // Fetch the full record on first open and cache it in _S.profiles.
+    if (!Array.isArray(profile.subjects)) {
+        root.innerHTML = `<div style="padding:16px;color:var(--p-text-muted-color,#888)">Loading…</div>`;
+        try {
+            const full = await sourceProfilesApi.getProfile(profile.id);
+            const idx = _S.profiles.findIndex(p => p.id === profile.id);
+            if (idx >= 0) _S.profiles[idx] = full;
+            profile = full;
+        } catch (err) {
+            root.innerHTML = `<div style="padding:16px;color:#f85149;">Failed to load profile: ${err.message}</div>`;
+            return;
+        }
+        root.innerHTML = "";
+    }
 
     // ── Header
     const header = _mk("div", { cls: "spe-detail-header" }, [
@@ -800,22 +1448,47 @@ function _renderDetail(root) {
     const body = _mk("div", { cls: "spe-detail-body" });
     root.appendChild(body);
 
-    // ── Media preview
-    body.appendChild(_renderMediaPreview(profile));
+    // ── Media preview (updated live when file/dir/type changes)
+    const previewWrap = _mk("div");
+    const _refreshPreview = () => {
+        previewWrap.innerHTML = "";
+        previewWrap.appendChild(_renderMediaPreview(profile));
+    };
+    _refreshPreview();
+    body.appendChild(previewWrap);
 
-    // ── Profile meta form
-    body.appendChild(_mk("div", { cls: "spe-section-head" }, ["Profile settings"]));
+    // ── Profile meta form (collapsible)
+    const settingsTitleRow = _mk("div", { cls: "spe-section-head spe-collapse-toggle" }, [
+        "Profile settings",
+        _mk("i", { cls: "pi pi-chevron-" + (_S.settingsOpen ? "up" : "down"), style: { marginLeft: "auto" } }),
+    ]);
+    body.appendChild(settingsTitleRow);
+    const settingsBody = _mk("div", { cls: "spe-collapsible" + (_S.settingsOpen ? "" : " collapsed") });
+    body.appendChild(settingsBody);
+    settingsTitleRow.onclick = () => {
+        _S.settingsOpen = !_S.settingsOpen;
+        settingsBody.classList.toggle("collapsed", !_S.settingsOpen);
+        settingsTitleRow.querySelector("[class*=pi-chevron]").className =
+            "pi pi-chevron-" + (_S.settingsOpen ? "up" : "down");
+    };
 
     const nameEl = _mk("input", { type: "text", value: profile.name || "" });
-    body.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Name"]), nameEl]));
+    settingsBody.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Name"]), nameEl]));
 
-    const allMedia = _allMedia(profile.media_type, profile.media_dir);
-    const fileEl = _mk("select");
-    ["", ...allMedia].forEach(fn => {
-        const o = _mk("option", { value: fn }, [fn || "(none)"]);
-        if (fn === (profile.media_filename || "")) o.selected = true;
-        fileEl.appendChild(o);
-    });
+    const fileUid = Math.random().toString(36).slice(2, 8);
+    const fileDl  = _mk("datalist", { id: `spe-media-dl-${fileUid}` });
+    const fileEl  = _mk("input", { type: "text",
+        placeholder: "filename or subdir/filename...",
+        value: profile.media_filename || "" });
+    fileEl.setAttribute("list", `spe-media-dl-${fileUid}`);
+
+    const _rebuildDl = (type, dir) => {
+        fileDl.innerHTML = "";
+        _allMedia(type, dir).forEach(fn => {
+            const o = document.createElement("option"); o.value = fn; fileDl.appendChild(o);
+        });
+    };
+    _rebuildDl(profile.media_type || "video", profile.media_dir || "input");
 
     const dirEl = _mk("select");
     MEDIA_DIRS.forEach(d => {
@@ -831,23 +1504,13 @@ function _renderDetail(root) {
         typeEl.appendChild(o);
     });
 
-    // Refresh file list when dir/type change
-    const refreshFiles = () => {
-        const files = _allMedia(typeEl.value, dirEl.value);
-        const cur = fileEl.value;
-        fileEl.innerHTML = "";
-        ["", ...files].forEach(fn => {
-            const o = _mk("option", { value: fn }, [fn || "(none)"]);
-            if (fn === cur) o.selected = true;
-            fileEl.appendChild(o);
-        });
-    };
-    dirEl.addEventListener("change", refreshFiles);
-    typeEl.addEventListener("change", refreshFiles);
+    fileEl.addEventListener("input",  () => { profile.media_filename = fileEl.value.trim(); _refreshPreview(); });
+    dirEl.addEventListener("change",  () => { profile.media_dir  = dirEl.value;  _rebuildDl(typeEl.value, dirEl.value); _refreshPreview(); });
+    typeEl.addEventListener("change", () => { profile.media_type = typeEl.value; _rebuildDl(typeEl.value, dirEl.value); _refreshPreview(); });
 
-    body.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Media type"]), typeEl]));
-    body.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Media dir"]), dirEl]));
-    body.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Media file"]), fileEl]));
+    settingsBody.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Media type"]), typeEl]));
+    settingsBody.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Media dir"]), dirEl]));
+    settingsBody.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Media file"]), fileEl, fileDl]));
 
     // Wire save
     const collectMeta = () => ({
@@ -858,17 +1521,32 @@ function _renderDetail(root) {
         media_type:     typeEl.value,
     });
 
-    // ── Subjects section
+    // ── Subjects section (collapsible)
     body.appendChild(_mk("div", { cls: "spe-divider" }));
-    body.appendChild(_mk("div", { cls: "spe-section-head" }, ["Subjects"]));
+    const subjectsTitleRow = _mk("div", { cls: "spe-section-head spe-collapse-toggle" }, [
+        "Subjects",
+        _mk("i", { cls: "pi pi-chevron-" + (_S.subjectsOpen ? "up" : "down"), style: { marginLeft: "auto" } }),
+    ]);
+    body.appendChild(subjectsTitleRow);
+    const subjectsBody = _mk("div", { cls: "spe-collapsible" + (_S.subjectsOpen ? "" : " collapsed") });
+    body.appendChild(subjectsBody);
+    subjectsTitleRow.onclick = () => {
+        _S.subjectsOpen = !_S.subjectsOpen;
+        subjectsBody.classList.toggle("collapsed", !_S.subjectsOpen);
+        subjectsTitleRow.querySelector("[class*=pi-chevron]").className =
+            "pi pi-chevron-" + (_S.subjectsOpen ? "up" : "down");
+    };
 
     const subjListEl = _mk("div");
-    body.appendChild(subjListEl);
+    subjectsBody.appendChild(subjListEl);
 
     const subjFormEl = _mk("div");
-    body.appendChild(subjFormEl);
+    subjectsBody.appendChild(subjFormEl);
+
+    let clipsSection = null;
 
     const renderSubjList = () => {
+        clipsSection?.redraw();
         subjListEl.innerHTML = "";
         const subjects = profile.subjects || [];
         if (!subjects.length) {
@@ -928,8 +1606,18 @@ function _renderDetail(root) {
     // ── Clips section (video only)
     if ((profile.media_type || "video") === "video") {
         body.appendChild(_mk("div", { cls: "spe-divider" }));
-        _renderClipsSection(body, profile, (_clips) => {
+        clipsSection = _renderClipsSection(body, profile, (_clips) => {
             profile.clips = _clips;
+        }, async () => {
+            // Auto-save the profile (with current form values) before
+            // backend calls that require the profile to exist on disk.
+            const current = collectMeta();
+            await _saveProfile(root, current);
+            // Keep the in-memory profile in sync so further calls get the updated id.
+            Object.assign(profile, current);
+        }, (startTime) => {
+            const vid = previewWrap.querySelector("video");
+            if (vid) vid.currentTime = startTime;
         });
     }
 
@@ -960,17 +1648,20 @@ function _renderAnalyzeSection(container, profile, rootEl, onSubjectsChanged) {
     const body = _mk("div", { cls: "spe-collapsible" + (_S.analyzeOpen ? "" : " collapsed") });
     wrap.appendChild(body);
 
+    let _rebuildClipSel = null;
+
     titleRow.onclick = () => {
         _S.analyzeOpen = !_S.analyzeOpen;
         body.classList.toggle("collapsed", !_S.analyzeOpen);
         titleRow.querySelector(".pi-chevron-up, .pi-chevron-down").className =
             "pi pi-chevron-" + (_S.analyzeOpen ? "up" : "down");
-        if (_S.analyzeOpen) _loadHistory(profile.id);
+        if (_S.analyzeOpen) { _loadHistory(profile.id); _rebuildClipSel?.(); }
     };
 
     // Pass type pills
     body.appendChild(_mk("div", { cls: "spe-section-head" }, ["Focus pass"]));
     const pillsWrap = _mk("div", { cls: "spe-pass-pills" });
+    let _updateDefaultPreview;
     PASS_TYPES.forEach(pt => {
         const pill = _mk("button", {
             cls: "spe-pass-pill" + (pt === _S.analyzePassType ? " active" : ""),
@@ -978,11 +1669,64 @@ function _renderAnalyzeSection(container, profile, rootEl, onSubjectsChanged) {
                 _S.analyzePassType = pt;
                 pillsWrap.querySelectorAll(".spe-pass-pill").forEach(p => p.classList.remove("active"));
                 pill.classList.add("active");
+                _updateDefaultPreview?.();
             },
         }, [PASS_LABELS[pt]]);
         pillsWrap.appendChild(pill);
     });
     body.appendChild(pillsWrap);
+
+    // Clip selector
+    body.appendChild(_mk("div", { cls: "spe-section-head" }, ["Clip / frame source"]));
+
+    const clipSel = _mk("select");
+    const maxFramesInp = _mk("input", { type: "number", min: 1, max: 120, step: 1,
+        value: _S.analyzeMaxFrames ?? 20,
+        style: { width: "56px" },
+        title: "Max frames sent to the VLM (native-video models) or tiled in the contact sheet" });
+    maxFramesInp.onchange = () => { _S.analyzeMaxFrames = parseInt(maxFramesInp.value) || 20; };
+
+    const nthInp = _mk("input", { type: "number", min: 1, max: 60, step: 1,
+        value: _S.analyzeSelectNth ?? 1,
+        style: { width: "48px" },
+        title: "Use every Nth frame of the clip (1 = every frame at effective fps)" });
+    nthInp.onchange = () => { _S.analyzeSelectNth = parseInt(nthInp.value) || 1; };
+
+    const frameControls = _mk("div", { cls: "spe-form-row", style: { display: "none" } }, [
+        _mk("label", {}, ["Max frames"]), maxFramesInp,
+        _mk("label", {}, ["Every Nth"]), nthInp,
+    ]);
+
+    _rebuildClipSel = () => {
+        clipSel.innerHTML = "";
+        const none = _mk("option", { value: "" }, ["Whole video (single frame @ 10%)"]);
+        clipSel.appendChild(none);
+        (profile.clips || []).forEach((c, i) => {
+            const lbl = c.label || `Clip ${i + 1}`;
+            const o = _mk("option", { value: i }, [`${lbl}  (${c.start_time.toFixed(1)}–${c.end_time.toFixed(1)}s)`]);
+            clipSel.appendChild(o);
+        });
+        if (_S.analyzeClipIdx != null) clipSel.value = _S.analyzeClipIdx;
+    };
+    _rebuildClipSel();
+
+    clipSel.onchange = () => {
+        _S.analyzeClipIdx = clipSel.value === "" ? null : parseInt(clipSel.value);
+        const hasClip = _S.analyzeClipIdx != null;
+        frameControls.style.display = hasClip ? "" : "none";
+        if (hasClip) {
+            const clip = (profile.clips || [])[_S.analyzeClipIdx];
+            if (clip?.select_every_nth) {
+                nthInp.value = clip.select_every_nth;
+                _S.analyzeSelectNth = clip.select_every_nth;
+            }
+        }
+    };
+
+    body.appendChild(_mk("div", { cls: "spe-form-row" }, [
+        _mk("label", {}, ["Clip"]), clipSel,
+    ]));
+    body.appendChild(frameControls);
 
     // Captioner selector
     body.appendChild(_mk("div", { cls: "spe-form-row" }, [
@@ -1003,10 +1747,26 @@ function _renderAnalyzeSection(container, profile, rootEl, onSubjectsChanged) {
     const overrideToggle = _mk("div", { cls: "spe-section-head spe-collapse-toggle",
         style: { cursor: "pointer" } }, ["▶ Edit prompt"]);
     const overrideWrap = _mk("div", { cls: "spe-collapsible collapsed" });
-    const overrideEl = _mk("textarea", { rows: 4, placeholder: "Leave empty to use the built-in template for the selected pass type." });
+
+    const defaultLbl = _mk("div", { cls: "spe-clip-field-label", style: { marginTop: "6px" } },
+        ["Default prompt (leave override empty to use this):"] );
+    const defaultPreviewEl = _mk("textarea", { rows: 5, readOnly: true,
+        style: { opacity: "0.6", resize: "vertical", width: "100%", boxSizing: "border-box",
+                 fontFamily: "monospace", fontSize: "11px" } });
+    _updateDefaultPreview = () => {
+        defaultPreviewEl.value = PASS_DEFAULT_PROMPTS[_S.analyzePassType] ?? "";
+    };
+    _updateDefaultPreview();
+
+    const overrideEl = _mk("textarea", { rows: 4,
+        placeholder: "Leave empty to use the default prompt shown below." });
     overrideEl.value = _S.analyzePromptOverride;
     overrideEl.onchange = () => { _S.analyzePromptOverride = overrideEl.value; };
-    overrideWrap.appendChild(overrideEl);
+
+    const clearBtn = _mk("button", { cls: "spe-btn sm ghost", style: { marginTop: "4px" },
+        onclick: () => { overrideEl.value = ""; _S.analyzePromptOverride = ""; } }, ["Clear override"]);
+
+    overrideWrap.append(overrideEl, clearBtn, defaultLbl, defaultPreviewEl);
     overrideToggle.onclick = () => {
         const open = overrideWrap.classList.toggle("collapsed") === false;
         overrideToggle.textContent = (open ? "▼" : "▶") + " Edit prompt";
@@ -1061,11 +1821,19 @@ async function _runAnalysis(profile, analyzeBody, onSubjectsChanged) {
     analyzeBody._candidatesEl.innerHTML  = "";
 
     try {
+        const clip = (_S.analyzeClipIdx != null)
+            ? (profile.clips || [])[_S.analyzeClipIdx]
+            : null;
+
         const res = await sourceProfilesApi.analyze({
             profile_id:       profile.id,
             pass_type:        _S.analyzePassType,
             prompt_override:  _S.analyzePromptOverride,
             captioner_type:   _S.analyzeCaptioner,
+            start_time:       clip ? clip.start_time : null,
+            end_time:         clip ? clip.end_time   : null,
+            select_every_nth: _S.analyzeSelectNth ?? 1,
+            max_frames:       _S.analyzeMaxFrames  ?? 20,
         });
 
         _S.analyzeCandidates = res.candidates ?? [];
@@ -1077,7 +1845,8 @@ async function _runAnalysis(profile, analyzeBody, onSubjectsChanged) {
             _renderHistory(analyzeBody._histWrap, profile, onSubjectsChanged);
         }
 
-        _toast(`Found ${_S.analyzeCandidates.length} candidate(s)`, "success");
+        const modeNote = res.frame_count > 1 ? ` · ${res.frame_count} frames` : "";
+        _toast(`Found ${_S.analyzeCandidates.length} candidate(s)${modeNote}`, "success");
     } catch (err) {
         _toast(`Analysis failed: ${err.message}`, "error");
     } finally {
@@ -1286,6 +2055,9 @@ export async function renderSourceProfileEditor(container) {
     container.innerHTML = "";
 
     const panel = _mk("div", { cls: "spe-panel", "data-fbt-editor": "source-profiles" });
+    panel.addEventListener("keydown",  e => e.stopPropagation());
+    panel.addEventListener("keyup",    e => e.stopPropagation());
+    panel.addEventListener("keypress", e => e.stopPropagation());
     container.appendChild(panel);
 
     // Show loading state
