@@ -233,11 +233,9 @@ function createViewerUI(node) {
     base_dir: "",
     output_dir: "",
     recursive: false,
-    captioner_type: "qwen_vl",
+    captioner_type: "llm_client",
     instruction: "",
     trigger_word: "",
-    device: "auto",
-    use_8bit: false,
     clean_caption: true,
     gemini_api_key: "",
   };
@@ -252,8 +250,6 @@ function createViewerUI(node) {
     state.captioner_type = String(safeWidgetValue(node, "captioner_type", state.captioner_type));
     state.instruction = String(safeWidgetValue(node, "instruction", state.instruction));
     state.trigger_word = String(safeWidgetValue(node, "trigger_word", state.trigger_word));
-    state.device = String(safeWidgetValue(node, "device", state.device));
-    state.use_8bit = Boolean(safeWidgetValue(node, "use_8bit", state.use_8bit));
     state.clean_caption = Boolean(safeWidgetValue(node, "clean_caption", state.clean_caption));
     state.gemini_api_key = String(safeWidgetValue(node, "gemini_api_key", state.gemini_api_key));
   }
@@ -445,8 +441,6 @@ function createViewerUI(node) {
               captioner_type: state.captioner_type,
               instruction: state.instruction,
               trigger_word: state.trigger_word,
-              device: state.device,
-              use_8bit: state.use_8bit,
               clean_caption: state.clean_caption,
               gemini_api_key: state.gemini_api_key,
           });

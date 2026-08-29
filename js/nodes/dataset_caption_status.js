@@ -24,8 +24,12 @@ function createStatusContainer() {
         "line-height:1.35",
         "display:grid",
         "gap:3px",
-        "min-height:70px",
+        "min-height:80px",
     ].join(";");
+
+    const llmLine = document.createElement("div");
+    llmLine.style.cssText = "border-bottom:1px solid #2a2a2a;padding-bottom:4px;margin-bottom:1px;color:#888;";
+    llmLine.textContent = "Model: checking…";
 
     const statusLine = document.createElement("div");
     const progressLine = document.createElement("div");
@@ -37,12 +41,13 @@ function createStatusContainer() {
     metricsLine.textContent = "Speed: 0.00 it/s | Elapsed: 00:00 | ETA: --:--";
     fileLine.textContent = "Active File: -";
 
+    container.appendChild(llmLine);
     container.appendChild(statusLine);
     container.appendChild(progressLine);
     container.appendChild(metricsLine);
     container.appendChild(fileLine);
 
-    return { container, statusLine, progressLine, metricsLine, fileLine };
+    return { container, llmLine, statusLine, progressLine, metricsLine, fileLine };
 }
 
 function formatDuration(totalSeconds) {
@@ -153,6 +158,49 @@ function getDatasetCaptionerNodes() {
     return (app?.graph?._nodes || []).filter((n) => n?._dcsUi);
 }
 
+// ── LLM status badge ──────────────────────────────────────────────────────────
+
+let _lastLlmStatus = { loaded: null, vision: false };
+
+function _getCaptionerType(node) {
+    return node.widgets?.find((w) => w.name === "captioner_type")?.value || "llm_client";
+}
+
+function updateLlmBadge(node) {
+    if (!node?._dcsUi?.llmLine) return;
+    const { llmLine } = node._dcsUi;
+    const captType = _getCaptionerType(node);
+
+    if (captType === "gemini_flash") {
+        llmLine.textContent = "Model: Gemini Flash (API)";
+        llmLine.style.color = "#60a5fa";
+        return;
+    }
+
+    const { loaded, vision } = _lastLlmStatus;
+    if (loaded && vision) {
+        const short = loaded.length > 36 ? loaded.slice(0, 34) + "…" : loaded;
+        llmLine.textContent = `Model: ${short} ✓`;
+        llmLine.style.color = "#22c55e";
+    } else if (loaded && !vision) {
+        const short = loaded.length > 28 ? loaded.slice(0, 26) + "…" : loaded;
+        llmLine.textContent = `Model: ${short} ⚠ no vision`;
+        llmLine.style.color = "#f59e0b";
+    } else {
+        llmLine.textContent = "Model: ⚠ none — load in fbTools Compose";
+        llmLine.style.color = "#f87171";
+    }
+}
+
+// Listen for status broadcasts from fbt_panel
+document.addEventListener("fbt:llm-status", ({ detail }) => {
+    _lastLlmStatus = { loaded: detail.loaded ?? null, vision: detail.vision ?? false };
+    for (const node of getDatasetCaptionerNodes()) {
+        updateLlmBadge(node);
+    }
+    app?.graph?.setDirtyCanvas(true, false);
+});
+
 export function setupDatasetCaptionerStatus(nodeType) {
     const onNodeCreated = nodeType.prototype.onNodeCreated;
 
@@ -186,8 +234,26 @@ export function setupDatasetCaptionerStatus(nodeType) {
         this._dcsStatusWidget = statusWidget;
         statusWidget.parentNode = this;
         statusWidget.computeSize = function computeSize(width) {
-            return [width, 112];
+            return [width, 126];
         };
+
+        // Set initial badge from last known state (or trigger a fetch if panel isn't open yet)
+        const initialStatus = window._fbtGetLlmStatus?.();
+        if (initialStatus) {
+            _lastLlmStatus = { loaded: initialStatus.loaded, vision: initialStatus.vision };
+        }
+        updateLlmBadge(this);
+
+        // Update badge immediately when the user switches captioner_type
+        const captWidget = this.widgets?.find((w) => w.name === "captioner_type");
+        if (captWidget) {
+            const origCallback = captWidget.callback;
+            const self = this;
+            captWidget.callback = function (value) {
+                origCallback?.call(captWidget, value);
+                updateLlmBadge(self);
+            };
+        }
 
         return result;
     };
