@@ -90,11 +90,44 @@ function _injectCss() {
     background: var(--p-blue-700, #1d4ed8);
     color: #fff;
 }
+.fbt-scb-mode-btn:disabled {
+    cursor: default;
+    opacity: 0.3;
+}
+.fbt-scb-mode-btn:not(:disabled):not(.active):hover {
+    background: var(--comfy-menu-bg-secondary, #2a2a2a);
+    color: var(--p-surface-200, #ddd);
+}
+.fbt-scb-mode-num-wrap {
+    display: contents;
+}
+.fbt-scb-mode-btn-num {
+    min-width: 16px;
+    padding: 2px 3px;
+    border-left: 1px solid var(--border-color, #444);
+}
+.fbt-scb-mode-btn-vid {
+    border-left: 1px solid var(--border-color, #444);
+}
 .fbt-scb-audio {
     width: 14px;
     height: 14px;
     cursor: pointer;
     accent-color: var(--p-blue-400, #60a5fa);
+}
+.fbt-scb-dlg {
+    width: 100%;
+    background: var(--comfy-input-bg, #222);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 3px;
+    color: inherit;
+    font-size: 11px;
+    padding: 2px 3px;
+    box-sizing: border-box;
+}
+.fbt-scb-dlg:focus {
+    outline: none;
+    border-color: var(--p-blue-400, #60a5fa);
 }
 .fbt-scb-rm-btn {
     background: transparent;
@@ -168,6 +201,24 @@ function _injectCss() {
     cursor: pointer;
 }
 .fbt-scb-add-btn:hover { border-color: var(--p-blue-400, #60a5fa); }
+
+/* Clip ID selectors */
+.fbt-scb-clips { margin-top: 6px; border-top: 1px solid var(--border-color, #333); padding-top: 5px; }
+.fbt-scb-clips-title { font-size: 10px; color: var(--p-surface-400, #888); font-weight: 600; margin-bottom: 4px; }
+.fbt-scb-clip-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.fbt-scb-clip-label { font-size: 10px; color: var(--p-surface-400, #888); white-space: nowrap; min-width: 28px; }
+.fbt-scb-clip-sel {
+    flex: 1;
+    background: var(--comfy-input-bg, #222);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 3px;
+    color: inherit;
+    font-size: 11px;
+    padding: 2px 4px;
+    cursor: pointer;
+}
+.fbt-scb-clip-sel:focus { outline: none; border-color: var(--p-blue-400, #60a5fa); }
+.fbt-scb-clip-sel:disabled { opacity: 0.4; cursor: default; }
 `;
     document.head.appendChild(s);
 }
@@ -184,11 +235,29 @@ export function setupSceneCastBuild(nodeType, _nodeData, app) {
     };
 
     // onConfigure fires after widget values are restored from the saved workflow.
-    // Rebuild the table so saved entries are visible on reload.
     const _origConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (config) {
         _origConfigure?.call(this, config);
         this._refreshCastTable?.();
+        requestAnimationFrame(() => {
+            this._refreshClipSelects?.();
+            this._refreshSourceSubjects?.();
+        });
+    };
+
+    // Refresh clip dropdowns and source subject column whenever a source_profile input changes.
+    const _origConnChange = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function (type, index, connected, linkInfo) {
+        _origConnChange?.call(this, type, index, connected, linkInfo);
+        if (type === LiteGraph?.INPUT) {
+            const inp = this.inputs?.[index];
+            if (inp?.name === "source_profile") {
+                requestAnimationFrame(() => {
+                    this._refreshClipSelects?.();
+                    this._refreshSourceSubjects?.();
+                });
+            }
+        }
     };
 }
 
@@ -202,6 +271,10 @@ function _buildCastBuildUI(node, app) {
     // ── 2. Internal state ─────────────────────────────────────────────────────
     let _subjects = [];
     let _bundles  = [];
+    // [{pid, label, subjects:[{id,label}]}] — populated by _refreshSourceSubjects
+    let _connectedSPSubjects = [];
+    // true unless the selected clip explicitly disallows dialogue
+    let _clipAllowsDialogue = true;
 
     // Parse initial entries from the widget value (populated from saved workflow)
     let _entries = [];
@@ -223,13 +296,16 @@ function _buildCastBuildUI(node, app) {
     const thead = document.createElement("thead");
     thead.innerHTML = `<tr>
         <th class="fbt-scb-row-num"></th>
-        <th style="width:27%">Subject</th>
-        <th style="width:30%">Bundle</th>
-        <th class="fbt-scb-c" style="width:50px">Mode</th>
+        <th style="width:18%">Subject</th>
+        <th style="width:20%">Bundle</th>
+        <th class="fbt-scb-src-th" style="width:18%;display:none">Source</th>
+        <th class="fbt-scb-c" style="width:80px">Mode</th>
         <th class="fbt-scb-c" style="width:26px">Aud</th>
+        <th style="width:22%" title="Dialogue text. Prefixes: [silent] = no audio; [sounds] desc = sound event. Use %libber:key% for libber lookup.">Dlg</th>
         <th style="width:34px"></th>
     </tr>`;
     table.appendChild(thead);
+    const srcTh = thead.querySelector(".fbt-scb-src-th");
 
     const tbody = document.createElement("tbody");
     table.appendChild(tbody);
@@ -239,7 +315,7 @@ function _buildCastBuildUI(node, app) {
     addBtn.textContent = "+ Add entry";
     addBtn.addEventListener("click", () => {
         if (_entries.length >= MAX_ENTRIES) return;
-        _entries.push({ subject_id: "", bundle_id: "", visual_mode: "images", use_audio: false });
+        _entries.push({ subject_id: "", bundle_id: "", visual_mode: "images", use_audio: false, dialogue: "" });
         _rebuildTable();
         _syncWidget();
     });
@@ -284,6 +360,28 @@ function _buildCastBuildUI(node, app) {
         });
     }
 
+    function _fillSourceSubjectSel(sel, currentProfileId, currentSubjectId) {
+        sel.innerHTML = "";
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "— (none) —";
+        if (!currentProfileId || !currentSubjectId) blank.selected = true;
+        sel.appendChild(blank);
+        _connectedSPSubjects.forEach((sp, i) => {
+            if (!sp.subjects.length) return;
+            const grp = document.createElement("optgroup");
+            grp.label = sp.label || `SP${i + 1}`;
+            sp.subjects.forEach(s => {
+                const o = document.createElement("option");
+                o.value = `${sp.pid}::${s.id}`;
+                o.textContent = s.label || s.id;
+                if (sp.pid === currentProfileId && s.id === currentSubjectId) o.selected = true;
+                grp.appendChild(o);
+            });
+            sel.appendChild(grp);
+        });
+    }
+
     // ── 5. Preview helpers ────────────────────────────────────────────────────
 
     function _buildPreviewRowEl() {
@@ -291,7 +389,7 @@ function _buildCastBuildUI(node, app) {
         tr.className = "fbt-scb-preview-row";
         tr.style.display = "none";
         const td = document.createElement("td");
-        td.colSpan = 6;
+        td.colSpan = 99;
         tr.appendChild(td);
         return tr;
     }
@@ -336,12 +434,20 @@ function _buildCastBuildUI(node, app) {
                 }
             } else {
                 const files = bundle.visual?.files || [];
-                if (files.length) {
-                    files.forEach(f => {
+                const imageFiles = files
+                    .map(f => (typeof f === "object" ? (f.file || "") : (f || "")))
+                    .filter(Boolean);
+                if (imageFiles.length) {
+                    imageFiles.forEach(file => {
                         const img = document.createElement("img");
                         img.className = "fbt-scb-thumb";
-                        img.src = `/view?filename=${encodeURIComponent(f)}&type=input`;
-                        img.title = f;
+                        const slashIdx = file.lastIndexOf("/");
+                        const fname = slashIdx >= 0 ? file.slice(slashIdx + 1) : file;
+                        const sfolder = slashIdx >= 0 ? file.slice(0, slashIdx) : "";
+                        const _mkUrl = type => `/view?filename=${encodeURIComponent(fname)}${sfolder ? `&subfolder=${encodeURIComponent(sfolder)}` : ""}&type=${type}`;
+                        img.src = _mkUrl("input");
+                        img.onerror = () => { img.onerror = null; img.src = _mkUrl("output"); };
+                        img.title = file;
                         img.loading = "lazy";
                         strip.appendChild(img);
                     });
@@ -429,23 +535,91 @@ function _buildCastBuildUI(node, app) {
         bundTd.appendChild(bundSel);
         tr.appendChild(bundTd);
 
+        // Source Profile subject select (hidden when no profiles are connected)
+        const srcTd = document.createElement("td");
+        srcTd.className = "fbt-scb-src-td";
+        srcTd.style.display = _connectedSPSubjects.length ? "" : "none";
+        const srcSel = document.createElement("select");
+        srcSel.className = "fbt-scb-sel fbt-scb-src-sel";
+        _fillSourceSubjectSel(srcSel, entry.source_profile_id || "", entry.source_subject_id || "");
+        srcTd.appendChild(srcSel);
+        tr.appendChild(srcTd);
+
         // Mode toggle
         const modeTd = document.createElement("td");
         modeTd.className = "fbt-scb-c";
         const modeWrap = document.createElement("div");
         modeWrap.className = "fbt-scb-mode";
+        const bun0 = _bundles.find(b => b.id === entry.bundle_id);
+        const _hasImages = b => Boolean(b?.visual?.files?.length);
+        const _hasVideo  = b => Boolean(b?.visual?.file);
+        const _imgCount  = b => b?.visual?.files?.length ?? 0;
+
+        if (!("image_selection" in entry)) entry.image_selection = null;
+
+        // Img button — "use all images"
         const imgBtn = document.createElement("button");
-        imgBtn.className = "fbt-scb-mode-btn" + (entry.visual_mode !== "video" ? " active" : "");
+        imgBtn.className = "fbt-scb-mode-btn";
         imgBtn.textContent = "Img";
-        imgBtn.title = "Images";
+
+        // Numbered sub-buttons (dynamic; always at least 2 slots rendered)
+        const imgSubWrap = document.createElement("div");
+        imgSubWrap.className = "fbt-scb-mode-num-wrap";
+
+        // Vid button
         const vidBtn = document.createElement("button");
-        vidBtn.className = "fbt-scb-mode-btn" + (entry.visual_mode === "video" ? " active" : "");
+        vidBtn.className = "fbt-scb-mode-btn fbt-scb-mode-btn-vid";
         vidBtn.textContent = "Vid";
-        vidBtn.title = "Video";
+
         modeWrap.appendChild(imgBtn);
+        modeWrap.appendChild(imgSubWrap);
         modeWrap.appendChild(vidBtn);
         modeTd.appendChild(modeWrap);
         tr.appendChild(modeTd);
+
+        // Sync active/disabled states across the whole button group
+        const _syncModeActive = () => {
+            const isVid = entry.visual_mode === "video";
+            const sel   = entry.image_selection;
+            imgBtn.classList.toggle("active", !isVid && sel == null);
+            vidBtn.classList.toggle("active", isVid);
+            imgSubWrap.querySelectorAll(".fbt-scb-mode-btn-num").forEach((btn, i) => {
+                btn.classList.toggle("active", !isVid && sel === i);
+            });
+        };
+
+        // Build (or rebuild) numbered image sub-buttons for the given bundle.
+        // Always renders at least 2 slots; extras are disabled if the bundle has fewer images.
+        const _buildNumBtns = bun => {
+            imgSubWrap.innerHTML = "";
+            const fileCount = _imgCount(bun);
+            const numSlots  = Math.max(2, fileCount);
+            for (let i = 0; i < numSlots; i++) {
+                const btn = document.createElement("button");
+                btn.className = "fbt-scb-mode-btn fbt-scb-mode-btn-num";
+                btn.textContent = String(i + 1);
+                const hasSlot = i < fileCount;
+                const file    = bun?.visual?.files?.[i];
+                const role    = (typeof file === "object" ? file?.role : null) || "character sheet";
+                btn.title     = hasSlot ? `Image ${i + 1}: ${role}` : "No image at this slot";
+                btn.disabled  = !hasSlot;
+                btn.addEventListener("click", () => {
+                    entry.visual_mode    = "images";
+                    entry.image_selection = i;
+                    _syncModeActive();
+                    _syncWidget();
+                });
+                imgSubWrap.appendChild(btn);
+            }
+            const hasImg = fileCount > 0;
+            imgBtn.disabled = bun && !hasImg;
+            imgBtn.title    = hasImg ? "Use all image references" : "No images in bundle";
+            vidBtn.disabled = bun && !_hasVideo(bun);
+            vidBtn.title    = _hasVideo(bun) ? "Use video reference" : "No video in bundle";
+            _syncModeActive();
+        };
+
+        _buildNumBtns(bun0);
 
         // Audio checkbox
         const audTd = document.createElement("td");
@@ -457,6 +631,17 @@ function _buildCastBuildUI(node, app) {
         audCb.checked = !!entry.use_audio;
         audTd.appendChild(audCb);
         tr.appendChild(audTd);
+
+        // Dialogue text input
+        const dlgTd = document.createElement("td");
+        const dlgInput = document.createElement("input");
+        dlgInput.type = "text";
+        dlgInput.className = "fbt-scb-dlg";
+        dlgInput.value = entry.dialogue || "";
+        dlgInput.placeholder = "text or %libber:key%";
+        dlgInput.title = "Dialogue for this cast entry.\n[silent] = no audio contribution\n[sounds] desc = sound event\n%libber:key% or %libber:*% = libber lookup (% delimiters required)";
+        dlgTd.appendChild(dlgInput);
+        tr.appendChild(dlgTd);
 
         // Preview + Remove buttons
         const rmTd = document.createElement("td");
@@ -500,28 +685,48 @@ function _buildCastBuildUI(node, app) {
 
         bundSel.addEventListener("change", () => {
             entry.bundle_id = bundSel.value;
-            // Auto-inherit bundle's visual type
             const bun = _bundles.find(b => b.id === entry.bundle_id);
+            const hasImg = _hasImages(bun);
+            const hasVid = _hasVideo(bun);
+            // Default to the bundle's preferred mode; fall back if not available.
             if (bun?.visual?.type) {
                 entry.visual_mode = bun.visual.type;
-                imgBtn.classList.toggle("active", entry.visual_mode !== "video");
-                vidBtn.classList.toggle("active", entry.visual_mode === "video");
+                if (entry.visual_mode === "video" && !hasVid && hasImg) entry.visual_mode = "images";
+                if (entry.visual_mode === "images" && !hasImg && hasVid) entry.visual_mode = "video";
             }
+            // If the previously-selected image index no longer exists, reset to "all".
+            const fc = _imgCount(bun);
+            if (entry.image_selection != null && entry.image_selection >= fc) {
+                entry.image_selection = null;
+            }
+            _buildNumBtns(bun);
             tr.classList.toggle("fbt-scb-empty", !entry.subject_id || !entry.bundle_id);
             _syncWidget();
         });
 
+        srcSel.addEventListener("change", () => {
+            const val = srcSel.value;
+            if (val) {
+                const sep = val.indexOf("::");
+                entry.source_profile_id = sep >= 0 ? val.slice(0, sep) : "";
+                entry.source_subject_id  = sep >= 0 ? val.slice(sep + 2) : val;
+            } else {
+                delete entry.source_profile_id;
+                delete entry.source_subject_id;
+            }
+            _syncWidget();
+        });
+
         imgBtn.addEventListener("click", () => {
-            entry.visual_mode = "images";
-            imgBtn.classList.add("active");
-            vidBtn.classList.remove("active");
+            entry.visual_mode    = "images";
+            entry.image_selection = null;
+            _syncModeActive();
             _syncWidget();
         });
 
         vidBtn.addEventListener("click", () => {
             entry.visual_mode = "video";
-            vidBtn.classList.add("active");
-            imgBtn.classList.remove("active");
+            _syncModeActive();
             _syncWidget();
         });
 
@@ -530,10 +735,29 @@ function _buildCastBuildUI(node, app) {
             _syncWidget();
         });
 
+        dlgInput.addEventListener("input", () => {
+            entry.dialogue = dlgInput.value;
+            _syncWidget();
+        });
+
         return tr;
     }
 
     // ── 7. Rebuild the whole tbody ────────────────────────────────────────────
+
+    function _applyDlgState() {
+        const disabled = !_clipAllowsDialogue;
+        tbody.querySelectorAll(".fbt-scb-dlg").forEach(inp => {
+            inp.disabled = disabled;
+            inp.title = disabled
+                ? "Dialogue disabled — this clip has 'Allows dialogue' turned off"
+                : "Dialogue for this cast entry.\n[silent] = no audio contribution\n[sounds] desc = sound event\n%libber:key% = libber lookup";
+            inp.style.opacity = disabled ? "0.35" : "";
+            inp.style.cursor  = disabled ? "not-allowed" : "";
+        });
+        const dlgTh = thead.querySelector("th[style*='22%']");
+        if (dlgTh) dlgTh.style.opacity = disabled ? "0.45" : "";
+    }
 
     function _rebuildTable() {
         // Clean up any extracted video frames still open
@@ -548,6 +772,7 @@ function _buildCastBuildUI(node, app) {
             tbody.appendChild(previewRow);
         });
         addBtn.style.display = _entries.length >= MAX_ENTRIES ? "none" : "";
+        _applyDlgState();
         // Update DOM widget height
         if (displayWidget) {
             displayWidget.computeSize = () => [0, _tableHeight()];
@@ -576,7 +801,187 @@ function _buildCastBuildUI(node, app) {
     });
     displayWidget.computeSize = () => [0, _tableHeight()];
 
-    // ── 10. Public refresh (called by cast editor "Send to Workflow") ─────────
+    // ── 10. Source subject column refresh ─────────────────────────────────────
+
+    function _updateSourceColVisibility() {
+        const show = _connectedSPSubjects.length > 0;
+        srcTh.style.display = show ? "" : "none";
+        tbody.querySelectorAll(".fbt-scb-src-td").forEach(td => {
+            td.style.display = show ? "" : "none";
+        });
+    }
+
+    async function _refreshSourceSubjects() {
+        const results = [];
+        const inp = node.inputs?.find(i => i.name === "source_profile");
+        const linkId = inp?.link;
+        if (linkId) {
+            const linkObj = app.graph.links[linkId];
+            const upstream = linkObj ? app.graph.getNodeById(linkObj.origin_id) : null;
+            // Widget was renamed from "profile_id" to "profile_name"; support both.
+            const profileWidget = upstream?.widgets?.find(
+                w => w.name === "profile_name" || w.name === "profile_id"
+            );
+            const profileVal = profileWidget?.value;
+            const isName = profileWidget?.name === "profile_name";
+            if (profileVal && profileVal !== "(none)") {
+                try {
+                    const param = isName
+                        ? `name=${encodeURIComponent(profileVal)}`
+                        : `id=${encodeURIComponent(profileVal)}`;
+                    const resp = await fetch(`/fbtools/source_profiles/get?${param}`);
+                    if (resp.ok) {
+                        const profile = await resp.json();
+                        results.push({
+                            pid: profile.id,
+                            label: profile.name || profile.id || profileVal,
+                            subjects: (profile.subjects ?? []).map(s => ({
+                                id: s.id,
+                                label: s.label || s.role_description || s.id,
+                            })),
+                        });
+                    }
+                } catch { /* skip */ }
+            }
+        }
+        _connectedSPSubjects = results;
+
+        // Update each existing source select in-place (no full rebuild needed)
+        const srcSels = [...tbody.querySelectorAll(".fbt-scb-src-sel")];
+        srcSels.forEach((sel, i) => {
+            const entry = _entries[i];
+            if (entry) {
+                _fillSourceSubjectSel(sel, entry.source_profile_id || "", entry.source_subject_id || "");
+            }
+        });
+
+        _updateSourceColVisibility();
+    }
+
+    node._refreshSourceSubjects = _refreshSourceSubjects;
+    requestAnimationFrame(() => _refreshSourceSubjects());
+
+    // ── 12. Clip ID selector (single source_profile input) ───────────────────
+    // Hide the backing STRING widget; replace with a <select> that fetches the
+    // connected profile's clip list on demand.
+
+    const clipWidget = node.widgets?.find(w => w.name === "clip_id");
+    if (clipWidget) setWidgetVisible(clipWidget, false, node);
+
+    const clipsSection = document.createElement("div");
+    clipsSection.className = "fbt-scb-clips";
+    clipsSection.style.display = "none"; // hidden until a profile is connected
+
+    const clipRow = document.createElement("div");
+    clipRow.className = "fbt-scb-clip-row";
+
+    const clipLabel = document.createElement("span");
+    clipLabel.className = "fbt-scb-clip-label";
+    clipLabel.textContent = "Clip";
+
+    const clipSel = document.createElement("select");
+    clipSel.className = "fbt-scb-clip-sel";
+    clipSel.addEventListener("change", () => {
+        if (clipWidget) {
+            clipWidget.value = clipSel.value;
+            app?.graph?.setDirtyCanvas?.(true, false);
+        }
+        _updateDlgFromClip();
+    });
+
+    clipRow.appendChild(clipLabel);
+    clipRow.appendChild(clipSel);
+    clipsSection.appendChild(clipRow);
+    wrap.appendChild(clipsSection);
+
+    // keyed by clip id — populated in _refreshClipSelects
+    let _clipMap = new Map();
+
+    function _updateDlgFromClip() {
+        const selId = clipSel.value;
+        const clip = _clipMap.get(selId);
+        _clipAllowsDialogue = !clip || clip.allows_dialogue !== false;
+        _applyDlgState();
+    }
+
+    async function _refreshClipSelects() {
+        const savedVal = clipWidget?.value ?? "";
+        const inp = node.inputs?.find(i => i.name === "source_profile");
+        const linkId = inp?.link;
+
+        if (!linkId) {
+            clipsSection.style.display = "none";
+            _clipMap.clear();
+            _clipAllowsDialogue = true;
+            _applyDlgState();
+            return;
+        }
+        const linkObj = app.graph.links[linkId];
+        const upstream = linkObj ? app.graph.getNodeById(linkObj.origin_id) : null;
+        const profileWidget = upstream?.widgets?.find(
+            w => w.name === "profile_name" || w.name === "profile_id"
+        );
+        const profileVal = profileWidget?.value;
+        const isName = profileWidget?.name === "profile_name";
+
+        if (!profileVal || profileVal === "(none)") {
+            clipsSection.style.display = "none";
+            _clipMap.clear();
+            _clipAllowsDialogue = true;
+            _applyDlgState();
+            return;
+        }
+
+        clipsSection.style.display = "";
+
+        let clips = [];
+        try {
+            const param = isName
+                ? `name=${encodeURIComponent(profileVal)}`
+                : `id=${encodeURIComponent(profileVal)}`;
+            const resp = await fetch(`/fbtools/source_profiles/get?${param}`);
+            if (resp.ok) clips = (await resp.json()).clips ?? [];
+        } catch { /* leave empty */ }
+
+        _clipMap = new Map(clips.map(c => [c.id, c]));
+
+        clipSel.innerHTML = "";
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = clips.length ? "— select clip —" : "— (no clips) —";
+        if (!savedVal) placeholder.selected = true;
+        clipSel.appendChild(placeholder);
+
+        let matched = !savedVal;
+        clips.forEach(c => {
+            const o = document.createElement("option");
+            o.value = c.id;
+            o.textContent = c.label ? `${c.id}  (${c.label})` : c.id;
+            if (c.id === savedVal) { o.selected = true; matched = true; }
+            clipSel.appendChild(o);
+        });
+
+        if (!matched && savedVal) {
+            const o = document.createElement("option");
+            o.value = savedVal;
+            o.textContent = `${savedVal}  (?)`;
+            o.selected = true;
+            clipSel.appendChild(o);
+        }
+
+        clipSel.disabled = clips.length === 0;
+        _updateDlgFromClip();
+
+        if (displayWidget) {
+            displayWidget.computeSize = () => [0, _tableHeight() + 28];
+            node.setSize?.([node.size[0], node.size[1]]);
+        }
+    }
+
+    node._refreshClipSelects = _refreshClipSelects;
+    requestAnimationFrame(() => _refreshClipSelects());
+
+    // ── 13. Public refresh (called by cast editor "Send to Workflow") ─────────
 
     node._refreshCastTable = function (newEntries) {
         if (Array.isArray(newEntries)) {
@@ -593,7 +998,7 @@ function _buildCastBuildUI(node, app) {
         _rebuildTable();
     };
 
-    // ── 11. Load subject + bundle lists, then render ─────────────────────────
+    // ── 14. Load subject + bundle lists, then render ─────────────────────────
     Promise.allSettled([
         bundlesApi.listSubjects(),
         bundlesApi.listBundles(),
