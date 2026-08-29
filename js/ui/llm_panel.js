@@ -480,7 +480,9 @@ function _renderModalTab(pane) {
 
     function _syncUI() {
         dot.className = "llmp-status-dot" + (_state.modalActive ? " blue" : "");
-        label.textContent = _state.modalActive ? `Active — ${_state.modalModel}` : "Inactive";
+        label.textContent = _state.modalActive
+            ? `Configured — ${_state.modalModel} (container starts on first request)`
+            : "Inactive";
         actionBtn.className = "llmp-btn " + (_state.modalActive ? "danger" : "primary");
         actionBtn.textContent = _state.modalActive ? "Disconnect" : "Activate";
         actionBtn.disabled = _activating;
@@ -604,11 +606,12 @@ function _renderModalTab(pane) {
             _mk("label", { htmlFor: "llmp-warm-cb", style: { fontSize: "12px" } }, [" Ping before idle timeout"]),
         ]),
         _mk("div", { cls: "llmp-info" }, [
-            "Cold starts take ~60 s on first use. Auth uses ",
+            _mk("strong", {}, ["Activate"]),
+            " stores your model choice locally — no container starts yet. The container spins up on the ",
+            _mk("strong", {}, ["first inference request"]),
+            " (cold start ~60 s on L40S; subsequent calls are fast while warm). Auth uses ",
             _mk("code", {}, ["~/.modal.toml"]),
-            " (workspace ",
-            _mk("code", {}, ["frost-byte"]),
-            "). Run ",
+            " — run ",
             _mk("code", {}, ["modal token new"]),
             " to authenticate.",
         ]),
