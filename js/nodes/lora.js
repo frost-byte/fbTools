@@ -441,12 +441,23 @@ function _lsbActiveRows(node) {
 // ── Rebuild UI ────────────────────────────────────────────────────────────────
 
 function _lsbRemoveGenerated(node) {
-    node.widgets = (node.widgets || []).filter(w => {
-        if (!String(w.name || "").startsWith(LSB_WPREFIX)) return true;
+    if (!node.widgets) return;
+    // Mutate in-place (splice) — replacing node.widgets with a new array breaks
+    // Vue reactivity in ComfyUI 1.49, causing newly-added custom widgets to be
+    // invisible because the framework still watches the old array reference.
+    for (let i = node.widgets.length - 1; i >= 0; i--) {
+        const w = node.widgets[i];
+        if (!String(w.name || "").startsWith(LSB_WPREFIX)) continue;
         if (w.element?.parentNode) w.element.parentNode.removeChild(w.element);
         else w.element?.remove?.();
-        return false;
-    });
+        // Use the node's own removeWidget path when available (handles dirty flag);
+        // fall back to direct splice when it's not (e.g. during initial setup).
+        if (typeof node.removeWidget === "function") {
+            try { node.removeWidget(w); } catch (_) { node.widgets.splice(i, 1); }
+        } else {
+            node.widgets.splice(i, 1);
+        }
+    }
 }
 
 function _lsbRebuildUi(node) {

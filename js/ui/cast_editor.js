@@ -676,6 +676,9 @@ export async function renderCastEditor(el) {
 
     const panel = _mk("div", { cls: "fbt-be-panel" });
     panel.dataset.fbtEditor = "cast";
+    panel.addEventListener("keydown",  e => e.stopPropagation());
+    panel.addEventListener("keyup",    e => e.stopPropagation());
+    panel.addEventListener("keypress", e => e.stopPropagation());
     _dom.content    = _mk("div", { cls: "fbt-be-content" });
     _dom.pagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
 
