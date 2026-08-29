@@ -20,6 +20,7 @@ import { renderCastEditor }          from "./cast_editor.js";
 import { renderSourceProfileEditor } from "./source_profile_editor.js";
 import { renderRunHistory }          from "./run_history.js";
 import { renderNodeInspector }       from "./node_inspector.js";
+import { renderLlmPanel, getActiveBackendLabel, onBackendChange } from "./llm_panel.js";
 
 // ── Shared LLM state ───────────────────────────────────────────────────────────
 // Any tab can read fbtLlm to see what's currently loaded without its own fetch.
@@ -124,13 +125,15 @@ let _lblEl = null;
 
 function _syncStatusBar() {
     if (!_dotEl || !_lblEl) return;
-    const name = fbtLlm.loaded;
-    _dotEl.className = "fbt-llm-dot" + (name ? " ok" : "");
-    _lblEl.className = "fbt-llm-lbl" + (name ? " ok" : "");
-    _lblEl.textContent = name
-        ? (name.length > 30 ? name.slice(0, 28) + "…" : name)
-        : "No model — load in Compose";
-    _lblEl.title = name || "";
+    const label = getActiveBackendLabel();
+    const isModal  = label.startsWith("Modal:");
+    const isLocal  = label.startsWith("Local:") && fbtLlm.loaded;
+    const hasModel = isModal || isLocal;
+    _dotEl.className = "fbt-llm-dot" + (isModal ? " busy" : hasModel ? " ok" : "");
+    _lblEl.className = "fbt-llm-lbl" + (hasModel ? " ok" : "");
+    const display = label.length > 30 ? label.slice(0, 28) + "…" : label;
+    _lblEl.textContent = hasModel ? display : "No backend — configure in LLM tab";
+    _lblEl.title = label;
 }
 
 // Synchronous push — called by composition_editor after every load/unload.
@@ -162,6 +165,7 @@ const TABS = [
     { id: "bundles",      label: "Bundles",  icon: "pi pi-images",    render: renderBundleEditor },
     { id: "casts",        label: "Casts",    icon: "pi pi-users",     render: renderCastEditor },
     { id: "sources",      label: "Sources",  icon: "pi pi-video",     render: renderSourceProfileEditor },
+    { id: "llm",          label: "LLM",      icon: "pi pi-microchip", render: renderLlmPanel },
     { id: "history",      label: "History",  icon: "pi pi-history",   render: renderRunHistory },
     { id: "inspector",    label: "Inspect",  icon: "pi pi-code",      render: renderNodeInspector },
 ];
@@ -262,8 +266,10 @@ export function renderFbtPanel(container) {
     window._fbtUpdateLlmStatus = _handleLlmPush;
     // Read-only accessor for other tabs that need to check LLM state
     window._fbtGetLlmStatus = () => ({ ...fbtLlm });
-    // Programmatic tab activation — used by node_inspector.js to switch to Inspector tab
+    // Programmatic tab activation — used by node_inspector.js and llm_panel.js
     window._fbtActivateTab = activateTab;
+    // Re-sync header when Modal backend state changes
+    onBackendChange(_syncStatusBar);
 
     // Initial status fetch
     _fetchLlmStatus();

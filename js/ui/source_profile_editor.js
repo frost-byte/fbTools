@@ -8,8 +8,9 @@
  * Supports manual annotation and LLM-assisted focused-pass analysis.
  */
 
-import { sourceProfilesApi } from "../api/source_profiles.js";
-import { bundlesApi }        from "../api/bundles.js";
+import { sourceProfilesApi }        from "../api/source_profiles.js";
+import { bundlesApi }               from "../api/bundles.js";
+import { getActiveCaptionerType }   from "./llm_panel.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ const PASS_LABELS = {
     custom:     "Custom",
 };
 
-const CAPTIONER_TYPES = ["auto", "qwen_vl", "qwen_omni", "gemini_flash"];
+// captioner_type is determined by the globally active VLM backend (LLM tab)
 
 const PASS_DEFAULT_PROMPTS = {
     people:
@@ -92,7 +93,7 @@ const _S = {
     analyzeOpen:    false,
     analyzePassType: "people",
     analyzePromptOverride: "",
-    analyzeCaptioner: "auto",
+    analyzeCaptioner: "auto",  // kept for potential legacy; overridden by getActiveCaptionerType()
     analyzeRunning:  false,
     analyzeCandidates: [],
     analyzeHistory:  [],
@@ -649,7 +650,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     let suggestions = [];
     let detecting = false;
     let autoSegRunning = false;
-    let useGeminiForClips = false;  // when true, sends captioner_type="gemini_flash"
+    // captioner_type for clip requests comes from the global active backend (LLM tab)
     let videoDuration = 0;
     let activeClipIdx = 0;
     let detectFlags = { camera_cuts: true, subject_changes: false, lower_threshold: false };
@@ -726,24 +727,20 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         proxyEdgeSel,
     ]));
 
-    // Detect row — status note shows which backend will be used
-    const llmStatus = window._fbtGetLlmStatus?.() || {};
-    const llmName   = llmStatus.loaded || null;
-    const llmNote   = _mk("span", { cls: "spe-clips-llm-note" },
-        [llmName && llmStatus.vision
-            ? `LLM: ${llmName.length > 24 ? llmName.slice(0, 22) + "…" : llmName} ✓`
-            : "LLM: none — will use qwen_vl (8-bit)"]);
-
-    const geminiCb  = _mk("input", { type: "checkbox", id: "spe-gemini-cb-" + (profile.id || "new") });
-    geminiCb.onchange = () => { useGeminiForClips = geminiCb.checked; };
-    const geminiLbl = _mk("label", { htmlFor: geminiCb.id, style: { fontSize: "11px" } }, ["Gemini"]);
+    // Detect row — active backend badge + detect button
+    const backendNote = _mk("span", {
+        cls: "spe-clips-llm-note",
+        style: { fontSize: "11px", cursor: "pointer", textDecoration: "underline dotted" },
+        title: "Configure in LLM tab",
+        onclick: () => window._fbtActivateTab?.("llm"),
+    }, [getActiveCaptionerType()]);
 
     const detectBtn = _mk("button", { cls: "spe-btn sm ghost", onclick: runDetect }, ["Detect boundaries"]);
     const detectSpinner = _mk("span", { style: { fontSize: "11px", color: "#888", display: "none" } }, [" Detecting…"]);
     let detNoteEl = null;
 
     body.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
-        llmNote, geminiCb, geminiLbl, detectBtn, detectSpinner,
+        backendNote, detectBtn, detectSpinner,
     ]));
 
     // Detect flags row
@@ -1241,7 +1238,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 video_duration:  totalDur,
                 prompt_override: detectPromptOverride.trim(),
                 flags:           detectPromptOverride.trim() ? null : { ...detectFlags },
-                ...(useGeminiForClips ? { captioner_type: "gemini_flash" } : {}),
+                captioner_type:  getActiveCaptionerType(),
             });
             suggestions = res.segments || [];
             lastRawResponse = res.raw_response || "";
@@ -1290,10 +1287,10 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             await onEnsureSaved?.();
             const res = await sourceProfilesApi.describeClip({
                 profile_id: profile.id,
-                start_time: clip.start_time,
-                end_time:   clip.end_time,
+                start_time:     clip.start_time,
+                end_time:       clip.end_time,
                 subjects,
-                ...(useGeminiForClips ? { captioner_type: "gemini_flash" } : {}),
+                captioner_type: getActiveCaptionerType(),
             });
             if (res.action) {
                 clips[i] = { ...clips[i], action: res.action };
@@ -1728,19 +1725,16 @@ function _renderAnalyzeSection(container, profile, rootEl, onSubjectsChanged) {
     ]));
     body.appendChild(frameControls);
 
-    // Captioner selector
+    // Active backend indicator (read-only — configured in LLM tab)
+    const backendBadge = _mk("span", {
+        style: { fontSize: "11px", color: "var(--p-text-muted-color,#888)",
+                 padding: "2px 6px", borderRadius: "3px",
+                 background: "var(--p-surface-section,#252525)" },
+    }, [getActiveCaptionerType()]);
     body.appendChild(_mk("div", { cls: "spe-form-row" }, [
-        _mk("label", {}, ["Captioner"]),
-        (() => {
-            const s = _mk("select");
-            CAPTIONER_TYPES.forEach(c => {
-                const o = _mk("option", { value: c }, [c]);
-                if (c === _S.analyzeCaptioner) o.selected = true;
-                s.appendChild(o);
-            });
-            s.onchange = () => { _S.analyzeCaptioner = s.value; };
-            return s;
-        })(),
+        _mk("label", {}, ["Backend"]),
+        backendBadge,
+        _mk("span", { style: { fontSize: "10px", color: "#666", marginLeft: "4px" } }, ["← LLM tab"]),
     ]));
 
     // Prompt override
@@ -1829,7 +1823,7 @@ async function _runAnalysis(profile, analyzeBody, onSubjectsChanged) {
             profile_id:       profile.id,
             pass_type:        _S.analyzePassType,
             prompt_override:  _S.analyzePromptOverride,
-            captioner_type:   _S.analyzeCaptioner,
+            captioner_type:   getActiveCaptionerType(),
             start_time:       clip ? clip.start_time : null,
             end_time:         clip ? clip.end_time   : null,
             select_every_nth: _S.analyzeSelectNth ?? 1,
