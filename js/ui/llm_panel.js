@@ -190,42 +190,168 @@ function _injectCSS() {
 // ── Local sub-tab ─────────────────────────────────────────────────────────────
 
 function _renderLocalTab(pane) {
-    const dot   = _mk("div", { cls: "llmp-status-dot" });
-    const label = _mk("span", { cls: "llmp-status-text" }, ["Checking…"]);
-    const status = _mk("div", { cls: "llmp-status" }, [dot, label]);
+    const _ls = { models: [], busy: false };
 
+    // ── Status badge ───────────────────────────────────────────────────────
+    const dot    = _mk("div", { cls: "llmp-status-dot" });
+    const lbl    = _mk("span", { cls: "llmp-status-text" }, ["Checking…"]);
+    const status = _mk("div", { cls: "llmp-status" }, [dot, lbl]);
     const badgeRow = _mk("div", { cls: "llmp-row", style: { gap: "6px", flexWrap: "wrap" } });
 
-    function _refresh() {
+    // ── Model selector ─────────────────────────────────────────────────────
+    const modelSel   = _mk("select", { cls: "llmp-select" });
+    const refreshBtn = _mk("button", { cls: "llmp-btn ghost", title: "Re-scan model directories" }, ["↻ Scan"]);
+    const capNote    = _mk("div", { cls: "llmp-info", style: { display: "none", padding: "4px 8px", marginTop: "0" } });
+
+    // ── Load / Unload ──────────────────────────────────────────────────────
+    const loadBtn   = _mk("button", { cls: "llmp-btn primary" }, ["Load"]);
+    const unloadBtn = _mk("button", { cls: "llmp-btn danger",   style: { display: "none" } }, ["Unload"]);
+
+    // ── Download prompt ────────────────────────────────────────────────────
+    const downloadRow = _mk("div", {});
+    const dlInfo = _mk("div", { cls: "llmp-info", style: { borderLeftColor: "#f59e0b" } });
+    dlInfo.innerHTML = (
+        "<b>No models found.</b> Place GGUF models in <code>ComfyUI/models/LLMs/&lt;name&gt;/</code>, " +
+        "one subdirectory per model. Vision models need an <code>mmproj-*.gguf</code> alongside the main " +
+        "<code>.gguf</code>.<br>Or download the recommended starter:"
+    );
+    const dlBtn = _mk("button", { cls: "llmp-btn ghost", style: { marginTop: "4px" } }, ["Download Qwen2.5-VL 3B"]);
+    downloadRow.append(dlInfo, dlBtn);
+
+    function _setStatus(text, ok = false) {
+        lbl.textContent = text;
+        dot.className   = "llmp-status-dot" + (ok ? " ok" : "");
+    }
+
+    function _setBusy(busy) {
+        _ls.busy           = busy;
+        loadBtn.disabled   = busy || _ls.models.length === 0;
+        unloadBtn.disabled = busy;
+        refreshBtn.disabled = busy;
+    }
+
+    function _syncFromGlobal() {
         const llm = window._fbtGetLlmStatus?.() || {};
         if (llm.loaded) {
-            dot.className   = "llmp-status-dot ok";
-            label.textContent = llm.loaded;
-            badgeRow.innerHTML = "";
+            _setStatus(llm.loaded, true);
+            loadBtn.textContent     = "Reload";
+            unloadBtn.style.display = "";
+            badgeRow.innerHTML      = "";
             if (llm.vision)      badgeRow.appendChild(_mk("span", { cls: "llmp-value", style: { fontSize: "11px", color: "#22c55e" } }, ["✓ vision"]));
             if (llm.nativeVideo) badgeRow.appendChild(_mk("span", { cls: "llmp-value", style: { fontSize: "11px", color: "#60a5fa" } }, ["✓ native-video"]));
         } else {
-            dot.className   = "llmp-status-dot";
-            label.textContent = "No model loaded";
-            badgeRow.innerHTML = "";
+            _setStatus("No model loaded");
+            loadBtn.textContent     = "Load";
+            unloadBtn.style.display = "none";
+            badgeRow.innerHTML      = "";
         }
     }
 
-    _refresh();
-    document.addEventListener("fbt:llm-status", _refresh);
+    function _populateSel() {
+        modelSel.innerHTML = "";
+        const noModels = _ls.models.length === 0;
+        if (noModels) {
+            modelSel.appendChild(_mk("option", { value: "" }, ["— no models found —"]));
+        } else {
+            _ls.models.forEach(m => {
+                const o = _mk("option", { value: m.id });
+                o.textContent = `${m.name}  ${(m.capability_tags || []).join(" ")}`;
+                o.title       = m.capability_note || "";
+                modelSel.appendChild(o);
+            });
+        }
+        loadBtn.disabled          = noModels;
+        downloadRow.style.display = noModels ? "" : "none";
+    }
 
-    const goBtn = _mk("button", {
-        cls: "llmp-btn ghost",
-        onclick: () => { window._fbtActivateTab?.("compositions"); },
-    }, ["→ Load model in Compose tab"]);
+    async function _scanModels() {
+        try {
+            const data = await llmApi.listModels();
+            _ls.models = data.models || [];
+            _populateSel();
+        } catch (_) { /* silent */ }
+    }
 
-    const note = _mk("div", { cls: "llmp-info" }, [
-        "Local model management (load / unload / scan) lives in the ",
-        _mk("strong", {}, ["Compose"]),
-        " tab. Activate a vision-capable model there, then return here — this panel will reflect it automatically.",
-    ]);
+    modelSel.onchange = () => {
+        const m = _ls.models.find(x => x.id === modelSel.value);
+        if (m?.capability_note) {
+            capNote.textContent   = m.capability_note;
+            capNote.style.display = "";
+        } else {
+            capNote.style.display = "none";
+        }
+    };
 
-    pane.append(status, badgeRow, goBtn, note);
+    loadBtn.onclick = async () => {
+        if (_ls.busy) return;
+        const modelInfo = _ls.models.find(m => m.id === modelSel.value);
+        if (!modelInfo) return;
+        _setBusy(true);
+        _setStatus(`Loading ${modelInfo.name}…`);
+        try {
+            const r = await llmApi.loadModel(modelInfo);
+            if (r.success) {
+                window._fbtUpdateLlmStatus?.(
+                    modelInfo.name,
+                    modelInfo.supports_vision,
+                    modelInfo.native_video ?? false,
+                );
+            } else {
+                _setStatus(`Load failed: ${r.message || "unknown error"}`);
+            }
+        } catch (e) {
+            _setStatus(`Load error: ${e.message}`);
+        }
+        _setBusy(false);
+        _syncFromGlobal();
+    };
+
+    unloadBtn.onclick = async () => {
+        if (_ls.busy) return;
+        _setBusy(true);
+        _setStatus("Unloading…");
+        try {
+            await llmApi.unloadModel();
+            window._fbtUpdateLlmStatus?.(null, false, false);
+        } catch (e) {
+            _setStatus(`Unload error: ${e.message}`);
+        }
+        _setBusy(false);
+        _syncFromGlobal();
+    };
+
+    refreshBtn.onclick = _scanModels;
+
+    dlBtn.onclick = async () => {
+        dlBtn.disabled    = true;
+        dlBtn.textContent = "Downloading…";
+        try {
+            const r = await llmApi.downloadDefault();
+            if (r.success) {
+                dlBtn.textContent = "Done — click ↻ Scan";
+            } else {
+                dlBtn.disabled    = false;
+                dlBtn.textContent = "Retry Download";
+            }
+        } catch (_) {
+            dlBtn.disabled    = false;
+            dlBtn.textContent = "Retry Download";
+        }
+    };
+
+    document.addEventListener("fbt:llm-status", _syncFromGlobal);
+
+    _syncFromGlobal();
+    _scanModels();
+
+    pane.append(
+        status,
+        badgeRow,
+        _mk("div", { cls: "llmp-row" }, [modelSel, refreshBtn]),
+        capNote,
+        _mk("div", { cls: "llmp-row" }, [loadBtn, unloadBtn]),
+        downloadRow,
+    );
 }
 
 // ── Modal sub-tab ─────────────────────────────────────────────────────────────
@@ -276,16 +402,17 @@ function _renderModalTab(pane) {
         _applyPreQuantizedState();
     }
 
-    _rebuildModelSel();
-
-    // Quantize toggle — declared before onchange so _applyPreQuantizedState can reference it
+    // Declare quantCb/quantNotice BEFORE calling _rebuildModelSel — it calls
+    // _applyPreQuantizedState which references both (TDZ guard).
     const quantCb     = _mk("input", { type: "checkbox", id: "llmp-quant-cb" });
     const quantNotice = _mk("span", {
         style: { fontSize: "11px", color: "#f59e0b", display: "none" },
     }, [" (disabled — model is pre-quantized)"]);
 
-    quantCb.checked = _state.modalQuant;
+    quantCb.checked  = _state.modalQuant;
     quantCb.onchange = () => { _state.modalQuant = quantCb.checked; _saveState(); };
+
+    _rebuildModelSel();
 
     function _applyPreQuantizedState() {
         const key = modelSel.value === "__custom__" ? "" : modelSel.value;

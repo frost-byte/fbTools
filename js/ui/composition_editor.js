@@ -141,8 +141,6 @@ const _S = {
     // Outfit registry state
     outfits:        {},    // id → {name, description, tags} from /fbtools/outfits/registry
     // LLM assistant state
-    llmModels:      [],    // descriptors from /fbtools/llm/models
-    llmDefault:     null,  // recommended default model info
     llmLoaded:      null,  // currently loaded model name (string) or null
     llmVision:      false, // does loaded model support vision?
     llmNativeVideo: false, // does loaded model support native temporal video?
@@ -503,14 +501,13 @@ function _attachLibberCompletion(el) {
 
 async function _loadResources() {
     try {
-        const [subj, bg, cam, snd, comps, llmData, llmStatus, settingsRes, libbersRes, lorasRes, outfitsRes, sam2Res,
+        const [subj, bg, cam, snd, comps, llmStatus, settingsRes, libbersRes, lorasRes, outfitsRes, sam2Res,
                mediaInImg, mediaOutImg, mediaInVid, mediaOutVid] = await Promise.allSettled([
             compositionsApi.listSubjects(),
             compositionsApi.listBackgrounds(),
             compositionsApi.listCameraPresets(),
             compositionsApi.listSoundPresets(),
             compositionsApi.listCompositions(),
-            llmApi.listModels(),
             llmApi.status(),
             compositionsApi.getSettings(),
             libberAPI.listLibbers(),
@@ -527,12 +524,10 @@ async function _loadResources() {
         _S.cameraPresets = cam.value?.camera_presets ?? [];
         _S.soundPresets  = snd.value?.sound_presets  ?? [];
         _S.savedComps    = comps.value?.compositions ?? [];
-        _S.llmModels     = llmData.value?.models     ?? [];
-        _S.llmDefault    = llmData.value?.default_model ?? null;
         const st = llmStatus.value;
-        _S.llmLoaded       = st?.loaded_model   ?? null;
-        _S.llmVision       = st?.supports_vision ?? false;
-        _S.llmNativeVideo  = st?.native_video    ?? false;
+        _S.llmLoaded      = st?.loaded_model   ?? null;
+        _S.llmVision      = st?.supports_vision ?? false;
+        _S.llmNativeVideo = st?.native_video    ?? false;
         _llmSyncBadge();
         if (settingsRes.value) {
             _S.settings = settingsRes.value;
@@ -555,7 +550,6 @@ async function _loadResources() {
     } catch (e) {
         console.error("fbt CompositionEditor: resource load error", e);
     }
-    _populateLlmModelSel();
     _llmUpdateStatus();
 }
 
@@ -1722,73 +1716,23 @@ function _llmSetBusy(busy) {
     if (_dom.llmGenSection) {
         _dom.llmGenSection.querySelectorAll("button").forEach(b => { b.disabled = busy; });
     }
-    if (_dom.llmLoadBtn) _dom.llmLoadBtn.disabled = busy;
-    if (_dom.llmUnloadBtn) _dom.llmUnloadBtn.disabled = busy;
 }
 
 function _llmUpdateStatus() {
     if (!_dom.llmStatusEl) return;
     if (_S.llmLoaded) {
         _dom.llmStatusEl.textContent = `Loaded: ${_S.llmLoaded}`;
-        _dom.llmStatusEl.className = "fbt-ce-llm-status fbt-ce-llm-ok";
-        if (_dom.llmUnloadBtn) _dom.llmUnloadBtn.style.display = "";
-        if (_dom.llmLoadBtn)   _dom.llmLoadBtn.textContent = "Reload";
-        if (_dom.llmGenSection)    _dom.llmGenSection.style.display = "";
-        if (_dom.llmFromVideoBtn)  _dom.llmFromVideoBtn.style.display = _S.llmNativeVideo ? "" : "none";
+        _dom.llmStatusEl.className   = "fbt-ce-llm-status fbt-ce-llm-ok";
+        if (_dom.llmGenSection)   _dom.llmGenSection.style.display = "";
+        if (_dom.llmFromVideoBtn) _dom.llmFromVideoBtn.style.display = _S.llmNativeVideo ? "" : "none";
     } else {
-        _dom.llmStatusEl.textContent = "No model loaded.";
-        _dom.llmStatusEl.className = "fbt-ce-llm-status";
-        if (_dom.llmUnloadBtn)    _dom.llmUnloadBtn.style.display = "none";
-        if (_dom.llmLoadBtn)      _dom.llmLoadBtn.textContent = "Load";
+        _dom.llmStatusEl.textContent = "No model loaded — use LLM tab.";
+        _dom.llmStatusEl.className   = "fbt-ce-llm-status";
         if (_dom.llmGenSection)   _dom.llmGenSection.style.display = "none";
         if (_dom.llmFromVideoBtn) _dom.llmFromVideoBtn.style.display = "none";
     }
-    // Push state to the shared panel header badge (no-op if panel not mounted)
-    window._fbtUpdateLlmStatus?.(_S.llmLoaded, _S.llmVision, _S.llmNativeVideo);
 }
 
-async function _llmLoadSelected() {
-    const sel = _dom.llmModelSel;
-    if (!sel) return;
-    const modelInfo = _S.llmModels.find(m => m.id === sel.value);
-    if (!modelInfo) { _toast("Select a model first", "warn"); return; }
-    _llmSetBusy(true);
-    _dom.llmStatusEl.textContent = `Loading ${modelInfo.name}…`;
-    try {
-        const r = await llmApi.loadModel(modelInfo);
-        if (r.success) {
-            _S.llmLoaded       = modelInfo.name;
-            _S.llmVision       = modelInfo.supports_vision;
-            _S.llmNativeVideo  = modelInfo.native_video ?? false;
-            _toast(`Loaded: ${modelInfo.name}`, "ok");
-        } else {
-            _toast(r.message || "Load failed", "error");
-            _S.llmLoaded = null;
-        }
-    } catch (e) {
-        _toast("Load error: " + e.message, "error");
-        _S.llmLoaded = null;
-    }
-    _llmSyncBadge();
-    _llmSetBusy(false);
-    _llmUpdateStatus();
-}
-
-async function _llmUnload() {
-    _llmSetBusy(true);
-    try {
-        await llmApi.unloadModel();
-        _S.llmLoaded      = null;
-        _S.llmVision      = false;
-        _S.llmNativeVideo = false;
-        _toast("Model unloaded", "ok");
-    } catch (e) {
-        _toast("Unload error: " + e.message, "error");
-    }
-    _llmSyncBadge();
-    _llmSetBusy(false);
-    _llmUpdateStatus();
-}
 
 async function _llmGenAction() {
     const card = _llmGetFocusedCard();
@@ -2464,103 +2408,23 @@ async function _llmPolishAction() {
     _llmUpdateStatus();
 }
 
-async function _llmDownloadDefault() {
-    if (!_dom.llmDownloadBtn) return;
-    _dom.llmDownloadBtn.disabled = true;
-    _dom.llmDownloadBtn.textContent = "Downloading…";
-    try {
-        const r = await llmApi.downloadDefault();
-        if (r.success) {
-            _toast(`Downloaded to: ${r.model_dir}`, "ok");
-            // Refresh model list
-            _dom.llmDownloadBtn.textContent = "Done — refresh models";
-            _dom.llmDownloadBtn.onclick = () => _llmRefreshModels();
-        } else {
-            _toast(r.error || "Download failed", "error");
-            _dom.llmDownloadBtn.disabled = false;
-            _dom.llmDownloadBtn.textContent = "Download";
-        }
-    } catch (e) {
-        _toast("Download error: " + e.message, "error");
-        _dom.llmDownloadBtn.disabled = false;
-        _dom.llmDownloadBtn.textContent = "Download";
-    }
-}
 
-async function _llmRefreshModels() {
-    try {
-        const data = await llmApi.listModels();
-        _S.llmModels = data.models || [];
-        _S.llmDefault = data.default_model || null;
-        _populateLlmModelSel();
-    } catch (_) { /* silent */ }
-}
-
-function _populateLlmModelSel() {
-    const sel = _dom.llmModelSel;
-    if (!sel) return;
-    sel.innerHTML = "";
-    const noModels = _S.llmModels.length === 0;
-    if (noModels) {
-        const o = document.createElement("option");
-        o.value = "";
-        o.textContent = "— no models found —";
-        sel.appendChild(o);
-    } else {
-        _S.llmModels.forEach(m => {
-            const o = document.createElement("option");
-            o.value = m.id;
-            const tags = (m.capability_tags || []).join(" ");
-            o.textContent = `${m.name}  ${tags}`;
-            o.title = m.capability_note || "";
-            sel.appendChild(o);
-        });
-    }
-    if (_dom.llmLoadBtn)     _dom.llmLoadBtn.disabled = noModels;
-    if (_dom.llmDownloadRow) _dom.llmDownloadRow.style.display = noModels ? "" : "none";
-}
 
 function _buildLlmSection(parent) {
     const body = _mk("div", { cls: "fbt-ce-sb-list fbt-ce-llm-body" });
 
-    // Model selector row
-    _dom.llmModelSel = _mk("select", { cls: "fbt-ce-select fbt-ce-llm-sel" });
-    const selRow = _mk("div", { cls: "fbt-ce-llm-row" }, [_dom.llmModelSel]);
-
-    // Refresh button
-    const refreshBtn = _mk("button", {
-        cls: "fbt-ce-icon-btn", title: "Re-scan model directories", textContent: "↻",
-        onclick: _llmRefreshModels,
-    });
-    selRow.appendChild(refreshBtn);
-    body.appendChild(selRow);
-
-    // Status line
-    _dom.llmStatusEl = _mk("div", { cls: "fbt-ce-llm-status", textContent: "No model loaded." });
+    // Status line — read-only; updated by fbt:llm-status events and generation state
+    _dom.llmStatusEl = _mk("div", { cls: "fbt-ce-llm-status", textContent: "No model loaded — use LLM tab." });
     body.appendChild(_dom.llmStatusEl);
 
-    // Capability note (updates when selection changes)
-    const capNote = _mk("div", { cls: "fbt-ce-llm-cap-note" });
-    body.appendChild(capNote);
-    _dom.llmModelSel.addEventListener("change", () => {
-        const m = _S.llmModels.find(x => x.id === _dom.llmModelSel.value);
-        capNote.textContent = m?.capability_note || "";
+    // Sync state from the LLM tab whenever it changes (load/unload/scan there)
+    document.addEventListener("fbt:llm-status", (e) => {
+        _S.llmLoaded      = e.detail.loaded      ?? null;
+        _S.llmVision      = e.detail.vision      ?? false;
+        _S.llmNativeVideo = e.detail.nativeVideo ?? false;
+        _llmSyncBadge();
+        _llmUpdateStatus();
     });
-
-    // Load / Unload buttons
-    const btnRow = _mk("div", { cls: "fbt-ce-llm-row" });
-    _dom.llmLoadBtn = _mk("button", {
-        cls: "fbt-ce-btn", textContent: "Load",
-        onclick: _llmLoadSelected,
-    });
-    _dom.llmUnloadBtn = _mk("button", {
-        cls: "fbt-ce-btn fbt-ce-btn-secondary", textContent: "Unload",
-        style: { display: "none" },
-        onclick: _llmUnload,
-    });
-    btnRow.appendChild(_dom.llmLoadBtn);
-    btnRow.appendChild(_dom.llmUnloadBtn);
-    body.appendChild(btnRow);
 
     // Generate buttons (hidden when no model loaded)
     _dom.llmGenSection = _mk("div", {
@@ -2621,34 +2485,6 @@ function _buildLlmSection(parent) {
     _dom.llmSidebarHistory = sidebarHist;
     _dom.llmGenSection.appendChild(sidebarHist.el);
     body.appendChild(_dom.llmGenSection);
-
-    // Download prompt (hidden when models exist)
-    _dom.llmDownloadRow = _mk("div", { cls: "fbt-ce-llm-download" });
-    const d = _mk("div", { cls: "fbt-ce-llm-download-info" });
-    d.innerHTML = (
-        "<b>No LLMs found.</b> Place GGUF models in <code>ComfyUI/models/LLMs/&lt;name&gt;/</code>, " +
-        "one subdirectory per model. Vision-capable GGUF models must include an <code>mmproj-*.gguf</code> file " +
-        "alongside the main <code>.gguf</code>.<br><br>" +
-        "Models stored elsewhere (e.g. a shared drive) can be registered by adding an <code>LLMs:</code> " +
-        "entry to your <code>extra_model_paths.yaml</code> — ComfyUI will scan those paths too.<br><br>" +
-        "Or download the recommended starter model:"
-    );
-    _dom.llmDownloadRow.appendChild(d);
-
-    const defInfo = _mk("div", { cls: "fbt-ce-llm-default-info" });
-    defInfo.innerHTML = (
-        "<b>Qwen2.5-VL 3B Instruct</b> — ~2.6 GB total<br>" +
-        "<span class='fbt-ce-llm-cap-note'>Accepts images. Video via frame sampling.</span><br>" +
-        "<i>Requires: llama-cpp-python</i>"
-    );
-    _dom.llmDownloadRow.appendChild(defInfo);
-
-    _dom.llmDownloadBtn = _mk("button", {
-        cls: "fbt-ce-btn", textContent: "Download",
-        onclick: _llmDownloadDefault,
-    });
-    _dom.llmDownloadRow.appendChild(_dom.llmDownloadBtn);
-    body.appendChild(_dom.llmDownloadRow);
 
     parent.appendChild(_buildSidebarSection("🤖 LLM Assistant", body));
 }
