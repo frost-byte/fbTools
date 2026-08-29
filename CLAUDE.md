@@ -188,6 +188,26 @@ PromptCollection = prompt_models.PromptCollection
 
 Keep node classes as thin orchestration wrappers. Put testable logic in `utils/` modules.
 
+### Cross-layer naming contracts
+
+Widget names are defined as string literals in `extension.py` (first argument to `io.<Type>.Input("name", ...)` or `id="name"` keyword). JavaScript reads them back at runtime via `node.widgets.find(w => w.name === "name")`. These references are invisible to the type system and break silently.
+
+**Rule:** before renaming a widget in Python, run:
+
+```bash
+grep -r '"old_name"' js/
+```
+
+…and update every matching JS file first. The same applies when removing a widget.
+
+**Automated check:** `tests/test_widget_name_contracts.py` extracts all widget names defined in Python and all `w.name === "x"` lookups in JS, then fails if any JS-referenced name is missing from the Python schema. Run it after any node schema change:
+
+```bash
+/mnt/comfy_ssd/venvs/comfy-preflight/bin/python -m pytest tests/test_widget_name_contracts.py -v
+```
+
+If the JS lookup is an intentional backwards-compat fallback for old saved workflows, add it to `ALLOWLIST` in the test file with a reason. Keep the list minimal.
+
 ### Data Models
 
 - `PromptCollection` (v2): named prompts with metadata (`PromptMetadata`), compositions (ordered prompt key lists), and optional `scene_flags`. Auto-migrates from v1 JSON.
