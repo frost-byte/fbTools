@@ -366,3 +366,55 @@ def test_parse_clip_desc_truncates_long_fallback():
 def test_parse_clip_desc_empty_action_field():
     raw = json.dumps({"action": ""})
     assert _parse_clip_desc(raw) == ""
+
+
+# ── build_clip_description_prompt ─────────────────────────────────────────────
+
+_build_clip_prompt = spa.build_clip_description_prompt
+
+
+def test_build_clip_prompt_no_subjects_returns_base_prompt():
+    prompt = _build_clip_prompt()
+    assert "Examine this video frame" in prompt
+    assert "Return ONLY valid JSON" in prompt
+    # No subject placeholders injected
+    assert "{A}" not in prompt
+
+
+def test_build_clip_prompt_with_subjects_includes_placeholder_instructions():
+    subjects = [("A", "Elena", "woman with auburn hair"), ("B", "Marcus", "tall man in dark jacket")]
+    prompt = _build_clip_prompt(subjects=subjects)
+    assert "{A} — Elena: woman with auburn hair" in prompt
+    assert "{B} — Marcus: tall man in dark jacket" in prompt
+    assert "Use {A} / {B} to refer to these subjects" in prompt
+    assert "not the subjects' appearance" in prompt
+
+
+def test_build_clip_prompt_with_subjects_uses_slot_schema():
+    subjects = [("A", "Anna", "")]
+    prompt = _build_clip_prompt(subjects=subjects)
+    # Schema should reference placeholder labels, not generic description
+    assert "placeholder labels" in prompt
+
+
+def test_build_clip_prompt_single_subject_no_slash():
+    subjects = [("A", "Sam", "person in red coat")]
+    prompt = _build_clip_prompt(subjects=subjects)
+    assert "Use {A} to refer to" in prompt
+    # No orphaned " / " separator for a single subject
+    assert " / {" not in prompt
+
+
+def test_build_clip_prompt_subject_missing_appearance():
+    subjects = [("A", "Person", "")]
+    prompt = _build_clip_prompt(subjects=subjects)
+    assert "{A} — Person" in prompt
+
+
+def test_build_clip_prompt_override_ignores_subjects():
+    override = "Just tell me the vibe."
+    subjects = [("A", "Elena", "auburn hair")]
+    prompt = _build_clip_prompt(prompt_override=override, subjects=subjects)
+    # Override takes precedence; subjects block is NOT injected
+    assert "Elena" not in prompt
+    assert "Just tell me the vibe" in prompt

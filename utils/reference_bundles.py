@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 VISUAL_TYPES = ("video", "images")
-AUDIO_SOURCES = ("extract_from_visual", "file", "none")
+AUDIO_SOURCES = ("extract_from_visual", "extract_from_video", "file", "none")
 
 _EMPTY_DATA: dict = {"version": 1, "bundles": {}}
 
@@ -92,8 +92,13 @@ class BundleRegistry:
         updated.setdefault("tags", [])
 
         visual = updated.setdefault("visual", {})
+        # visual.type is the *default mode* preference ("images" | "video").
+        # Both visual.file (video) and visual.files (images) may be set
+        # simultaneously so the user can switch modes per cast entry without
+        # maintaining separate bundles.
         visual.setdefault("type", "images")
         visual.setdefault("file", "")
+        visual.setdefault("video_dir", "input")
         visual.setdefault("files", [])
         visual.setdefault("start_time", 0.0)
         visual.setdefault("duration", 0.0)
@@ -162,19 +167,24 @@ def validate_bundle(bundle: dict) -> list[str]:
     visual = bundle.get("visual", {})
     audio = bundle.get("audio", {})
 
-    visual_type = visual.get("type", "images")
+    visual_type = visual.get("type", "images")   # default-mode preference
     audio_source = audio.get("source", "none")
+    has_video  = bool(visual.get("file", ""))
+    has_images = bool(visual.get("files", []))
 
     if visual_type not in VISUAL_TYPES:
         warnings.append(f"visual.type must be one of {VISUAL_TYPES!r}, got {visual_type!r}")
     if audio_source not in AUDIO_SOURCES:
         warnings.append(f"audio.source must be one of {AUDIO_SOURCES!r}, got {audio_source!r}")
-    if visual_type == "video" and not visual.get("file"):
-        warnings.append("visual.type is 'video' but visual.file is empty")
-    if visual_type == "images" and not visual.get("files"):
-        warnings.append("visual.type is 'images' but visual.files is empty")
-    if audio_source == "extract_from_visual" and visual_type != "video":
-        warnings.append("audio.source 'extract_from_visual' requires visual.type 'video'")
+    # Warn only when the *default* mode lacks media; having both is valid.
+    if visual_type == "video" and not has_video:
+        warnings.append("default mode is 'video' but visual.file is empty")
+    if visual_type == "images" and not has_images:
+        warnings.append("default mode is 'images' but visual.files is empty")
+    if audio_source == "extract_from_visual" and not has_video:
+        warnings.append("audio.source 'extract_from_visual' requires a video file (visual.file)")
+    if audio_source == "extract_from_video" and not audio.get("video_file", ""):
+        warnings.append("audio.source 'extract_from_video' requires a video file (audio.video_file)")
     if audio_source == "file" and not audio.get("file"):
         warnings.append("audio.source is 'file' but audio.file is empty")
 
