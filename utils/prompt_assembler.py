@@ -175,6 +175,28 @@ def _lang_label(code: str) -> str:
     return _LANG_LABELS.get((code or "").lower().strip(), code or "English")
 
 
+def _possessive(info: dict) -> str:
+    """Return the possessive form for a subject based on its pronoun_style.
+
+    masculine → his
+    feminine  → her
+    object    → its
+    location  → the {short_name}'s   (falls back to "its" when short_name absent)
+    neutral   → their  (default)
+    """
+    style = info.get("pronoun_style", "neutral")
+    if style == "masculine":
+        return "his"
+    if style == "feminine":
+        return "her"
+    if style == "object":
+        return "its"
+    if style == "location":
+        short = info.get("short_name", "").strip()
+        return f"the {short}'s" if short else "its"
+    return "their"
+
+
 def _join_labels(labels: list[str]) -> str:
     """Oxford-comma join for reference labels: '<Pic 1>, <Pic 2>, and <Pic 3>'."""
     if not labels:
@@ -267,10 +289,60 @@ def _build_ref_map(
             pre_standalone_nums[slot_id] = _audio_ctr
             _audio_ctr += 1
 
+    # Pre-assign speaker IDs using speaking order, not subject order.
+    # Audio-bearing subjects get IDs first; then any slot that appears as
+    # speaker_slot in a shot's dialogue entry (dialogue-only speakers with no
+    # audio file still need an (Sx) marker so H3 knows who is speaking).
+    _speaker_ctr = 1
+    pre_speaker_ids: dict[str, str] = {}  # slot_id → "S{n}"
+    for slot_id in ordered_slots:
+        subj = assignments.get(slot_id)
+        if subj is None:
+            continue
+        sid = subj.get("subject_id", "")
+        ve = video_lookup.get(sid) if sid else None
+        has_audio = (
+            (ve is not None and ve.get("audio_source") == "extract_from_visual")
+            or bool(subj.get("voice", {}).get("audio_reference_file", ""))
+        )
+        if has_audio:
+            pre_speaker_ids[slot_id] = f"S{_speaker_ctr}"
+            _speaker_ctr += 1
+    # Extend to dialogue-only speakers (no audio reference) so (Sx) appears in
+    # subject_definitions even when there is no <Audio N> reference.
+    # Only consider shots that have actual resolved text in dialogue_map (not
+    # just a placeholder marker without text), so (Sx) only appears when
+    # real dialogue is present.
+    _dialogue_map = scene_instance.get("dialogue", {})
+    for _shot in scene_instance.get("template", {}).get("shots", []):
+        if _shot.get("id", "") not in _dialogue_map:
+            continue
+        _dlg = _shot.get("dialogue") or {}
+        _spk = _dlg.get("speaker_slot") or _dlg.get("speaker", "")
+        if _spk and _spk in ordered_slots and _spk not in pre_speaker_ids:
+            pre_speaker_ids[_spk] = f"S{_speaker_ctr}"
+            _speaker_ctr += 1
+
     ref_map: dict[str, dict] = {}
-    subject_counter = 1
     picture_counter = 1
     video_counter = 1
+
+    # Pre-assign Subject N numbers with bundle subjects first.
+    # Processing order (audio ordinals, picture ordinals) stays alphabetical so
+    # it matches _build_h3_refplan().  Only the visible Subject label uses this
+    # bundle-first numbering.  Replaced source slots get no Subject label.
+    _pre_subject_nums: dict[str, int] = {}
+    _sub_ctr = 1
+    for _sid in ordered_slots:  # bundles (attribute_transfer) first
+        if assignments.get(_sid, {}).get("_cast_retention", "fully_preserved") == "attribute_transfer":
+            _pre_subject_nums[_sid] = _sub_ctr
+            _sub_ctr += 1
+    for _sid in ordered_slots:  # retained source subjects next
+        _m = assignments.get(_sid, {}).get("_cast_retention", "fully_preserved")
+        if _m not in ("attribute_transfer", "replaced"):
+            _pre_subject_nums[_sid] = _sub_ctr
+            _sub_ctr += 1
+    # Replaced source slots intentionally omitted — they get no Subject N label.
 
     for slot_id in ordered_slots:
         subject = assignments.get(slot_id)
@@ -303,13 +375,15 @@ def _build_ref_map(
         soundtrack_retention: str = "timbre"
         soundtrack_role: str = ""
         if ve:
-            ve_key = id(ve)
-            if ve_key in _video_entry_num:
-                video_num = _video_entry_num[ve_key]
-            else:
-                video_num = video_counter
-                _video_entry_num[ve_key] = video_num
-                video_counter += 1
+            is_audio_only = ve.get("audio_only", False)
+            if not is_audio_only:
+                ve_key = id(ve)
+                if ve_key in _video_entry_num:
+                    video_num = _video_entry_num[ve_key]
+                else:
+                    video_num = video_counter
+                    _video_entry_num[ve_key] = video_num
+                    video_counter += 1
             video_file = ve.get("video_file", "")
             if ve.get("audio_source") == "extract_from_visual":
                 soundtrack_num = pre_soundtrack_nums.get(subject_id)
@@ -334,6 +408,9 @@ def _build_ref_map(
         _ap_detail_str = f", with {_join_details(_ap_detail)}" if _ap_detail else ""
         appearance_phrase = f"{_ap_body}{_ap_detail_str}"
 
+        subject_num = _pre_subject_nums.get(slot_id, 0)
+        subject_label = f"<Subject {subject_num}>" if subject_num else ""
+
         ref_map[slot_id] = {
             "subject_id": subject_id,
             "name": subject.get("name", slot_id),
@@ -352,9 +429,9 @@ def _build_ref_map(
             "character_sheet_images": [s["file"] for s in sheets],
             "character_sheet_entries": character_sheet_entries,
             "concept_id": subject.get("concept_id", ""),
-            "subject_num": subject_counter,
-            "speaker_id": f"S{subject_counter}",
-            "subject_label": f"<Subject {subject_counter}>",
+            "subject_num": subject_num,
+            "speaker_id": pre_speaker_ids.get(slot_id, f"S{subject_num or 1}"),
+            "subject_label": subject_label,
             "picture_nums": picture_nums,
             "video_num": video_num,
             "video_file": video_file,
@@ -366,8 +443,10 @@ def _build_ref_map(
                 retention_markers.get(slot_id)
                 or subject.get("_cast_retention", "fully_preserved")
             ),
+            "transfer_to_slot": subject.get("_transfer_to_slot", ""),
+            "pronoun_style":    subject.get("_pronoun_style", "neutral"),
+            "short_name":       subject.get("_short_name", ""),
         }
-        subject_counter += 1
 
     return ref_map
 
@@ -427,13 +506,16 @@ def _build_h3_refplan(
             continue
         sheets = subject.get("character_sheet_images", [])
         subject_id = subject.get("subject_id", "")
-        for path in sheets:
+        for entry in sheets:
+            file_path = entry.get("file", "") if isinstance(entry, dict) else entry
+            if not file_path:
+                continue
             references.append({
                 "modality":       "image",
                 "picture_ordinal": picture_counter,
                 "subject_id":     subject_id,
                 "slot_id":        slot_id,
-                "path":           path,
+                "path":           file_path,
             })
             picture_counter += 1
 
@@ -448,33 +530,53 @@ def _build_h3_refplan(
             continue
 
         has_soundtrack = ve.get("audio_source") == "extract_from_visual"
+        is_audio_only  = ve.get("audio_only", False)
         this_video_ordinal = video_counter
 
         if has_soundtrack:
+            if is_audio_only:
+                # No video is emitted for this slot (images mode with extracted audio).
+                # Treat as standalone audio — pairing with a nonexistent <Video N> is wrong.
+                references.append({
+                    "modality":      "audio",
+                    "audio_ordinal": audio_counter,
+                    "subject_id":    subject_id,
+                    "slot_id":       slot_id,
+                    "path":          ve.get("audio_path", ve.get("video_file", "")),
+                    "start_time":    ve.get("audio_start_time", 0.0),
+                    "duration":      ve.get("audio_duration", 0.0),
+                    "retention":     ve.get("audio_retention", "timbre"),
+                    "role":          ve.get("audio_role", ""),
+                    "audio_cache":   ve.get("audio_cache", ""),
+                })
+            else:
+                references.append({
+                    "modality":      "soundtrack_audio",
+                    "audio_ordinal": audio_counter,
+                    "video_ordinal": this_video_ordinal,
+                    "subject_id":    subject_id,
+                    "slot_id":       slot_id,
+                    "path":          ve.get("audio_path", ve.get("video_file", "")),
+                    "start_time":    ve.get("audio_start_time", 0.0),
+                    "duration":      ve.get("audio_duration", 0.0),
+                    "retention":     ve.get("audio_retention", "timbre"),
+                    "role":          ve.get("audio_role", ""),
+                    "audio_cache":   ve.get("audio_cache", ""),
+                })
+            audio_counter += 1
+
+        # audio_only entries provide only an audio reference — no visual video
+        # item is emitted, and the video counter is not incremented.
+        if not is_audio_only:
             references.append({
-                "modality":      "soundtrack_audio",
-                "audio_ordinal": audio_counter,
+                "modality":      "video",
                 "video_ordinal": this_video_ordinal,
                 "subject_id":    subject_id,
                 "slot_id":       slot_id,
-                "path":          ve.get("audio_path", ve.get("video_file", "")),
-                "start_time":    ve.get("audio_start_time", 0.0),
-                "duration":      ve.get("audio_duration", 0.0),
-                "retention":     ve.get("audio_retention", "timbre"),
-                "role":          ve.get("audio_role", ""),
-                "audio_cache":   ve.get("audio_cache", ""),
+                "path":          ve.get("video_file", ""),
+                "load_params":   ve.get("load_params", {}),
             })
-            audio_counter += 1
-
-        references.append({
-            "modality":     "video",
-            "video_ordinal": this_video_ordinal,
-            "subject_id":   subject_id,
-            "slot_id":      slot_id,
-            "path":         ve.get("video_file", ""),
-            "load_params":  ve.get("load_params", {}),
-        })
-        video_counter += 1
+            video_counter += 1
 
     # Pass 3: standalone audio entries (voice.audio_reference_file)
     _trim_map = slot_trim_to or {}
@@ -530,16 +632,29 @@ def _replace_h3(
         info = ref_map.get(slot_id)
         if not info:
             return match.group(0)
+        # Redirect replaced source slots to their bundle replacement in descriptions.
+        # effective_slot tracks the bundle slot for seen_globally so first-appearance
+        # detection is consistent across multiple {A} references in the same shot.
+        effective_slot = slot_id
+        if info.get("retention_marker") == "replaced" and info.get("transfer_to_slot"):
+            redirect_target = info["transfer_to_slot"]   # bundle slot, e.g. "E"
+            repl_info = ref_map.get(redirect_target)
+            if repl_info:
+                info = repl_info
+                effective_slot = redirect_target
         label = info["subject_label"]
-        base = f"{label} ({info['speaker_id']})" if slot_id in speaking_slots else label
-        if seen_globally is not None and slot_id not in seen_globally:
-            seen_globally.add(slot_id)
+        # A replaced source slot refers to the same entity as its bundle replacement,
+        # so treat it as speaking if the bundle slot is the active speaker.
+        is_speaking = slot_id in speaking_slots or effective_slot in speaking_slots
+        base = f"{label} ({info['speaker_id']})" if is_speaking else label
+        if seen_globally is not None and effective_slot not in seen_globally:
+            seen_globally.add(effective_slot)
             ap = info.get("appearance_phrase", "")
             if ap:
                 return f"{base}, {ap}"
         return base
 
-    return re.sub(r"\{([A-D])\}", _sub, text)
+    return re.sub(r"\{([A-H])\}", _sub, text)
 
 
 def _replace_named(text: str, ref_map: dict) -> str:
@@ -577,45 +692,98 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     user_flags: list[str] = scene_instance.get("task_flags") or []
     active_flags: set[str] = set(user_flags)
 
+    # Slots that are the active speaker in a shot with real dialogue text — used
+    # to inject (Sx) into subject_definitions when there is no <Audio N>.
+    # Placeholder slots without resolved dialogue_map entries are excluded so
+    # templates with placeholder markers don't add (Sx) when no text is provided.
+    _dlg_speaking_slots: set[str] = set()
+    for _shot in template.get("shots", []):
+        if _shot.get("id", "") not in dialogue_map:
+            continue
+        _dlg = _shot.get("dialogue") or {}
+        _spk = _dlg.get("speaker_slot") or _dlg.get("speaker", "")
+        if _spk:
+            _dlg_speaking_slots.add(_spk)
+
     # Build video_num → [subject_label, …] map for shared-video role lines.
-    # Multiple subjects from the same source profile share one <Video N>; the
-    # video role line must list all co-sourced subjects ("… for <Subject 1> and <Subject 2>").
+    # Only include subjects with a defined Subject label (excludes replaced source slots).
     _vnum_to_labels: dict[int, list[str]] = {}
     for _sid in ordered_slots:
         _info = ref_map[_sid]
         _vn = _info.get("video_num")
-        if _vn is not None:
+        if _vn is not None and _info.get("subject_label"):
             _vnum_to_labels.setdefault(_vn, []).append(_info["subject_label"])
 
+    # Identify which video numbers are source/motion-donor videos vs. pure bundle
+    # appearance references. A video is a source unless EVERY associated slot is
+    # attribute_transfer (a bundle replacement whose video is only a visual ref).
+    # This prevents "is the source video being edited" from appearing on bundle
+    # reference videos; simple editing scenes (all slots retained/replaced) still
+    # mark their single video as a source correctly.
+    _vnum_all_markers: dict[int, list[str]] = {}
+    for _sid in ordered_slots:
+        _info = ref_map[_sid]
+        _vn = _info.get("video_num")
+        if _vn is not None:
+            _vnum_all_markers.setdefault(_vn, []).append(_info.get("retention_marker") or "")
+    _vnum_is_source: set[int] = {
+        _vn for _vn, _markers in _vnum_all_markers.items()
+        if any(m != "attribute_transfer" for m in _markers)
+    }
+
     # ── subject_definitions ────────────────────────────────────────────────────
-    # Format (per MiniMax best practice):
-    #   Subject lines:  "<Subject N> is [summary] from <Video N> / from the
-    #                   character sheet(s) contained in <Picture N>, with [details]."
-    #   Video lines:    "<Video N> is the visual identity reference for <Subject 1> and <Subject 2>."
+    # Format (per MiniMax H3 Ref2VA spec):
+    #   Subject lines:  "<Subject N> is [summary] whose appearance comes from <Picture N>…"
+    #                   (pictures cited inside Subject line — no standalone <Picture N> entries
+    #                    for character references per spec)
+    #   Video lines:    "<Video N> is the visual identity reference / source video being edited…"
     #   Audio lines:    "<Audio N> is the voice-timbre reference for <Subject N> (SN)…"
+    #
+    # Attribute-transfer (video editing replacement) rules:
+    #   • Replaced source slot (retention_marker="replaced"): no Subject line emitted.
+    #     Their video line still appears so H3 knows the motion source.
+    #   • Bundle replacement slot (retention_marker="attribute_transfer"): Subject line
+    #     appears with a motion-source sentence referencing the source video.
+
+    # Emit Subject lines in display order: bundle (attribute_transfer) subjects first,
+    # then retained source subjects.
+    _sd_display_slots = (
+        [s for s in ordered_slots if ref_map[s].get("retention_marker") == "attribute_transfer"]
+        + [s for s in ordered_slots
+           if ref_map[s].get("retention_marker") not in ("attribute_transfer", "replaced")
+           and bool(ref_map[s].get("subject_label"))]
+    )
+
     sd: list[str] = []
     video_sd_lines: list[str] = []
     video_sd_emitted: set[int] = set()  # guard against duplicate <Video N> lines
     audio_sd_lines: list[str] = []
 
-    for slot_id in ordered_slots:
+    for slot_id in _sd_display_slots:
         info = ref_map[slot_id]
         label = info["subject_label"]
+        # Append (Sx) speaker ID to the label when the slot has dialogue so H3
+        # can associate the voice with the correct subject definition, even when
+        # there is no <Audio N> reference (audio-only subjects already get (Sx)
+        # appended via the <Audio N> line; this covers dialogue-only speakers).
+        if slot_id in _dlg_speaking_slots and info.get("speaker_id") and label:
+            if info.get("audio_num") is None and info.get("soundtrack_num") is None:
+                label = f"{label} ({info['speaker_id']})"
         summary = info["appearance_summary"] or info["name"]
 
-        # Build reference anchor — placed AFTER summary per H3 spec:
-        #   "<Subject N> is [description] in <Video N>, with [details]."
-        #   "<Subject N> is [description] in <Picture N>, with [details]."
-        # Both video and picture references use "in" (per official doc examples).
+        # Build reference anchor using spec-compliant phrasing:
+        #   pictures → "whose appearance comes from <Picture N>" (appearance reference, cited inline)
+        #   video    → "from <Video N>" (visual identity)
+        #   both     → "whose appearance comes from <Picture N> and whose motion comes from <Video N>"
         vid_ref = f"<Video {info['video_num']}>" if info["video_num"] is not None else ""
         pic_ref_str = _join_labels([f"<Picture {p}>" for p in info["picture_nums"]]) if info["picture_nums"] else ""
 
         if vid_ref and pic_ref_str:
-            ref_anchor = f" from {vid_ref} and {pic_ref_str}"
+            ref_anchor = f" whose appearance comes from {pic_ref_str} and whose motion comes from {vid_ref}"
+        elif pic_ref_str:
+            ref_anchor = f" whose appearance comes from {pic_ref_str}"
         elif vid_ref:
             ref_anchor = f" from {vid_ref}"
-        elif pic_ref_str:
-            ref_anchor = f" from {pic_ref_str}"
         else:
             ref_anchor = ""
 
@@ -625,30 +793,61 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         ]
         detail_phrase = f", with {_join_details(detail_parts)}" if detail_parts else ""
 
-        # Summary starts with lowercase after "is"; trailing period stripped since
-        # detail_phrase or ref_anchor continues the sentence.
-        summary_body = (summary[0].lower() + summary[1:]).rstrip(". ") if summary else ""
-        # When a specific reference is cited, the subject is definite — replace a
-        # leading indefinite article ("a "/"an ") with "the " to match spec examples
-        # ("is the young blonde woman in <Video 1>…").  Leaves "the", names, and
-        # article-free summaries untouched.
+        # Prose descriptions start with lowercase after "is"; proper names keep
+        # their capitalisation.  Heuristic: if appearance_summary is populated
+        # treat it as prose (lowercase first letter); if it's empty and we fell
+        # back to the subject's display name, preserve case.
+        _ap_sum = info["appearance_summary"]
+        if _ap_sum:
+            summary_body = (_ap_sum[0].lower() + _ap_sum[1:]).rstrip(". ")
+        else:
+            summary_body = info["name"].rstrip(". ") if info["name"] else ""
+        # When a specific reference is cited, the subject is definite — replace
+        # leading indefinite article ("a "/"an ") with "the ".
         if ref_anchor and summary_body:
             summary_body = re.sub(r"^an? ", "the ", summary_body, count=1)
-        sd.append(f"{label} is {summary_body}{ref_anchor}{detail_phrase}.")
 
-        # Standalone video role line (task-flag-aware).
-        # Emit only once per video_num — co-sourced subjects share one line.
+        # Attribute-transfer bundle subject: add a sentence explaining that their
+        # pose/motion/position come from the source subject they replace.
+        motion_clause = ""
+        if info.get("retention_marker") == "attribute_transfer":
+            src_slot_id = info.get("transfer_to_slot", "")
+            src_info = ref_map.get(src_slot_id)
+            if src_info:
+                src_vnum = src_info.get("video_num")
+                src_name = src_info.get("name") or src_info.get("appearance_summary") or "the replaced subject"
+                if src_vnum is not None:
+                    motion_clause = (
+                        f" Their pose, movement, and screen position in the scene "
+                        f"match those of {src_name} in <Video {src_vnum}>."
+                    )
+                else:
+                    motion_clause = (
+                        f" Their pose, movement, and screen position in the scene "
+                        f"match those of {src_name}."
+                    )
+
+        sd.append(f"{label} is {summary_body}{ref_anchor}{detail_phrase}.{motion_clause}")
+
+    # Video/audio sd_lines iterate all slots (including replaced) so every <Video N>
+    # and <Audio N> gets a role line.
+    for slot_id in ordered_slots:
+        info = ref_map[slot_id]
+        label = info["subject_label"] or info["name"]  # fallback name for replaced slots
+
+        # Standalone video role line (task-flag-aware); emitted for ALL slots including
+        # transfer sources so H3 knows what each <Video N> is.
         if info["video_num"] is not None:
             vnum = info["video_num"]
             if vnum not in video_sd_emitted:
                 video_sd_emitted.add(vnum)
                 if "video continuation" in active_flags:
                     video_role = "is the continuation starting point for the target video"
-                elif "video editing" in active_flags:
+                elif "video editing" in active_flags and vnum in _vnum_is_source:
                     video_role = "is the source video being edited"
                 else:
                     co_labels = _vnum_to_labels.get(vnum, [label])
-                    targets = _join_labels(co_labels)
+                    targets = _join_labels(co_labels) if co_labels else label
                     video_role = f"is the visual identity reference for {targets}"
                 video_sd_lines.append(f"<Video {vnum}> {video_role}")
 
@@ -662,7 +861,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             spk = f"{label} ({info['speaker_id']})"
             if snd_role:
                 desc = f"{snd_role} for {spk}"
-            elif snd_ret == "reuse":
+            elif snd_ret == "reuse" and vnum is not None:
                 desc = f"the audio track from <Video {vnum}>, reproduced verbatim"
             elif snd_ret == "style":
                 desc = (f"the audio style and rhythm reference for {spk}, "
@@ -691,19 +890,6 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                         f"containing {voice_desc}, without copying the original signal")
             audio_sd_lines.append(f"<Audio {aud_num}> is {desc}.")
 
-    # Picture role lines — tell H3 each <Picture N> is an appearance reference,
-    # not a scene composition template (prevents spatial bleed from portrait framing).
-    picture_sd_lines: list[str] = []
-    for slot_id in ordered_slots:
-        info = ref_map[slot_id]
-        label = info["subject_label"]
-        for entry in info.get("character_sheet_entries", []):
-            pnum = entry["picture_num"]
-            role = entry.get("role") or "character sheet"
-            desc = _SHEET_ROLE_H3.get(role, f"{role} (appearance reference; do not use as scene composition)")
-            picture_sd_lines.append(f"<Picture {pnum}> is {desc} for {label}.")
-
-    sd.extend(picture_sd_lines)
     sd.extend(video_sd_lines)
     sd.extend(audio_sd_lines)
     sections.append("subject_definitions:\n" + "\n".join(sd))
@@ -715,11 +901,10 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         for info in ref_map.values()
     )
 
-    # User-provided task_flags override auto-detection; otherwise infer from refs.
-    # Per MiniMax docs, pictures AND videos that provide character/style/camera guidance
-    # both fall under "reference generation".  Intent-based types (video editing,
-    # video continuation, keyframe completion, audio reuse) cannot be auto-detected
-    # from file presence — users must supply them via task_flags.
+    # Task tag: merge user-provided flags with auto-detected ones.
+    # user_flags supply intent-based tasks (video editing, video continuation, etc.)
+    # that cannot be inferred from references alone.  Auto-detection always adds
+    # the reference-type tasks that ARE inferrable, regardless of user_flags.
     _TASK_ORDER = [
         "video continuation",
         "video editing",
@@ -734,15 +919,42 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         unknown = [f for f in flags if f not in _TASK_ORDER]
         return known + unknown
 
-    if user_flags:
-        task_tag = "[" + " + ".join(_sort_tasks(user_flags)) + "]"
-    else:
-        task_parts: list[str] = []
-        if has_refs:
-            task_parts.append("reference generation")
-        if has_audio:
-            task_parts.append("audio reference")
-        task_tag = "[" + " + ".join(task_parts) + "]" if task_parts else "[video generation]"
+    # Auto-detect reference tasks from what's actually present in ref_map.
+    # Intent-based flags (video editing / continuation) explain why a video is present
+    # without implying "reference generation" — so only pictures unconditionally trigger
+    # "reference generation" when an intent mode is already active.
+    _user_set = set(user_flags)
+    _intent_modes = {"video continuation", "video editing", "keyframe completion"}
+    _is_intent_mode = bool(_intent_modes & _user_set)
+
+    auto_tasks: list[str] = []
+    _pics_exist = any(bool(info["picture_nums"]) for info in ref_map.values())
+    _vids_exist = any(info["video_num"] is not None for info in ref_map.values())
+    if _pics_exist or (_vids_exist and not _is_intent_mode):
+        auto_tasks.append("reference generation")
+
+    # Differentiate audio task by retention: timbre/style → "audio reference"; reuse → "audio reuse".
+    # If the user already specified any audio task flag, skip auto-detection for audio entirely.
+    _audio_flags = {"audio reference", "audio reuse"}
+    if not (_audio_flags & _user_set):
+        _has_timbre_audio = any(
+            (info["soundtrack_num"] is not None and info["soundtrack_retention"] != "reuse")
+            or (info["audio_num"] is not None and info["audio_retention"] != "reuse")
+            for info in ref_map.values()
+        )
+        _has_reuse_audio = any(
+            (info["soundtrack_num"] is not None and info["soundtrack_retention"] == "reuse")
+            or (info["audio_num"] is not None and info["audio_retention"] == "reuse")
+            for info in ref_map.values()
+        )
+        if _has_timbre_audio:
+            auto_tasks.append("audio reference")
+        if _has_reuse_audio:
+            auto_tasks.append("audio reuse")
+
+    # Merge: user_flags lead (they carry intent tasks); auto_tasks fill in reference tasks.
+    merged_flags = user_flags + [t for t in auto_tasks if t not in _user_set]
+    task_tag = "[" + " + ".join(_sort_tasks(merged_flags)) + "]" if merged_flags else "[video generation]"
 
     # Build bare {A}→<Subject N> map for the summary narrative (no names/appearance)
     slot_to_label = {slot_id: ref_map[slot_id]["subject_label"] for slot_id in ordered_slots}
@@ -842,8 +1054,15 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 if shot_label not in slot_appearances[slot_id]:
                     slot_appearances[slot_id].append(shot_label)
 
-    # Subject entries: "<Subject N> (appears in [Shot N], [Shot M]): fully_preserved - ..."
-    for slot_id in ordered_slots:
+    # Subject entries in display order: bundle (attribute_transfer) first, then retained.
+    # Replaced source slots are skipped — they have no Subject definition.
+    _ra_display_slots = (
+        [s for s in ordered_slots if ref_map[s].get("retention_marker") == "attribute_transfer"]
+        + [s for s in ordered_slots
+           if ref_map[s].get("retention_marker") not in ("attribute_transfer", "replaced")
+           and bool(ref_map[s].get("subject_label"))]
+    )
+    for slot_id in _ra_display_slots:
         info = ref_map[slot_id]
         label = info["subject_label"]
 
@@ -852,24 +1071,39 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             "appears in " + ", ".join(appears_list) if appears_list else "appears throughout"
         )
 
-        # Build the same appearance phrase used in subject_definitions (minus the ref anchor).
-        summary = info["appearance_summary"]
-        summary_body = (summary[0].lower() + summary[1:]).rstrip(". ") if summary else ""
-        # Mirror the definite-article substitution: if the subject has any visual reference
-        # the subject_definitions line already says "the …", so match it here.
-        has_ref = info["video_num"] is not None or bool(info["picture_nums"])
-        if has_ref and summary_body:
-            summary_body = re.sub(r"^an? ", "the ", summary_body, count=1)
-        detail_parts = [f for f in (info.get("hair", ""), info.get("face", ""), info.get("body", "")) if f]
-        if info["outfit"]:
-            detail_parts.append(f"wearing {info['outfit']}")
-        detail_phrase = f", with {_join_details(detail_parts)}" if detail_parts else ""
-        preserve_desc = f"{summary_body}{detail_phrase}" if summary_body else "appearance retained"
-
         subj_retention = info.get("retention_marker", "fully_preserved")
+
+        if subj_retention == "attribute_transfer":
+            # Bundle subject replacing a source profile subject.
+            src_slot_id = info.get("transfer_to_slot", "")
+            src_info = ref_map.get(src_slot_id)
+            src_name = src_info.get("name", "the replaced subject") if src_info else "the replaced subject"
+            src_vnum = src_info.get("video_num") if src_info else None
+            if src_vnum is not None:
+                preserve_desc = (
+                    f"{info['name']}'s appearance overrides that of {src_name} in the source video. "
+                    f"Their pose, movement, and screen position match those of {src_name} in <Video {src_vnum}>"
+                )
+            else:
+                preserve_desc = (
+                    f"{info['name']}'s appearance overrides that of {src_name} in the source video"
+                )
+        else:
+            # Build the same appearance phrase used in subject_definitions (minus the ref anchor).
+            summary = info["appearance_summary"]
+            summary_body = (summary[0].lower() + summary[1:]).rstrip(". ") if summary else ""
+            has_ref = info["video_num"] is not None or bool(info["picture_nums"])
+            if has_ref and summary_body:
+                summary_body = re.sub(r"^an? ", "the ", summary_body, count=1)
+            detail_parts = [f for f in (info.get("hair", ""), info.get("face", ""), info.get("body", "")) if f]
+            if info["outfit"]:
+                detail_parts.append(f"wearing {info['outfit']}")
+            detail_phrase = f", with {_join_details(detail_parts)}" if detail_parts else ""
+            preserve_desc = f"{summary_body}{detail_phrase}" if summary_body else "appearance retained"
+
         ra.append(f"{label} ({appears_clause}): {subj_retention} - {preserve_desc}.")
 
-    # Video entries: "<Video N> (role): fully_preserved - ..."
+    # Video entries: "<Video N> (role): <status> - ..."
     # Deduplicate by video_num — co-sourced subjects share one video line.
     _ra_video_emitted: set[int] = set()
     for slot_id in ordered_slots:
@@ -879,22 +1113,56 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             if vnum in _ra_video_emitted:
                 continue
             _ra_video_emitted.add(vnum)
-            co_labels = _vnum_to_labels.get(vnum, [info["subject_label"]])
-            targets = _join_labels(co_labels)
+            co_labels = _vnum_to_labels.get(vnum, [])
+            targets = _join_labels(co_labels) if co_labels else "the target subject"
             if "video continuation" in active_flags:
-                role_clause = "continuation starting point"
+                role_clause  = "continuation starting point"
+                video_status = "fully_preserved"
                 preserve_desc = (
                     f"<Video {vnum}> is the continuation starting point; the target video "
                     f"begins where <Video {vnum}> ends, maintaining consistent motion and scene state"
                 )
-            elif "video editing" in active_flags:
-                role_clause = "source video for editing"
-                preserve_desc = (
-                    f"<Video {vnum}> is the source material being edited; "
-                    f"the cut structure and pacing serve as the primary reference"
-                )
+            elif "video editing" in active_flags and vnum in _vnum_is_source:
+                # Only motion is carried over; the original subject's appearance is replaced.
+                role_clause  = "motion and gestures"
+                video_status = "partially_preserved"
+                # Bundle slots (attribute_transfer) with transfer_to_slot pointing to a slot
+                # that has this video_num are the replacement subjects.
+                replacement_pairs: list[tuple[str, str]] = []   # (original_name, replacement_label)
+                retained_originals: list[str] = []
+                for _sid in ordered_slots:
+                    _inf = ref_map[_sid]
+                    if _inf.get("retention_marker") == "attribute_transfer":
+                        _src_slot = _inf.get("transfer_to_slot", "")
+                        _src_inf = ref_map.get(_src_slot)
+                        if _src_inf and _src_inf.get("video_num") == vnum:
+                            replacement_pairs.append((_src_inf["name"], _inf["subject_label"]))
+                    elif _inf.get("video_num") == vnum and _inf.get("retention_marker") != "replaced":
+                        retained_originals.append(_inf["subject_label"])
+                if replacement_pairs:
+                    replacements_str = _join_labels([r for _, r in replacement_pairs])
+                    originals_str    = _join_labels([o for o, _ in replacement_pairs])
+                    preserve_desc = (
+                        f"the actions, gestures, head movements, hand timing, and camera framing "
+                        f"from <Video {vnum}> are reproduced exactly by {replacements_str}, "
+                        f"without copying the visual appearance of {originals_str}"
+                    )
+                    if retained_originals:
+                        retained_str = _join_labels(retained_originals)
+                        n = len(retained_originals)
+                        preserve_desc += (
+                            f"; {retained_str} appear{'s' if n == 1 else ''} "
+                            f"as {'themselves' if n > 1 else 'themselves'} from <Video {vnum}>"
+                        )
+                else:
+                    preserve_desc = (
+                        f"the actions, gestures, head movements, hand timing, and camera framing "
+                        f"from <Video {vnum}> are reproduced exactly by {targets}, without copying "
+                        f"the visual appearance of the original subjects in <Video {vnum}>"
+                    )
             else:
-                role_clause = f"visual identity of {targets}"
+                role_clause  = f"visual identity of {targets}"
+                video_status = "fully_preserved"
                 _plural = len(co_labels) > 1
                 _whose  = "their" if _plural else "the subject's"
                 _who    = "the people" if _plural else "the person"
@@ -903,7 +1171,22 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                     f"{_whose} appearance in the target video "
                     f"must fully match {_who} shown in <Video {vnum}>"
                 )
-            ra.append(f"<Video {vnum}> ({role_clause}): fully_preserved - {preserve_desc}.")
+            ra.append(f"<Video {vnum}> ({role_clause}): {video_status} - {preserve_desc}.")
+
+    # Picture entries: "<Picture N>: fully_preserved - ..."
+    # Each character-sheet image fully defines the replacement subject's visual appearance.
+    _ra_pic_emitted: set[int] = set()
+    for slot_id in ordered_slots:
+        info = ref_map[slot_id]
+        for pnum in info["picture_nums"]:
+            if pnum in _ra_pic_emitted:
+                continue
+            _ra_pic_emitted.add(pnum)
+            subj_label = info["subject_label"]
+            ra.append(
+                f"<Picture {pnum}>: fully_preserved - "
+                f"{subj_label}'s facial features, hair, and clothing."
+            )
 
     # Audio entries — format matches H3 spec: "fully_copy" or "reference - ..."
     def _audio_ra_line(
@@ -966,6 +1249,38 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     if opening:
         dd.append(". ".join(opening) + ".")
 
+    # Video-editing preamble: one paragraph before [Shot 1] describing the
+    # identity-replacement operation when bundle subjects are present.
+    if "video editing" in active_flags:
+        _bun_slots = [
+            s for s in ordered_slots
+            if ref_map[s].get("retention_marker") == "attribute_transfer"
+        ]
+        if _bun_slots:
+            _bun_labels = _join_labels([ref_map[s]["subject_label"] for s in _bun_slots])
+            _src_vnums: list[int] = []
+            for _s in _bun_slots:
+                _src_sid2 = ref_map[_s].get("transfer_to_slot", "")
+                _src_vnum = ref_map.get(_src_sid2, {}).get("video_num")
+                if _src_vnum is not None and _src_vnum not in _src_vnums:
+                    _src_vnums.append(_src_vnum)
+            _video_ref = _join_labels([f"<Video {v}>" for v in _src_vnums])
+            preamble = (
+                "The target video is a photorealistic, seamless identity-replacement edit "
+                "with strong temporal consistency. "
+                f"The priority is exact likeness fidelity: the visible result must contain "
+                f"the appearance of {_bun_labels}"
+            )
+            if _video_ref:
+                preamble += (
+                    f" while preserving the original video performance and "
+                    f"scene continuity of {_video_ref}."
+                )
+            else:
+                preamble += "."
+            dd.append("")
+            dd.append(preamble)
+
     seen_globally: set[str] = set()
 
     for i, shot in enumerate(template.get("shots", [])):
@@ -1000,11 +1315,15 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 dd.append(action)
 
         if text:
-            lang = _lang_label(ref_map.get(speaker_slot, {}).get("language", "en-us") or "en-us")
+            _spk_info = ref_map.get(speaker_slot, {})
+            lang = _lang_label(_spk_info.get("language", "en-us") or "en-us")
+            _spk_label = _spk_info.get("subject_label", "")
+            _spk_id    = _spk_info.get("speaker_id", "")
+            _spk_prefix = f"{_spk_label} ({_spk_id}) says: " if _spk_label and _spk_id else ""
             if use_dialogue_tags:
-                dd.append(f"<d>[{lang}] {text}</d>")
+                dd.append(f"{_spk_prefix}<d>[{lang}] {text}</d>")
             else:
-                dd.append(f'"[{lang}] {text}"')
+                dd.append(f'{_spk_prefix}"[{lang}] {text}"')
 
         sound_events = shot.get("sound_events")
         if sound_events:
