@@ -19,7 +19,7 @@ import { modalApi, vlmActivityApi } from "../api/modal.js";
 
 const _state = {
     modalActive:  false,
-    modalModel:   "qwen2.5-vl-7b",
+    modalModel:   "qwen3-vl-8b",
     modalQuant:   true,
     modalNativeV: true,
     idleMinutes:  10,
@@ -242,37 +242,71 @@ function _renderModalTab(pane) {
     // Model selector
     const modelSel = _mk("select", { cls: "llmp-select" });
 
+    const _FALLBACK_PRESETS = [
+        { key: "qwen3-vl-8b",        label: "Qwen3-VL 8B",          pre_quantized: false },
+        { key: "qwen2.5-vl-7b",      label: "Qwen2.5-VL 7B",        pre_quantized: false },
+        { key: "qwen2.5-vl-32b-awq", label: "Qwen2.5-VL 32B (AWQ)", pre_quantized: true  },
+        { key: "qwen2.5-vl-3b",      label: "Qwen2.5-VL 3B",        pre_quantized: false },
+        { key: "qwen2.5-omni-7b",    label: "Qwen2.5-Omni 7B",      pre_quantized: false },
+        { key: "gemma3-4b",          label: "Gemma 3 4B",            pre_quantized: false },
+    ];
+
+    // Lookup map: key → preset object (pre_quantized flag etc.)
+    let _presetMap = Object.fromEntries(_FALLBACK_PRESETS.map(p => [p.key, p]));
+
     function _rebuildModelSel() {
         modelSel.innerHTML = "";
-        // Presets
-        (_state.presets.length ? _state.presets : [
-            { key: "qwen2.5-vl-7b",   label: "Qwen2.5-VL 7B" },
-            { key: "qwen2.5-vl-3b",   label: "Qwen2.5-VL 3B" },
-            { key: "qwen2.5-omni-7b", label: "Qwen2.5-Omni 7B" },
-            { key: "gemma3-4b",       label: "Gemma 3 4B" },
-        ]).forEach(p => {
-            const o = _mk("option", { value: p.key }, [p.label || p.key]);
+        const presets = _state.presets.length ? _state.presets : _FALLBACK_PRESETS;
+        _presetMap = Object.fromEntries(presets.map(p => [p.key, p]));
+        presets.forEach(p => {
+            const suffix = p.pre_quantized ? " ·AWQ" : "";
+            const o = _mk("option", { value: p.key }, [(p.label || p.key) + suffix]);
             if (p.key === _state.modalModel) o.selected = true;
             modelSel.appendChild(o);
         });
         // Custom history entries not already in presets
-        const presetKeys = new Set((_state.presets.length ? _state.presets : []).map(p => p.key));
+        const presetKeys = new Set(presets.map(p => p.key));
         _state.modelHistory.filter(k => !presetKeys.has(k)).forEach(k => {
             const o = _mk("option", { value: k }, [k]);
             if (k === _state.modalModel) o.selected = true;
             modelSel.appendChild(o);
         });
         // "Custom…" sentinel
-        const customOpt = _mk("option", { value: "__custom__" }, ["Custom HF repo ID…"]);
-        modelSel.appendChild(customOpt);
+        modelSel.appendChild(_mk("option", { value: "__custom__" }, ["Custom HF repo ID…"]));
+        _applyPreQuantizedState();
     }
 
     _rebuildModelSel();
 
+    // Quantize toggle — declared before onchange so _applyPreQuantizedState can reference it
+    const quantCb     = _mk("input", { type: "checkbox", id: "llmp-quant-cb" });
+    const quantNotice = _mk("span", {
+        style: { fontSize: "11px", color: "#f59e0b", display: "none" },
+    }, [" (disabled — model is pre-quantized)"]);
+
+    quantCb.checked = _state.modalQuant;
+    quantCb.onchange = () => { _state.modalQuant = quantCb.checked; _saveState(); };
+
+    function _applyPreQuantizedState() {
+        const key = modelSel.value === "__custom__" ? "" : modelSel.value;
+        const preset = _presetMap[key];
+        const isPreQ = preset?.pre_quantized ?? false;
+        if (isPreQ) {
+            quantCb.checked  = false;
+            quantCb.disabled = true;
+            quantNotice.style.display = "";
+        } else {
+            quantCb.disabled = false;
+            quantNotice.style.display = "none";
+            // Restore saved preference when switching away from pre-quantized
+            quantCb.checked = _state.modalQuant;
+        }
+    }
+
     // Custom input row (shown when "Custom…" is selected)
     const customInput = _mk("input", {
         cls: "llmp-select", type: "text",
-        placeholder: "org/model-name (HF repo ID)",
+        placeholder: "org/model-name — standard HF transformer repo only",
         style: { display: "none" },
     });
 
@@ -280,21 +314,20 @@ function _renderModalTab(pane) {
         if (modelSel.value === "__custom__") {
             customInput.style.display = "";
             customInput.focus();
+            quantCb.disabled = false;
+            quantNotice.style.display = "none";
+            quantCb.checked = _state.modalQuant;
         } else {
             customInput.style.display = "none";
             _state.modalModel = modelSel.value;
             _saveState();
+            _applyPreQuantizedState();
         }
     };
     customInput.onchange = () => {
         const v = customInput.value.trim();
         if (v) { _state.modalModel = v; _saveState(); }
     };
-
-    // Quantize toggle
-    const quantCb = _mk("input", { type: "checkbox", id: "llmp-quant-cb" });
-    quantCb.checked = _state.modalQuant;
-    quantCb.onchange = () => { _state.modalQuant = quantCb.checked; _saveState(); };
 
     // Timeout
     const timeoutInput = _mk("input", {
@@ -401,7 +434,7 @@ function _renderModalTab(pane) {
                 _state.modalQuant = !!res.quantize;
                 quantCb.checked   = _state.modalQuant;
             }
-            _rebuildModelSel();
+            _rebuildModelSel();  // also calls _applyPreQuantizedState
             _syncUI();
             _notify();
         } catch (_) {}
@@ -422,10 +455,15 @@ function _renderModalTab(pane) {
             modelSel,
         ]),
         customInput,
-        _mk("div", { cls: "llmp-row" }, [
-            _mk("span", { cls: "llmp-label" }, ["Quantize (4-bit)"]),
+        _mk("div", { cls: "llmp-row", style: { flexWrap: "wrap" } }, [
+            _mk("span", { cls: "llmp-label" }, ["Quantize (NF4)"]),
             quantCb,
-            _mk("label", { htmlFor: "llmp-quant-cb", style: { fontSize: "12px" } }, [" NF4 reduces VRAM ~3×"]),
+            _mk("label", {
+                htmlFor: "llmp-quant-cb",
+                style: { fontSize: "12px" },
+                title: "Applies NF4 4-bit quantization at load time to bf16 models (~3× VRAM reduction). Disable for pre-quantized repos (AWQ/GPTQ) — applying NF4 on top degrades quality.",
+            }, [" bf16 → 4-bit, ~3× VRAM reduction"]),
+            quantNotice,
         ]),
         actionBtn,
         _mk("div", { cls: "llmp-row" }, [
