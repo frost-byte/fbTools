@@ -326,6 +326,152 @@ def extract_video_frame(
     )
 
 
+def probe_video_resolution(video_path: str) -> tuple[int, int]:
+    """Return (width, height) of the first video stream via ffprobe, or (0, 0)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "csv=s=x:p=0", video_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        parts = result.stdout.strip().split("x")
+        if len(parts) == 2:
+            return int(parts[0]), int(parts[1])
+    except Exception:
+        pass
+    return 0, 0
+
+
+def probe_video_fps(video_path: str) -> float:
+    """Return the video's native FPS via ffprobe, defaulting to 24.0."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        num, _, den = result.stdout.strip().partition("/")
+        if den and float(den):
+            return float(num) / float(den)
+        if num:
+            return float(num)
+    except Exception:
+        pass
+    return 24.0
+
+
+def extract_clip_frames(
+    video_path: str,
+    start_time: float,
+    end_time: float,
+    max_frames: int = 20,
+    select_every_nth: int = 1,
+    raw_fps: float | None = None,
+) -> tuple[list, list[float], float]:
+    """Extract frames from a video clip for multi-frame VLM input.
+
+    Returns ``(pil_frames, timestamps, sample_fps)`` where:
+    - ``pil_frames``  — list of ``PIL.Image.Image`` objects (RGB)
+    - ``timestamps``  — corresponding absolute timestamps in seconds
+    - ``sample_fps``  — effective frames-per-second of the returned sequence,
+                         for use as ``video_meta["sample_fps"]``
+
+    Args:
+        video_path:      absolute path to the video file
+        start_time:      clip start in seconds
+        end_time:        clip end in seconds
+        max_frames:      hard cap on the number of frames returned
+        select_every_nth: treat the video as if sampled at raw_fps/select_every_nth;
+                          controls the spacing between extracted timestamps
+        raw_fps:         native video FPS (probed via ffprobe if None)
+    """
+    import subprocess
+    import tempfile
+    from PIL import Image as _PIL
+
+    duration = max(end_time - start_time, 0.01)
+    if raw_fps is None:
+        raw_fps = probe_video_fps(video_path)
+
+    effective_fps = raw_fps / max(select_every_nth, 1)
+    n_ideal = int(duration * effective_fps)
+    n_frames = max(1, min(n_ideal, max_frames))
+
+    if n_frames == 1:
+        timestamps = [start_time + duration / 2.0]
+    else:
+        step = duration / (n_frames - 1) if n_frames > 1 else duration
+        timestamps = [start_time + i * step for i in range(n_frames)]
+
+    sample_fps = len(timestamps) / duration
+
+    pil_frames: list = []
+    actual_timestamps: list[float] = []
+    tmp_files: list[str] = []
+
+    try:
+        for ts in timestamps:
+            tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            tmp.close()
+            tmp_files.append(tmp.name)
+            cmd = [
+                "ffmpeg", "-y", "-ss", f"{ts:.4f}", "-i", video_path,
+                "-vframes", "1", "-q:v", "2", tmp.name,
+            ]
+            try:
+                subprocess.run(cmd, capture_output=True, check=True, timeout=30)
+                if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 0:
+                    pil_frames.append(_PIL.open(tmp.name).convert("RGB").copy())
+                    actual_timestamps.append(ts)
+            except Exception:
+                pass
+    finally:
+        for p in tmp_files:
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+
+    if not pil_frames:
+        raise RuntimeError(f"Could not extract any frames from {video_path!r} "
+                           f"between {start_time:.1f}s–{end_time:.1f}s")
+
+    actual_fps = len(pil_frames) / duration
+    return pil_frames, actual_timestamps, actual_fps
+
+
+def build_contact_sheet_image(
+    pil_frames: list,
+    timestamps: list[float],
+    thumb_w: int = 320,
+    thumb_h: int = 180,
+    n_cols: int = 6,
+):
+    """Compose a list of PIL frames into a labelled contact-sheet image.
+
+    Returns a single ``PIL.Image.Image``.  Falls back to the first frame if
+    PIL is unavailable.
+    """
+    from PIL import Image as _PIL, ImageDraw as _Draw
+
+    imgs = [img.resize((thumb_w, thumb_h)) for img in pil_frames]
+    n_cols = min(len(imgs), n_cols)
+    n_rows = (len(imgs) + n_cols - 1) // n_cols
+    sheet = _PIL.new("RGB", (thumb_w * n_cols, (thumb_h + 20) * n_rows), (30, 30, 30))
+    draw  = _Draw.Draw(sheet)
+    for i, (img, ts) in enumerate(zip(imgs, timestamps)):
+        row, col = divmod(i, n_cols)
+        x = col * thumb_w
+        y = row * (thumb_h + 20)
+        sheet.paste(img, (x, y))
+        draw.text((x + 4, y + thumb_h + 2), f"{ts:.2f}s", fill=(200, 200, 200))
+    return sheet
+
+
 # ── Segment / boundary detection ───────────────────────────────────────────────
 
 _SEGMENT_SCHEMA_INSTRUCTION = """
@@ -351,25 +497,48 @@ Return ONLY valid JSON — no markdown, no prose, no code fences:
 }
 """.strip()
 
-_DETECT_BOUNDARIES_PROMPT_TEMPLATE = """\
+_CLIP_DESCRIPTION_SCHEMA_WITH_SLOTS = """
+Return ONLY valid JSON — no markdown, no prose, no code fences:
+{
+  "action": "1-2 sentences using the placeholder labels (e.g. {A}, {B}) for identified subjects"
+}
+""".strip()
+
+_SUBJECT_CONTEXT_HEADER = (
+    "\n\nThe following subjects may appear in this frame. "
+    "Use their placeholder labels instead of describing their appearance:\n"
+)
+
+_DETECT_BOUNDARY_BASE = """\
 You are analyzing a series of video frames, each labelled with its timestamp.
 The frames are sampled at regular intervals from a single video clip.
 
 Your task: identify where MEANINGFUL scene or action transitions occur —
-moments where what is happening changes significantly (new shot, different
-action, different set of people visible, clear emotional shift, etc.).
+moments where what is happening changes significantly.\
+"""
 
+# Flag-controlled sentence snippets appended to the base prompt.
+_FLAG_CAMERA_CUTS = (
+    "Hard camera cuts, lens angle changes, and scene edits are transition "
+    "boundaries even when the subject or setting remains the same."
+)
+_FLAG_SUBJECT_CHANGES = (
+    "A key subject entering or leaving the frame counts as a transition "
+    "when it represents a notable shift in the scene's cast."
+)
+_FLAG_LOWER_THRESHOLD = (
+    "When in doubt, err on the side of marking more boundaries rather than fewer."
+)
+
+_DETECT_BOUNDARY_TAIL = """\
 Minor continuous motion (walking, talking) within the same scene is NOT a
-transition.  Only mark a transition when the viewer would naturally feel the
-scene has moved on.
+transition unless there is a clear shift in what is happening.
 
 For each segment between transitions, provide:
 - start_time / end_time  (seconds)
 - label  (very short title, ≤8 words)
-- action  (1-2 sentence summary of the action in that segment)
-
-{schema}
-""".strip().format(schema=_SEGMENT_SCHEMA_INSTRUCTION)
+- action  (1-2 sentence summary of the action in that segment)\
+"""
 
 _DESCRIBE_CLIP_PROMPT = (
     "Examine this video frame carefully.  Describe in 1-2 sentences "
@@ -379,28 +548,84 @@ _DESCRIBE_CLIP_PROMPT = (
 )
 
 
-def build_segment_detection_prompt(prompt_override: str = "") -> str:
+def build_segment_detection_prompt(
+    prompt_override: str = "",
+    flags: dict | None = None,
+) -> str:
     """Return the VLM prompt for boundary detection from a frame strip.
 
-    If prompt_override is non-empty, it is used instead of the template body;
-    the schema instruction is always appended so output remains parseable.
+    Args:
+        prompt_override: When non-empty, used verbatim (schema appended if absent).
+        flags: Optional dict controlling optional sentence injections:
+            camera_cuts (bool, default True)  — include camera cut / angle change language
+            subject_changes (bool, default False) — include subject entry/exit language
+            lower_threshold (bool, default False) — encourage more boundaries when unsure
     """
     if prompt_override.strip():
         body = prompt_override.strip()
         if _SEGMENT_SCHEMA_INSTRUCTION not in body:
             body = body.rstrip() + "\n\n" + _SEGMENT_SCHEMA_INSTRUCTION
         return body
-    return _DETECT_BOUNDARIES_PROMPT_TEMPLATE
+
+    flags = flags or {}
+    extras: list[str] = []
+    if flags.get("camera_cuts", True):
+        extras.append(_FLAG_CAMERA_CUTS)
+    if flags.get("subject_changes", False):
+        extras.append(_FLAG_SUBJECT_CHANGES)
+    if flags.get("lower_threshold", False):
+        extras.append(_FLAG_LOWER_THRESHOLD)
+
+    parts = [_DETECT_BOUNDARY_BASE]
+    if extras:
+        parts.append("\nBoundary criteria:\n" + "\n".join(f"- {e}" for e in extras))
+    parts.append("\n" + _DETECT_BOUNDARY_TAIL)
+    parts.append("\n\n" + _SEGMENT_SCHEMA_INSTRUCTION)
+    return "\n".join(parts)
 
 
-def build_clip_description_prompt(prompt_override: str = "") -> str:
-    """Return the VLM prompt for describing the action in a single clip frame."""
+def build_clip_description_prompt(
+    prompt_override: str = "",
+    subjects: list[tuple[str, str, str]] | None = None,
+) -> str:
+    """Return the VLM prompt for describing the action in a single clip frame.
+
+    Args:
+        prompt_override: If non-empty, used as the instruction body (schema appended).
+        subjects: Optional list of (slot, name, appearance) tuples, e.g.
+            [("A", "Elena", "woman with auburn hair"), ("B", "Marcus", "tall man")].
+            When provided, the prompt instructs the VLM to use {A}, {B} placeholders
+            instead of describing subjects' appearance inline.
+    """
     if prompt_override.strip():
         body = prompt_override.strip()
         if _CLIP_DESCRIPTION_SCHEMA not in body:
             body = body.rstrip() + "\n\n" + _CLIP_DESCRIPTION_SCHEMA
         return body
-    return _DESCRIBE_CLIP_PROMPT
+
+    base = (
+        "Examine this video frame carefully.  Describe in 1-2 sentences "
+        "what action or situation is visually depicted — focus on what the "
+        "subjects are doing or what is occurring in the scene at this moment."
+    )
+
+    if not subjects:
+        return base + "\n\n" + _CLIP_DESCRIPTION_SCHEMA
+
+    subject_lines = "\n".join(
+        f"  {{{slot}}} — {name}: {appearance}" if appearance else f"  {{{slot}}} — {name}"
+        for slot, name, appearance in subjects
+    )
+    placeholders = " / ".join(f"{{{slot}}}" for slot, _, _ in subjects)
+    subject_block = (
+        _SUBJECT_CONTEXT_HEADER
+        + subject_lines
+        + f"\n\nUse {placeholders} to refer to these subjects. "
+        + "Describe only the action, framing, and emotional register — "
+        + "not the subjects' appearance."
+    )
+
+    return base + subject_block + "\n\n" + _CLIP_DESCRIPTION_SCHEMA_WITH_SLOTS
 
 
 def _parse_segments_response(raw: str, video_duration: float = 0.0) -> list[dict]:

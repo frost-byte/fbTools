@@ -32,27 +32,59 @@ DEFAULT_SELECT_EVERY_NTH: int   = 2
 DEFAULT_FRAME_LOAD_CAP:   int   = 120
 
 
+_PRONOUN_STYLES = {"neutral", "feminine", "masculine", "object", "location"}
+
+
 def _normalize_subject(entry: dict) -> dict:
+    ps = str(entry.get("pronoun_style", "")).lower().strip()
     return {
         "id":               str(entry.get("id", "")),
         "label":            str(entry.get("label", "")),
         "role_description": str(entry.get("role_description", "")),
         "entity_type":      str(entry.get("entity_type", "person")),
+        "pronoun_style":    ps if ps in _PRONOUN_STYLES else "neutral",
+        "short_name":       str(entry.get("short_name", "")),
         "notes":            str(entry.get("notes", "")),
+    }
+
+
+def _normalize_lora(entry: dict) -> dict:
+    return {
+        "name":           str(entry.get("name", "")),
+        "strength_model": float(entry.get("strength_model", 1.0)),
+        "strength_clip":  float(entry.get("strength_clip", 1.0)),
     }
 
 
 def _normalize_clip(entry: dict) -> dict:
     return {
-        "id":               str(entry.get("id", "")),
-        "label":            str(entry.get("label", "")),
-        "start_time":       float(entry.get("start_time", 0.0)),
-        "end_time":         float(entry.get("end_time", 0.0)),
-        "select_every_nth": int(entry.get("select_every_nth", DEFAULT_SELECT_EVERY_NTH)),
-        "frame_load_cap":   int(entry.get("frame_load_cap", DEFAULT_FRAME_LOAD_CAP)),
-        "subjects":         [str(s) for s in entry.get("subjects", []) if s],
-        "action":           str(entry.get("action", "")),
+        "id":                  str(entry.get("id", "")),
+        "label":               str(entry.get("label", "")),
+        "start_time":          float(entry.get("start_time", 0.0)),
+        "end_time":            float(entry.get("end_time", 0.0)),
+        "select_every_nth":    int(entry.get("select_every_nth", DEFAULT_SELECT_EVERY_NTH)),
+        "frame_load_cap":      int(entry.get("frame_load_cap", DEFAULT_FRAME_LOAD_CAP)),
+        "subjects":            [str(s) for s in entry.get("subjects", []) if s],
+        "action":              str(entry.get("action", "")),
+        "overall_soundscape":  str(entry.get("overall_soundscape", "")),
+        "non_diegetic_music":  str(entry.get("non_diegetic_music", "")),
+        "allows_dialogue":     bool(entry.get("allows_dialogue", True)),
+        "loras":               [_normalize_lora(l) for l in entry.get("loras", []) if l and l.get("name")],
     }
+
+
+_PROXY_SHORT_EDGE_DEFAULT = 768
+_PROXY_SHORT_EDGE_CHOICES = (480, 576, 640, 768, 1080)
+
+
+def _normalize_proxy_short_edge(value) -> int:
+    """Round to nearest multiple of 32; clamp to a sensible range."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return _PROXY_SHORT_EDGE_DEFAULT
+    v = max(320, min(v, 1080))
+    return round(v / 32) * 32
 
 
 def _normalize_profile(pid: str, entry: dict) -> dict:
@@ -66,6 +98,9 @@ def _normalize_profile(pid: str, entry: dict) -> dict:
         "subjects":                 [_normalize_subject(s) for s in entry.get("subjects", []) if s],
         "clips":                    [_normalize_clip(c) for c in entry.get("clips", []) if c],
         "default_segment_duration": float(seg_dur) if seg_dur is not None else None,
+        "proxy_short_edge":         _normalize_proxy_short_edge(
+                                        entry.get("proxy_short_edge", _PROXY_SHORT_EDGE_DEFAULT)
+                                    ),
     }
 
 
@@ -127,6 +162,18 @@ class SourceProfileRegistry:
             "clips":                    existing.get("clips", []),
             "default_segment_duration": default_segment_duration,
         }
+        return new_reg
+
+    def set_subjects(
+        self,
+        profile_id: str,
+        subjects: list[dict],
+    ) -> "SourceProfileRegistry":
+        """Return a NEW registry with the profile's subjects replaced entirely."""
+        new_reg = copy.deepcopy(self)
+        if profile_id not in new_reg.profiles:
+            new_reg.profiles[profile_id] = _normalize_profile(profile_id, {})
+        new_reg.profiles[profile_id]["subjects"] = [_normalize_subject(s) for s in subjects if s]
         return new_reg
 
     def set_clips(
@@ -308,6 +355,17 @@ class SourceProfileRegistry:
 
     def profile_ids(self) -> list[str]:
         return list(self.profiles.keys())
+
+    def profile_names(self) -> list[str]:
+        """Return display names in profile registration order."""
+        return [p.get("name", pid) for pid, p in self.profiles.items()]
+
+    def get_profile_by_name(self, name: str) -> dict | None:
+        """Return the first profile whose name matches *name*, or None."""
+        for pid, p in self.profiles.items():
+            if p.get("name", pid) == name:
+                return p
+        return None
 
     def subject_ids(self, profile_id: str) -> list[str]:
         profile = self.profiles.get(profile_id)
