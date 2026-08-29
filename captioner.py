@@ -150,6 +150,11 @@ def _clean(text: str) -> str:
     return text.strip()
 
 
+def clean_caption_text(text: str) -> str:
+    """Strip common VLM boilerplate. Public API for callers outside captioner.py."""
+    return _clean(text)
+
+
 def caption_image_qwen_vl(
     image_path: Path,
     model,

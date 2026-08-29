@@ -99,8 +99,13 @@ from .utils.source_profile_analysis import (
     append_history_entry as _spa_append_history,
     history_for_profile as _spa_history_for_profile,
     extract_video_frame as _spa_extract_frame,
+    extract_clip_frames as _spa_extract_clip_frames,
+    build_contact_sheet_image as _spa_build_contact_sheet,
+    probe_video_fps as _spa_probe_fps,
+    probe_video_resolution as _spa_probe_resolution,
     PASS_TYPES as _SPA_PASS_TYPES,
 )
+from .utils.proxy_cache import ensure_source_profile_proxy as _ensure_proxy
 from .utils.scene_templates import (
     SceneTemplate,
     load_template as _load_scene_template,
@@ -130,6 +135,7 @@ from .utils.scene_casts import (
     save_registry as _save_cast_registry,
     validate_cast as _validate_cast,
 )
+from .utils.libber_resolve import resolve_libber_refs, extract_libber_names, apply_slot_dialogue
 from .utils.outfit_registry import (
     OutfitRegistry,
     load_outfit_registry as _load_outfit_registry,
@@ -217,7 +223,7 @@ DEFAULT_INSTRUCTION = (
     "Write in flowing prose. Do not use subjective quality descriptors."
 )
 
-CAPTIONER_OPTIONS = ["qwen_vl", "qwen_omni", "gemini_flash"]
+CAPTIONER_OPTIONS = ["llm_client", "gemini_flash"]
 DEVICE_OPTIONS    = ["auto", "cuda", "cpu"]
 DATASET_CAPTION_STATUS_ID = prefixed_node_id("DatasetCaptioner")
 
@@ -749,8 +755,9 @@ class SubjectCompositor(io.ComfyNode):
 
 class DatasetCaptioner(io.ComfyNode):
     """
-    Captions images in a directory using a local VLM or Gemini Flash.
+    Captions images in a directory using the loaded LLM panel model or Gemini Flash.
     Writes one .txt file per image (alongside the image, or into output_directory).
+    Load a vision-capable model in the fbTools Compose -> LLM panel before running.
     """
 
     @classmethod
@@ -760,8 +767,9 @@ class DatasetCaptioner(io.ComfyNode):
             display_name="Dataset Captioner",
             category="🧊 frost-byte/Dataset",
             description=(
-                "Captions all images in a directory using Qwen2.5-VL, Qwen2.5-Omni, "
-                "or Gemini Flash. Writes one .txt caption file per image."
+                "Captions all images in a directory using the model loaded in the "
+                "fbTools LLM panel, or Gemini Flash via API key. "
+                "Writes one .txt caption file per image."
             ),
             inputs=[
                 io.String.Input(
@@ -775,8 +783,11 @@ class DatasetCaptioner(io.ComfyNode):
                     "captioner_type",
                     display_name="Captioner",
                     options=CAPTIONER_OPTIONS,
-                    default="qwen_vl",
-                    tooltip="qwen_vl is recommended for images. qwen_omni is heavier. gemini_flash requires an API key.",
+                    default="llm_client",
+                    tooltip=(
+                        "llm_client: uses the model loaded in the fbTools Compose -> LLM panel. "
+                        "gemini_flash: uses the Gemini Flash API (requires gemini_api_key)."
+                    ),
                 ),
                 io.String.Input(
                     "instruction",
@@ -801,21 +812,6 @@ class DatasetCaptioner(io.ComfyNode):
                     optional=True,
                     tooltip="Prepended deterministically to every caption. More reliable than asking the model to include it.",
                 ),
-                io.Combo.Input(
-                    "device",
-                    display_name="Device",
-                    options=DEVICE_OPTIONS,
-                    default="auto",
-                    optional=True,
-                    tooltip="Inference device. 'auto' selects CUDA if available, otherwise CPU.",
-                ),
-                io.Boolean.Input(
-                    "use_8bit",
-                    display_name="Use 8-bit",
-                    default=False,
-                    optional=True,
-                    tooltip="Load model in 8-bit precision. Halves VRAM usage. Requires bitsandbytes.",
-                ),
                 io.Boolean.Input(
                     "recursive",
                     display_name="Recursive",
@@ -836,13 +832,6 @@ class DatasetCaptioner(io.ComfyNode):
                     default=True,
                     optional=True,
                     tooltip="Strip common VLM boilerplate phrases from output.",
-                ),
-                io.Boolean.Input(
-                    "unload_after",
-                    display_name="Unload Model After",
-                    default=False,
-                    optional=True,
-                    tooltip="Release model from VRAM when done. Useful before running generation nodes.",
                 ),
                 io.String.Input(
                     "gemini_api_key",
@@ -868,12 +857,9 @@ class DatasetCaptioner(io.ComfyNode):
         instruction: str,
         output_directory: str = "",
         trigger_word: str = "",
-        device: str = "auto",
-        use_8bit: bool = False,
         recursive: bool = False,
         override_existing: bool = False,
         clean_caption: bool = True,
-        unload_after: bool = False,
         gemini_api_key: str = "",
     ) -> io.NodeOutput:
         input_dir = _resolve_dataset_input_directory(input_directory)
@@ -898,13 +884,7 @@ class DatasetCaptioner(io.ComfyNode):
 
         send_status_update(
             DATASET_CAPTION_STATUS_ID,
-            f"Dataset Captioner: loading {captioner_type} model (first run may download)",
-            source="dataset_captioner",
-        )
-        model, processor = get_model(captioner_type, device, use_8bit)
-        send_status_update(
-            DATASET_CAPTION_STATUS_ID,
-            f"Dataset Captioner: model ready, captioning {len(images)} image(s)",
+            f"Dataset Captioner: captioning {len(images)} image(s) via {captioner_type}",
             source="dataset_captioner",
         )
         success = failed = 0
@@ -917,14 +897,12 @@ class DatasetCaptioner(io.ComfyNode):
                     f"Dataset Captioner: processing {idx}/{total_images} ({img_path.name})",
                     source="dataset_captioner",
                 )
-                caption = caption_image(
-                    image_path     = img_path,
-                    captioner_type = captioner_type,
-                    instruction    = instruction,
-                    model          = model,
-                    processor      = processor,
-                    api_key        = api_key,
-                    clean          = clean_caption,
+                caption = _run_vision_inference(
+                    str(img_path),
+                    instruction,
+                    captioner_type=captioner_type,
+                    api_key=api_key,
+                    clean=clean_caption,
                 )
                 if trigger_word.strip():
                     caption = f"{trigger_word.strip()}. {caption}"
@@ -939,14 +917,6 @@ class DatasetCaptioner(io.ComfyNode):
                     level="error",
                 )
                 failed += 1
-
-        if unload_after:
-            unload_model()
-            send_status_update(
-                DATASET_CAPTION_STATUS_ID,
-                "Dataset Captioner: model unloaded",
-                source="dataset_captioner",
-            )
 
         completion_level = "error" if failed else "success"
         send_status_update(
@@ -8665,40 +8635,27 @@ async def recaption_single(request: web.Request) -> web.Response:
         "gemini_api_key": ""
     }
     """
-    import os
-    from .captioner import caption_image, get_model
-
     try:
         body           = await request.json()
         image_path     = Path(body["image_path"])
         txt_path       = Path(body["txt_path"])
-        captioner_type = body.get("captioner_type", "qwen_vl")
+        captioner_type = body.get("captioner_type", "llm_client")
         instruction    = body.get("instruction", "Describe this image in detail.")
         trigger_word   = body.get("trigger_word", "")
-        device         = body.get("device", "auto")
-        use_8bit       = bool(body.get("use_8bit", False))
         clean          = bool(body.get("clean_caption", True))
         api_key        = body.get("gemini_api_key", "") or os.environ.get("GEMINI_API_KEY", "")
 
         send_status_update(
             DATASET_CAPTION_STATUS_ID,
-            f"Dataset Captioner: loading {captioner_type} for re-caption",
+            f"Dataset Captioner: re-captioning via {captioner_type}",
             source="dataset_captioner",
         )
-        model, processor = get_model(captioner_type, device, use_8bit)
-        send_status_update(
-            DATASET_CAPTION_STATUS_ID,
-            "Dataset Captioner: generating caption",
-            source="dataset_captioner",
-        )
-        caption = caption_image(
-            image_path     = image_path,
-            captioner_type = captioner_type,
-            instruction    = instruction,
-            model          = model,
-            processor      = processor,
-            api_key        = api_key,
-            clean          = clean,
+        caption = _run_vision_inference(
+            str(image_path),
+            instruction,
+            captioner_type=captioner_type,
+            api_key=api_key,
+            clean=clean,
         )
         if trigger_word.strip():
             caption = f"{trigger_word.strip()}. {caption}"
@@ -11987,12 +11944,12 @@ class SubjectProfileList(io.ComfyNode):
 
 # ── Source Profile helpers ────────────────────────────────────────────────────
 
-def _source_profile_get_ids() -> list[str]:
-    """Read source_profiles.json and return profile IDs for combo widgets."""
+def _source_profile_get_names() -> list[str]:
+    """Read source_profiles.json and return profile names for combo widgets."""
     try:
         reg = _load_source_registry(default_source_profiles_path())
-        ids = reg.profile_ids()
-        return ids if ids else ["(none)"]
+        names = reg.profile_names()
+        return names if names else ["(none)"]
     except Exception:
         return ["(none)"]
 
@@ -12036,7 +11993,7 @@ class SourceProfileLoad(io.ComfyNode):
 
     @classmethod
     def define_schema(cls):
-        profile_ids = _source_profile_get_ids()
+        profile_names = _source_profile_get_names()
         return io.Schema(
             node_id=cls.node_id,
             display_name=cls.display_name,
@@ -12044,8 +12001,8 @@ class SourceProfileLoad(io.ComfyNode):
             is_output_node=cls.is_output_node,
             inputs=[
                 io.Combo.Input(
-                    "profile_id",
-                    options=profile_ids,
+                    "profile_name",
+                    options=profile_names,
                     display_name="Source Profile",
                     tooltip="Source profile to load. Press R to refresh the list after adding new profiles.",
                 ),
@@ -12065,22 +12022,29 @@ class SourceProfileLoad(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, profile_id: str = "", **_):
+    def fingerprint_inputs(cls, profile_name: str = "", **_):
         path = default_source_profiles_path()
         try:
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        return (path, profile_id, mtime, _source_profile_reload_counter)
+        return (path, profile_name, mtime, _source_profile_reload_counter)
 
     @classmethod
-    def execute(cls, profile_id: str = "") -> io.NodeOutput:
+    def execute(cls, profile_name: str = "") -> io.NodeOutput:
         path = default_source_profiles_path()
         registry = _load_source_registry(path)
 
-        profile = registry.get_profile(profile_id) if profile_id and profile_id != "(none)" else None
+        profile = None
+        if profile_name and profile_name != "(none)":
+            profile = registry.get_profile_by_name(profile_name)
+            # Compat: old saved workflows stored the profile ID in this widget before
+            # it was renamed from profile_id → profile_name.  Fall back to ID lookup
+            # so those workflows continue to work without manual intervention.
+            if profile is None:
+                profile = registry.get_profile(profile_name)
         if profile is None:
-            logger.warning("SourceProfileLoad: profile_id %r not found in %s", profile_id, path)
+            logger.warning("SourceProfileLoad: profile %r not found in %s", profile_name, path)
             return io.NodeOutput(None, "")
 
         subjects = profile.get("subjects", [])
@@ -12090,7 +12054,7 @@ class SourceProfileLoad(io.ComfyNode):
 
         send_status_update(
             cls.node_id,
-            f"Loaded: {profile.get('name', profile_id)} | {len(subjects)} subject(s)",
+            f"Loaded: {profile_name} | {len(subjects)} subject(s)",
         )
         return io.NodeOutput(profile, subject_info)
 
@@ -12279,6 +12243,744 @@ class SourceProfileList(io.ComfyNode):
         return io.NodeOutput(listing, count, ui={"profile_list": listing, "profile_count": count})
 
 
+# ── Node: SourceProfileClipPrompt ─────────────────────────────────────────────
+
+class SourceProfileClipPrompt(io.ComfyNode):
+    """Build a model-specific prompt from a Source Profile clip.
+
+    For H3 models: outputs a full 6-section H3 prompt with task_flags=["video editing"],
+    so the model treats <Video 1> as the source material to edit. Preserves
+    {A}/{B}/{C}/{D} → <Subject 1>/<Subject 2>/… mapping from clip.subjects order.
+
+    clip_duration_frames = ceil(duration_s × 24) — the H3 output length in frames.
+    LoRAs defined on the clip are emitted as LORA_STACK_DATA for direct connection
+    to LoraStackApply.
+    """
+    node_id = prefixed_node_id("SourceProfileClipPrompt")
+    display_name = "Source Profile Clip Prompt"
+    category = "🧊 frost-byte/Scene"
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            inputs=[
+                SourceProfileIOType.Input(
+                    "source_profile",
+                    display_name="Source Profile",
+                    tooltip="Source profile from SourceProfileLoad. Provides subjects and clip library.",
+                ),
+                io.String.Input(
+                    "clip_id",
+                    display_name="Clip ID",
+                    default="",
+                    tooltip="ID of the clip to process (e.g. 'clip_1'). Leave empty to use the first clip.",
+                ),
+                io.Combo.Input(
+                    "model_type",
+                    options=_PROMPT_MODEL_TYPES,
+                    display_name="Model Type",
+                    tooltip="Target model. h3_ref2va emits a 6-section structured brief with video editing task flag.",
+                ),
+                io.String.Input(
+                    "filename_prefix",
+                    display_name="Filename Prefix",
+                    default="",
+                    tooltip=(
+                        "Optional prefix prepended to 'profile_name/clip_label' for the filename_prefix output. "
+                        "Include a trailing '/' to place outputs in a subfolder (e.g. 'video/' → 'video/office_work/clip_1'). "
+                        "Wire the output into a VHS_VideoCombine filename_prefix input."
+                    ),
+                    optional=True,
+                ),
+                CastIOType.Input(
+                    "scene_cast",
+                    display_name="Scene Cast",
+                    optional=True,
+                    tooltip=(
+                        "Optional cast from SceneCastBuild. When provided, bundle appearance data "
+                        "and images replace raw source-profile role descriptions for matched subjects."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.String.Output(
+                    "prompt",
+                    display_name="Prompt",
+                    tooltip="Model-specific assembled prompt text.",
+                ),
+                H3RefplanType.Output(
+                    "h3_refplan",
+                    display_name="H3 Ref Plan",
+                    tooltip=(
+                        "Ordered reference descriptor bundle (FBTOOLS_H3_REFPLAN) for "
+                        "CompositionToH3Conditioning. Contains the source video reference "
+                        "with clip load params. Empty when model_type is not an H3 variant."
+                    ),
+                ),
+                LoraStackData.Output(
+                    "lora_stack_data",
+                    display_name="LoRA Stack",
+                    tooltip="LoRAs defined on this clip. Feed into LoraStackApply.",
+                ),
+                io.String.Output(
+                    "concept_ids",
+                    display_name="Concept IDs",
+                    tooltip="Comma-separated concept IDs from assigned subjects. Wire into ConceptResolve.",
+                ),
+                io.Int.Output(
+                    "clip_duration_frames",
+                    display_name="Clip Frames",
+                    tooltip=(
+                        "Clip duration converted to H3 output frames at 24 fps: ceil(duration_s × 24). "
+                        "Use as the 'length' input for CompositionToH3Conditioning."
+                    ),
+                ),
+                io.Int.Output(
+                    "width",
+                    display_name="Width",
+                    tooltip="Source video width in pixels (probed via ffprobe). 0 if probe failed.",
+                ),
+                io.Int.Output(
+                    "height",
+                    display_name="Height",
+                    tooltip="Source video height in pixels (probed via ffprobe). 0 if probe failed.",
+                ),
+                io.String.Output(
+                    "clip_summary",
+                    display_name="Clip Summary",
+                    tooltip="Human-readable description of the assembled clip and its subject assignments.",
+                ),
+                io.String.Output(
+                    "filename_prefix",
+                    display_name="Filename Prefix",
+                    tooltip="prefix + profile_name/clip_label (e.g. 'video/office_work/segment_1'). Wire into VHS_VideoCombine filename_prefix.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        source_profile=None,
+        clip_id: str = "",
+        model_type: str = "h3_ref2va",
+        filename_prefix: str = "",
+        scene_cast=None,
+    ) -> io.NodeOutput:
+        if source_profile is None:
+            return io.NodeOutput("", None, [], "", 0, 0, 0, "No source profile connected.", "")
+
+        # ── Resolve clip ───────────────────────────────────────────────────────
+        profile_id     = source_profile.get("id", "")
+        profile_name   = source_profile.get("name", profile_id)
+        clips          = source_profile.get("clips", [])
+        subjects_all   = source_profile.get("subjects", [])
+        media_filename = source_profile.get("media_filename", "")
+        media_dir      = source_profile.get("media_dir", "input")
+
+        # scene_cast.clip_ids takes priority — wiring scene_cast is the primary
+        # path and must override the serialized widget value, which can be stale.
+        # The widget/link value is only consulted when scene_cast is absent, to
+        # support standalone use without a SceneCastBuild node.
+        effective_clip_id = ""
+        if isinstance(scene_cast, dict):
+            effective_clip_id = scene_cast.get("clip_ids", {}).get(profile_id, "")
+        if not effective_clip_id:
+            effective_clip_id = clip_id.strip() if clip_id else ""
+
+        clip = None
+        if effective_clip_id:
+            for c in clips:
+                if c.get("id") == effective_clip_id:
+                    clip = c
+                    break
+        if clip is None:
+            clip = clips[0] if clips else None
+        if clip is None:
+            return io.NodeOutput("", None, [], "", 0, 0, 0, f"No clips found in profile '{profile_name}'.", "")
+
+        clip_id_used = clip.get("id", "")
+        clip_label   = clip.get("label", clip_id_used)
+
+        # ── Resolve clip subjects ──────────────────────────────────────────────
+        # ALL entity types (people, environments, objects) go into slots so that
+        # {A}/{B}/{C}/{D} placeholders in the clip action text resolve correctly.
+        # Stale IDs (removed from the profile) are silently skipped; cap at 4.
+        # Fallback: if the clip has no subjects tagged (e.g. manually created
+        # clips or clips auto-partitioned before subjects were added), use all
+        # profile subjects in definition order so nothing is silently dropped.
+        subject_index = {s["id"]: s for s in subjects_all}
+        source_subject_ids: list[str] = [
+            sid for sid in clip.get("subjects", [])
+            if sid in subject_index
+        ][:4]
+        if not source_subject_ids:
+            source_subject_ids = [s["id"] for s in subjects_all if s.get("id")][:4]
+
+        SOURCE_SLOTS = ["A", "B", "C", "D"]   # preserve placeholder mapping
+        BUNDLE_SLOTS = ["E", "F", "G", "H"]   # replacement subjects added after
+
+        # ── Build cast lookup for bundle substitution ──────────────────────────
+        # Hybrid cast entries (source_profile_id + source_subject_id + bundle_id)
+        # mean a bundle is replacing a source subject. Source subject stays in its
+        # original slot (so action placeholders resolve); bundle replacement gets an
+        # additional slot from BUNDLE_SLOTS.
+        cast_lookup: dict[str, dict] = {}   # source_subject_id → cast entry
+        bundle_reg = None
+        if isinstance(scene_cast, dict):
+            for entry in scene_cast.get("entries", []):
+                if (entry.get("source_profile_id") == profile_id
+                        and entry.get("source_subject_id")
+                        and entry.get("bundle_id")):
+                    cast_lookup[entry["source_subject_id"]] = entry
+            if cast_lookup:
+                try:
+                    bundle_reg = _load_bundle_registry(default_bundle_registry_path())
+                except Exception:
+                    bundle_reg = None
+
+        # ── Build slot_assignments ─────────────────────────────────────────────
+        slot_assignments: dict = {}
+        bundle_slot_pairs: list[tuple[str, str]] = []   # (bundle_slot, source_slot)
+        bundle_slot_idx = 0
+        bundle_video_entries: list[dict] = []           # video refs for bundle slots
+
+        _ENTITY_PRONOUN_DEFAULTS = {
+            "location":   "location",
+            "object":     "object",
+            "soundscape": "object",
+        }  # anything else (person, animal, …) → "neutral"
+
+        for i, sid in enumerate(source_subject_ids):
+            src_slot = SOURCE_SLOTS[i]
+            subj     = subject_index[sid]
+            label    = subj.get("label", sid)
+            etype    = subj.get("entity_type", "person").lower()
+
+            # Pronoun style: prefer explicit field on the subject; fall back to
+            # entity_type-based default so location/object subjects say "its"/"the X's"
+            # without needing manual configuration.
+            pronoun_style = (subj.get("pronoun_style")
+                             or _ENTITY_PRONOUN_DEFAULTS.get(etype, "neutral"))
+            short_name    = subj.get("short_name", "")
+
+            # Source subject entry — always added; provides the video reference and
+            # preserves {A}/{B}/{C}/{D} placeholder mapping in the clip action text.
+            # _cast_retention and _transfer_to_slot are filled in below if a bundle
+            # replacement is found for this subject.
+            slot_assignments[src_slot] = {
+                "subject_id":             sid,
+                "name":                   label,
+                "concept_id":             None,
+                "character_sheet_images": [],
+                "appearance": {
+                    "summary":        label,   # concise label, not the full action sentence
+                    "hair":           "",
+                    "face":           "",
+                    "body":           "",
+                    "default_outfit": "",
+                },
+                "voice":           {},
+                "_cast_retention": "fully_preserved",
+                "_pronoun_style":  pronoun_style,
+                "_short_name":     short_name,
+            }
+
+            # If a bundle is assigned to this source subject, add a replacement slot.
+            cast_entry = cast_lookup.get(sid)
+            if cast_entry and bundle_reg is not None and bundle_slot_idx < len(BUNDLE_SLOTS):
+                bundle = bundle_reg.get(cast_entry["bundle_id"])
+                if bundle:
+                    bun_slot = BUNDLE_SLOTS[bundle_slot_idx]
+                    bundle_slot_idx += 1
+                    bundle_slot_pairs.append((bun_slot, src_slot))
+                    # Mark the source slot as a motion donor for the assembler
+                    slot_assignments[src_slot]["_cast_retention"] = "replaced"
+                    slot_assignments[src_slot]["_transfer_to_slot"] = bun_slot
+
+                    bun_name   = bundle.get("name") or label
+                    bun_appear = (bundle.get("appearance_override")
+                                  or bundle.get("appearance")
+                                  or "")  # empty → assembler falls back to bun_name
+                    visual = bundle.get("visual", {})
+                    # Resolve mode: cast entry overrides the bundle's default mode.
+                    bun_visual_mode = cast_entry.get("visual_mode") or visual.get("type", "images")
+
+                    # Images path — character sheet images
+                    bun_images: list = []
+                    if bun_visual_mode != "video":
+                        raw_files = visual.get("files", [])
+                        bun_images = [
+                            {"file": f.get("file", ""), "role": f.get("role", "character sheet")}
+                            if isinstance(f, dict)
+                            else {"file": f, "role": "character sheet"}
+                            for f in raw_files
+                            if (f.get("file", "") if isinstance(f, dict) else f)
+                        ]
+                        # image_selection: None = all, int = single image by 0-based index
+                        img_sel = cast_entry.get("image_selection")
+                        if img_sel is not None:
+                            try:
+                                idx = int(img_sel)
+                                bun_images = [bun_images[idx]] if 0 <= idx < len(bun_images) else []
+                            except (TypeError, ValueError):
+                                pass
+
+                    audio        = bundle.get("audio", {})
+                    audio_source = audio.get("source", "none")
+
+                    # Video path — add a video_entry for the bundle slot so the
+                    # assembler emits a <Video N> reference for this subject.
+                    if bun_visual_mode == "video":
+                        vfile = visual.get("file", "")
+                        if vfile:
+                            vdir = visual.get("video_dir", "input")
+                            bun_base = (get_output_directory() if vdir == "output"
+                                        else get_input_directory())
+                            bun_load = {
+                                "start_time":        float(visual.get("start_time", 0.0)),
+                                "duration":          float(visual.get("duration", 0.0)),
+                                "force_rate":        visual.get("force_rate", 0),
+                                "frame_load_cap":    visual.get("frame_load_cap", 96),
+                                "skip_first_frames": visual.get("skip_first_frames", 0),
+                                "select_every_nth":  visual.get("select_every_nth", 1),
+                            }
+                            # extract_from_visual: audio extracted from this same video.
+                            # extract_from_video / file: separate source — handled as
+                            # bun_voice below; this entry has no audio.
+                            # use_audio on the cast entry: treat bundle video's audio
+                            # track as the voice-timbre reference for this subject.
+                            ve_audio_src = (
+                                "extract_from_visual"
+                                if (audio_source == "extract_from_visual"
+                                    or cast_entry.get("use_audio"))
+                                else "none"
+                            )
+                            bundle_video_entries.append({
+                                "subject_id":       cast_entry["bundle_id"],
+                                "subject_ids":      [cast_entry["bundle_id"]],
+                                "video_file":       os.path.join(bun_base, vfile),
+                                "load_params":      bun_load,
+                                "audio_source":     ve_audio_src,
+                                "audio_path":       "",
+                                "audio_start_time": 0.0,
+                                "audio_duration":   0.0,
+                                "audio_retention":  audio.get("retention", "timbre"),
+                                "audio_role":       audio.get("role", ""),
+                                "audio_cache":      audio.get("audio_cache", ""),
+                            })
+
+                    # extract_from_video: a SEPARATE video whose audio track is the
+                    # voice reference.  Add an audio_only video_entry linked to the
+                    # bundle slot so the assembler emits <Audio N> without also
+                    # assigning a spurious <Video N> visual reference to the slot.
+                    if audio_source == "extract_from_video":
+                        aud_vfile = audio.get("video_file", "")
+                        if aud_vfile:
+                            aud_vdir = audio.get("video_dir", "input")
+                            aud_base = (get_output_directory() if aud_vdir == "output"
+                                        else get_input_directory())
+                            aud_load = {
+                                "start_time":        float(audio.get("start_time", 0.0)),
+                                "duration":          float(audio.get("duration", 0.0)),
+                                "force_rate":        audio.get("force_rate", 0),
+                                "frame_load_cap":    audio.get("frame_load_cap", 0) or 4,
+                                "skip_first_frames": audio.get("skip_first_frames", 0),
+                                "select_every_nth":  audio.get("select_every_nth", 1),
+                            }
+                            # When visual mode is images, link to the bundle slot via
+                            # bundle_id so the assembler can resolve soundtrack_num.
+                            # audio_only=True tells the assembler to assign <Audio N>
+                            # only (no <Video N> added to the slot's visual refs).
+                            # When visual mode is video the visual entry already holds
+                            # bundle_id; use a distinct id to avoid collisions.
+                            aud_sid = (cast_entry["bundle_id"] if bun_visual_mode != "video"
+                                       else cast_entry["bundle_id"] + "_audvid")
+                            bundle_video_entries.append({
+                                "subject_id":       aud_sid,
+                                "subject_ids":      [aud_sid],
+                                "video_file":       os.path.join(aud_base, aud_vfile),
+                                "load_params":      aud_load,
+                                "audio_source":     "extract_from_visual",
+                                "audio_only":       bun_visual_mode != "video",
+                                "audio_path":       "",
+                                "audio_start_time": 0.0,
+                                "audio_duration":   0.0,
+                                "audio_retention":  audio.get("retention", "timbre"),
+                                "audio_role":       audio.get("role", ""),
+                                "audio_cache":      audio.get("audio_cache", ""),
+                            })
+
+                    # Standalone audio voice reference (<Audio N>) — emitted when the
+                    # bundle carries a separate audio file (source == "file").
+                    # extract_from_visual / extract_from_video are handled via
+                    # video_entries above.
+                    bun_voice: dict = {}
+                    if audio_source == "file" and audio.get("file"):
+                        bun_voice = {
+                            "audio_reference_file": os.path.join(
+                                get_input_directory(), audio["file"]
+                            ),
+                            "audio_start_time": float(audio.get("start_time", 0.0)),
+                            "audio_duration":   float(audio.get("duration", 0.0)),
+                            "audio_retention":  audio.get("retention", "timbre"),
+                            "audio_role":       audio.get("role", ""),
+                            "audio_cache":      audio.get("audio_cache", ""),
+                            "description":      audio.get("description", ""),
+                            "language":         audio.get("language", "en-us"),
+                        }
+
+                    slot_assignments[bun_slot] = {
+                        "subject_id":             cast_entry["bundle_id"],
+                        "name":                   bun_name,
+                        "concept_id":             None,
+                        "character_sheet_images": bun_images,
+                        "appearance": {
+                            "summary":        bun_appear,
+                            "hair":           "",
+                            "face":           "",
+                            "body":           "",
+                            "default_outfit": "",
+                        },
+                        "voice":            bun_voice,
+                        "_cast_retention":  "attribute_transfer",
+                        "_transfer_to_slot": src_slot,
+                    }
+
+        # ── Task flags and scene synopsis ──────────────────────────────────────
+        if bundle_slot_pairs:
+            task_flags = ["video editing", "reference generation"]
+            # Auto-generate a replacement synopsis.  Bundle slot placeholders {b}
+            # are resolved by _bare() to <Subject N>; source subject names are
+            # embedded as literals because replaced slots have no Subject label.
+            repl_parts = []
+            for _b, _s in bundle_slot_pairs:
+                _s_idx = SOURCE_SLOTS.index(_s)
+                _src_sid = source_subject_ids[_s_idx]
+                _src_name = subject_index[_src_sid].get("label", _src_sid)
+                repl_parts.append(
+                    f"{{{_b}}} takes the place of {_src_name}, "
+                    f"replicating their pose, movement, and screen position"
+                )
+            retained = [
+                SOURCE_SLOTS[i] for i, sid in enumerate(source_subject_ids)
+                if sid not in cast_lookup
+            ]
+            if retained:
+                if len(retained) == 1:
+                    ret_str = f"{{{retained[0]}}} performs the same actions from <Video 1>"
+                else:
+                    parts = [f"{{{s}}}" for s in retained]
+                    ret_str = (", ".join(parts[:-1]) + " and " + parts[-1]
+                               + " perform the same actions from <Video 1>")
+                scene_synopsis = ". ".join(repl_parts) + ". " + ret_str + "."
+            else:
+                scene_synopsis = ". ".join(repl_parts) + "."
+        else:
+            task_flags    = ["video editing"]
+            scene_synopsis = ""
+
+        # ── Collect per-slot dialogue from cast entries ────────────────────────
+        # slot_dialogue maps slot key (e.g. "E", "A") → raw dialogue string.
+        # Hybrid entries: dialogue belongs to the bundle replacement slot.
+        # Source-only entries: dialogue belongs to the original source slot.
+        slot_dialogue: dict[str, str] = {}
+        if isinstance(scene_cast, dict):
+            _src_dlg_lookup: dict[str, str] = {}  # source_subject_id → dialogue
+            for _ce in scene_cast.get("entries", []):
+                if _ce.get("source_profile_id") != profile_id:
+                    continue
+                _d = str(_ce.get("dialogue", "") or "").strip()
+                if not _d:
+                    continue
+                _ssid = _ce.get("source_subject_id", "")
+                if _ssid and not _ce.get("bundle_id"):
+                    _src_dlg_lookup[_ssid] = _d
+
+            for _i2, _sid2 in enumerate(source_subject_ids):
+                _d2 = _src_dlg_lookup.get(_sid2, "")
+                if _d2:
+                    slot_dialogue[SOURCE_SLOTS[_i2]] = _d2
+
+            for _bslot, _sslot in bundle_slot_pairs:
+                _s_idx2 = SOURCE_SLOTS.index(_sslot)
+                _src_sid2 = source_subject_ids[_s_idx2]
+                _ce2 = cast_lookup.get(_src_sid2)
+                if _ce2:
+                    _d3 = str(_ce2.get("dialogue", "") or "").strip()
+                    if _d3:
+                        slot_dialogue[_bslot] = _d3
+
+        # ── Build scene_instance ────────────────────────────────────────────────
+        _shot_id = f"{clip_id_used}_shot_1"
+        scene_instance = {
+            "template_id":      profile_id,
+            "template_name":    profile_name,
+            "task_flags":       task_flags,
+            "scene_synopsis":   scene_synopsis,
+            "slot_assignments": slot_assignments,
+            "dialogue":         {},
+            "outfit_overrides": {},
+            "template": {
+                "shots": [
+                    {
+                        "id":       _shot_id,
+                        "action":   clip.get("action", ""),
+                        "camera":   "",
+                        "dialogue": None,
+                    }
+                ],
+                "environment":         {},
+                "style":               clip.get("style", ""),
+                "overall_soundscape":  clip.get("overall_soundscape", ""),
+                "non_diegetic_music":  clip.get("non_diegetic_music", ""),
+            },
+        }
+
+        # ── Resolve dialogue and populate shot ─────────────────────────────────
+        if not clip.get("allows_dialogue", True):
+            slot_dialogue = {}
+        if slot_dialogue:
+            _libber_mgr = LibberStateManager.instance()
+            _all_raw = " ".join(slot_dialogue.values())
+            _lib_registry: dict = {}
+            for _lname in extract_libber_names(_all_raw):
+                _lb = _libber_mgr.get_libber(_lname)
+                if _lb:
+                    _lib_registry[_lname] = _lb.libs
+
+            _dlg_map, _shot_patch = apply_slot_dialogue(slot_dialogue, _lib_registry, _shot_id)
+            scene_instance["dialogue"].update(_dlg_map)
+            _shot = scene_instance["template"]["shots"][0]
+            _shot.update(_shot_patch)
+
+        # ── Build video_entries ────────────────────────────────────────────────
+        # ONE entry shared by all clip subjects: `subject_ids` (list) causes
+        # _build_ref_map to assign the same <Video 1> ordinal to every subject,
+        # while `subject_id` (primary) feeds _build_h3_refplan's singular lookup.
+        base_dir  = get_output_directory() if media_dir == "output" else get_input_directory()
+        video_abs = os.path.join(base_dir, media_filename) if media_filename else ""
+
+        clip_start  = clip.get("start_time", 0.0)
+        clip_end    = clip.get("end_time", 0.0)
+        clip_dur    = max(0.0, clip_end - clip_start)
+
+        load_params = {
+            "start_time":        clip_start,
+            "duration":          clip_dur,
+            "force_rate":        0,
+            "frame_load_cap":    clip.get("frame_load_cap", 120),
+            "skip_first_frames": 0,
+            "select_every_nth":  clip.get("select_every_nth", 2),
+        }
+
+        # ── Per-segment proxy ──────────────────────────────────────────────────
+        # Trim + downscale once so CompositionToH3Conditioning doesn't need to
+        # seek inside a large source file on every generation run.
+        video_file_for_entry = video_abs
+        if video_abs:
+            try:
+                proxy_path = _ensure_proxy(
+                    source_path=video_abs,
+                    profile_id=profile_id,
+                    clip_id=clip_id_used,
+                    start_time=clip_start,
+                    end_time=clip_end,
+                    short_edge=source_profile.get("proxy_short_edge", 768),
+                    base_dir=str(user_data_dir()),
+                )
+                if proxy_path:
+                    video_file_for_entry = proxy_path
+                    load_params = dict(load_params)
+                    load_params["start_time"] = 0.0
+                    load_params["duration"]   = clip_dur
+            except Exception as _proxy_exc:
+                logger.warning(
+                    "SourceProfileClipPrompt: proxy generation failed for %s: %s",
+                    os.path.basename(video_abs), _proxy_exc,
+                )
+
+        video_entries = [{
+            "subject_id":       source_subject_ids[0] if source_subject_ids else "",
+            "subject_ids":      source_subject_ids,
+            "video_file":       video_file_for_entry,
+            "load_params":      load_params,
+            "audio_source":     "none",
+            "audio_path":       "",
+            "audio_start_time": 0.0,
+            "audio_duration":   0.0,
+            "audio_retention":  "timbre",
+            "audio_role":       "",
+            "audio_cache":      "",
+        }] if source_subject_ids else []
+
+        # Bundle slots that have visual_mode="video" contribute their own video
+        # reference entries (separate from the source profile's motion-donor video).
+        video_entries.extend(bundle_video_entries)
+
+        # ── use_audio: voice-timbre reference from the subject's video clip ──────
+        # Cast entries with use_audio=True request an <Audio N> voice-timbre
+        # reference for that subject.
+        # • VIDEO mode bundles: audio_source is already set to "extract_from_visual"
+        #   on the bundle video entry above — no extra entry needed.
+        # • IMAGE mode bundles / source-only: add an audio_only entry pointing to
+        #   the source profile video (the motion-donor clip).
+        if isinstance(scene_cast, dict) and video_file_for_entry:
+            _audio_load = dict(load_params, frame_load_cap=4, select_every_nth=1)
+            for _ce in scene_cast.get("entries", []):
+                if _ce.get("source_profile_id") != profile_id:
+                    continue
+                if not _ce.get("use_audio"):
+                    continue
+                _bid  = _ce.get("bundle_id", "")
+                _ssid = _ce.get("source_subject_id", "")
+                # VIDEO mode bundle: handled by bundle video entry — skip.
+                if _bid and _ce.get("visual_mode") == "video":
+                    continue
+                _audio_sid = _bid if _bid else _ssid
+                if not _audio_sid:
+                    continue
+                video_entries.append({
+                    "subject_id":       _audio_sid,
+                    "subject_ids":      [_audio_sid],
+                    "video_file":       video_file_for_entry,
+                    "load_params":      _audio_load,
+                    "audio_source":     "extract_from_visual",
+                    "audio_only":       True,
+                    "audio_path":       "",
+                    "audio_start_time": 0.0,
+                    "audio_duration":   0.0,
+                    "audio_retention":  "timbre",
+                    "audio_role":       "",
+                    "audio_cache":      "",
+                })
+
+        # ── Assemble prompt ────────────────────────────────────────────────────
+        try:
+            result = _assemble_prompt(scene_instance, model_type, video_entries)
+        except Exception as exc:
+            logger.error("SourceProfileClipPrompt: prompt assembly failed: %s", exc)
+            return io.NodeOutput("", None, [], "", 0, 0, 0, f"Prompt assembly error: {exc}", "")
+
+        prompt       = result["prompt"]
+        concept_ids  = result.get("concept_ids", [])
+
+        # ── Build h3_refplan (H3 models only) ─────────────────────────────────
+        h3_refplan = None
+        if model_type in ("h3_ref2va", "h3_fl2va"):
+            rp = _build_h3_refplan(scene_instance, video_entries)
+            rp["prompt"]         = prompt
+            rp["model_type"]     = model_type
+            rp["ref_image_size"] = "match"
+            rp["has_turbo_lora"] = any(
+                "turbo" in (e.get("name", "") or "").lower()
+                for e in clip.get("loras", [])
+            )
+            h3_refplan = rp
+
+        # ── Build LORA_STACK_DATA from clip loras ──────────────────────────────
+        lora_stack_data: list = []
+        for entry in clip.get("loras", []):
+            name = entry.get("name", "")
+            if name:
+                lora_stack_data.append({
+                    "lora":           name,
+                    "strength_model": entry.get("strength_model", 1.0),
+                    "strength_clip":  entry.get("strength_clip", 1.0),
+                    "enabled":        True,
+                    "model_target":   "both",
+                    "audio_enabled":  False,
+                })
+
+        # ── Clip frame count + resolution ──────────────────────────────────────
+        # clip_frames is the H3 output length: how many frames the model should
+        # generate.  frame_load_cap and select_every_nth are VHS reference-loading
+        # constraints and must NOT affect the output frame count.
+        duration_s  = max(0.0, clip.get("end_time", 0.0) - clip.get("start_time", 0.0))
+        clip_frames = math.ceil(duration_s * 24)
+        vid_w, vid_h = _spa_probe_resolution(video_abs) if video_abs else (0, 0)
+
+        # ── Summary ────────────────────────────────────────────────────────────
+        slot_desc = ", ".join(
+            f"{SOURCE_SLOTS[i]}={subject_index[sid].get('label', sid)}"
+            for i, sid in enumerate(source_subject_ids)
+        )
+        concept_ids_str = ", ".join(c for c in concept_ids if c)
+
+        # Bundle substitution summary — one line per matched entry
+        bundle_lines: list[str] = []
+        if cast_lookup and bundle_reg is None:
+            bundle_lines.append("  WARNING: bundle registry failed to load — no substitutions applied")
+        for src_sid, ce in cast_lookup.items():
+            src_label = subject_index.get(src_sid, {}).get("label", src_sid)
+            bun_id    = ce.get("bundle_id", "")
+            bun       = bundle_reg.get(bun_id) if bundle_reg else None
+            if bun is None:
+                bundle_lines.append(f"  {src_label} → bundle '{bun_id}' NOT FOUND in registry")
+            else:
+                vm      = ce.get("visual_mode") or bun.get("visual", {}).get("type", "images")
+                nimgs   = len(bun.get("visual", {}).get("files", []))
+                has_vid = bool(bun.get("visual", {}).get("file", ""))
+                aud     = bun.get("audio", {})
+                aud_src = aud.get("source", "none")
+                if aud_src == "extract_from_visual":
+                    audio_str = f"audio=extract_from_visual:{'ok' if has_vid else 'NO VIDEO'}"
+                elif aud_src == "extract_from_video":
+                    aud_vf = aud.get("video_file", "")
+                    audio_str = f"audio=extract_from_video:{aud_vf or 'NO FILE'}"
+                elif aud_src == "file":
+                    audio_str = f"audio=file:{aud.get('file', '') or 'NO FILE'}"
+                else:
+                    audio_str = "audio=none"
+                media_str = (f"video={'yes' if has_vid else 'NO'}" if vm == "video"
+                             else f"images={nimgs}")
+                bundle_lines.append(
+                    f"  {src_label} → '{bun.get('name', bun_id)}' "
+                    f"[mode={vm}, {media_str}, {audio_str}]"
+                )
+
+        # Slot map — shows which slots actually reached the assembler
+        slot_map_parts = []
+        for sl, sa in sorted(slot_assignments.items()):
+            nimgs_sl = len(sa.get("character_sheet_images", []))
+            has_aud  = bool(sa.get("voice", {}).get("audio_reference_file"))
+            marker   = "📷" if nimgs_sl else ""
+            marker  += "🔊" if has_aud else ""
+            slot_map_parts.append(f"{sl}={sa.get('name', sl)}{marker}")
+        slot_map_str = ", ".join(slot_map_parts)
+        bundle_section = ("\nBundles:\n" + "\n".join(bundle_lines)) if bundle_lines else ""
+
+        res_str = f"{vid_w}×{vid_h}" if vid_w and vid_h else "unknown"
+        proxy_used = video_file_for_entry != video_abs and video_file_for_entry
+        proxy_note = f"\nProxy: {os.path.basename(video_file_for_entry)}" if proxy_used else ""
+        clip_summary = (
+            f"Profile: {profile_name} | Clip: {clip_label} ({clip_id_used})\n"
+            f"Duration: {duration_s:.1f}s → {clip_frames} frames | Resolution: {res_str}\n"
+            f"Slots: {slot_map_str}\n"
+            f"Model: {model_type} | LoRAs: {len(lora_stack_data)}\n"
+            f"Concept IDs: {concept_ids_str or '(none)'}"
+            f"{bundle_section}"
+            f"{proxy_note}"
+        )
+
+        # ── Filename prefix ────────────────────────────────────────────────────
+        def _slug(s: str) -> str:
+            import re as _re
+            return _re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+
+        filename_prefix_out = f"{filename_prefix}{_slug(profile_name)}/{_slug(clip_label)}"
+
+        send_status_update(
+            cls.node_id,
+            f"Clip: {clip_label} | {duration_s:.0f}s → {clip_frames}fr | {model_type} | {len(prompt)} chars",
+        )
+
+        return io.NodeOutput(prompt, h3_refplan, lora_stack_data, concept_ids_str, clip_frames, vid_w, vid_h, clip_summary, filename_prefix_out)
+
+
 # ── Subject REST API endpoints ────────────────────────────────────────────────
 
 @routes.post("/fbtools/subjects/reload")
@@ -12334,15 +13036,20 @@ async def _source_profiles_list(request):
 
 @routes.get("/fbtools/source_profiles/get")
 async def _source_profiles_get_one(request):
-    """Return a single source profile by ?id=<profile_id>."""
-    pid = request.rel_url.query.get("id", "")
-    if not pid:
-        return web.json_response({"error": "id parameter required"}, status=400)
+    """Return a single source profile by ?id=<profile_id> or ?name=<profile_name>."""
+    pid  = request.rel_url.query.get("id", "").strip()
+    name = request.rel_url.query.get("name", "").strip()
+    if not pid and not name:
+        return web.json_response({"error": "id or name parameter required"}, status=400)
     try:
         registry = _load_source_registry(default_source_profiles_path())
-        profile = registry.get_profile(pid)
+        if pid:
+            profile = registry.get_profile(pid)
+        else:
+            profile = registry.get_profile_by_name(name)
         if profile is None:
-            return web.json_response({"error": f"Source profile '{pid}' not found"}, status=404)
+            key = pid or name
+            return web.json_response({"error": f"Source profile '{key}' not found"}, status=404)
         return web.json_response(profile)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -12367,17 +13074,8 @@ async def _source_profiles_save(request):
             media_type=data.get("media_type", "video"),
             default_segment_duration=float(seg_dur_raw) if seg_dur_raw is not None else None,
         )
-        for s in data.get("subjects", []):
-            sid = s.get("id", "").strip()
-            if sid:
-                registry = registry.define_subject(
-                    profile_id=pid,
-                    subject_id=sid,
-                    label=s.get("label", ""),
-                    role_description=s.get("role_description", ""),
-                    entity_type=s.get("entity_type", "person"),
-                    notes=s.get("notes", ""),
-                )
+        if "subjects" in data:
+            registry = registry.set_subjects(pid, data["subjects"])
         if "clips" in data:
             registry = registry.set_clips(pid, data["clips"])
         _save_source_registry(registry, path)
@@ -12408,41 +13106,155 @@ async def _source_profiles_delete(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+def _run_vision_inference(
+    image_path: str,
+    prompt: str,
+    captioner_type: str = "auto",
+    device: str = "auto",
+    use_8bit: "bool | None" = None,
+    api_key: str = "",
+    clean: bool = False,
+) -> str:
+    """Run a single-image VLM call through the active backend.
+
+    Two explicit paths — no silent fallback loading:
+
+    1. gemini_flash  — captioner.py Gemini API path. Pass
+                       captioner_type="gemini_flash" and a valid api_key.
+    2. llm_client    — the primary path for all other captioner_type values
+                       ("auto", "llm_client", etc.).  The user loads a model
+                       via the Compose -> LLM panel before calling this.
+                       Raises RuntimeError if no vision-capable model is loaded
+                       rather than silently falling back to captioner.py.
+
+    device / use_8bit are accepted for signature compatibility but ignored on
+    the llm_client path (model loading is managed by the LLM panel).
+
+    clean=True strips common VLM boilerplate from the returned text.
+    """
+    from pathlib import Path as _Path
+    from .captioner import caption_image_gemini as _cap_gemini, clean_caption_text as _cap_clean
+
+    if captioner_type == "gemini_flash":
+        return _cap_gemini(_Path(image_path), prompt, api_key, clean=clean)
+
+    st = _llm_client.backend_status()
+    if not st.get("loaded_model"):
+        raise RuntimeError(
+            "No model loaded. Load a vision-capable model in the Compose -> LLM panel first."
+        )
+    if not st.get("supports_vision"):
+        raise RuntimeError(
+            f"The loaded model ({st['loaded_model']}) does not support vision inputs. "
+            "Load a vision-capable model in the Compose -> LLM panel."
+        )
+
+    from PIL import Image as _PIL_Image
+    result = _llm_client.generate(
+        prompt, images=[_PIL_Image.open(image_path).convert("RGB")]
+    )
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "llm_client.generate returned no text")
+    text = result.get("text", "")
+    return _cap_clean(text) if clean else text
+
+
+def _run_vision_inference_clip(
+    frames: list,
+    timestamps: list[float],
+    sample_fps: float,
+    raw_fps: float,
+    prompt: str,
+    api_key: str = "",
+) -> str:
+    """Run a multi-frame VLM call, routing by the loaded model's capabilities.
+
+    - native_video (Qwen2.5-VL / Omni): frames are passed as a video sequence
+      with temporal RoPE metadata so the model reasons over time properly.
+    - vision-only (HF or GGUF): frames are composited into a labelled contact
+      sheet and passed as a single image.
+
+    Raises RuntimeError if no vision-capable model is loaded.
+    """
+    st = _llm_client.backend_status()
+    if not st.get("loaded_model"):
+        raise RuntimeError(
+            "No model loaded. Load a vision-capable model in the Compose → LLM panel first."
+        )
+    if not st.get("supports_vision"):
+        raise RuntimeError(
+            f"The loaded model ({st['loaded_model']}) does not support vision inputs."
+        )
+
+    if st.get("native_video"):
+        result = _llm_client.generate(
+            prompt,
+            video_frames=frames,
+            video_meta={"sample_fps": sample_fps, "raw_fps": raw_fps},
+        )
+    else:
+        # Contact-sheet fallback for image-only vision models and GGUF
+        import tempfile
+        sheet = _spa_build_contact_sheet(frames, timestamps)
+        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        try:
+            sheet.save(tmp.name, quality=85)
+            tmp.close()
+            result = _llm_client.generate(prompt, images=[sheet])
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or result.get("message") or "llm_client returned no text")
+    from .captioner import clean_caption_text as _cap_clean
+    return result.get("text", "")
+
+
 @routes.post("/fbtools/source_profiles/analyze")
 async def _source_profiles_analyze(request: web.Request) -> web.Response:
     """Run a focused VLM pass on a source profile's media.
 
     JSON body:
-        profile_id      str   — profile to analyze
-        pass_type       str   — one of PASS_TYPES ("people", "setting", …)
-        prompt_override str   — optional; replaces the template body
-        captioner_type  str   — "qwen_vl" | "qwen_omni" | "gemini_flash" (default: qwen_vl)
-        device          str   — "auto" | "cpu" | "cuda" (default: auto)
-        use_8bit        bool  — load model in 8-bit quantization (default: false)
-        gemini_api_key  str   — required when captioner_type is "gemini_flash"
+        profile_id        str   — profile to analyze
+        pass_type         str   — one of PASS_TYPES ("people", "setting", …)
+        prompt_override   str   — optional; replaces the template body
+        captioner_type    str   — "gemini_flash" uses Gemini API; everything else
+                                  routes through the LLM panel model
+        gemini_api_key    str   — required when captioner_type is "gemini_flash"
+        start_time        float — clip start in seconds (omit for single-frame mode)
+        end_time          float — clip end in seconds   (omit for single-frame mode)
+        select_every_nth  int   — frame sampling stride (default: clip's own value or 1)
+        max_frames        int   — hard cap on frames sent to the VLM (default: 20)
 
     Returns:
         {
           "candidates": [ {label, role_description, entity_type, notes}, … ],
           "pass_type":  str,
           "prompt":     str,
+          "frame_mode": "clip_multi" | "single",
+          "frame_count": int,
         }
     """
     import tempfile
 
-    from .captioner import caption_image as _caption_image, get_model as _get_model
-
     _SPA_STATUS_ID = "fbt_SourceProfileAnalysis"
 
     try:
-        body            = await request.json()
-        profile_id      = str(body.get("profile_id", "")).strip()
-        pass_type       = str(body.get("pass_type", "people")).strip()
-        prompt_override = str(body.get("prompt_override", "")).strip()
-        captioner_type  = str(body.get("captioner_type", "qwen_vl")).strip()
-        device          = str(body.get("device", "auto")).strip()
-        use_8bit        = bool(body.get("use_8bit", False))
-        api_key         = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
+        body             = await request.json()
+        profile_id       = str(body.get("profile_id", "")).strip()
+        pass_type        = str(body.get("pass_type", "people")).strip()
+        prompt_override  = str(body.get("prompt_override", "")).strip()
+        captioner_type   = str(body.get("captioner_type", "auto")).strip()
+        api_key          = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
+        _raw_start       = body.get("start_time")
+        _raw_end         = body.get("end_time")
+        start_time       = float(_raw_start) if _raw_start is not None else None
+        end_time         = float(_raw_end)   if _raw_end   is not None else None
+        select_every_nth = int(body.get("select_every_nth", 1)) or 1
+        max_frames       = int(body.get("max_frames", 20)) or 20
     except Exception as exc:
         return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
 
@@ -12452,6 +13264,8 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"pass_type must be one of {_SPA_PASS_TYPES}"}, status=400
         )
+
+    use_clip_mode = (start_time is not None and end_time is not None and end_time > start_time)
 
     # Load the profile to get the media file
     try:
@@ -12481,77 +13295,118 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
 
     send_status_update(
         _SPA_STATUS_ID,
-        f"Source analysis: preparing {media_type} frame for '{profile_id}' ({pass_type} pass)",
+        f"Source analysis: preparing {media_type} {'clip' if use_clip_mode else 'frame'} "
+        f"for '{profile_id}' ({pass_type} pass)",
         source="source_profile_analysis",
     )
 
-    # For video: extract a representative frame; for image: use directly
-    frame_path = abs_media
-    _tmp_frame = None
-    if media_type == "video":
+    frame_count = 1
+
+    if use_clip_mode and media_type == "video":
+        # Multi-frame clip path
         try:
-            _tmp_frame = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-            _tmp_frame.close()
-            frame_path = _spa_extract_frame(abs_media, _tmp_frame.name, position_frac=0.10)
-        except Exception as exc:
-            if _tmp_frame and os.path.exists(_tmp_frame.name):
-                os.unlink(_tmp_frame.name)
-            return web.json_response(
-                {"error": f"Could not extract video frame: {exc}"}, status=500
+            raw_fps = _spa_probe_fps(abs_media)
+            pil_frames, timestamps, sample_fps = _spa_extract_clip_frames(
+                abs_media,
+                start_time=start_time,
+                end_time=end_time,
+                max_frames=max_frames,
+                select_every_nth=select_every_nth,
+                raw_fps=raw_fps,
             )
-
-    try:
-        send_status_update(
-            _SPA_STATUS_ID,
-            f"Source analysis: calling {captioner_type} for {pass_type} pass",
-            source="source_profile_analysis",
-        )
-
-        model, processor = _get_model(captioner_type, device, use_8bit)
-        raw_response = _caption_image(
-            image_path     = Path(frame_path),
-            captioner_type = captioner_type,
-            instruction    = prompt,
-            model          = model,
-            processor      = processor,
-            api_key        = api_key,
-            clean          = False,
-        )
-
-        candidates = _spa_parse_response(raw_response, pass_type)
-
-        # Persist to history
-        _spa_append_history(
-            data_dir   = user_data_dir(),
-            profile_id = profile_id,
-            media_file = media_filename,
-            pass_type  = pass_type,
-            prompt     = prompt,
-            candidates = candidates,
-        )
+            frame_count = len(pil_frames)
+        except Exception as exc:
+            return web.json_response({"error": f"Could not extract clip frames: {exc}"}, status=500)
 
         send_status_update(
             _SPA_STATUS_ID,
-            f"Source analysis: {len(candidates)} candidate(s) found ({pass_type} pass)",
+            f"Source analysis: {frame_count} frames extracted, calling LLM ({pass_type} pass)",
             source="source_profile_analysis",
         )
 
-        return web.json_response({
-            "candidates": candidates,
-            "pass_type":  pass_type,
-            "prompt":     prompt,
-        })
+        try:
+            if captioner_type == "gemini_flash":
+                # For Gemini, use a contact sheet (API doesn't support video_frames path)
+                sheet = _spa_build_contact_sheet(pil_frames, timestamps)
+                import tempfile as _tf
+                tmp = _tf.NamedTemporaryFile(suffix=".jpg", delete=False)
+                try:
+                    sheet.save(tmp.name, quality=85)
+                    tmp.close()
+                    raw_response = _run_vision_inference(tmp.name, prompt, captioner_type="gemini_flash", api_key=api_key)
+                finally:
+                    try: os.unlink(tmp.name)
+                    except Exception: pass
+            else:
+                raw_response = _run_vision_inference_clip(
+                    pil_frames, timestamps, sample_fps, raw_fps, prompt,
+                )
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
 
-    except Exception as exc:
-        logger.exception("Source profile analyze error")
-        return web.json_response({"error": str(exc)}, status=500)
+        frame_mode = "clip_multi"
 
-    finally:
-        if _tmp_frame and os.path.exists(_tmp_frame.name):
+    else:
+        # Single-frame path (image media or no clip selected)
+        frame_path = abs_media
+        _tmp_frame = None
+        if media_type == "video":
             try:
-                os.unlink(_tmp_frame.name)
-            except OSError:
-                pass
+                _tmp_frame = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+                _tmp_frame.close()
+                frame_path = _spa_extract_frame(abs_media, _tmp_frame.name, position_frac=0.10)
+            except Exception as exc:
+                if _tmp_frame and os.path.exists(_tmp_frame.name):
+                    os.unlink(_tmp_frame.name)
+                return web.json_response(
+                    {"error": f"Could not extract video frame: {exc}"}, status=500
+                )
+
+        send_status_update(
+            _SPA_STATUS_ID,
+            f"Source analysis: calling LLM for {pass_type} pass",
+            source="source_profile_analysis",
+        )
+
+        try:
+            raw_response = _run_vision_inference(
+                str(frame_path), prompt,
+                captioner_type=captioner_type,
+                api_key=api_key,
+            )
+        finally:
+            if _tmp_frame and os.path.exists(_tmp_frame.name):
+                try: os.unlink(_tmp_frame.name)
+                except Exception: pass
+
+        frame_mode = "single"
+
+    candidates = _spa_parse_response(raw_response, pass_type)
+
+    # Persist to history
+    _spa_append_history(
+        data_dir   = user_data_dir(),
+        profile_id = profile_id,
+        media_file = media_filename,
+        pass_type  = pass_type,
+        prompt     = prompt,
+        candidates = candidates,
+    )
+
+    send_status_update(
+        _SPA_STATUS_ID,
+        f"Source analysis: {len(candidates)} candidate(s) found ({pass_type} pass, "
+        f"{frame_count} frame(s))",
+        source="source_profile_analysis",
+    )
+
+    return web.json_response({
+        "candidates":  candidates,
+        "pass_type":   pass_type,
+        "prompt":      prompt,
+        "frame_mode":  frame_mode,
+        "frame_count": frame_count,
+    })
 
 
 @routes.get("/fbtools/source_profiles/analysis_history")
@@ -12584,18 +13439,20 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
         video_duration      float — required (caller probes via /fbtools/media/info)
         interval_seconds    float — frame sampling interval for the contact sheet
                                     (default: min(segment_duration/2, 5.0))
-        prompt_override     str   — optional full prompt replacement
+        prompt_override     str   — optional full prompt replacement (bypasses flags)
+        flags               dict  — optional flag overrides for prompt construction:
+                                    camera_cuts (bool, default True)
+                                    subject_changes (bool, default False)
+                                    lower_threshold (bool, default False)
         captioner_type      str   — "qwen_vl" | "qwen_omni" | "gemini_flash"
         device              str   — "auto" | "cpu" | "cuda"
         use_8bit            bool
         gemini_api_key      str
 
     Returns:
-        { "segments": [{start_time, end_time, label, action}, …] }
+        { "segments": [{start_time, end_time, label, action}, …], "raw_response": str }
     """
     import tempfile
-
-    from .captioner import caption_image as _caption_image, get_model as _get_model
 
     try:
         body             = await request.json()
@@ -12603,9 +13460,11 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
         video_duration   = float(body.get("video_duration", 0.0))
         interval_seconds = float(body.get("interval_seconds", 0.0)) or 0.0
         prompt_override  = str(body.get("prompt_override", "")).strip()
-        captioner_type   = str(body.get("captioner_type", "qwen_vl")).strip()
+        flags            = body.get("flags") if isinstance(body.get("flags"), dict) else None
+        captioner_type   = str(body.get("captioner_type", "auto")).strip()
         device           = str(body.get("device", "auto")).strip()
-        use_8bit         = bool(body.get("use_8bit", False))
+        _use_8bit_raw    = body.get("use_8bit")
+        use_8bit         = bool(_use_8bit_raw) if _use_8bit_raw is not None else None
         api_key          = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
     except Exception as exc:
         return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
@@ -12687,11 +13546,13 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
             import shutil as _shutil
             _shutil.copy2(frame_paths[0], contact_path)
 
-        prompt = _spa_build_segment_prompt(prompt_override)
-        model  = _get_model(captioner_type, device=device, use_8bit=use_8bit, api_key=api_key)
-        raw    = _caption_image(model, contact_path, prompt)
+        prompt = _spa_build_segment_prompt(prompt_override, flags)
+        raw    = _run_vision_inference(
+            contact_path, prompt,
+            captioner_type=captioner_type, device=device, use_8bit=use_8bit, api_key=api_key,
+        )
         segs   = _spa_parse_segments(raw, video_duration)
-        return web.json_response({"segments": segs})
+        return web.json_response({"segments": segs, "raw_response": raw or ""})
 
     except Exception as exc:
         logger.exception("detect_segments failed for profile %r", profile_id)
@@ -12727,18 +13588,26 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
     """
     import tempfile
 
-    from .captioner import caption_image as _caption_image, get_model as _get_model
-
     try:
         body            = await request.json()
         profile_id      = str(body.get("profile_id", "")).strip()
         start_time      = float(body.get("start_time", 0.0))
         end_time        = float(body.get("end_time", 0.0))
         prompt_override = str(body.get("prompt_override", "")).strip()
-        captioner_type  = str(body.get("captioner_type", "qwen_vl")).strip()
+        captioner_type  = str(body.get("captioner_type", "auto")).strip()
         device          = str(body.get("device", "auto")).strip()
-        use_8bit        = bool(body.get("use_8bit", False))
+        _use_8bit_raw   = body.get("use_8bit")
+        use_8bit        = bool(_use_8bit_raw) if _use_8bit_raw is not None else None
         api_key         = str(body.get("gemini_api_key", "")).strip() or os.environ.get("GEMINI_API_KEY", "")
+        # Optional subject context: [{slot, name, appearance}] → list[tuple[str,str,str]]
+        raw_subjects    = body.get("subjects") or []
+        subjects: list[tuple[str, str, str]] = [
+            (str(s.get("slot", "")).strip(),
+             str(s.get("name", "")).strip(),
+             str(s.get("appearance", "")).strip())
+            for s in raw_subjects
+            if isinstance(s, dict) and s.get("slot") and s.get("name")
+        ]
     except Exception as exc:
         return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
 
@@ -12781,9 +13650,11 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         frac = (midpoint / _dur) if _dur > 0 else 0.1
         _spa_extract_frame(video_path, _tmp_frame.name, position_frac=max(0.0, min(1.0, frac)))
 
-        prompt = _spa_build_clip_desc_prompt(prompt_override)
-        model  = _get_model(captioner_type, device=device, use_8bit=use_8bit, api_key=api_key)
-        raw    = _caption_image(model, _tmp_frame.name, prompt)
+        prompt = _spa_build_clip_desc_prompt(prompt_override, subjects=subjects or None)
+        raw    = _run_vision_inference(
+            _tmp_frame.name, prompt,
+            captioner_type=captioner_type, device=device, use_8bit=use_8bit, api_key=api_key,
+        )
         action = _spa_parse_clip_desc(raw)
         return web.json_response({"action": action})
 
@@ -12906,6 +13777,141 @@ async def _source_profiles_remove_clip(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("remove_clip failed for profile %r", profile_id)
         return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/source_profiles/proxy_status")
+async def _source_profiles_proxy_status(request: web.Request) -> web.Response:
+    """Return proxy freshness for every clip in a profile.
+
+    Query params:
+        profile_id  str
+
+    Returns: { "clips": [ { "clip_id", "fresh": bool, "proxy_path": str|null } ] }
+    """
+    profile_id = request.rel_url.query.get("profile_id", "").strip()
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+
+    try:
+        path     = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        profile  = registry.get_profile(profile_id)
+        if not profile:
+            return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
+
+        media_filename = profile.get("media_filename", "")
+        media_dir      = profile.get("media_dir", "input")
+        base_dir       = get_input_directory() if media_dir != "output" else get_output_directory()
+        video_abs      = os.path.join(base_dir, media_filename) if media_filename else ""
+        short_edge     = profile.get("proxy_short_edge", 768)
+
+        results = []
+        for clip in profile.get("clips", []):
+            clip_id    = clip.get("id", "")
+            start_time = float(clip.get("start_time", 0.0))
+            end_time   = float(clip.get("end_time", 0.0))
+
+            # Re-derive the expected proxy path without generating it
+            from .utils.proxy_cache import _proxy_dir, _proxy_stem, _is_fresh
+            stem       = _proxy_stem(profile_id, clip_id, start_time, end_time, short_edge)
+            proxy_path = _proxy_dir(str(user_data_dir())) / f"{stem}.mp4"
+            fresh      = _is_fresh(proxy_path, video_abs) if video_abs else False
+
+            results.append({
+                "clip_id":    clip_id,
+                "fresh":      fresh,
+                "proxy_path": str(proxy_path) if fresh else None,
+            })
+
+        return web.json_response({"clips": results})
+    except Exception as exc:
+        logger.exception("proxy_status failed for profile %r", profile_id)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/prebuild_proxies")
+async def _source_profiles_prebuild_proxies(request: web.Request) -> web.Response:
+    """Pre-generate proxies for all clips in a profile.
+
+    JSON body:
+        profile_id  str
+        clip_id     str|null  (optional — build only this one clip)
+
+    Progress is broadcast via websocket as fbtools.status events with
+    source="proxy_build".  Returns immediately with { "started": true };
+    the caller polls proxy_status or listens to websocket events.
+    """
+    try:
+        body       = await request.json()
+        profile_id = str(body.get("profile_id", "")).strip()
+        only_clip  = (body.get("clip_id") or "").strip() or None
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+
+    try:
+        path     = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        profile  = registry.get_profile(profile_id)
+        if not profile:
+            return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+    media_filename = profile.get("media_filename", "")
+    media_dir      = profile.get("media_dir", "input")
+    base_dir       = get_input_directory() if media_dir != "output" else get_output_directory()
+    video_abs      = os.path.join(base_dir, media_filename) if media_filename else ""
+    short_edge     = profile.get("proxy_short_edge", 768)
+    clips          = profile.get("clips", [])
+    if only_clip:
+        clips = [c for c in clips if c.get("id") == only_clip]
+
+    if not video_abs or not os.path.exists(video_abs):
+        return web.json_response({"error": "Source video file not found"}, status=404)
+
+    def _build_all():
+        total = len(clips)
+        for i, clip in enumerate(clips):
+            clip_id    = clip.get("id", "")
+            start_time = float(clip.get("start_time", 0.0))
+            end_time   = float(clip.get("end_time", 0.0))
+            label      = clip.get("label", clip_id)
+            send_status_update(
+                "proxy_build",
+                f"Building proxy {i + 1}/{total}: {label} ({start_time:.1f}–{end_time:.1f}s)",
+                source="proxy_build",
+            )
+            try:
+                result = _ensure_proxy(
+                    source_path=video_abs,
+                    profile_id=profile_id,
+                    clip_id=clip_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    short_edge=short_edge,
+                    base_dir=str(user_data_dir()),
+                )
+                status = "ready" if result else "failed"
+            except Exception as exc:
+                status = f"error: {exc}"
+                logger.warning("prebuild_proxies: clip %r failed: %s", clip_id, exc)
+            send_status_update(
+                "proxy_build",
+                f"Proxy {i + 1}/{total} {status}: {label}",
+                source="proxy_build",
+            )
+        send_status_update(
+            "proxy_build",
+            f"Proxy build complete ({total} clip{'s' if total != 1 else ''})",
+            source="proxy_build",
+        )
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _build_all)
+    return web.json_response({"started": True, "clip_count": len(clips)})
 
 
 # ── Custom type: SCENE_TEMPLATE ──────────────────────────────────────────────
@@ -14950,19 +15956,20 @@ class SceneCastLoad(io.ComfyNode):
 # ── Node: SceneCastBuild ──────────────────────────────────────────────────────
 
 class SceneCastBuild(io.ComfyNode):
-    """Build a Scene Cast inline, with optional Source Profile inputs.
+    """Build a Scene Cast inline, with an optional Source Profile input.
 
     Accepts standalone subject → bundle assignments alongside source-derived
-    subjects from up to three connected SourceProfileLoad nodes.  All connected
-    subjects form the available pool; per-slot assignments and retention modes
-    are encoded in cast_entries_json (managed by the Scene Casts sidebar widget).
+    subjects from a connected SourceProfileLoad node.  Assignments and retention
+    modes are encoded in cast_entries_json (managed by the Scene Casts sidebar).
 
     Each entry may be:
-      • Bundle-backed  — subject_id + bundle_id (existing path)
+      • Bundle-backed  — subject_id + bundle_id
       • Source-derived — subject_id + source_profile_id + source_subject_id
+      • Hybrid         — bundle + source (bundle provides media, source provides video ref)
 
-    Outputs the same SCENE_CAST type as SceneCastLoad, so it wires into
-    PromptCompositionLoader unchanged.
+    Outputs the same SCENE_CAST type as SceneCastLoad, plus source_profile and
+    clip_id pass-throughs so SourceProfileClipPrompt can be wired downstream
+    without re-connecting the profile.
     """
 
     node_id = prefixed_node_id("SceneCastBuild")
@@ -14986,43 +15993,19 @@ class SceneCastBuild(io.ComfyNode):
                     ),
                 ),
                 SourceProfileIOType.Input(
-                    "source_profile_1",
-                    display_name="Source Profile 1",
+                    "source_profile",
+                    display_name="Source Profile",
                     optional=True,
-                    tooltip="Source profile whose subjects are available as pool options.",
+                    tooltip="Source profile whose subjects are available as cast pool options.",
                 ),
                 io.String.Input(
-                    "clip_id_1",
-                    display_name="Clip ID 1",
+                    "clip_id",
+                    display_name="Clip ID",
                     default="",
                     tooltip=(
-                        "Optional clip ID from Source Profile 1. "
+                        "Optional clip ID from the Source Profile. "
                         "When set, only frames within that clip's time window are loaded."
                     ),
-                ),
-                SourceProfileIOType.Input(
-                    "source_profile_2",
-                    display_name="Source Profile 2",
-                    optional=True,
-                    tooltip="Second source profile.",
-                ),
-                io.String.Input(
-                    "clip_id_2",
-                    display_name="Clip ID 2",
-                    default="",
-                    tooltip="Optional clip ID from Source Profile 2.",
-                ),
-                SourceProfileIOType.Input(
-                    "source_profile_3",
-                    display_name="Source Profile 3",
-                    optional=True,
-                    tooltip="Third source profile.",
-                ),
-                io.String.Input(
-                    "clip_id_3",
-                    display_name="Clip ID 3",
-                    default="",
-                    tooltip="Optional clip ID from Source Profile 3.",
                 ),
             ],
             outputs=[
@@ -15036,6 +16019,16 @@ class SceneCastBuild(io.ComfyNode):
                     display_name="Cast Summary",
                     tooltip="Human-readable summary of configured entries.",
                 ),
+                SourceProfileIOType.Output(
+                    "source_profile",
+                    display_name="Source Profile",
+                    tooltip="Pass-through of the connected Source Profile (for SourceProfileClipPrompt).",
+                ),
+                io.String.Output(
+                    "clip_id",
+                    display_name="Clip ID",
+                    tooltip="Pass-through of the selected Clip ID (for SourceProfileClipPrompt).",
+                ),
             ],
         )
 
@@ -15043,12 +16036,8 @@ class SceneCastBuild(io.ComfyNode):
     def fingerprint_inputs(
         cls,
         cast_entries_json: str = "[]",
-        source_profile_1=None,
-        source_profile_2=None,
-        source_profile_3=None,
-        clip_id_1: str = "",
-        clip_id_2: str = "",
-        clip_id_3: str = "",
+        source_profile=None,
+        clip_id: str = "",
         **_,
     ):
         bundle_mtime = subject_mtime = source_mtime = 0
@@ -15066,23 +16055,15 @@ class SceneCastBuild(io.ComfyNode):
             source_mtime = os.path.getmtime(default_source_profiles_path())
         except OSError:
             pass
-        sp_ids = tuple(
-            p.get("id", "") if isinstance(p, dict) else ""
-            for p in (source_profile_1, source_profile_2, source_profile_3)
-        )
-        return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json,
-                clip_id_1, clip_id_2, clip_id_3) + sp_ids
+        sp_id = source_profile.get("id", "") if isinstance(source_profile, dict) else ""
+        return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json, clip_id, sp_id)
 
     @classmethod
     def execute(
         cls,
         cast_entries_json: str = "[]",
-        source_profile_1=None,
-        source_profile_2=None,
-        source_profile_3=None,
-        clip_id_1: str = "",
-        clip_id_2: str = "",
-        clip_id_3: str = "",
+        source_profile=None,
+        clip_id: str = "",
         **_,
     ) -> io.NodeOutput:
         try:
@@ -15094,11 +16075,10 @@ class SceneCastBuild(io.ComfyNode):
 
         # Build connected source profiles dict: profile_id → profile dict
         connected_profiles: dict = {}
-        for sp in (source_profile_1, source_profile_2, source_profile_3):
-            if isinstance(sp, dict):
-                pid = sp.get("id", "")
-                if pid:
-                    connected_profiles[pid] = sp
+        if isinstance(source_profile, dict):
+            pid = source_profile.get("id", "")
+            if pid:
+                connected_profiles[pid] = source_profile
 
         _RETENTION_BUNDLE = "fully_preserved"
         _RETENTION_SOURCE = "partially_preserved"
@@ -15112,7 +16092,7 @@ class SceneCastBuild(io.ComfyNode):
             retention         = str(e.get("retention",         "")).strip()
 
             if source_profile_id and source_subject_id:
-                # Source-derived entry — look up in connected profile
+                # Resolve source subject (shared by source-only and hybrid paths)
                 profile = connected_profiles.get(source_profile_id)
                 if profile is None:
                     logger.warning(
@@ -15131,8 +16111,7 @@ class SceneCastBuild(io.ComfyNode):
                         source_subject_id, source_profile_id,
                     )
                     continue
-                entries.append({
-                    "subject_id":        subject_id or source_subject_id,
+                src_fields = {
                     "source_profile_id": source_profile_id,
                     "source_subject_id": source_subject_id,
                     "role_description":  subject_entry.get("role_description", ""),
@@ -15140,33 +16119,53 @@ class SceneCastBuild(io.ComfyNode):
                     "source_media_file": profile.get("media_filename", ""),
                     "source_media_dir":  profile.get("media_dir", "input"),
                     "source_media_type": profile.get("media_type", "video"),
-                    "retention":         retention or _RETENTION_SOURCE,
-                })
+                }
+
+                if bundle_id:
+                    # Hybrid: bundle provides appearance/media, source provides video reference
+                    visual_mode    = e.get("visual_mode", "images")
+                    use_audio      = bool(e.get("use_audio", False))
+                    image_selection = e.get("image_selection")
+                    entries.append({
+                        "subject_id":      subject_id or source_subject_id,
+                        "bundle_id":       bundle_id,
+                        "visual_mode":     visual_mode if visual_mode in ("images", "video") else "images",
+                        "use_audio":       use_audio,
+                        "image_selection": image_selection,
+                        "retention":       retention or _RETENTION_SOURCE,
+                        "dialogue":        str(e.get("dialogue", "") or "").strip(),
+                        **src_fields,
+                    })
+                else:
+                    # Source-only: no bundle
+                    entries.append({
+                        "subject_id": subject_id or source_subject_id,
+                        "retention":  retention or _RETENTION_SOURCE,
+                        "dialogue":   str(e.get("dialogue", "") or "").strip(),
+                        **src_fields,
+                    })
 
             elif subject_id and bundle_id:
-                # Bundle-backed entry (existing path)
-                visual_mode = e.get("visual_mode", "images")
-                use_audio   = bool(e.get("use_audio", False))
+                # Bundle-only: no source video reference
+                visual_mode     = e.get("visual_mode", "images")
+                use_audio       = bool(e.get("use_audio", False))
+                image_selection = e.get("image_selection")
                 entries.append({
-                    "subject_id":  subject_id,
-                    "bundle_id":   bundle_id,
-                    "visual_mode": visual_mode if visual_mode in ("images", "video") else "images",
-                    "use_audio":   use_audio,
-                    "retention":   retention or _RETENTION_BUNDLE,
+                    "subject_id":      subject_id,
+                    "bundle_id":       bundle_id,
+                    "visual_mode":     visual_mode if visual_mode in ("images", "video") else "images",
+                    "use_audio":       use_audio,
+                    "image_selection": image_selection,
+                    "retention":       retention or _RETENTION_BUNDLE,
+                    "dialogue":        str(e.get("dialogue", "") or "").strip(),
                 })
 
-        # Map profile_id → clip_id for the three source profile slots
+        # Map profile_id → clip_id
         clip_ids: dict = {}
-        sp_clip_pairs = [
-            (source_profile_1, clip_id_1),
-            (source_profile_2, clip_id_2),
-            (source_profile_3, clip_id_3),
-        ]
-        for sp, cid in sp_clip_pairs:
-            if isinstance(sp, dict) and cid and cid.strip():
-                pid = sp.get("id", "")
-                if pid:
-                    clip_ids[pid] = cid.strip()
+        if isinstance(source_profile, dict) and clip_id and clip_id.strip():
+            pid = source_profile.get("id", "")
+            if pid:
+                clip_ids[pid] = clip_id.strip()
 
         cast = {
             "id":              "_inline",
@@ -15177,16 +16176,26 @@ class SceneCastBuild(io.ComfyNode):
         }
 
         n = len(entries)
-        ns = len(connected_profiles)
+        has_sp = bool(connected_profiles)
         lines = [f"Inline cast  ({n} {'subject' if n == 1 else 'subjects'}"
-                 + (f", {ns} source profile(s)" if ns else "") + ")"]
+                 + (" + source profile" if has_sp else "") + ")"]
         for e in entries:
             ret_str = f" [{e.get('retention', '')}]" if e.get("retention") else ""
-            if e.get("source_profile_id"):
+            if e.get("source_profile_id") and e.get("bundle_id"):
+                # Hybrid
+                audio_flag = " + audio" if e.get("use_audio") else ""
+                sp_subj = e.get("source_subject_id", "?")
+                lines.append(
+                    f"  • {e['subject_id']} [{e['bundle_id']},"
+                    f" {e['visual_mode']}{audio_flag}] + src:{sp_subj}{ret_str}"
+                )
+            elif e.get("source_profile_id"):
+                # Source-only
                 etype = e.get("entity_type", "?")
                 role  = e.get("role_description", e.get("subject_id", "?"))
                 lines.append(f"  • [{etype}] {role}{ret_str}")
             else:
+                # Bundle-only
                 audio_flag = " + audio" if e.get("use_audio") else ""
                 lines.append(
                     f"  • {e['subject_id']} → {e['bundle_id']} [{e['visual_mode']}{audio_flag}]{ret_str}"
@@ -15196,9 +16205,9 @@ class SceneCastBuild(io.ComfyNode):
         send_status_update(
             cls.node_id,
             f"Inline cast: {n} {'entry' if n == 1 else 'entries'}"
-            + (f" | {ns} source profile(s)" if ns else ""),
+            + (" | source profile" if has_sp else ""),
         )
-        return io.NodeOutput(cast, summary)
+        return io.NodeOutput(cast, summary, source_profile or {}, clip_id or "")
 
 
 # ── Scene Cast reload endpoint ────────────────────────────────────────────────
@@ -15247,6 +16256,7 @@ from .utils.prompt_assembler import (
     validate_h3_audio_clip   as _validate_h3_audio_clip,
     validate_h3_audio_total  as _validate_h3_audio_total,
 )
+from .utils.prompt_assembler import _build_ref_map as _pa_build_ref_map
 
 
 @routes.get("/fbtools/compositions/list")
@@ -16289,7 +17299,15 @@ def _resolve_cast_media(
                     "audio_cache":      audio.get("audio_cache", ""),
                 })
         else:
-            image_files.extend(visual.get("files", []))
+            raw_files = visual.get("files", [])
+            img_sel = entry.get("image_selection")
+            if img_sel is not None:
+                try:
+                    idx = int(img_sel)
+                    raw_files = [raw_files[idx]] if 0 <= idx < len(raw_files) else []
+                except (TypeError, ValueError):
+                    pass
+            image_files.extend(raw_files)
 
         # Legacy flat audio: first non-"none" source across all entries
         if audio_source == "none":
@@ -16369,12 +17387,18 @@ def _resolve_cast_media(
         if not reference_video:
             reference_video = abs_file
 
-        # All subject_ids from this profile that appear in the cast
+        # Only include subject_ids from pure source-only entries (no bundle).
+        # Hybrid entries (bundle + source) use the bundle for visual references;
+        # including the source profile video would produce a spurious <Video N>
+        # even when the user selected images mode for that slot.
         sp_subject_ids = [
             e.get("subject_id") or e.get("source_subject_id", "")
             for e in entries
-            if e.get("source_profile_id") == sp_id
+            if e.get("source_profile_id") == sp_id and not e.get("bundle_id")
         ]
+        if not sp_subject_ids:
+            # All cast entries for this profile have bundles — skip source video
+            continue
 
         # Resolve clip load_params if a clip_id was specified for this profile
         clip_ids_map = scene_cast.get("clip_ids", {})
@@ -16856,7 +17880,7 @@ class PromptCompositionLoader(io.ComfyNode):
 # =============================================================================
 
 def _h3_resolve_path(path: str) -> str:
-    """Return an absolute path, falling back to ComfyUI input directory."""
+    """Return an absolute path, checking input then output directory."""
     if not path:
         return ""
     if os.path.isabs(path) and os.path.exists(path):
@@ -16864,6 +17888,9 @@ def _h3_resolve_path(path: str) -> str:
     candidate = os.path.join(get_input_directory(), path)
     if os.path.exists(candidate):
         return candidate
+    candidate_out = os.path.join(get_output_directory(), path)
+    if os.path.exists(candidate_out):
+        return candidate_out
     return path  # let callers decide what to do with a missing path
 
 
@@ -17192,41 +18219,71 @@ class CompositionToH3Conditioning(io.ComfyNode):
         standalone_idx   = 0
         loaded_audio_durations: list[float] = []
 
+        logger.info("CompositionToH3: loading %d reference item(s) — canvas %dx%d, %d frames",
+                    len(references), width, height, length)
+
         for ref in references:
             modality = ref.get("modality", "")
             path     = ref.get("path", "")
+            fname    = os.path.basename(path) if path else "(no path)"
 
             if modality == "image":
                 frames = _h3_load_image(path)
                 if frames is not None:
                     n = ref["picture_ordinal"] - 1
                     ref_images[f"ref_image_{n}"] = frames
+                    h, w = frames.shape[1], frames.shape[2]
+                    logger.info("  <Picture %d>  image  %s  %dx%d",
+                                ref["picture_ordinal"], fname, w, h)
+                else:
+                    logger.warning("  <Picture %d>  image  %s  FAILED TO LOAD",
+                                   ref["picture_ordinal"], fname)
 
             elif modality == "video":
                 frames = _h3_load_video_frames(path, ref.get("load_params", {}))
                 if frames is not None:
                     n = ref["video_ordinal"] - 1
                     ref_videos[f"ref_video_{n}"] = frames
+                    lp = ref.get("load_params", {})
+                    logger.info("  <Video %d>    video  %s  %d frames  start=%.1fs dur=%.1fs",
+                                ref["video_ordinal"], fname, frames.shape[0],
+                                lp.get("start_time", 0.0), lp.get("duration", 0.0))
+                else:
+                    logger.warning("  <Video %d>    video  %s  FAILED TO LOAD",
+                                   ref["video_ordinal"], fname)
 
             elif modality == "soundtrack_audio":
                 _cache = ref.get("audio_cache", "")
                 if _cache and os.path.isfile(_cache):
                     audio = _h3_load_audio(_cache, 0.0, 0.0)
+                    src_note = f"cache:{os.path.basename(_cache)}"
                 else:
                     audio = _h3_load_audio(path, ref.get("start_time", 0.0),
                                            ref.get("duration", 0.0))
+                    src_note = fname
                 if audio is not None:
                     n = ref["video_ordinal"] - 1
                     ref_video_audios[f"ref_video_audio_{n}"] = audio
+                    dur = audio["waveform"].shape[-1] / max(audio["sample_rate"], 1)
+                    logger.info("  <Audio %d>    soundtrack  %s  %.2fs  retention=%s  (paired with <Video %d>)",
+                                ref["audio_ordinal"], src_note, dur,
+                                ref.get("retention", "timbre"), ref["video_ordinal"])
+                else:
+                    logger.warning("  <Audio %d>    soundtrack  %s  FAILED TO LOAD",
+                                   ref["audio_ordinal"], src_note)
 
             elif modality == "audio":
                 _cache = ref.get("audio_cache", "")
                 if _cache and os.path.isfile(_cache):
                     audio = _h3_load_audio(_cache, 0.0, 0.0)
+                    src_note = f"cache:{os.path.basename(_cache)}"
                 else:
                     audio = _h3_load_audio(path, ref.get("start_time", 0.0),
                                            ref.get("duration", 0.0))
+                    src_note = fname
                 if audio is None:
+                    logger.warning("  <Audio %d>    standalone  %s  FAILED TO LOAD",
+                                   ref["audio_ordinal"], src_note)
                     continue
 
                 # Apply trim_to: shorten waveform to estimated dialogue line duration
@@ -17246,6 +18303,11 @@ class CompositionToH3Conditioning(io.ComfyNode):
                 if clip_err:
                     raise ValueError(clip_err)
 
+                trim_note = f"  trimmed→{actual_dur:.2f}s" if trim_to else ""
+                logger.info("  <Audio %d>    standalone  %s  %.2fs  retention=%s%s",
+                            ref["audio_ordinal"], src_note, actual_dur,
+                            ref.get("retention", "timbre"), trim_note)
+
                 loaded_audio_durations.append(actual_dur)
                 ref_audios[f"ref_audio_{standalone_idx}"] = audio
                 standalone_idx += 1
@@ -17255,6 +18317,13 @@ class CompositionToH3Conditioning(io.ComfyNode):
         total_err = _validate_h3_audio_total(loaded_audio_durations)
         if total_err:
             raise ValueError(total_err)
+
+        logger.info(
+            "CompositionToH3: passing to MiniMaxH3ReferenceToVideo — "
+            "%d image(s), %d video(s), %d soundtrack(s), %d standalone audio(s)%s",
+            len(ref_images), len(ref_videos), len(ref_video_audios), len(ref_audios),
+            f" | {total_audio:.1f}s audio total" if loaded_audio_durations else "",
+        )
 
         audio_note = f" | audio {total_audio:.1f}s total" if loaded_audio_durations else ""
         send_status_update(
@@ -17412,6 +18481,7 @@ class FBToolsExtension(ComfyExtension):
             SourceProfileLoad,
             SourceProfileDefine,
             SourceProfileList,
+            SourceProfileClipPrompt,
             # Scene Template nodes
             SceneTemplateLoad,
             SceneTemplateList,
