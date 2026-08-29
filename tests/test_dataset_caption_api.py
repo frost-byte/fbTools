@@ -95,7 +95,6 @@ def test_recaption_single_includes_expected_payload_fields():
         "instruction",
         "trigger_word",
         "clean_caption",
-        "gemini_api_key",
     ]
     for field in required_fields:
         assert f'body.get("{field}"' in func_source or f'body["{field}"]' in func_source

@@ -35,7 +35,6 @@ describe("DatasetCaptionViewer", () => {
                 { name: "device", value: "auto" },
                 { name: "use_8bit", value: false },
                 { name: "clean_caption", value: true },
-                { name: "gemini_api_key", value: "" },
             ],
             size: [520, 420],
             addDOMWidget: ((name, type, element) => {
