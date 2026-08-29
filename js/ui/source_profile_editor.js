@@ -126,6 +126,18 @@ function _toast(msg, severity = "info") {
     catch (_) {}
 }
 
+// Extract the most useful error string from an APIError or generic Error.
+// APIError.response is the raw server response body (may be JSON with an "error" key).
+function _errMsg(err) {
+    try {
+        if (err?.response) {
+            const body = typeof err.response === "string" ? JSON.parse(err.response) : err.response;
+            if (body?.error) return body.error;
+        }
+    } catch (_) {}
+    return err?.message || String(err);
+}
+
 function _slugify(str) {
     return (str || "").toLowerCase().replace(/\s+/g, "_").replace(/[^\w]/g, "").slice(0, 48);
 }
@@ -1215,7 +1227,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             redraw();
             _toast(`Created ${clips.length} clip(s)`, "success");
         } catch (err) {
-            _toast(`Auto-segment failed: ${err.message}`, "error");
+            _toast(`Auto-segment failed: ${_errMsg(err)}`, "error");
         } finally {
             autoSegRunning = false;
             autoSegBtn.disabled = false;
@@ -1254,7 +1266,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             redraw();
             _toast(`${suggestions.length} suggested boundary(s)`, "info");
         } catch (err) {
-            _toast(`Detection failed: ${err.message}`, "error");
+            _toast(`Detection failed: ${_errMsg(err)}`, "error");
         } finally {
             detecting = false;
             detectBtn.disabled = false;
@@ -1299,7 +1311,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 _toast("Action filled", "success");
             }
         } catch (err) {
-            _toast(`Describe failed: ${err.message}`, "error");
+            _toast(`Describe failed: ${_errMsg(err)}`, "error");
         } finally {
             btn.disabled = false;
             btn.textContent = prev;
@@ -1842,7 +1854,7 @@ async function _runAnalysis(profile, analyzeBody, onSubjectsChanged) {
         const modeNote = res.frame_count > 1 ? ` · ${res.frame_count} frames` : "";
         _toast(`Found ${_S.analyzeCandidates.length} candidate(s)${modeNote}`, "success");
     } catch (err) {
-        _toast(`Analysis failed: ${err.message}`, "error");
+        _toast(`Analysis failed: ${_errMsg(err)}`, "error");
     } finally {
         _S.analyzeRunning = false;
         analyzeBody._runBtn.disabled = false;
