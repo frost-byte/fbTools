@@ -28,21 +28,29 @@ logger = logging.getLogger(__name__)
 # ── Preset models ─────────────────────────────────────────────────────────────
 
 PRESET_MODELS: list[dict] = [
-    {"key": "qwen2.5-vl-7b",   "label": "Qwen2.5-VL 7B",   "native_video": True},
-    {"key": "qwen2.5-vl-3b",   "label": "Qwen2.5-VL 3B",   "native_video": True},
-    {"key": "qwen2.5-omni-7b", "label": "Qwen2.5-Omni 7B", "native_video": True},
-    {"key": "gemma3-4b",       "label": "Gemma 3 4B",       "native_video": False},
+    # key          — passed as model_key to VisionLLM
+    # label        — display name in the UI
+    # native_video — supports video_frames path (Qwen VL family does; Gemma does not)
+    # pre_quantized — already quantized (AWQ/GPTQ); do NOT apply NF4 on top
+    {"key": "qwen3-vl-8b",        "label": "Qwen3-VL 8B",          "native_video": True,  "pre_quantized": False},
+    {"key": "qwen2.5-vl-7b",      "label": "Qwen2.5-VL 7B",        "native_video": True,  "pre_quantized": False},
+    {"key": "qwen2.5-vl-32b-awq", "label": "Qwen2.5-VL 32B (AWQ)", "native_video": True,  "pre_quantized": True},
+    {"key": "qwen2.5-vl-3b",      "label": "Qwen2.5-VL 3B",        "native_video": True,  "pre_quantized": False},
+    {"key": "qwen2.5-omni-7b",    "label": "Qwen2.5-Omni 7B",      "native_video": True,  "pre_quantized": False},
+    {"key": "gemma3-4b",          "label": "Gemma 3 4B",            "native_video": False, "pre_quantized": False},
 ]
 
-_PRESET_NATIVE_VIDEO: dict[str, bool] = {m["key"]: m["native_video"] for m in PRESET_MODELS}
+_PRESET_NATIVE_VIDEO: dict[str, bool]    = {m["key"]: m["native_video"]    for m in PRESET_MODELS}
+_PRESET_PRE_QUANTIZED: dict[str, bool]   = {m["key"]: m["pre_quantized"]   for m in PRESET_MODELS}
 
 # ── Module-level state ────────────────────────────────────────────────────────
 
 _state: dict[str, Any] = {
-    "active":        False,
-    "model_key":     "qwen2.5-vl-7b",
-    "quantize":      True,
-    "native_video":  True,
+    "active":         False,
+    "model_key":      "qwen3-vl-8b",
+    "quantize":       True,
+    "native_video":   True,
+    "pre_quantized":  False,
 }
 
 # ── Availability ──────────────────────────────────────────────────────────────
@@ -64,6 +72,7 @@ def backend_status() -> dict:
         "model_key":        _state["model_key"],
         "quantize":         _state["quantize"],
         "native_video":     _state["native_video"],
+        "pre_quantized":    _state["pre_quantized"],
         "modal_available":  _has_modal(),
     }
 
@@ -82,12 +91,22 @@ def activate(model_key: str = "qwen2.5-vl-7b", quantize: bool = True) -> dict:
                 "Install with: pip install modal  (or pip install 'fb-Tools[modal]')"
             ),
         }
-    _state["active"]       = True
-    _state["model_key"]    = model_key
-    _state["quantize"]     = quantize
+    pre_quantized = _PRESET_PRE_QUANTIZED.get(model_key, False)
+    if quantize and pre_quantized:
+        logger.warning(
+            "Model %r is already AWQ/GPTQ quantized — disabling NF4 to avoid double-quantization",
+            model_key,
+        )
+        quantize = False
+
+    _state["active"]        = True
+    _state["model_key"]     = model_key
+    _state["quantize"]      = quantize
+    _state["pre_quantized"] = pre_quantized
     # native_video is preset-derived; custom repo IDs default to True (Qwen family)
-    _state["native_video"] = _PRESET_NATIVE_VIDEO.get(model_key, True)
-    logger.info("Modal backend activated: model=%s quantize=%s", model_key, quantize)
+    _state["native_video"]  = _PRESET_NATIVE_VIDEO.get(model_key, True)
+    logger.info("Modal backend activated: model=%s quantize=%s pre_quantized=%s",
+                model_key, quantize, pre_quantized)
     return {"success": True, "message": f"Modal activated with model {model_key!r}"}
 
 
