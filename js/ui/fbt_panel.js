@@ -2,15 +2,14 @@
  * fbTools unified sidebar panel.
  *
  * Single ComfyUI sidebar entry hosting all fbTools tabs:
- *   Compose · Bundles · Casts · Sources · History
+ *   Compose · Bundles · Casts · Sources · LLM · History
  *
  * Features:
- * - Persistent LLM status bar in the header (read-only — model management
- *   stays in the Compositions tab where the full Load/Unload UI lives)
+ * - Persistent LLM status bar in the header (read-only indicator)
  * - Lazy tab mounting: each tab's DOM is created once on first activation
  *   and kept alive (hidden) on switch, so state is never lost
- * - Synchronous status push: composition_editor calls window._fbtUpdateLlmStatus
- *   after every load/unload so the header badge stays current without polling
+ * - Synchronous status push: LLM Local tab calls window._fbtUpdateLlmStatus
+ *   after every load/unload so the header badge and Compose tab stay current
  */
 
 import { llmApi }                    from "../api/llm.js";
@@ -136,7 +135,7 @@ function _syncStatusBar() {
     _lblEl.title = label;
 }
 
-// Synchronous push — called by composition_editor after every load/unload.
+// Synchronous push — called by LLM Local tab after load/unload.
 // Avoids an extra network round-trip and keeps the badge instantly in sync.
 function _handleLlmPush(loaded, vision, nativeVideo) {
     fbtLlm.loaded      = loaded      ?? null;
@@ -147,8 +146,7 @@ function _handleLlmPush(loaded, vision, nativeVideo) {
     document.dispatchEvent(new CustomEvent("fbt:llm-status", { detail: { ...fbtLlm } }));
 }
 
-// Async pull — used on panel open and tab switch to reconcile if composition
-// editor was used before this panel was open.
+// Async pull — used on panel open and tab switch to reconcile with server state.
 async function _fetchLlmStatus() {
     try {
         const st = await llmApi.status();
@@ -262,7 +260,7 @@ export function renderFbtPanel(container) {
     // Eagerly mount and activate the first tab
     activateTab(TABS[0].id);
 
-    // Wire the synchronous push from composition_editor
+    // Synchronous push — called by LLM Local tab (and anywhere that loads/unloads a model)
     window._fbtUpdateLlmStatus = _handleLlmPush;
     // Read-only accessor for other tabs that need to check LLM state
     window._fbtGetLlmStatus = () => ({ ...fbtLlm });
