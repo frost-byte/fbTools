@@ -177,5 +177,14 @@ def generate(
             return {"success": False, "text": "", "message": f"Unexpected Modal response type: {type(result)}"}
         return result
     except Exception as exc:
+        msg = str(exc)
+        if "not found in environment" in msg or ("not found" in msg and "fbtools-vision-llm" in msg):
+            return {
+                "success": False, "text": "",
+                "message": (
+                    "Modal app 'fbtools-vision-llm' is not deployed. "
+                    "Run: modal deploy modal/app.py  from the comfyui-fbTools directory."
+                ),
+            }
         logger.error("Modal generate failed: %s", exc)
         return {"success": False, "text": "", "message": f"Modal error: {exc}"}
