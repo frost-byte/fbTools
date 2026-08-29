@@ -174,7 +174,12 @@ def _parse_vlm_json_response(
         else:
             return []
 
-    subjects_raw = data.get("subjects") if isinstance(data, dict) else None
+    if isinstance(data, list):
+        subjects_raw = data
+    elif isinstance(data, dict):
+        subjects_raw = data.get("subjects")
+    else:
+        subjects_raw = None
     if not isinstance(subjects_raw, list):
         return []
 
@@ -652,10 +657,12 @@ def _parse_segments_response(raw: str, video_duration: float = 0.0) -> list[dict
         else:
             data = {}
 
-    if not isinstance(data, dict):
-        data = {}
-
-    raw_segs = data.get("segments", [])
+    if isinstance(data, list):
+        raw_segs = data
+    elif isinstance(data, dict):
+        raw_segs = data.get("segments", [])
+    else:
+        raw_segs = []
     if not isinstance(raw_segs, list):
         raw_segs = []
 
