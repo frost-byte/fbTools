@@ -160,12 +160,11 @@ def generate(
                 f"Calling Modal ({model_key}) — container may take ~60 s to warm up on first use"
             )
 
-        vlm = modal.Cls.from_name("fbtools-vision-llm", "VisionLLM")(
-            model_key=model_key,
-            quantize=quantize,
-        )
+        vlm = modal.Cls.from_name("fbtools-vision-llm", "VisionLLM")()
         result = vlm.generate.remote(
             prompt,
+            model_key=model_key,
+            quantize=quantize,
             images=images,
             video_frames=video_frames,
             system_prompt=system_prompt,
