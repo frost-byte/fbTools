@@ -94,14 +94,11 @@ def test_recaption_single_includes_expected_payload_fields():
         "captioner_type",
         "instruction",
         "trigger_word",
-        "device",
-        "use_8bit",
         "clean_caption",
         "gemini_api_key",
     ]
     for field in required_fields:
         assert f'body.get("{field}"' in func_source or f'body["{field}"]' in func_source
 
-    assert "caption_image(" in func_source
-    assert "get_model(" in func_source
+    assert "_run_vision_inference(" in func_source
     assert "txt_path.write_text(caption, encoding=\"utf-8\")" in func_source
