@@ -473,7 +473,8 @@ function _renderForm() {
     form.appendChild(_formRow("ID",     idEl));
     form.appendChild(_formRow("Subject", subjectEl));
     form.appendChild(_formRow("Appear.", appearEl));
-    if (_S.llmVision) {
+    const _hasVision = window._fbtGetLlmStatus?.()?.vision ?? _S.llmVision;
+    if (_hasVision) {
         _llmEl = _buildAppearanceAnalyzer(b, appearEl);
         form.appendChild(_llmEl);
     }
@@ -1415,9 +1416,10 @@ function _buildAudioProcessingSection(wrap, b, sourceAudioEl = null) {
             const btn = e.currentTarget;
             const src = b.audio.source;
             let filename = "";
-            if (src === "file")                filename = b.audio.file;
-            else if (src === "extract_from_video") filename = b.audio.video_file;
-            else if (src === "extract_from_visual") filename = b.visual.file;
+            let dir = "input";
+            if (src === "file") { filename = b.audio.file; dir = b.audio.audio_dir || "input"; }
+            else if (src === "extract_from_video") { filename = b.audio.video_file; dir = b.audio.video_dir || "input"; }
+            else if (src === "extract_from_visual") { filename = b.visual.file; dir = b.visual.video_dir || "input"; }
             if (!filename) { _toast("No audio source selected", "warn"); return; }
 
             btn.disabled     = true;
@@ -1429,6 +1431,7 @@ function _buildAudioProcessingSection(wrap, b, sourceAudioEl = null) {
                 const result = await bundlesApi.preprocessAudio({
                     bundle_id:   b.id || "default",
                     filename,
+                    dir,
                     start_time:  b.audio.start_time || 0,
                     duration:    b.audio.duration   || 0,
                     audio_processing: {
@@ -1581,7 +1584,8 @@ function _buildAppearanceAnalyzer(b, appearEl) {
                 previewImg.style.display = "none";
                 try {
                     const r = await bundlesApi.extractFrame(
-                        b.visual.file, parseInt(frameInput.value, 10) || 0);
+                        b.visual.file, parseInt(frameInput.value, 10) || 0,
+                        b.visual.video_dir || "input");
                     _currentTmpFrame = r.tmp_filename;
                     frameInput.max = r.frame_count - 1;
                     frameCountEl.textContent = `of ${r.frame_count} frames  (${r.width}×${r.height})`;
@@ -2109,7 +2113,7 @@ function _renderSubjectForm() {
     form.appendChild(voiceSec);
 
     // ── LLM Appearance Analysis (optional) ─────────────────────────────────────
-    if (_S.llmVision) {
+    if (window._fbtGetLlmStatus?.()?.vision ?? _S.llmVision) {
         const llmSec = _mk("div", { cls: "fbt-be-section" });
         llmSec.appendChild(_mk("div", { cls: "fbt-be-sec-label", textContent: "LLM Appearance Analysis" }));
 
@@ -2326,6 +2330,16 @@ export async function renderBundleEditor(el) {
     } catch (e) {
         console.error("fbt BundleEditor: load error", e);
     }
+
+    // Keep LLM vision state in sync when a model is loaded/unloaded from the
+    // LLM tab after this editor was already mounted.
+    document.addEventListener("fbt:llm-status", (e) => {
+        const { vision, loaded } = e.detail ?? {};
+        const changed = _S.llmVision !== (vision ?? false);
+        _S.llmVision = vision ?? false;
+        _S.llmModel  = loaded ?? _S.llmModel;
+        if (changed && _S.editing !== null) _render();
+    });
 
     _repopulateSubjectFilter();
     _render();

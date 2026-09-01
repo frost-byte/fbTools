@@ -79,8 +79,8 @@ export class BundlesAPI extends BaseAPI {
         return r.json();
     }
 
-    extractFrame(filename, frameIndex) {
-        return this.post("/media/extract_frame", { filename, frame_index: frameIndex });
+    extractFrame(filename, frameIndex, dir = "input") {
+        return this.post("/media/extract_frame", { filename, frame_index: frameIndex, dir });
     }
 
     async deleteTmpFrame(filename) {
@@ -104,8 +104,8 @@ export class BundlesAPI extends BaseAPI {
         return `/fbtools/media/stream?filename=${encodeURIComponent(filename)}${dirPart}`;
     }
 
-    preprocessAudio({ bundle_id, filename, start_time, duration, audio_processing }) {
-        return this.post("/bundles/preprocess_audio", { bundle_id, filename, start_time, duration, audio_processing });
+    preprocessAudio({ bundle_id, filename, dir, start_time, duration, audio_processing }) {
+        return this.post("/bundles/preprocess_audio", { bundle_id, filename, dir, start_time, duration, audio_processing });
     }
 
     async previewSampled({ filename, start_time, duration, force_rate, select_every_nth }) {
