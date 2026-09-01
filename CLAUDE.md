@@ -135,8 +135,6 @@ Key files:
 | `utils/prompt_assembler.py` | Pure prompt assembly logic (no ComfyUI deps) — `assemble_prompt`, per-model-type formatters |
 | `scene_templates/` | Bundled example templates (seeded into user_data_dir on first use) |
 
-**Registered nodes** (from `FBToolsExtension.get_node_list()`): SubjectLayerDefine, SubjectCompositor, DatasetCaptioner, DatasetCaptionEditor, DatasetCaptionViewer, DatasetExportSummary, CaptionModelUnloader, FBTextEncodeQwenImageEditPlus (conditioning), SAMPreprocessNHWC, QwenAspectRatio, SubdirLister, MultiLoraLoader, SceneCreate, SceneUpdate, SceneMaskDefinition, SceneSave, SceneInput, SceneOutput, SceneView, SceneSelect, SceneWanVideoLoraMultiSave, SceneLoraStackSave, ScenePromptManager, PromptComposer, StorySceneBatch, StoryScenePick, StoryVideoBatch, StoryCreate, StoryEdit, StoryView, StorySave, StoryLoad, StorySceneImageSave, OpaqueAlpha, MaskProcessor, TailSplit, TailEnhancePro, LibberManager, LibberApply, **LoraStackBuilder** (primary LoRA path), LoraStackApply, LoraEntryDefine (legacy), LoraStackCollect (legacy), WanVidLoraStack, LoraPresetDefine, LoraPresetSelect, WanPresetDefine, WanPresetSelect, AudioFixShape, ConceptRegistryLoad, ConceptDefine, ConceptResolve, ConceptList, **SubjectProfileLoad**, **SubjectProfileDefine**, **SubjectProfileList**, **SceneTemplateLoad**, **SceneTemplateList**, **SceneCompose**, **PromptAssemble**, **PromptCompositionLoader**. `LoraStackView` is **defined but not registered** — it will not appear in ComfyUI until added to `get_node_list()`.
-
 **Node categories** — use one of these existing values when adding a new node:
 
 `compositing`, `conditioning`, `Dataset`, `File`, `Image Processing`, `Libber`, `Loaders`, `lora`, `Nodes`, `Preprocessing`, `Scene`, `Story`, `Video`
@@ -155,6 +153,8 @@ Full form: `"🧊 frost-byte/<category>"` (e.g., `"🧊 frost-byte/Scene"`).
 **State managers** (`PromptCollectionManager`, `LibberManager` at module level in `extension.py`) hold server-side session state with TTL.
 
 **Node ID convention**: all node IDs are prefixed with `fbt_` via `prefixed_node_id()`. The frontend references them with the constant `EXT_PREFIX = "fbt_"`.
+
+For the full registered node list, custom wire types, data models, persistence paths, optional dependencies, and developer scripts — invoke the `node-reference` skill. For Scene Composition Engine details (Concept Registry, Subject Profiles, Scene Templates, SceneCompose, PromptAssemble) — invoke the `scene-composition-engine` skill.
 
 ### Frontend (JavaScript)
 
@@ -207,204 +207,6 @@ grep -r '"old_name"' js/
 ```
 
 If the JS lookup is an intentional backwards-compat fallback for old saved workflows, add it to `ALLOWLIST` in the test file with a reason. Keep the list minimal.
-
-### Data Models
-
-- `PromptCollection` (v2): named prompts with metadata (`PromptMetadata`), compositions (ordered prompt key lists), and optional `scene_flags`. Auto-migrates from v1 JSON.
-- `SceneInStory`: scene slot in a story, carries `mask_name`, `prompt_source`, `video_prompt_source`, and deprecates `mask_type`/`prompt_type` (v1 fields kept for migration).
-- Scene data stored as JSON on disk; migrated lazily on load.
-
-### Custom Types
-
-Node wiring uses custom type strings for type safety:
-- `SUBJECT_LAYER` — between `SubjectLayerDefine` → `SubjectCompositor`
-- `LORA_ENTRY` — between `LoraEntryDefine` → `LoraStackCollect` / `LoraStackBuilder` (legacy autogrow path)
-- `LORA_STACK_DATA` — between `LoraStackBuilder` / `LoraStackCollect` → `LoraStackApply`
-- `LORA_PRESET_LIST` — between `LoraPresetDefine` → `LoraPresetSelect` (carries `{ name, lora_stack, prompt }` dicts)
-- `PRESET_LIST` — between `WanPresetDefine` → `WanPresetSelect` (carries `{ name, lora_h, lora_l, prompt }` dicts)
-- `CONCEPT_REGISTRY` — between `ConceptRegistryLoad` / `ConceptDefine` → `ConceptResolve` / `ConceptList` (carries `ConceptRegistry` instance)
-- `SUBJECT_PROFILE` — between `SubjectProfileLoad` / `SubjectProfileDefine` → `SceneCompose` (carries subject dict with name, appearance, voice, character_sheet_images, concept_id)
-- `SCENE_TEMPLATE` — between `SceneTemplateLoad` → `SceneCompose` (carries `SceneTemplate` instance with slots, shots, environment, style)
-- `SCENE_INSTANCE` — between `SceneCompose` → `PromptAssemble` (carries composed scene dict: template, slot_assignments, dialogue, outfit_overrides)
-
-### Persistence
-
-All package-level data is stored under `user_data_dir()` → `ComfyUI/user/default/comfyui-fbTools/`:
-- `concept_registry.json` — concept definitions (with `.bak` auto-backup on save)
-- `subject_profiles.json` — subject profile definitions (with `.bak` auto-backup on save)
-- `scene_templates/` — user scene template JSON files (seeded from bundled `scene_templates/` on first use)
-- `scenes/` — scene directories (new installs); legacy `output/scenes/` is still supported if the new dir is empty
-- `libbers/` — libber template JSON files (new installs); legacy `output/libbers/` is still supported
-
-The helper `user_data_dir()` in `extension.py` uses `folder_paths.get_user_directory()` with a fallback chain.
-
-### Concept Registry
-
-The concept system is defined in `utils/concept_registry.py` (no ComfyUI deps) and exposed via four nodes:
-
-| Node | Role |
-|---|---|
-| `ConceptRegistryLoad` | Load `concept_registry.json` from disk; expose available concepts |
-| `ConceptDefine` | Add/update a concept entry for one model type (chainable); auto_save option |
-| `ConceptResolve` | Resolve concept IDs → apply LoRAs to model/clip; assemble prompt with trigger words |
-| `ConceptList` | Display formatted concept list, optionally filtered by model type |
-
-**Model types** (in `MODEL_PROFILES` in `utils/concept_registry.py`):
-
-| ID | Display | Split model? |
-|---|---|---|
-| `wan22` | Wan 2.2 | Yes (high + low) |
-| `bernini` | BerniniR | Yes (high + low) |
-| `ltx23` | LTX 2.3 | No |
-| `flux2` | Flux 2 | No |
-| `krea2` | Krea 2 | No |
-| `qwen` | Qwen Image | No |
-| `minimax_h3` | MiniMax H3 | No |
-
-For split models, `ConceptResolve` applies the HIGH LoRA to the primary `model` input and the LOW LoRA to the optional `model_low` input. Both apply to `clip`. For single-model types, only `model` is used.
-
-Same `concept_id` + different `model_type` → entries accumulate (one per model type). Same `concept_id` + same `model_type` → the entry is overwritten. A `.bak` backup is created on every save.
-
-### Subject Profiles (Scene Composition Engine — Phase 1)
-
-The subject profile system is defined in `utils/subject_profiles.py` (no ComfyUI deps) and exposed via three nodes. It is the first layer of the Scene Composition Engine (`docs/scene_composition_action_plan.md`).
-
-| Node | Role |
-|---|---|
-| `SubjectProfileLoad` | Load a subject from `subject_profiles.json`; outputs IMAGE batch + AUDIO |
-| `SubjectProfileDefine` | Create/update a subject profile entry; auto_save option |
-| `SubjectProfileList` | Display all defined subjects as formatted text |
-
-**Storage**: `user_data_dir() + "/subject_profiles.json"` with `.bak` backup on save.
-
-**Character sheet images** are loaded from the ComfyUI input directory by filename. Stacked into a single IMAGE batch (N × H × W × 3). Images with different sizes are resized to match the first.
-
-**Audio reference** loaded from the ComfyUI input directory via `torchaudio`. Returns None if file is absent or `torchaudio` unavailable.
-
-**Reload mechanism**: `POST /fbtools/subjects/reload` increments `_subject_reload_counter`, causing `SubjectProfileLoad` and `SubjectProfileList` nodes to re-execute via `fingerprint_inputs`. The `subject_id` combo on `SubjectProfileLoad` is populated at schema load time — a page refresh is needed to see newly-added subject IDs in the dropdown.
-
-**REST endpoints**:
-- `POST /fbtools/subjects/reload` — force reload counter increment
-- `GET /fbtools/subjects/profiles` — return full subject_profiles.json as JSON
-
-### Scene Templates (Scene Composition Engine — Phase 2)
-
-The scene template system is defined in `utils/scene_templates.py` (no ComfyUI deps) and exposed via two nodes. It is the second layer of the Scene Composition Engine.
-
-| Node | Role |
-|---|---|
-| `SceneTemplateLoad` | Load a template from `scene_templates/`; outputs SCENE_TEMPLATE + slot_info STRING |
-| `SceneTemplateList` | Scan the templates directory and list all available templates |
-
-**Storage**: `user_data_dir() + "/scene_templates/"` — one JSON file per template. Seeded with 3 bundled examples (`monologue_indoor`, `cafe_conversation_2p`, `meeting_room_3p`) on first use.
-
-**Bundled examples** ship in the package's own `scene_templates/` directory and are copied once into the user data dir when that directory is empty.
-
-**Template schema fields**: `id`, `name`, `description`, `slots` (dict of slot_id → `{role, needs_voice, needs_character_sheet}`), `environment` (`{summary, lighting}`), `style`, `shots` (list of `{id, timestamp, camera, action, dialogue, sound_events}`), `overall_soundscape`, `non_diegetic_music`.
-
-**Placeholder convention**: `{A}`, `{B}`, `{C}` in `action` and `camera` fields are replaced at assembly time with subject appearance descriptions.
-
-**Reload mechanism**: `POST /fbtools/scene_templates/reload` increments `_scene_template_reload_counter`. The `template_id` combo on `SceneTemplateLoad` is populated at schema load time — a page refresh is needed to see newly-added templates.
-
-**REST endpoints**:
-- `POST /fbtools/scene_templates/reload` — force reload counter increment
-- `GET /fbtools/scene_templates/list` — return list of template metadata as JSON
-
-### Scene Composition (Scene Composition Engine — Phase 3)
-
-The composition layer is defined in `utils/scene_compose.py` (no ComfyUI deps) and exposed via one node.
-
-| Node | Role |
-|---|---|
-| `SceneCompose` | Assign subjects to template slots, fill dialogue, apply outfit overrides; outputs SCENE_INSTANCE |
-
-**Inputs**: `template` (SCENE_TEMPLATE), `slot_A`–`slot_D` (SUBJECT_PROFILE, optional B–D), `dialogue_1`–`dialogue_4` (STRING, positional — fills placeholder shots in shot order), `outfit_override_A`–`outfit_override_D` (STRING, optional).
-
-**Dialogue mapping**: positional — `dialogue_1` fills the first shot with `placeholder: true` dialogue, `dialogue_2` fills the second, etc. Order follows shot order in the template.
-
-**Validation**: warns (via `scene_summary` output and status update) if required slots are unfilled or if voice/character-sheet requirements aren't met. Does not hard-fail — `scene_instance` is still returned so the graph can be inspected.
-
-**`subject_id` injection**: `SubjectProfileLoad` and `SubjectProfileDefine` inject a `subject_id` key into the subject dict they output, so `SceneCompose` and downstream nodes can reference which profile was loaded without needing a separate STRING output.
-
-**SCENE_INSTANCE dict schema**:
-```python
-{
-    "template_id": str,
-    "template_name": str,
-    "template": {full template dict},
-    "slot_assignments": {"A": subject_dict, "B": subject_dict, ...},
-    "dialogue": {"shot_1": "line text", "shot_2": "line text", ...},
-    "outfit_overrides": {"A": "override text", ...},
-}
-```
-
-### Prompt Assembly (Scene Composition Engine — Phase 4)
-
-The prompt assembly layer is defined in `utils/prompt_assembler.py` (no ComfyUI deps) and exposed via one node.
-
-| Node | Role |
-|---|---|
-| `PromptAssemble` | Takes a SCENE_INSTANCE and generates the model-specific prompt, reference image batch, audio outputs, concept IDs, and assembly report |
-
-**Inputs**: `scene_instance` (SCENE_INSTANCE), `model_type` (COMBO), `concept_registry` (CONCEPT_REGISTRY, optional — accepted for future trigger word injection but not yet used).
-
-**Outputs**:
-- `prompt` — fully assembled prompt string in the format required by `model_type`
-- `reference_images` — IMAGE batch of all character sheets (slot order: slot A's sheets first, then B, …), or None if no sheets
-- `reference_audio` — AUDIO dict for first subject's voice reference (slot A), or None
-- `additional_audio` — AUDIO dict for second subject's voice reference (slot B), or None
-- `concept_ids` — comma-separated concept IDs from all assigned subjects (wire into ConceptResolve)
-- `assembly_report` — human-readable summary of what was assembled
-
-**Model types** (prompt formats):
-
-| ID | Format |
-|---|---|
-| `h3_ref2va` | MiniMax H3 6-section structured brief: `subject_definitions`, `summary`, `retention_analysis`, `detailed_description`, `overall_soundscape`, `non_diegetic_music` |
-| `h3_fl2va` | MiniMax H3 free-language: shots with `[Shot N]` headers and `<d>[lang] text</d>` dialogue tags, no reference labels |
-| `wan22` | Wan 2.2 production-direction block |
-| `bernini` | BerniniR production-direction block (same format as wan22) |
-| `ltx23` | LTX 2.3 simple descriptive |
-| `flux2` | Flux 2 simple descriptive |
-| `krea2` | Krea 2 simple descriptive |
-| `qwen` | Qwen Image simple descriptive |
-
-**H3 Ref2VA reference numbering** (independent per type, assigned in slot order):
-- `<Subject N>` — one per assigned slot (A=S1/Subject 1, B=S2/Subject 2, …)
-- `<Picture N>` — continuous global numbering across all subjects (slot A's sheets first)
-- `<Audio N>` — continuous numbering for slots that have audio files
-
-**Placeholder replacement**: `{A}`, `{B}`, `{C}`, `{D}` in template `action` and `camera` fields are replaced with `<Subject N> (Name — appearance_summary)` on first appearance, and `<Subject N> (Name)` on subsequent appearances for H3 formats; with plain subject names for other formats.
-
-**Integration with ConceptResolve**:
-```
-[PromptAssemble] → concept_ids → [ConceptResolve] applies LoRAs without modifying prompt
-[PromptAssemble] → prompt ─────→ [text conditioning node]
-[PromptAssemble] → reference_images → [model conditioning]
-```
-
-### Optional Dependencies
-
-Gracefully absent:
-- `rembg` — background removal in SubjectLayerDefine
-- `ComfyUI-SCAIL-Pose` / `taichi` — NLF 3D pose in SceneUpdate
-- `ComfyUI-WanVideoWrapper` — WANVIDLORA output in LoraStackApply
-- `transformers`, `bitsandbytes`, `google-generativeai` — captioning backends
-- `torchaudio` — audio reference loading in SubjectProfileLoad (audio output returns None if absent)
-
-All optional imports are guarded with `try/except` and degrade gracefully.
-
-## Scripts
-
-Developer utilities in `scripts/`:
-
-| Script | Usage |
-|---|---|
-| `scripts/migrate_lora_stack.py` | Migrate `loras.json` → `lora_stack.json`; clean deprecated `audio_enabled` boolean in LTX2.3 entries. Args: `[SCENES_DIR] [--force] [--dry-run]` |
-| `scripts/migrate_masks.py` | Convert legacy `mask_type` scenes to `mask_name` format |
-| `scripts/inspect_safetensors.py` | Print metadata and tensor names from a `.safetensors` file |
-| `scripts/inspect_gguf.py` | Print metadata and tensor keys from a `.gguf` file |
-| `scripts/dataset_caption_edit.fish` | Batch caption find/replace via the `/fbtools/dataset_caption/edit` API |
 
 ## Key Conventions
 

@@ -681,6 +681,18 @@ _SHEET_ROLE_H3: dict[str, str] = {
     "reference":        "an appearance reference image (do not use as scene composition)",
 }
 
+# Natural-language inline descriptions for character sheet roles, used inside
+# subject_definitions sentences: "appearance comes from <Picture N>, <desc>."
+# Single-sheet only — multi-sheet references omit the inline description.
+_SHEET_ROLE_INLINE: dict[str, str] = {
+    "character sheet":  "a character reference sheet showing the figure from multiple angles",
+    "portrait":         "a frontal portrait (facial likeness reference)",
+    "side profile":     "a side-profile view (silhouette and structure reference)",
+    "full body":        "a full-body reference (costume and proportion reference)",
+    "costume detail":   "a costume detail reference",
+    "reference":        "an appearance reference image",
+}
+
 
 def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     template = scene_instance.get("template", {})
@@ -778,10 +790,18 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         vid_ref = f"<Video {info['video_num']}>" if info["video_num"] is not None else ""
         pic_ref_str = _join_labels([f"<Picture {p}>" for p in info["picture_nums"]]) if info["picture_nums"] else ""
 
+        cs_entries = info.get("character_sheet_entries", [])
+        if len(cs_entries) == 1:
+            _cs_role = cs_entries[0].get("role", "character sheet")
+            _cs_desc = _SHEET_ROLE_INLINE.get(_cs_role, "")
+            pic_role_suffix = f", {_cs_desc}" if _cs_desc else ""
+        else:
+            pic_role_suffix = ""
+
         if vid_ref and pic_ref_str:
-            ref_anchor = f" whose appearance comes from {pic_ref_str} and whose motion comes from {vid_ref}"
+            ref_anchor = f" whose appearance comes from {pic_ref_str}{pic_role_suffix} and whose motion comes from {vid_ref}"
         elif pic_ref_str:
-            ref_anchor = f" whose appearance comes from {pic_ref_str}"
+            ref_anchor = f" whose appearance comes from {pic_ref_str}{pic_role_suffix}"
         elif vid_ref:
             ref_anchor = f" from {vid_ref}"
         else:
@@ -1101,7 +1121,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             detail_phrase = f", with {_join_details(detail_parts)}" if detail_parts else ""
             preserve_desc = f"{summary_body}{detail_phrase}" if summary_body else "appearance retained"
 
-        ra.append(f"{label} ({appears_clause}): {subj_retention} - {preserve_desc}.")
+        ra_retention = "fully_preserved" if subj_retention == "attribute_transfer" else subj_retention
+        ra.append(f"{label} ({appears_clause}): {ra_retention} - {preserve_desc}.")
 
     # Video entries: "<Video N> (role): <status> - ..."
     # Deduplicate by video_num — co-sourced subjects share one video line.
@@ -1249,37 +1270,38 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     if opening:
         dd.append(". ".join(opening) + ".")
 
-    # Video-editing preamble: one paragraph before [Shot 1] describing the
-    # identity-replacement operation when bundle subjects are present.
+    # Video-editing preamble: opening quality directive followed by one sentence per
+    # bundle replacement pair, identifying the source subject by appearance so the
+    # model can locate them in the video, then naming the bundle subject replacing them.
     if "video editing" in active_flags:
         _bun_slots = [
             s for s in ordered_slots
             if ref_map[s].get("retention_marker") == "attribute_transfer"
         ]
         if _bun_slots:
-            _bun_labels = _join_labels([ref_map[s]["subject_label"] for s in _bun_slots])
-            _src_vnums: list[int] = []
-            for _s in _bun_slots:
-                _src_sid2 = ref_map[_s].get("transfer_to_slot", "")
-                _src_vnum = ref_map.get(_src_sid2, {}).get("video_num")
-                if _src_vnum is not None and _src_vnum not in _src_vnums:
-                    _src_vnums.append(_src_vnum)
-            _video_ref = _join_labels([f"<Video {v}>" for v in _src_vnums])
-            preamble = (
-                "The target video is a photorealistic, seamless identity-replacement edit "
-                "with strong temporal consistency. "
-                f"The priority is exact likeness fidelity: the visible result must contain "
-                f"the appearance of {_bun_labels}"
-            )
-            if _video_ref:
-                preamble += (
-                    f" while preserving the original video performance and "
-                    f"scene continuity of {_video_ref}."
-                )
-            else:
-                preamble += "."
             dd.append("")
-            dd.append(preamble)
+            dd.append(
+                "The target video is a photorealistic, seamless identity-replacement edit "
+                "with strong temporal consistency."
+            )
+            for _s in _bun_slots:
+                _bun_info = ref_map[_s]
+                _src_slot_id = _bun_info.get("transfer_to_slot", "")
+                _src_info = ref_map.get(_src_slot_id)
+                if not _src_info:
+                    continue
+                _src_vnum = _src_info.get("video_num")
+                _src_raw = _src_info.get("appearance_summary", "") or _src_info.get("name", "")
+                _src_lower = (_src_raw[0].lower() + _src_raw[1:]).rstrip(". ") if _src_raw else ""
+                # Strip leading article so we can wrap uniformly in "The …"
+                _src_desc = re.sub(r"^(?:an? |the )", "", _src_lower).strip() if _src_lower else "replaced subject"
+                _bun_label = _bun_info["subject_label"]
+                if _src_vnum is not None:
+                    dd.append(
+                        f"The {_src_desc} in <Video {_src_vnum}> is completely replaced by {_bun_label}."
+                    )
+                else:
+                    dd.append(f"The {_src_desc} is completely replaced by {_bun_label}.")
 
     seen_globally: set[str] = set()
 

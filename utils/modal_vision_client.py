@@ -45,12 +45,15 @@ _PRESET_PRE_QUANTIZED: dict[str, bool]   = {m["key"]: m["pre_quantized"]   for m
 
 # ── Module-level state ────────────────────────────────────────────────────────
 
+_VALID_GPUS = {"T4", "L4", "L40S"}
+
 _state: dict[str, Any] = {
     "active":         False,
     "model_key":      "qwen3-vl-8b",
     "quantize":       True,
     "native_video":   True,
     "pre_quantized":  False,
+    "gpu":            "L40S",
 }
 
 # ── Availability ──────────────────────────────────────────────────────────────
@@ -73,11 +76,13 @@ def backend_status() -> dict:
         "quantize":         _state["quantize"],
         "native_video":     _state["native_video"],
         "pre_quantized":    _state["pre_quantized"],
+        "gpu":              _state["gpu"],
         "modal_available":  _has_modal(),
     }
 
 
-def activate(model_key: str = "qwen2.5-vl-7b", quantize: bool = True) -> dict:
+def activate(model_key: str = "qwen2.5-vl-7b", quantize: bool = True,
+             gpu: str = "L40S") -> dict:
     """Mark the Modal backend as active for the given model key.
 
     Does not spin up a container — the first generate() call triggers that.
@@ -91,6 +96,10 @@ def activate(model_key: str = "qwen2.5-vl-7b", quantize: bool = True) -> dict:
                 "Install with: pip install modal  (or pip install 'fb-Tools[modal]')"
             ),
         }
+    gpu = gpu.upper() if gpu else "L40S"
+    if gpu not in _VALID_GPUS:
+        return {"success": False, "message": f"Invalid GPU tier {gpu!r}. Valid: {sorted(_VALID_GPUS)}"}
+
     pre_quantized = _PRESET_PRE_QUANTIZED.get(model_key, False)
     if quantize and pre_quantized:
         logger.warning(
@@ -103,11 +112,12 @@ def activate(model_key: str = "qwen2.5-vl-7b", quantize: bool = True) -> dict:
     _state["model_key"]     = model_key
     _state["quantize"]      = quantize
     _state["pre_quantized"] = pre_quantized
+    _state["gpu"]           = gpu
     # native_video is preset-derived; custom repo IDs default to True (Qwen family)
     _state["native_video"]  = _PRESET_NATIVE_VIDEO.get(model_key, True)
-    logger.info("Modal backend activated: model=%s quantize=%s pre_quantized=%s",
-                model_key, quantize, pre_quantized)
-    return {"success": True, "message": f"Modal activated with model {model_key!r}"}
+    logger.info("Modal backend activated: model=%s quantize=%s pre_quantized=%s gpu=%s",
+                model_key, quantize, pre_quantized, gpu)
+    return {"success": True, "message": f"Modal activated with model {model_key!r} on {gpu}"}
 
 
 def deactivate() -> dict:
@@ -154,13 +164,15 @@ def generate(
 
         model_key = _state["model_key"]
         quantize  = _state["quantize"]
+        gpu       = _state.get("gpu", "L40S")
+        cls_name  = f"VisionLLM_{gpu}"
 
         if status_callback:
             status_callback(
-                f"Calling Modal ({model_key}) — container may take ~60 s to warm up on first use"
+                f"Calling Modal ({model_key} on {gpu}) — GPU container may take 1–3 min to provision "
+                f"on first use or when capacity is limited"
             )
-
-        vlm = modal.Cls.from_name("fbtools-vision-llm", "VisionLLM")()
+        vlm = modal.Cls.from_name("fbtools-vision-llm", cls_name)()
         result = vlm.generate.remote(
             prompt,
             model_key=model_key,
@@ -172,6 +184,8 @@ def generate(
             temperature=temperature,
             video_meta=video_meta,
         )
+        if status_callback:
+            status_callback(f"Modal ({model_key}) responded — processing result")
         if not isinstance(result, dict):
             return {"success": False, "text": "", "message": f"Unexpected Modal response type: {type(result)}"}
         return result
@@ -183,6 +197,15 @@ def generate(
                 "message": (
                     "Modal app 'fbtools-vision-llm' is not deployed. "
                     "Run: modal deploy modal/app.py  from the comfyui-fbTools directory."
+                ),
+            }
+        if "takes no arguments" in msg or ("VisionLLM" in msg and "arguments" in msg) or ("not found" in msg and cls_name in msg):
+            return {
+                "success": False, "text": "",
+                "message": (
+                    "Modal container failed to start — stale deployment metadata. "
+                    "Redeploy with: modal deploy modal/app.py  then try again. "
+                    f"(Details: {exc})"
                 ),
             }
         logger.error("Modal generate failed: %s", exc)

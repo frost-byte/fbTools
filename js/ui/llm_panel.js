@@ -21,6 +21,7 @@ const _state = {
     modalActive:  false,
     modalModel:   "qwen3-vl-8b",
     modalQuant:   true,
+    modalGpu:     "L40S",
     modalNativeV: true,
     idleMinutes:  10,
     keepWarm:     false,
@@ -35,6 +36,7 @@ function _loadState() {
         const s = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
         if (s.modalModel)  _state.modalModel  = s.modalModel;
         if (s.modalQuant   !== undefined) _state.modalQuant   = !!s.modalQuant;
+        if (s.modalGpu)    _state.modalGpu    = s.modalGpu;
         if (s.idleMinutes) _state.idleMinutes = s.idleMinutes;
         if (s.keepWarm     !== undefined) _state.keepWarm     = !!s.keepWarm;
     } catch (_) {}
@@ -45,6 +47,7 @@ function _saveState() {
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
             modalModel:  _state.modalModel,
             modalQuant:  _state.modalQuant,
+            modalGpu:    _state.modalGpu,
             idleMinutes: _state.idleMinutes,
             keepWarm:    _state.keepWarm,
         }));
@@ -177,6 +180,34 @@ const _CSS = `
     color:var(--p-text-muted-color,#888);
 }
 .llmp-history-item:hover { background:var(--p-surface-section,#252525); color:var(--p-text-color,#ccc); }
+
+/* VRAM recommendation card */
+.llmp-vram-card {
+    display:flex; flex-direction:column; gap:3px;
+    padding:8px 10px; border-radius:6px;
+    background:var(--p-surface-section,#252525);
+    border:1px solid var(--p-surface-border,#444);
+    font-size:11px; color:var(--p-text-muted-color,#999);
+    min-height:0;
+}
+.llmp-vram-card:empty { display:none; }
+.llmp-vram-header { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+.llmp-vram-breakdown { font-size:10px; color:#666; font-variant-numeric:tabular-nums; }
+.llmp-vram-gpu-row {
+    display:flex; align-items:center; gap:4px; margin-top:4px; flex-wrap:wrap;
+}
+.llmp-gpu-label { font-size:10px; color:#888; margin-right:2px; }
+.llmp-gpu-btn {
+    font-size:11px; padding:2px 8px; border-radius:4px; cursor:pointer; border:1px solid #555;
+    background:transparent; color:#aaa; transition:all 0.15s;
+}
+.llmp-gpu-btn:hover  { border-color:#888; color:#ddd; }
+.llmp-gpu-btn.selected { border-color:var(--p-primary-color,#60a5fa); color:var(--p-primary-color,#60a5fa); background:rgba(96,165,250,0.1); }
+.llmp-gpu-btn.recommended { position:relative; }
+.llmp-gpu-rec-dot { font-size:7px; color:#4ade80; margin-right:3px; vertical-align:super; }
+.llmp-vram-gpu-detail { font-size:10px; color:#888; font-variant-numeric:tabular-nums; margin-left:4px; }
+.llmp-vram-warn { color:#f87171; font-size:10px; }
+.llmp-vram-alt  { color:#888; font-size:10px; font-variant-numeric:tabular-nums; }
 `;
 
 function _injectCSS() {
@@ -415,7 +446,8 @@ function _renderModalTab(pane) {
     _rebuildModelSel();
 
     function _applyPreQuantizedState() {
-        const key = modelSel.value === "__custom__" ? "" : modelSel.value;
+        // For custom repos the selector holds "__custom__"; use _state.modalModel as key.
+        const key    = modelSel.value === "__custom__" ? _state.modalModel : modelSel.value;
         const preset = _presetMap[key];
         const isPreQ = preset?.pre_quantized ?? false;
         if (isPreQ) {
@@ -438,6 +470,7 @@ function _renderModalTab(pane) {
     });
 
     modelSel.onchange = () => {
+        _state._gpuManualOverride = false;  // let VRAM rec auto-select for the new model
         if (modelSel.value === "__custom__") {
             customInput.style.display = "";
             customInput.focus();
@@ -449,12 +482,171 @@ function _renderModalTab(pane) {
             _state.modalModel = modelSel.value;
             _saveState();
             _applyPreQuantizedState();
+            _scheduleVramRefresh();
         }
     };
     customInput.onchange = () => {
         const v = customInput.value.trim();
-        if (v) { _state.modalModel = v; _saveState(); }
+        if (v) { _state.modalModel = v; _state._gpuManualOverride = false; _saveState(); _scheduleVramRefresh(); }
     };
+
+    // ── VRAM recommendation card ──────────────────────────────────────────────
+
+    const vramCard = _mk("div", { cls: "llmp-vram-card" }, []);
+
+    function _renderVramRec(rec) {
+        vramCard.innerHTML = "";
+        if (!rec?.available) {
+            if (rec?.error) {
+                vramCard.append(_mk("span", { cls: "llmp-vram-warn" },
+                    [`⚠ Profile unavailable: ${rec.error}`]));
+            }
+            return;
+        }
+        const est  = rec.estimate || {};
+        const r    = rec.recommendation || {};
+        const peak = est.peak_gb ?? "?";
+        const src  = rec.profile_source === "hf_derived" ? " (fetched)" : "";
+
+        // Breakdown row: weights + vision + kv + act
+        const breakdown = `${est.weights_gb ?? "?"}w + ${est.vision_gb ?? "?"}v + ${est.kv_gb ?? "?"}kv`;
+        const measuredNote = est.measured ? " ✓ measured" : " (estimated)";
+
+        // Recommendation row
+        const gpuName    = r.gpu ?? "none";
+        const headroom   = r.headroom_gb != null ? `${r.headroom_gb} GB free` : "";
+        const costStr    = r.cost_per_hr  ? `~$${r.cost_per_hr}/hr` : "";
+        const altStr     = rec.alt_quant
+            ? `${rec.quant}→${r.gpu}  vs  ${rec.alt_quant.quant}→${rec.alt_quant.gpu || "none"} ($${rec.alt_quant.cost}/hr)`
+            : "";
+
+        // GPU tier selector — three buttons, recommended tier pre-selected
+        const GPU_TIERS = [
+            { id: "T4",   label: "T4",   vram: "16 GB", cost: "$0.59/hr" },
+            { id: "L4",   label: "L4",   vram: "24 GB", cost: "$0.80/hr" },
+            { id: "L40S", label: "L40S", vram: "48 GB", cost: "$1.95/hr" },
+        ];
+        // Auto-select recommended GPU if not already overridden
+        if (gpuName && gpuName !== "none" && !_state._gpuManualOverride) {
+            _state.modalGpu = gpuName;
+            _saveState();
+        }
+        const gpuBtns = GPU_TIERS.map(tier => {
+            const isRec = tier.id === gpuName;
+            const isSel = tier.id === _state.modalGpu;
+            const btn   = _mk("button", {
+                cls:   "llmp-gpu-btn" + (isSel ? " selected" : "") + (isRec ? " recommended" : ""),
+                title: `${tier.vram} · ${tier.cost}${isRec ? " — recommended for this model" : ""}`,
+            }, [tier.label]);
+            if (isRec) {
+                const dot = _mk("span", { cls: "llmp-gpu-rec-dot", title: "Recommended" }, ["●"]);
+                btn.prepend(dot);
+            }
+            btn.onclick = () => {
+                _state.modalGpu           = tier.id;
+                _state._gpuManualOverride = true;
+                _saveState();
+                // Re-render buttons in place
+                gpuRow.querySelectorAll(".llmp-gpu-btn").forEach(b => b.classList.remove("selected"));
+                btn.classList.add("selected");
+            };
+            return btn;
+        });
+        const gpuLabel = _mk("span", { cls: "llmp-gpu-label" }, ["GPU:"]);
+        const gpuRow   = _mk("div", { cls: "llmp-vram-gpu-row" }, [gpuLabel, ...gpuBtns]);
+        if (headroom || costStr) {
+            const detail = _mk("span", { cls: "llmp-vram-gpu-detail" }, [
+                headroom ? `${headroom}` : "",
+                headroom && costStr ? "  " : "",
+                costStr  ? costStr   : "",
+            ]);
+            gpuRow.append(detail);
+        }
+
+        const rows = [
+            _mk("div", { cls: "llmp-vram-header" }, [
+                _mk("span", {}, [`${rec.quant.toUpperCase()}  ~${peak} GB peak${src}${measuredNote}`]),
+                _mk("span", { cls: "llmp-vram-breakdown" }, [breakdown]),
+            ]),
+            gpuRow,
+        ];
+        if (r.warning)  rows.push(_mk("div", { cls: "llmp-vram-warn" }, [`⚠ ${r.warning}`]));
+        if (altStr)     rows.push(_mk("div", { cls: "llmp-vram-alt"  }, [altStr]));
+
+        vramCard.append(...rows);
+    }
+
+    let _vramDebounce = null;
+    function _scheduleVramRefresh() {
+        clearTimeout(_vramDebounce);
+        _vramDebounce = setTimeout(_refreshVram, 300);
+    }
+
+    async function _refreshVram() {
+        const key = _state.modalModel;
+        if (!key) return;
+        const isPreQ = _presetMap[key]?.pre_quantized ?? false;
+        const quant  = isPreQ ? false : _state.modalQuant;
+        try {
+            const rec = await modalApi.recommend(key, { quantize: quant });
+            // rec.pre_quantized is null or the quant format string ("nvfp4", "awq", …).
+            // Inject into _presetMap so _applyPreQuantizedState can disable the checkbox.
+            if (rec.available && rec.pre_quantized && !_presetMap[key]) {
+                _presetMap[key] = { key, label: key, pre_quantized: true };
+                _applyPreQuantizedState();
+            }
+            _renderVramRec(rec);
+        } catch (_) {}
+    }
+
+    // Profile button (for custom repos)
+    const profileBtn = _mk("button", {
+        cls: "llmp-btn",
+        style: { fontSize: "11px", padding: "2px 8px", marginTop: "4px", display: "none" },
+        title: "Fetch VRAM profile for this HF repo (no model download required)",
+    }, ["Profile repo"]);
+    profileBtn.onclick = async () => {
+        const key = modelSel.value === "__custom__"
+            ? (customInput.value.trim() || "")
+            : modelSel.value;
+        if (!key) return;
+        profileBtn.disabled = true;
+        profileBtn.textContent = "Profiling…";
+        try {
+            const res = await modalApi.profileRepo(key, { refresh: true });
+            // Inject fetched profile into _presetMap so _applyPreQuantizedState works
+            if (res.profile) {
+                _presetMap[key] = {
+                    key,
+                    label: key,
+                    pre_quantized: !!res.profile.pre_quantized,
+                };
+                _applyPreQuantizedState();
+            }
+            _renderVramRec(res.recommendation || res);
+        } catch (err) {
+            vramCard.innerHTML = "";
+            vramCard.append(_mk("span", { cls: "llmp-vram-warn" }, [`⚠ ${err.message}`]));
+        } finally {
+            profileBtn.disabled = false;
+            profileBtn.textContent = "Profile repo";
+        }
+    };
+
+    // Show profile button for custom models / non-preset entries
+    function _updateProfileBtnVisibility() {
+        const key = modelSel.value === "__custom__" ? "" : modelSel.value;
+        const isPreset = !!_presetMap[key];
+        profileBtn.style.display = isPreset ? "none" : "";
+    }
+
+    const _origModelSelOnchange = modelSel.onchange;
+    modelSel.onchange = (e) => {
+        if (_origModelSelOnchange) _origModelSelOnchange(e);
+        _scheduleVramRefresh();
+        _updateProfileBtnVisibility();
+    };
+    quantCb.addEventListener("change", _scheduleVramRefresh);
 
     // Timeout
     const timeoutInput = _mk("input", {
@@ -502,7 +694,7 @@ function _renderModalTab(pane) {
                     : modelSel.value;
                 _state.modalModel = modelKey;
                 _saveState();
-                const res = await modalApi.activate(modelKey, _state.modalQuant);
+                const res = await modalApi.activate(modelKey, _state.modalQuant, _state.modalGpu);
                 if (!res.success) {
                     alert(`Modal activation failed: ${res.message}`);
                     return;
@@ -562,6 +754,7 @@ function _renderModalTab(pane) {
                 _state.modalModel = res.model_key;
                 _state.modalQuant = !!res.quantize;
                 quantCb.checked   = _state.modalQuant;
+                if (res.gpu) _state.modalGpu = res.gpu;
             }
             _rebuildModelSel();  // also calls _applyPreQuantizedState
             _syncUI();
@@ -569,7 +762,7 @@ function _renderModalTab(pane) {
         } catch (_) {}
     }
 
-    _fetchStatus();
+    _fetchStatus().then(() => _refreshVram());
     _refreshHistory();
     _updateIdle();
     const _idleTimer = setInterval(_updateIdle, 30_000);
@@ -584,6 +777,8 @@ function _renderModalTab(pane) {
             modelSel,
         ]),
         customInput,
+        profileBtn,
+        vramCard,
         _mk("div", { cls: "llmp-row", style: { flexWrap: "wrap" } }, [
             _mk("span", { cls: "llmp-label" }, ["Quantize (NF4)"]),
             quantCb,
@@ -609,7 +804,7 @@ function _renderModalTab(pane) {
             _mk("strong", {}, ["Activate"]),
             " stores your model choice locally — no container starts yet. The container spins up on the ",
             _mk("strong", {}, ["first inference request"]),
-            " (cold start ~60 s on L40S; subsequent calls are fast while warm). Auth uses ",
+            " (cold start ~60 s; subsequent calls are fast while warm). Auth uses ",
             _mk("code", {}, ["~/.modal.toml"]),
             " — run ",
             _mk("code", {}, ["modal token new"]),

@@ -93,6 +93,8 @@ from .utils.source_profile_analysis import (
     build_segment_detection_prompt as _spa_build_segment_prompt,
     build_clip_description_prompt as _spa_build_clip_desc_prompt,
     _parse_segments_response as _spa_parse_segments,
+    build_subject_inference_prompt as _spa_build_subject_inference_prompt,
+    parse_inferred_subjects_response as _spa_parse_inferred_subjects,
     parse_clip_description_response as _spa_parse_clip_desc,
     build_prompt as _spa_build_prompt,
     _parse_vlm_json_response as _spa_parse_response,
@@ -12403,12 +12405,12 @@ class SourceProfileClipPrompt(io.ComfyNode):
         source_subject_ids: list[str] = [
             sid for sid in clip.get("subjects", [])
             if sid in subject_index
-        ][:4]
+        ][:10]
         if not source_subject_ids:
-            source_subject_ids = [s["id"] for s in subjects_all if s.get("id")][:4]
+            source_subject_ids = [s["id"] for s in subjects_all if s.get("id")][:10]
 
-        SOURCE_SLOTS = ["A", "B", "C", "D"]   # preserve placeholder mapping
-        BUNDLE_SLOTS = ["E", "F", "G", "H"]   # replacement subjects added after
+        SOURCE_SLOTS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]   # preserve placeholder mapping
+        BUNDLE_SLOTS = ["K", "L", "M", "N"]   # replacement subjects added after source slots
 
         # ── Build cast lookup for bundle substitution ──────────────────────────
         # Hybrid cast entries (source_profile_id + source_subject_id + bundle_id)
@@ -12455,7 +12457,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
             short_name    = subj.get("short_name", "")
 
             # Source subject entry — always added; provides the video reference and
-            # preserves {A}/{B}/{C}/{D} placeholder mapping in the clip action text.
+            # preserves {A}/{B}/… placeholder mapping in the clip action text.
             # _cast_retention and _transfer_to_slot are filled in below if a bundle
             # replacement is found for this subject.
             slot_assignments[src_slot] = {
@@ -13105,6 +13107,7 @@ def _run_vision_inference(
     clean: bool = False,
     profile_id: str = "",
     operation: str = "analyze",
+    max_tokens: int = 512,
 ) -> str:
     """Run a single-image VLM call through the active backend.
 
@@ -13143,6 +13146,7 @@ def _run_vision_inference(
             prompt,
             images=[_PIL_Image.open(image_path).convert("RGB")],
             status_callback=_status_cb,
+            max_tokens=max_tokens,
         )
         if not result.get("success"):
             raise RuntimeError(result.get("message") or "Modal generate returned no text")
@@ -13171,6 +13175,59 @@ def _run_vision_inference(
     text = result.get("text", "")
     _vlm_log.record(user_data_dir(), "local", st.get("loaded_model", ""), operation, profile_id)
     return _cap_clean(text) if clean else text
+
+
+def _run_text_inference(
+    prompt: str,
+    captioner_type: str = "auto",
+    profile_id: str = "",
+    operation: str = "text_inference",
+    max_tokens: int = 1024,
+) -> str:
+    """Run a text-only LLM call (no image) through the active backend.
+
+    modal and llm_client paths are supported.  gemini_flash requires an image
+    and returns "" if selected.  Also returns "" if no backend is active.
+    Every successful call is recorded in the VLM activity log.
+    """
+    if captioner_type == "gemini_flash":
+        logger.debug("_run_text_inference: gemini_flash does not support text-only; skipping")
+        return ""
+
+    if captioner_type == "modal":
+        if not _modal_client.is_active():
+            return ""
+
+        def _status_cb(msg: str) -> None:
+            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
+
+        result = _modal_client.generate(
+            prompt,
+            images=None,
+            status_callback=_status_cb,
+            max_tokens=max_tokens,
+        )
+        if not result.get("success"):
+            logger.warning("Text inference failed: %s", result.get("message"))
+            return ""
+        text = result.get("text", "")
+        _vlm_log.record(user_data_dir(), "modal", _modal_client.backend_status()["model_key"], operation, profile_id)
+        return text
+
+    # llm_client path (covers "auto" and all other captioner_type values)
+    st = _llm_client.backend_status()
+    if not st.get("loaded_model"):
+        return ""
+    try:
+        result = _llm_client.generate(prompt, images=None)
+    except TypeError:
+        result = _llm_client.generate(prompt)
+    if not result.get("success"):
+        logger.warning("Text inference failed: %s", result.get("error") or result.get("message"))
+        return ""
+    text = result.get("text", "")
+    _vlm_log.record(user_data_dir(), "local", st.get("loaded_model", ""), operation, profile_id)
+    return text
 
 
 def _run_vision_inference_clip(
@@ -13289,8 +13346,10 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
         _raw_end         = body.get("end_time")
         start_time       = float(_raw_start) if _raw_start is not None else None
         end_time         = float(_raw_end)   if _raw_end   is not None else None
-        select_every_nth = int(body.get("select_every_nth", 1)) or 1
-        max_frames       = int(body.get("max_frames", 20)) or 20
+        select_every_nth     = int(body.get("select_every_nth", 1)) or 1
+        max_frames           = int(body.get("max_frames", 20)) or 20
+        video_duration       = float(body.get("video_duration", 0.0)) or 0.0
+        batch_window_seconds = max(30.0, float(body.get("batch_window_seconds", 60.0)))
     except Exception as exc:
         return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
 
@@ -13369,26 +13428,126 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
                 try:
                     sheet.save(tmp.name, quality=85)
                     tmp.close()
-                    raw_response = _run_vision_inference(
-                        tmp.name, prompt, captioner_type="gemini_flash",
-                        profile_id=profile_id, operation=pass_type,
+                    raw_response = await asyncio.to_thread(
+                        _run_vision_inference,
+                        tmp.name, prompt, "gemini_flash",
+                        "auto", None, False, profile_id, pass_type,
                     )
                 finally:
                     try: os.unlink(tmp.name)
                     except Exception: pass
             else:
-                raw_response = _run_vision_inference_clip(
+                raw_response = await asyncio.to_thread(
+                    _run_vision_inference_clip,
                     pil_frames, timestamps, sample_fps, raw_fps, prompt,
-                    captioner_type=captioner_type,
-                    profile_id=profile_id, operation=pass_type,
+                    captioner_type, profile_id, pass_type,
                 )
+
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
         frame_mode = "clip_multi"
 
+    elif media_type == "video" and video_duration > 0:
+        # Windowed whole-video analysis: split into batch_window_seconds windows,
+        # run the clip-mode path on each, then deduplicate candidates by label.
+        if video_duration <= batch_window_seconds:
+            analyze_windows: list[tuple[float, float]] = [(0.0, video_duration)]
+        else:
+            analyze_windows = []
+            w = 0.0
+            while w < video_duration:
+                analyze_windows.append((w, min(w + batch_window_seconds, video_duration)))
+                w += batch_window_seconds
+
+        n_windows = len(analyze_windows)
+        send_status_update(
+            _SPA_STATUS_ID,
+            f"Source analysis: {n_windows} window(s) × {batch_window_seconds:.0f}s "
+            f"over {video_duration:.0f}s video ({pass_type} pass)",
+            source="source_profile_analysis",
+        )
+
+        raw_fps = _spa_probe_fps(abs_media)
+        all_candidates_raw: list[dict] = []
+        seen_labels: set[str] = set()
+        total_frames = 0
+
+        for win_idx, (w_start, w_end) in enumerate(analyze_windows):
+            if n_windows > 1:
+                send_status_update(
+                    _SPA_STATUS_ID,
+                    f"Window {win_idx + 1}/{n_windows}: {w_start:.0f}s – {w_end:.0f}s ({pass_type}) ...",
+                    source="source_profile_analysis",
+                )
+            try:
+                pil_frames, timestamps, sample_fps = _spa_extract_clip_frames(
+                    abs_media,
+                    start_time=w_start,
+                    end_time=w_end,
+                    max_frames=max_frames,
+                    select_every_nth=select_every_nth,
+                    raw_fps=raw_fps,
+                )
+            except Exception as exc:
+                logger.warning("analyze: frame extraction failed for window %s–%s: %s",
+                               w_start, w_end, exc)
+                continue
+
+            total_frames += len(pil_frames)
+            send_status_update(
+                _SPA_STATUS_ID,
+                f"Window {win_idx + 1}/{n_windows}: {len(pil_frames)} frame(s) extracted, calling VLM...",
+                source="source_profile_analysis",
+            )
+
+            try:
+                if captioner_type == "gemini_flash":
+                    sheet = _spa_build_contact_sheet(pil_frames, timestamps)
+                    import tempfile as _tf2
+                    tmp2 = _tf2.NamedTemporaryFile(suffix=".jpg", delete=False)
+                    try:
+                        sheet.save(tmp2.name, quality=85)
+                        tmp2.close()
+                        win_raw = await asyncio.to_thread(
+                            _run_vision_inference,
+                            tmp2.name, prompt, "gemini_flash",
+                            "auto", None, False, profile_id, pass_type,
+                        )
+                    finally:
+                        try: os.unlink(tmp2.name)
+                        except Exception: pass
+                else:
+                    win_raw = await asyncio.to_thread(
+                        _run_vision_inference_clip,
+                        pil_frames, timestamps, sample_fps, raw_fps, prompt,
+                        captioner_type, profile_id, pass_type,
+                    )
+            except Exception as exc:
+                logger.warning("analyze: VLM call failed for window %s–%s: %s",
+                               w_start, w_end, exc)
+                continue
+
+            for cand in _spa_parse_response(win_raw, pass_type):
+                label_key = cand.get("label", "").strip().lower()
+                if label_key and label_key not in seen_labels:
+                    seen_labels.add(label_key)
+                    all_candidates_raw.append(cand)
+
+            if n_windows > 1:
+                send_status_update(
+                    _SPA_STATUS_ID,
+                    f"Window {win_idx + 1}/{n_windows}: {len(all_candidates_raw)} unique candidate(s) so far",
+                    source="source_profile_analysis",
+                )
+
+        candidates = all_candidates_raw
+        frame_count = total_frames
+        raw_response = ""
+        frame_mode = "windowed_multi"
+
     else:
-        # Single-frame path (image media or no clip selected)
+        # Single-frame path (image media, or video with no duration provided)
         frame_path = abs_media
         _tmp_frame = None
         if media_type == "video":
@@ -13410,11 +13569,10 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
         )
 
         try:
-            raw_response = _run_vision_inference(
-                str(frame_path), prompt,
-                captioner_type=captioner_type,
-                profile_id=profile_id,
-                operation=pass_type,
+            raw_response = await asyncio.to_thread(
+                _run_vision_inference,
+                str(frame_path), prompt, captioner_type,
+                "auto", None, False, profile_id, pass_type,
             )
         finally:
             if _tmp_frame and os.path.exists(_tmp_frame.name):
@@ -13423,7 +13581,9 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
 
         frame_mode = "single"
 
-    candidates = _spa_parse_response(raw_response, pass_type)
+    # Windowed mode builds candidates directly; other paths produce raw_response to parse.
+    if frame_mode != "windowed_multi":
+        candidates = _spa_parse_response(raw_response, pass_type)
 
     # Persist to history
     _spa_append_history(
@@ -13479,9 +13639,12 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
     JSON body:
         profile_id          str   — required
         video_duration      float — required (caller probes via /fbtools/media/info)
-        interval_seconds    float — frame sampling interval for the contact sheet
-                                    (default: min(segment_duration/2, 5.0))
-        prompt_override     str   — optional full prompt replacement (bypasses flags)
+        interval_seconds      float — frame sampling interval per window
+                                      (default: min(segment_duration/2, 5.0))
+        batch_window_seconds  float — split video into windows of this many seconds;
+                                      each window is a separate VLM call so the model
+                                      sees denser frames (default: 60, min: 30)
+        prompt_override       str   — optional full prompt replacement (bypasses flags)
         flags               dict  — optional flag overrides for prompt construction:
                                     camera_cuts (bool, default True)
                                     subject_changes (bool, default False)
@@ -13530,71 +13693,182 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
     if not os.path.exists(video_path):
         return web.json_response({"error": f"Video not found: {media_filename}"}, status=404)
 
-    # Default interval: sample every ~2s (≤30 frames for a 60s video)
     seg_dur = profile.get("default_segment_duration") or 10.0
     if not interval_seconds:
         interval_seconds = max(1.0, min(seg_dur / 2.0, 5.0))
 
-    # Extract frames at regular timestamps
-    timestamps = []
-    t = interval_seconds / 2.0  # start at midpoint of first interval
-    while t < video_duration:
-        timestamps.append(t)
-        t += interval_seconds
-    if not timestamps:
-        timestamps = [video_duration / 2.0]
+    # Split video into fixed-size windows; each window is processed separately so
+    # the VLM sees a focused contact sheet rather than one frame per many seconds.
+    batch_window_seconds = max(30.0, float(body.get("batch_window_seconds", 60.0)))
 
     _tmp_frames: list[str] = []
-    try:
-        # Build a contact-sheet image: N frames tiled horizontally
+
+    async def _run_window(win_start: float, win_end: float) -> tuple[list[dict], str]:
+        """Build a contact sheet for [win_start, win_end) and run the VLM.
+
+        Frames carry absolute timestamps, so the VLM returns absolute
+        start_time/end_time values that can be concatenated across windows
+        without any offset adjustment.
+        """
+        win_ts: list[float] = []
+        t = win_start + interval_seconds / 2.0
+        while t < win_end:
+            win_ts.append(t)
+            t += interval_seconds
+        if not win_ts:
+            win_ts = [(win_start + win_end) / 2.0]
+
         frame_paths: list[str] = []
-        for ts in timestamps[:30]:  # cap at 30 frames for VLM context
+        for ts in win_ts[:20]:  # cap at 20 frames per window
             tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
             tmp.close()
             _tmp_frames.append(tmp.name)
-            frac = ts / video_duration
             try:
-                _spa_extract_frame(video_path, tmp.name, position_frac=frac)
+                _spa_extract_frame(video_path, tmp.name, position_frac=ts / video_duration)
                 frame_paths.append(tmp.name)
             except Exception:
-                pass  # skip unextractable frames
+                pass
 
         if not frame_paths:
-            return web.json_response({"error": "Could not extract any frames"}, status=500)
+            return [], ""
 
-        # Compose into a contact sheet with timestamp labels via PIL
         contact_path = tempfile.mktemp(suffix=".jpg")
         _tmp_frames.append(contact_path)
         try:
-            from PIL import Image as _PIL_Image, ImageDraw as _PIL_Draw, ImageFont as _PIL_Font
+            from PIL import Image as _PIL_Image, ImageDraw as _PIL_Draw
             imgs = [_PIL_Image.open(p).convert("RGB") for p in frame_paths]
-            # Scale to uniform thumbnail size
-            thumb_w, thumb_h = 320, 180
+            # Smaller thumbnails = fewer input tokens; readable enough for boundary detection
+            thumb_w, thumb_h = 200, 112
             imgs = [img.resize((thumb_w, thumb_h)) for img in imgs]
             n_cols = min(len(imgs), 6)
             n_rows = (len(imgs) + n_cols - 1) // n_cols
             sheet = _PIL_Image.new("RGB", (thumb_w * n_cols, (thumb_h + 20) * n_rows), (30, 30, 30))
             draw  = _PIL_Draw.Draw(sheet)
-            for i, (img, ts) in enumerate(zip(imgs, timestamps[:len(imgs)])):
+            for i, (img, ts) in enumerate(zip(imgs, win_ts[:len(imgs)])):
                 row, col = divmod(i, n_cols)
-                x = col * thumb_w
-                y = row * (thumb_h + 20)
+                x, y = col * thumb_w, row * (thumb_h + 20)
                 sheet.paste(img, (x, y))
                 draw.text((x + 4, y + thumb_h + 2), f"{ts:.1f}s", fill=(200, 200, 200))
             sheet.save(contact_path, quality=85)
-        except Exception as pil_exc:
-            # Fallback: just use the first frame
+        except Exception:
             import shutil as _shutil
             _shutil.copy2(frame_paths[0], contact_path)
 
-        prompt = _spa_build_segment_prompt(prompt_override, flags)
-        raw    = _run_vision_inference(
-            contact_path, prompt,
-            captioner_type=captioner_type, device=device, use_8bit=use_8bit,
-            profile_id=profile_id, operation="detect_segments",
+        send_status_update(
+            _SPA_STATUS_ID,
+            f"Extracted {len(frame_paths)} frame(s) from {win_start:.0f}s–{win_end:.0f}s — querying VLM...",
+            source="source_profile_analysis",
         )
-        segs   = _spa_parse_segments(raw, video_duration)
-        return web.json_response({"segments": segs, "raw_response": raw or ""})
+
+        window_note = (
+            f"\n\nNOTE: These frames cover {win_start:.1f}s – {win_end:.1f}s of a "
+            f"{video_duration:.1f}s video. Return all start_time/end_time values as "
+            f"absolute timestamps (seconds from the start of the full video) within "
+            f"this range."
+        )
+        win_prompt = _spa_build_segment_prompt(prompt_override, flags) + window_note
+
+        raw = await asyncio.to_thread(
+            _run_vision_inference,
+            contact_path, win_prompt, captioner_type, device, use_8bit,
+            False, profile_id, "detect_segments",
+            2048,  # max_tokens: segment lists can be long; 512 truncates JSON mid-object
+        )
+        # video_duration=0 suppresses the auto-fallback — caller handles empty windows
+        segs = _spa_parse_segments(raw, 0.0)
+        return segs, raw or ""
+
+    # Build non-overlapping windows covering the full video
+    if video_duration <= batch_window_seconds:
+        windows: list[tuple[float, float]] = [(0.0, video_duration)]
+    else:
+        windows = []
+        w = 0.0
+        while w < video_duration:
+            windows.append((w, min(w + batch_window_seconds, video_duration)))
+            w += batch_window_seconds
+
+    try:
+        n_windows = len(windows)
+        send_status_update(
+            _SPA_STATUS_ID,
+            (f"Detect segments: {n_windows} window(s) × {batch_window_seconds:.0f}s "
+             f"over {video_duration:.0f}s video — sending to VLM..."),
+            source="source_profile_analysis",
+        )
+
+        all_segments: list[dict] = []
+        all_raw:      list[str]  = []
+
+        for idx, (w_start, w_end) in enumerate(windows):
+            if n_windows > 1:
+                send_status_update(
+                    _SPA_STATUS_ID,
+                    f"Window {idx + 1}/{n_windows}: {w_start:.0f}s – {w_end:.0f}s ...",
+                    source="source_profile_analysis",
+                )
+            segs, raw_text = await _run_window(w_start, w_end)
+            all_segments.extend(segs)
+            if raw_text:
+                prefix = f"[{w_start:.0f}s–{w_end:.0f}s]\n" if n_windows > 1 else ""
+                all_raw.append(f"{prefix}{raw_text}")
+            if n_windows > 1:
+                send_status_update(
+                    _SPA_STATUS_ID,
+                    f"Window {idx + 1}/{n_windows}: {len(segs)} segment(s) found",
+                    source="source_profile_analysis",
+                )
+
+        send_status_update(
+            _SPA_STATUS_ID,
+            (f"Detect segments complete: {len(all_segments)} segment(s) "
+             f"from {n_windows} window(s)"),
+            source="source_profile_analysis",
+        )
+
+        if not all_segments:
+            all_segments.append({
+                "start_time": 0.0,
+                "end_time":   round(video_duration, 3),
+                "label":      "Full video",
+                "action":     "",
+            })
+
+        # --- Infer subjects from action descriptions via text-only LLM ---
+        inferred_subjects: list[dict] = []
+        action_texts = [s.get("action", "") for s in all_segments if s.get("action", "").strip()]
+        if len(action_texts) >= 2:
+            send_status_update(
+                _SPA_STATUS_ID,
+                f"Inferring subjects from {len(action_texts)} action description(s)...",
+                source="source_profile_analysis",
+            )
+            try:
+                existing_labels = [
+                    s.get("label", "") for s in profile.get("subjects", [])
+                    if s.get("label", "").strip()
+                ]
+                subj_prompt = _spa_build_subject_inference_prompt(action_texts, existing_labels)
+                raw_subjects = await asyncio.to_thread(
+                    _run_text_inference,
+                    subj_prompt, captioner_type, profile_id, "subject_inference", 1024,
+                )
+                if raw_subjects:
+                    inferred_subjects = _spa_parse_inferred_subjects(raw_subjects)
+            except Exception as _subj_exc:
+                logger.warning("Subject inference from detect segments failed: %s", _subj_exc)
+            send_status_update(
+                _SPA_STATUS_ID,
+                f"Detect segments done: {len(all_segments)} segment(s), "
+                f"{len(inferred_subjects)} inferred subject(s)",
+                source="source_profile_analysis",
+            )
+
+        return web.json_response({
+            "segments":          all_segments,
+            "raw_response":      "\n\n".join(all_raw),
+            "inferred_subjects": inferred_subjects,
+        })
 
     except Exception as exc:
         logger.exception("detect_segments failed for profile %r", profile_id)
@@ -13620,6 +13894,8 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         start_time      float   — clip start (seconds)
         end_time        float   — clip end (seconds)
         prompt_override str     — optional
+        existing_action str     — optional; if set, VLM refines/corrects it rather
+                                  than generating from scratch
         captioner_type  str
         device          str
         use_8bit        bool
@@ -13640,6 +13916,7 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         _use_8bit_raw   = body.get("use_8bit")
         use_8bit        = bool(_use_8bit_raw) if _use_8bit_raw is not None else None
         api_key         = os.environ.get("GEMINI_API_KEY", "")
+        existing_action = str(body.get("existing_action", "")).strip()
         # Optional subject context: [{slot, name, appearance}] → list[tuple[str,str,str]]
         raw_subjects    = body.get("subjects") or []
         subjects: list[tuple[str, str, str]] = [
@@ -13691,11 +13968,15 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         frac = (midpoint / _dur) if _dur > 0 else 0.1
         _spa_extract_frame(video_path, _tmp_frame.name, position_frac=max(0.0, min(1.0, frac)))
 
-        prompt = _spa_build_clip_desc_prompt(prompt_override, subjects=subjects or None)
-        raw    = _run_vision_inference(
-            _tmp_frame.name, prompt,
-            captioner_type=captioner_type, device=device, use_8bit=use_8bit,
-            profile_id=profile_id, operation="describe_clip",
+        prompt = _spa_build_clip_desc_prompt(
+            prompt_override,
+            subjects=subjects or None,
+            existing_action=existing_action,
+        )
+        raw    = await asyncio.to_thread(
+            _run_vision_inference,
+            _tmp_frame.name, prompt, captioner_type, device, use_8bit,
+            False, profile_id, "describe_clip",
         )
         action = _spa_parse_clip_desc(raw)
         return web.json_response({"action": action})
@@ -13747,6 +14028,107 @@ async def _source_profiles_auto_partition(request: web.Request) -> web.Response:
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("auto_partition failed for profile %r", profile_id)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/set_clips")
+async def _source_profiles_set_clips(request: web.Request) -> web.Response:
+    """Replace a profile's entire clip list.
+
+    Used to apply VLM-detected segment suggestions as clips in one shot.
+
+    JSON body:
+        profile_id  str
+        clips       [{id, label, start_time, end_time, action, subjects, ...}, ...]
+
+    Returns: { "profile": <updated profile dict> }
+    """
+    try:
+        body       = await request.json()
+        profile_id = str(body.get("profile_id", "")).strip()
+        clips      = body.get("clips")
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+    if not isinstance(clips, list):
+        return web.json_response({"error": "clips must be a list"}, status=400)
+
+    try:
+        path     = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        if not registry.get_profile(profile_id):
+            return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
+        registry = registry.set_clips(profile_id, clips)
+        _save_source_registry(registry, path)
+        return web.json_response({"profile": registry.get_profile(profile_id)})
+    except Exception as exc:
+        logger.exception("set_clips failed for profile %r", profile_id)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/merge_subjects")
+async def _source_profiles_merge_subjects(request: web.Request) -> web.Response:
+    """Add inferred subjects to a profile without duplicating existing ones.
+
+    Subjects are deduplicated by label (case-insensitive).  New subjects get
+    an auto-generated ID of the form ``subj_<8hex>``.
+
+    JSON body:
+        profile_id  str
+        subjects    [{label, role_description, entity_type}, ...]
+
+    Returns: { "profile": <updated profile dict>, "added": N }
+    """
+    import uuid as _uuid
+
+    try:
+        body       = await request.json()
+        profile_id = str(body.get("profile_id", "")).strip()
+        subjects   = body.get("subjects")
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+    if not isinstance(subjects, list):
+        return web.json_response({"error": "subjects must be a list"}, status=400)
+
+    try:
+        path     = default_source_profiles_path()
+        registry = _load_source_registry(path)
+        profile  = registry.get_profile(profile_id)
+        if profile is None:
+            return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
+
+        existing_labels = {
+            s.get("label", "").strip().lower()
+            for s in profile.get("subjects", [])
+        }
+
+        added = 0
+        for entry in subjects:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label", "")).strip()
+            if not label or label.lower() in existing_labels:
+                continue
+            subject_id = f"subj_{_uuid.uuid4().hex[:8]}"
+            registry = registry.define_subject(
+                profile_id,
+                subject_id,
+                label=label,
+                role_description=str(entry.get("role_description", "")).strip(),
+                entity_type=str(entry.get("entity_type", "person")).strip(),
+            )
+            existing_labels.add(label.lower())
+            added += 1
+
+        _save_source_registry(registry, path)
+        return web.json_response({"profile": registry.get_profile(profile_id), "added": added})
+    except Exception as exc:
+        logger.exception("merge_subjects failed for profile %r", profile_id)
         return web.json_response({"error": str(exc)}, status=500)
 
 
@@ -14487,7 +14869,7 @@ class SceneCompose(io.ComfyNode):
                     multiline=True,
                     tooltip=(
                         "Concise scene overview used as the summary body in H3 prompts. "
-                        "Use {A}/{B}/{C}/{D} slot references — expanded to <Subject N> labels at assemble time. "
+                        "Use {A}/{B}/… slot references (A–J) — expanded to <Subject N> labels at assemble time. "
                         "Overrides the automatic shot-action summary when non-empty."
                     ),
                     optional=True,
@@ -15326,13 +15708,18 @@ async def _media_extract_frame(request):
         body = await request.json()
         filename = body.get("filename", "").strip()
         frame_index = int(body.get("frame_index", 0))
+        dir_hint = (body.get("dir") or "input").strip()
         if not filename:
             return web.json_response({"error": "filename is required"}, status=400)
 
-        input_dir = get_input_directory()
-        video_path = os.path.join(input_dir, filename)
+        base_dir = get_output_directory() if dir_hint == "output" else get_input_directory()
+        video_path = os.path.join(base_dir, filename)
         if not os.path.exists(video_path):
             return web.json_response({"error": f"File not found: {filename}"}, status=404)
+
+        # Temp frames always land in the input directory so ComfyUI's /view endpoint
+        # can serve them directly (it only serves from input/output roots).
+        input_dir = get_input_directory()
 
         def _extract():
             import cv2
@@ -15721,7 +16108,8 @@ async def _bundles_preprocess_audio(request):
 
     Body JSON:
         bundle_id       str      — used for the cache directory name
-        filename        str      — audio/video file in the ComfyUI input directory
+        filename        str      — audio/video filename
+        dir             str      — "input" or "output" (default "input")
         start_time      float    — trim start (seconds); ignored if audio_source == "extract_from_visual"
         duration        float    — trim duration; 0 = to end
         audio_processing dict:
@@ -15741,9 +16129,10 @@ async def _bundles_preprocess_audio(request):
     if not filename:
         return web.json_response({"error": "filename required"}, status=400)
 
-    input_dir = get_input_directory()
-    src_path = os.path.realpath(os.path.join(input_dir, filename))
-    if not src_path.startswith(os.path.realpath(input_dir)):
+    dir_hint = (data.get("dir") or "input").strip()
+    base_dir = get_output_directory() if dir_hint == "output" else get_input_directory()
+    src_path = os.path.realpath(os.path.join(base_dir, filename))
+    if not src_path.startswith(os.path.realpath(base_dir)):
         return web.json_response({"error": "Forbidden"}, status=403)
     if not os.path.isfile(src_path):
         return web.json_response({"error": f"Not found: {filename}"}, status=404)
@@ -16489,6 +16878,7 @@ from .utils.llm_scanner import scan_llm_dirs as _llm_scan_dirs, DEFAULT_MODEL as
 from .utils import llm_client as _llm_client
 from .utils import modal_vision_client as _modal_client
 from .utils import vlm_activity_log as _vlm_log
+from .utils import modal_vram_profiler as _vram_profiler
 import asyncio
 
 
@@ -16897,10 +17287,21 @@ async def _llm_describe_history_delete(request):
 
 @routes.get("/fbtools/modal/status")
 async def _modal_status(request):
-    """Return Modal backend status (active model, availability)."""
+    """Return Modal backend status (active model, availability, VRAM recommendation)."""
     try:
         st = _modal_client.backend_status()
         st["presets"] = _modal_client.PRESET_MODELS
+        # Attach a quick recommendation for the currently-active model (non-blocking).
+        active_key = st.get("model_key")
+        if active_key:
+            try:
+                st["recommendation"] = _vram_profiler.get_recommendation(
+                    active_key,
+                    quantize=st.get("quantize", True),
+                    data_dir=user_data_dir(),
+                )
+            except Exception:
+                pass
         return web.json_response(st)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -16908,12 +17309,13 @@ async def _modal_status(request):
 
 @routes.post("/fbtools/modal/activate")
 async def _modal_activate(request):
-    """Activate the Modal backend.  Body: { model_key, quantize }."""
+    """Activate the Modal backend.  Body: { model_key, quantize, gpu }."""
     try:
         body      = await request.json()
         model_key = str(body.get("model_key", "qwen2.5-vl-7b")).strip()
         quantize  = bool(body.get("quantize", True))
-        result    = _modal_client.activate(model_key, quantize)
+        gpu       = str(body.get("gpu", "L40S")).strip().upper()
+        result    = _modal_client.activate(model_key, quantize, gpu=gpu)
         if result["success"]:
             _vlm_log.record(user_data_dir(), "modal", model_key, "activate")
         return web.json_response(result, status=200 if result["success"] else 503)
@@ -16927,6 +17329,89 @@ async def _modal_deactivate(request):
     try:
         result = _modal_client.deactivate()
         return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/modal/recommend")
+async def _modal_recommend(request):
+    """Compute a VRAM recommendation for a given model configuration.
+
+    Query params:
+      model_key       (str)  preset key or HF repo ID [required]
+      quantize        (bool) use 4-bit quant (default true)
+      context_length  (int)  token budget (default 8192)
+      frame_budget    (int)  frames passed per call (default 20)
+      modality        (str)  image / video / text (default image)
+      priority        (str)  cost / throughput / bandwidth (default cost)
+    """
+    try:
+        params         = request.rel_url.query
+        model_key      = params.get("model_key", "").strip()
+        if not model_key:
+            return web.json_response({"error": "model_key is required"}, status=400)
+        quantize       = params.get("quantize", "true").lower() not in ("false", "0", "no")
+        context_length = int(params.get("context_length", 8192))
+        frame_budget   = int(params.get("frame_budget", 20))
+        modality       = params.get("modality", "image")
+        priority       = params.get("priority", "cost")
+
+        rec = await asyncio.to_thread(
+            _vram_profiler.get_recommendation,
+            model_key,
+            quantize=quantize,
+            context_length=context_length,
+            frame_budget=frame_budget,
+            modality=modality,
+            data_dir=user_data_dir(),
+            priority=priority,
+        )
+        return web.json_response(rec)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/modal/profile_repo")
+async def _modal_profile_repo(request):
+    """Fetch and cache a VRAM profile for a custom HuggingFace repo.
+
+    Body (JSON):
+      repo_id    (str)  HF repo ID, e.g. "Qwen/Qwen3-VL-8B-Instruct" [required]
+      hf_token   (str)  optional; falls back to HF_TOKEN / HUGGINGFACE_HUB_TOKEN env vars
+      refresh    (bool) re-fetch even if a cached profile exists (default false)
+    """
+    try:
+        body     = await request.json()
+        repo_id  = str(body.get("repo_id", "")).strip()
+        if not repo_id:
+            return web.json_response({"error": "repo_id is required"}, status=400)
+
+        hf_token = (
+            body.get("hf_token")
+            or os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+        )
+        refresh  = bool(body.get("refresh", False))
+
+        data_dir = user_data_dir()
+        if not refresh:
+            cache = _vram_profiler.load_profile_cache(data_dir)
+            if repo_id in cache:
+                profile = cache[repo_id]
+                rec     = _vram_profiler.get_recommendation(repo_id, data_dir=data_dir)
+                return web.json_response({"profile": profile, "recommendation": rec, "cached": True})
+
+        profile = await asyncio.to_thread(
+            _vram_profiler.fetch_hf_profile, repo_id, hf_token
+        )
+        cache           = _vram_profiler.load_profile_cache(data_dir)
+        cache[repo_id]  = profile
+        _vram_profiler.save_profile_cache(data_dir, cache)
+
+        rec = _vram_profiler.get_recommendation(repo_id, data_dir=data_dir)
+        return web.json_response({"profile": profile, "recommendation": rec, "cached": False})
+    except RuntimeError as exc:
+        return web.json_response({"error": str(exc)}, status=422)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -18059,17 +18544,6 @@ def _h3_load_video_frames(path: str, load_params: dict):
         )
         skip_first_frames = 0
 
-    # H3 reference videos need ≥39 frames to give Qwen useful signal after
-    # the upstream node trims to n%17==5.  Enforce a minimum for generation.
-    if 0 < frame_load_cap < 39:
-        logger.warning(
-            "CompositionToH3: frame_load_cap=%d too low for MiniMax H3 "
-            "(minimum 39 frames needed after trimming). Upgrading to 96. "
-            "Update the bundle's frame_load_cap to suppress this warning.",
-            frame_load_cap,
-        )
-        frame_load_cap = 96
-
     try:
         import cv2
     except ImportError:
@@ -18097,15 +18571,6 @@ def _h3_load_video_frames(path: str, load_params: dict):
         if duration > 0.0:
             duration_cap = max(1, int(duration * target_fps))
             frame_load_cap = duration_cap if frame_load_cap == 0 else min(frame_load_cap, duration_cap)
-
-        # Enforce H3 minimum again after duration may have reduced the cap.
-        if 0 < frame_load_cap < 39:
-            logger.warning(
-                "CompositionToH3: computed frame_load_cap=%d (duration=%.2fs at %.0ffps) "
-                "too low for MiniMax H3. Upgrading to 96.",
-                frame_load_cap, duration, target_fps,
-            )
-            frame_load_cap = 96
 
         # Time-accumulator resampling — mirrors VHS cv_frame_generator logic:
         # read native frames until the virtual clock reaches the next output slot,
@@ -18156,6 +18621,32 @@ def _h3_load_video_frames(path: str, load_params: dict):
         if not frames:
             logger.warning("CompositionToH3: cv2 loaded no frames from %s", path)
             return None
+
+        # Ping-pong to the nearest valid H3 frame count (17k+5: 5, 22, 39, …).
+        # MiniMaxH3ReferenceToVideo trims DOWN to 17k+5 and errors below 5, so
+        # whenever the loaded count is not already a valid number we ping-pong up
+        # to the next valid count — never further.  This avoids both the model
+        # error and unnecessary frame trimming while keeping fabricated motion
+        # to the minimum needed.
+        n = len(frames)
+        _k = max(1, (n - 5 + 16) // 17)   # ceiling: smallest k with 17k+5 >= n, floor k=1 (22 frames)
+        target = 17 * _k + 5
+        if n < target:
+            logger.warning(
+                "CompositionToH3: %d frame(s) from %s is not a valid H3 count "
+                "(17k+5) — ping-pong looping to %d.",
+                n, os.path.basename(path), target,
+            )
+            # Single frame: repeat.  Multi-frame: bounce (omit endpoints from
+            # the reversed half so they are not duplicated at each turn).
+            cycle = frames if n == 1 else frames + list(reversed(frames[1:-1]))
+            result: list = []
+            i = 0
+            while len(result) < target:
+                result.append(cycle[i % len(cycle)])
+                i += 1
+            frames = result
+
         logger.debug(
             "CompositionToH3: loaded %d frames from %s (start=%.2fs, dur=%.2fs, cap=%d, skip=%d)",
             len(frames), path, start_time, duration, frame_load_cap, skip_first_frames,

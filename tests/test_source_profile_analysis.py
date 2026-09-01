@@ -411,10 +411,12 @@ def test_build_clip_prompt_subject_missing_appearance():
     assert "{A} — Person" in prompt
 
 
-def test_build_clip_prompt_override_ignores_subjects():
+def test_build_clip_prompt_override_includes_subjects():
     override = "Just tell me the vibe."
     subjects = [("A", "Elena", "auburn hair")]
     prompt = _build_clip_prompt(prompt_override=override, subjects=subjects)
-    # Override takes precedence; subjects block is NOT injected
-    assert "Elena" not in prompt
+    # Override replaces only the base preamble; subjects block is still injected
     assert "Just tell me the vibe" in prompt
+    assert "Elena" in prompt
+    assert "{A}" in prompt
+    assert "action" in prompt  # schema still appended

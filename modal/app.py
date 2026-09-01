@@ -32,7 +32,7 @@ _image = (
     .pip_install(
         "torch==2.5.1",
         "torchvision",
-        "transformers>=4.51.0",
+        "transformers>=4.52.0",  # Qwen3-VL support added in 4.52
         "accelerate>=0.34.0",
         "bitsandbytes>=0.43.0",
         "pillow",
@@ -54,7 +54,7 @@ _CACHE = "/models"
 _PRESETS: dict[str, dict] = {
     "qwen3-vl-8b": {
         "repo": "Qwen/Qwen3-VL-8B-Instruct",
-        "arch": "qwen_vl",
+        "arch": "qwen3_vl",  # distinct from qwen2.5-vl; uses Qwen3VLForConditionalGeneration
         "pre_quantized": False,
     },
     "qwen2.5-vl-7b": {
@@ -80,30 +80,17 @@ _PRESETS: dict[str, dict] = {
 }
 
 
-# ── VisionLLM class ────────────────────────────────────────────────────────────
+# ── Shared implementation (no Modal decorators) ───────────────────────────────
 
-@app.cls(
-    gpu="L40S",
-    timeout=600,
-    scaledown_window=300,
-    volumes={_CACHE: _vol},
-)
-class VisionLLM:
-    """Vision-language model runner.
+class _VisionLLMImpl:
+    """Shared implementation — no Modal decorators.  Subclasses apply @app.cls(gpu=...)."""
 
-    Model loading is lazy and cached within a container's lifetime.
-    Pass model_key + quantize on every generate() call; the model is
-    (re)loaded only when those values change from the previous call.
-    """
-
-    @modal.enter()
     def setup(self) -> None:
         self._model      = None
         self._processor  = None
         self._arch       = None
         self._loaded_key = None   # (model_key, quantize) tuple
 
-    @modal.method()
     def generate(
         self,
         prompt: str,
@@ -148,8 +135,13 @@ class VisionLLM:
             pre_quantized = preset["pre_quantized"]
         else:
             repo          = model_key   # treat as raw HF repo ID
-            arch          = "qwen_vl"
-            pre_quantized = False
+            arch          = "auto"      # detect from loaded model config
+            # Name-based pre-quantization detection — prevents applying NF4 on top of
+            # already-quantized weights (AWQ, GPTQ, FP4, etc.) for custom repos.
+            _low = repo.lower()
+            pre_quantized = any(t in _low for t in
+                                ("-awq", "-gptq", "-nvfp4", "-fp4", "-fp8",
+                                 "-int4", "-int8", "-gguf", "-ggml"))
 
         cache_dir = f"{_CACHE}/{model_key.replace('/', '__')}"
 
@@ -171,18 +163,51 @@ class VisionLLM:
         if bnb_cfg:
             load_kwargs["quantization_config"] = bnb_cfg
 
-        if arch == "qwen_vl":
+        if arch == "qwen3_vl":
+            try:
+                from transformers import Qwen3VLForConditionalGeneration
+                self._model = Qwen3VLForConditionalGeneration.from_pretrained(**load_kwargs)
+            except (ImportError, AttributeError):
+                # transformers < 4.52 — fall back; should not happen with current image
+                from transformers import AutoModelForCausalLM
+                self._model = AutoModelForCausalLM.from_pretrained(**load_kwargs)
+                arch = "qwen_vl"  # keep vision inference path
+        elif arch == "qwen_vl":
             from transformers import Qwen2_5_VLForConditionalGeneration
             try:
                 self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(**load_kwargs)
             except Exception:
-                # Custom repo may not be Qwen2.5-VL — fall back to auto
                 from transformers import AutoModelForCausalLM
                 self._model = AutoModelForCausalLM.from_pretrained(**load_kwargs)
                 arch = "generic"
         else:
-            from transformers import AutoModelForCausalLM
-            self._model = AutoModelForCausalLM.from_pretrained(**load_kwargs)
+            # "auto" (custom repo) — read config.json first (cheap, no weights) to pick
+            # the right loading class without triggering class-mismatch warnings.
+            from transformers import AutoConfig
+            pre_cfg    = AutoConfig.from_pretrained(repo, cache_dir=cache_dir,
+                                                    trust_remote_code=True)
+            model_type = (getattr(pre_cfg, "model_type", "") or "").lower()
+            has_vision = hasattr(pre_cfg, "vision_config")
+
+            if "qwen3_vl" in model_type:
+                arch = "qwen3_vl"
+                from transformers import Qwen3VLForConditionalGeneration
+                self._model = Qwen3VLForConditionalGeneration.from_pretrained(**load_kwargs)
+            elif any(t in model_type for t in ("qwen2_5_vl", "qwen2_vl", "qwenvl")):
+                arch = "qwen_vl"
+                from transformers import Qwen2_5_VLForConditionalGeneration
+                self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(**load_kwargs)
+            elif has_vision:
+                # VL model with non-standard model_type (e.g. qwen3_5 = Qwen3.8 multimodal).
+                # AutoModelForConditionalGeneration reads architectures[] from config and
+                # picks the correct multimodal class — no class-mismatch warning.
+                arch = "qwen3_vl" if "qwen3" in model_type else "qwen_vl"
+                from transformers import AutoModelForConditionalGeneration
+                self._model = AutoModelForConditionalGeneration.from_pretrained(**load_kwargs)
+            else:
+                arch = "generic"
+                from transformers import AutoModelForCausalLM
+                self._model = AutoModelForCausalLM.from_pretrained(**load_kwargs)
 
         self._processor = AutoProcessor.from_pretrained(
             repo, cache_dir=cache_dir, trust_remote_code=True
@@ -202,7 +227,7 @@ class VisionLLM:
         max_tokens: int,
         temperature: float,
     ) -> str:
-        if self._arch == "qwen_vl":
+        if self._arch in ("qwen_vl", "qwen3_vl"):
             return self._run_qwen_vl(
                 prompt,
                 images=images,
@@ -249,13 +274,18 @@ class VisionLLM:
             messages, tokenize=False, add_generation_prompt=True
         )
         image_inputs, video_inputs = process_vision_info(messages)
-        inputs = self._processor(
+        proc_kwargs: dict = dict(
             text=[text_input],
             images=image_inputs,
             videos=video_inputs,
             padding=True,
             return_tensors="pt",
-        ).to(self._model.device)
+        )
+        # Qwen3-VL skips the per-frame pixel cap by default; enable it to match
+        # qwen-vl-utils reference behavior and avoid excessive token consumption.
+        if self._arch == "qwen3_vl":
+            proc_kwargs["cap_pixels_per_frame"] = True
+        inputs = self._processor(**proc_kwargs).to(self._model.device)
 
         with torch.no_grad():
             output_ids = self._model.generate(
@@ -308,3 +338,68 @@ class VisionLLM:
         return self._processor.batch_decode(
             output_ids[:, prompt_len:], skip_special_tokens=True
         )[0]
+
+
+# ── GPU-tier subclasses ────────────────────────────────────────────────────────
+
+_CLS_KWARGS = dict(
+    timeout=600,
+    scaledown_window=300,
+    volumes={_CACHE: _vol},
+    secrets=[modal.Secret.from_name("huggingface-vision")],
+)
+
+
+@app.cls(gpu="T4", **_CLS_KWARGS)
+class VisionLLM_T4(_VisionLLMImpl):
+    @modal.enter()
+    def setup(self): super().setup()
+
+    @modal.method()
+    def generate(self, prompt, *, model_key="qwen3-vl-8b", quantize=True,
+                 images=None, video_frames=None, system_prompt="",
+                 max_tokens=512, temperature=0.7, video_meta=None):
+        return super().generate(
+            prompt, model_key=model_key, quantize=quantize,
+            images=images, video_frames=video_frames,
+            system_prompt=system_prompt, max_tokens=max_tokens,
+            temperature=temperature, video_meta=video_meta,
+        )
+
+
+@app.cls(gpu="L4", **_CLS_KWARGS)
+class VisionLLM_L4(_VisionLLMImpl):
+    @modal.enter()
+    def setup(self): super().setup()
+
+    @modal.method()
+    def generate(self, prompt, *, model_key="qwen3-vl-8b", quantize=True,
+                 images=None, video_frames=None, system_prompt="",
+                 max_tokens=512, temperature=0.7, video_meta=None):
+        return super().generate(
+            prompt, model_key=model_key, quantize=quantize,
+            images=images, video_frames=video_frames,
+            system_prompt=system_prompt, max_tokens=max_tokens,
+            temperature=temperature, video_meta=video_meta,
+        )
+
+
+@app.cls(gpu="L40S", **_CLS_KWARGS)
+class VisionLLM_L40S(_VisionLLMImpl):
+    @modal.enter()
+    def setup(self): super().setup()
+
+    @modal.method()
+    def generate(self, prompt, *, model_key="qwen3-vl-8b", quantize=True,
+                 images=None, video_frames=None, system_prompt="",
+                 max_tokens=512, temperature=0.7, video_meta=None):
+        return super().generate(
+            prompt, model_key=model_key, quantize=quantize,
+            images=images, video_frames=video_frames,
+            system_prompt=system_prompt, max_tokens=max_tokens,
+            temperature=temperature, video_meta=video_meta,
+        )
+
+
+# Backward-compat alias — old deployments that reference "VisionLLM" still work
+VisionLLM = VisionLLM_L40S
