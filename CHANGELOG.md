@@ -1,6 +1,558 @@
 # CHANGELOG
 
 
+## v1.24.0 (2026-09-01)
+
+### Bug Fixes
+
+- **llm-panel**: Clarify Modal activation does not start container
+  ([`75fc9f8`](https://github.com/frost-byte/fbTools/commit/75fc9f88085c6943dd46afab4ac0d5051214dbaf))
+
+Rename status from "Active" to "Configured" and add "(container starts on first request)" note so
+  users understand the dashboard will be empty until the first inference call triggers a cold start.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **llm-panel**: Move model load/unload to Local tab; fix Modal TDZ crash
+  ([`fadbdf5`](https://github.com/frost-byte/fbTools/commit/fadbdf58eea17d6d670c1cb5d9aeb57bf06b2f88))
+
+- Fix ReferenceError: quantCb/quantNotice were accessed in TDZ when _rebuildModelSel() was called
+  before their const declarations in _renderModalTab. Fixed by declaring them before the first call.
+  - Move full model management (scan, select, load, unload, download) from composition_editor's LLM
+  Assistant section to the LLM panel's Local tab. - Compose tab retains status line (read-only) and
+  generate buttons; syncs _S.llmLoaded/Vision/NativeVideo via fbt:llm-status custom event dispatched
+  by fbt_panel._handleLlmPush after every load/unload. - Remove _llmRefreshModels,
+  _populateLlmModelSel, _llmLoadSelected, _llmUnload, _llmDownloadDefault from composition_editor.js
+  — all now live in llm_panel.js.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **modal**: Drop modal.parameter() — pass model_key/quantize via generate()
+  ([`ee20960`](https://github.com/frost-byte/fbTools/commit/ee20960bb819438a0b17025d40ee11f0d3f7b247))
+
+modal.parameter() doesn't support str type in modal 1.x. Restructured VisionLLM to load the model
+  lazily on first generate() call, caching by (model_key, quantize) within a container's lifetime.
+  Client updated to pass model_key and quantize as keyword args to generate.remote() instead of the
+  class constructor.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **modal**: Rename container_idle_timeout to scaledown_window (modal 1.x)
+  ([`d172cb7`](https://github.com/frost-byte/fbTools/commit/d172cb77b06c36d5a407f1af9f3b021e1081d36f))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **modal**: Use gpu="L40S" string — modal.gpu removed in modal 1.x
+  ([`3c5ed38`](https://github.com/frost-byte/fbTools/commit/3c5ed38e172320ffeae7a1d5f052abf6c1c202e8))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **prompt-assembler**: Correct H3 video roles, bundle subjects, dialogue verb, speaker IDs
+  ([`a779c57`](https://github.com/frost-byte/fbTools/commit/a779c571ce069b1a2fe5b1fa8946f4fd7cc6fdef))
+
+- Video role in subject_definitions and retention_analysis now differentiates motion-donor (source)
+  videos from bundle appearance references using _vnum_is_source computed from retention markers -
+  Bundle-first subject numbering: attribute_transfer slots get Subject N labels before retained
+  source slots; replaced slots get no label - Add _possessive() helper for pronoun-aware possessive
+  forms - Dialogue lines now include "says:" verb before quoted text - Speaker IDs (Sx) now assigned
+  to dialogue-only slots (no audio file) so subject_definitions shows the (Sx) marker for all
+  speaking subjects - Pre-assign subject numbers before the ref_map loop to ensure stable ordering
+  independent of slot iteration order
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profile-analysis**: Hoist _SPA_STATUS_ID to module level
+  ([`3ebba1d`](https://github.com/frost-byte/fbTools/commit/3ebba1d1282514068e31ec7de9c4a1f667e4d13b))
+
+_run_vision_inference and _run_vision_inference_clip reference _SPA_STATUS_ID in their Modal
+  status_callback but it was only defined as a local variable inside _source_profiles_analyze,
+  causing NameError when the Modal path ran. Promoted to module-level constant and removed the
+  now-redundant local def.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profile-editor**: Surface server error detail in VLM failure toasts
+  ([`693e58c`](https://github.com/frost-byte/fbTools/commit/693e58cb122bcba951198ff3d205263fb5361900))
+
+APIError.response holds the raw JSON body from the server, which contains the actual reason (e.g.
+  "Modal app not deployed", "modal package not installed"). Previously all VLM catch blocks showed
+  only err.message ("Internal Server Error"). Added _errMsg() helper that parses err.response for
+  the "error" field first, falling back to err.message. Applied to auto-segment, detect, describe,
+  and analyze failure toasts.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Accept bare JSON array in VLM parser responses
+  ([`361984b`](https://github.com/frost-byte/fbTools/commit/361984b0c04ca93872a75b323729de2d60761348))
+
+_parse_vlm_json_response and _parse_segments_response now handle both {"subjects":[...]} /
+  {"segments":[...]} envelopes and bare [...] arrays, matching the leniency added to the Modal-side
+  parsers. Qwen2.5-VL and similar models sometimes omit the wrapping dict.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Output-dir support for extract-frame/audio, source profile card + nav fixes
+  ([`d4c1149`](https://github.com/frost-byte/fbTools/commit/d4c11493b655bc350f1babc1da22034a2fb1fae8))
+
+Bundle editor: - extractFrame and preprocessAudio now pass the correct dir ("input"/"output") to the
+  server — videos placed in output/ were always 404ing - LLM appearance analyzer reads live vision
+  status via window._fbtGetLlmStatus and listens to fbt:llm-status so the section appears without
+  needing a reload after a model is loaded from the LLM tab
+
+Source profile editor: - Card subject count uses subject_count from the list summary instead of
+  subjects.length (which was always 0 before a profile was opened) - Card body shows "N subjects ·
+  open to view" when subjects aren't yet fetched - Back button used
+  root.parentElement?.parentElement causing DOM drift on each navigation; fixed to render into root
+  directly
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Documentation
+
+- Add Modal cloud vision backend integration handoff
+  ([`b3479ec`](https://github.com/frost-byte/fbTools/commit/b3479ec190b2a2f3cd2963f184601825f14e2f58))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- Update CLAUDE.md with widget contracts; add design docs
+  ([`5db9875`](https://github.com/frost-byte/fbTools/commit/5db9875a3401f973ad67dc606431ee4248cee51d))
+
+- CLAUDE.md: document cross-layer widget naming contract and the test_widget_name_contracts.py
+  automated check - docs/vlm_systems.md: VLM system architecture overview -
+  docs/h3_ref_short_edge_action_plan.md: H3 reference short-edge plan
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Features
+
+- Subject inference, multi-GPU modal dispatch, describe-clip refinements
+  ([`d6183fb`](https://github.com/frost-byte/fbTools/commit/d6183fbf3314c6bdcb7cb432a06d4e3a6b8b585c))
+
+Source profile analysis: - build_subject_inference_prompt / parse_inferred_subjects_response for
+  LLM-driven subject detection from clip descriptions - detect_segments: batch_window_seconds
+  parameter for chunked processing - describe_clip: existing_action and prompt_override parameters -
+  New endpoints: set_clips (bulk replace), merge_subjects (dedup upsert) - API client additions in
+  js/api/source_profiles.js
+
+Modal / LLM panel: - modal/app.py: per-GPU cls variants (T4, L4, L40S) for flexible dispatch -
+  modal_vision_client: activate() accepts gpu parameter - js/api/modal.js: recommend() and
+  profileRepo() methods - llm_panel.js: GPU selector UI, Qwen3-VL model list refresh
+
+Other: - prompt_assembler: formatting and correctness fixes - extract_frame and preprocess_audio
+  endpoints accept dir="output" - pyproject.toml: dependency/version updates
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **composition**: Add per-slot appearance overrides (slot_descriptors + appearance_overrides)
+  ([`84853c6`](https://github.com/frost-byte/fbTools/commit/84853c64e80f73aeedc36a57e534de9f71cdfef2))
+
+- utils/prompt_assembler.py: in assemble_composition(), apply composition.slot_descriptors[Sn] as
+  appearance.summary override and composition.appearance_overrides[Sn].{face,hair,body} as granular
+  sub-field overrides before passing slot_assignments to assemble_prompt. Deep-copies the affected
+  subject dict so original resolved_subjects are never mutated. - js/ui/composition_editor.js: add
+  collapsible "Override appearance" section to each slot card with a description textarea
+  (slot_descriptors) and face/hair/body field rows (appearance_overrides). Indicator badge (✎) on
+  toggle when any override is set. Wired to _markDirty(); both dicts included in _renumberSlots()
+  remapping and slot removal cleanup. - js/styles/style.css: add .fbt-ce-slot-override-* rules. -
+  tests/test_prompt_assembler.py: 10 new tests for TestSlotDescriptors and TestAppearanceOverrides
+  covering override, no-mutation, empty/ whitespace passthrough, unknown key, and combined cases.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **dataset**: Dataset caption status and viewer node improvements
+  ([`4c7e28b`](https://github.com/frost-byte/fbTools/commit/4c7e28be6d78121f3b2bc999491d6a37f1f82258))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **libber**: Extract libber resolution to stdlib-only utility module
+  ([`e008160`](https://github.com/frost-byte/fbTools/commit/e00816041aa32ee2b76ef4f656d445d5e04206d8))
+
+Move %libber_name:key% resolution logic out of extension.py into utils/libber_resolve.py so it can
+  be imported and tested without any ComfyUI context. Adds resolve_libber_refs() and
+  extract_libber_names() with full test coverage.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **modal**: Add Modal cloud VLM backend as third explicit inference path
+  ([`5bd2aca`](https://github.com/frost-byte/fbTools/commit/5bd2aca6a2da34b8ab8b5aefc8c727865e1f16fe))
+
+- utils/modal_vision_client.py: slim client wrapping VisionLLM.generate.remote();
+  activate/deactivate/is_active/backend_status; PRESET_MODELS list - utils/vlm_activity_log.py:
+  rolling 500-entry activity log with record/recent/ model_history/last_activity_ts; drives model
+  history in Modal tab and idle tracking - extension.py: third 'modal' branch in
+  _run_vision_inference + captioner_type param on _run_vision_inference_clip; activity logged on
+  every inference call; new routes GET /fbtools/modal/status, POST /fbtools/modal/activate, POST
+  /fbtools/modal/deactivate, GET /fbtools/vlm/activity, GET /fbtools/vlm/model_history; late-imports
+  modal_vision_client + vlm_activity_log
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **modal**: Add Qwen3-VL-8B + Qwen2.5-VL-32B-AWQ presets; pre_quantized flag
+  ([`e888c8c`](https://github.com/frost-byte/fbTools/commit/e888c8cdd230c256c644212a277f70d1502821c8))
+
+- PRESET_MODELS gains qwen3-vl-8b (new default) and qwen2.5-vl-32b-awq with pre_quantized: True;
+  backend_status() exposes pre_quantized; activate() auto- disables NF4 when pre_quantized to
+  prevent double-quantization - llm_panel.js: fallback preset list updated to match; _presetMap
+  lookup drives _applyPreQuantizedState() which disables and unchecks the NF4 toggle with an amber
+  notice when an AWQ/GPTQ preset is selected; re-enables on switch away; quantize label gains
+  tooltip explaining bf16-only scope; custom HF ID placeholder now notes standard transformer repos
+  only
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **modal**: Add VisionLLM Modal app + better "not deployed" error message
+  ([`0efd896`](https://github.com/frost-byte/fbTools/commit/0efd896d64e0d098316f02d8a294b07eb892939e))
+
+modal/app.py: - Defines fbtools-vision-llm Modal app with a VisionLLM cls - Supports qwen3-vl-8b
+  (default), qwen2.5-vl-7b, qwen2.5-vl-32b-awq, qwen2.5-vl-3b, gemma3-4b; custom HF repos via
+  model_key parameter - qwen_vl arch: Qwen2_5_VLForConditionalGeneration + qwen-vl-utils for native
+  image and video_frames input - generic arch: AutoModelForCausalLM + AutoProcessor chat template
+  path (Gemma3 and unknown custom repos) - NF4 quantization via BitsAndBytesConfig (skipped for
+  pre-quantized AWQ) - Models cached in modal.Volume "fbtools-model-cache" to avoid re-download -
+  GPU: L40S; idle timeout: 5 min; deploy: modal deploy modal/app.py
+
+utils/modal_vision_client.py: - Catch "App not found in environment" from modal.Cls.from_name() and
+  return a human-readable deploy instruction instead of the raw SDK error
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene**: Extend SceneCastBuild with source profile pool routing
+  ([`11eca8c`](https://github.com/frost-byte/fbTools/commit/11eca8c63e2217ba0685392c8189dbfbad3026ea))
+
+Add three optional SOURCE_PROFILE inputs to SceneCastBuild so subjects from SourceProfileLoad nodes
+  form a selectable pool alongside existing bundle-backed entries.
+
+- source_profile_1/2/3 optional inputs wire SOURCE_PROFILE → cast pool - fingerprint_inputs()
+  includes source_profiles.json mtime + profile IDs - execute() routes source-derived entries
+  (source_profile_id + source_subject_id) vs bundle-backed entries (subject_id + bundle_id) - Smart
+  retention defaults: fully_preserved for bundle entries, partially_preserved for source-derived -
+  Cast output carries source_profiles dict for downstream deduplication - cast_summary shows
+  retention mode and entity type per entry
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene**: Phase 4 — source-derived subjects in prompt assembly
+  ([`bdc6515`](https://github.com/frost-byte/fbTools/commit/bdc6515f32f7b9793cea96a6a854e66477c09219))
+
+Teach _resolve_cast_media, apply_cast_to_subjects, _build_ref_map, and the H3 assembler to handle
+  source-profile cast entries end-to-end.
+
+_resolve_cast_media (extension.py): - Second pass groups cast entries by source_profile_id; emits
+  one video_entries_full entry per unique profile (not per subject), carrying subject_ids: list for
+  shared <Video N> assignment downstream.
+
+apply_cast_to_subjects (utils/prompt_compositions.py): - New branch for source-derived entries:
+  builds a synthetic subject dict with role_description as appearance.summary and _cast_retention
+  set to the entry's retention mode (default: partially_preserved).
+
+_build_ref_map (utils/prompt_assembler.py): - video_lookup handles subject_ids list so co-sourced
+  subjects share the same video_entry object. - _video_entry_num dict ensures co-sourced subjects
+  get the same <Video N> ordinal (only one video_counter increment per unique source entry). -
+  retention_marker falls back to subject._cast_retention when retention_markers dict has no override
+  for the slot.
+
+_assemble_h3_ref2va (utils/prompt_assembler.py): - _vnum_to_labels map built after ref_map; drives
+  combined subject labels in video role lines ("is the visual identity reference for <Subject 1> and
+  <Subject 2>"). - video_sd_emitted / _ra_video_emitted guards prevent duplicate <Video N> lines
+  when multiple subjects share one source video. - retention_analysis video lines use plural grammar
+  ("their appearance", "the people") when more than one subject shares the video.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene**: Phase 7 — LLM subject decomposition for Source Profiles
+  ([`e5fe4b9`](https://github.com/frost-byte/fbTools/commit/e5fe4b9ea4d43c5f3af27f8d1b0a0a0e5b11f3f3))
+
+Focused, additive VLM analysis passes identify subjects in source media (people, setting,
+  soundscape, objects, animals, or custom) and return structured candidates for review before
+  committing to the catalog.
+
+utils/source_profile_analysis.py (new — no ComfyUI deps): - PASS_TYPES + PASS_ENTITY_DEFAULTS define
+  the six focus modes - build_prompt(): returns per-pass template with JSON schema instruction
+  appended; accepts optional prompt_override replacing the template body -
+  _parse_vlm_json_response(): strips markdown code fences, validates schema, fills missing/invalid
+  fields with safe defaults, skips entries with no label - extract_video_frame(): pulls one frame at
+  10% into clip via ffmpeg (primary) or imageio (fallback) - append_history_entry() / load_history()
+  / history_for_profile(): append-only JSON history in source_profile_analysis_history.json with
+  .bak backup; newest-first ordering per profile
+
+extension.py: - Import source_profile_analysis helpers at module load - POST
+  /fbtools/source_profiles/analyze — resolves media path, extracts frame for video sources, calls
+  captioner.py backend, parses response, writes history, returns {candidates, pass_type, prompt} -
+  GET /fbtools/source_profiles/analysis_history?profile_id=… — returns history entries for a
+  profile, newest first
+
+tests/test_source_profile_analysis.py (new — 35 tests): - prompt template coverage, JSON parser edge
+  cases (code fences, leading prose, missing/invalid fields, non-dict items, empty subjects),
+  history append/load/filter/ordering, backup creation, mutation safety
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast**: Scenecastbuild dialogue and clip prompt UI
+  ([`ad2aae0`](https://github.com/frost-byte/fbTools/commit/ad2aae0be4e00182d5dd3e2349fb1a34bfd4df84))
+
+Extend SceneCastBuild node UI with dialogue entry system and clip prompt support; dynamic slot/cast
+  rendering improvements.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profile**: Add SourceProfileLoad/Define/List nodes and REST endpoints
+  ([`79a8813`](https://github.com/frost-byte/fbTools/commit/79a881385ab74a13a9e8ce43352e5cbb96431cc3))
+
+Registers SOURCE_PROFILE wire type and three nodes (Load, Define, List) following the SubjectProfile
+  pattern. Adds five REST endpoints: reload, list, get, save, delete under
+  /fbtools/source_profiles/. Nodes are registered in get_node_list() under the Scene category.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profile**: Add SourceProfileRegistry data model and persistence
+  ([`03d1bf0`](https://github.com/frost-byte/fbTools/commit/03d1bf0d8cf945f96690b7ac6a6117b9e51b2ba4))
+
+Pure utility module (no ComfyUI deps) for the media-first subject catalog. Supports
+  create/update/remove for profiles and subjects, entity type validation, wire dict generation for
+  downstream PromptAssemble rendering, and JSON persistence with .bak backup. 50 tests, all passing.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Add video clip segmentation system
+  ([`f1a89e4`](https://github.com/frost-byte/fbTools/commit/f1a89e492500400718f2a69525df4e1e430b0f26))
+
+Adds clips array to SourceProfile for time-windowed video segments, VLM-assisted boundary detection
+  via contact sheet, and per-clip action description. SceneCastBuild now accepts clip_id_1/2/3 to
+  select which segment of each connected source profile to load; _resolve_cast_media looks up clip
+  load_params when a clip_id is specified.
+
+- utils/source_profiles.py: _normalize_clip, set_clips, upsert_clip, remove_clip, auto_partition,
+  get_clip, clip_load_params, DEFAULT_* constants; define_profile preserves clips and
+  default_segment_duration - utils/source_profile_analysis.py: segment detection and clip
+  description prompts, _parse_segments_response, parse_clip_description_response - extension.py:
+  SceneCastBuild clip_id_1/2/3 inputs + fingerprint; execute stores clip_ids in cast dict;
+  _resolve_cast_media uses clip_load_params when clip_id is set; REST endpoints auto_partition,
+  upsert_clip, remove_clip, detect_segments, describe_clip - js/api/source_profiles.js:
+  detectSegments, describeClip, autoPartition, upsertClip, removeClip API methods - tests: 41 new
+  tests for clip CRUD, auto_partition, clip_load_params, _parse_segments_response,
+  parse_clip_description_response
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Extend backend nodes, clip prompt node, REST API
+  ([`0182280`](https://github.com/frost-byte/fbTools/commit/0182280d08fb3225525f4fe12e75418d633760b3))
+
+- captioner.py: expose clean_caption_text() as public API for callers outside captioner (used by
+  source profile analysis pipeline) - extension.py: SourceProfileLoad / SceneCastBuild node updates;
+  SourceProfileClipPrompt node for dynamic clip_id selection; new REST endpoints: proxy_status,
+  prebuild_proxies, describe_clip, remove_clip; DatasetCaptioner refactor; widget name cleanups
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Proxy cache, analysis pipeline, profile data model
+  ([`98316e5`](https://github.com/frost-byte/fbTools/commit/98316e59902622d1c6ed057b095b9c7a87c9ab75))
+
+- Add utils/proxy_cache.py: per-segment ffmpeg proxy builder with sidecar JSON tracking; scale
+  filter commas escaped for ffmpeg filter- graph parser; _is_fresh uses os.path.realpath() for
+  symlink-safe comparison against ComfyUI's symlinked output directory - source_profile_analysis.py:
+  extended segment analysis pipeline - source_profiles.py: profile data model updates -
+  reference_bundles.py: reference bundle helpers
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Segment editor UI overhaul
+  ([`821978c`](https://github.com/frost-byte/fbTools/commit/821978c62cb9a7a458581d12c36d75bb1a7ba5d8))
+
+- Single-segment panel with ← N/M → nav replacing all-expanded card list - Timeline band click
+  selects segment; video preview seeks to clip start - Active segment highlighted in timeline with
+  filled triangle indicator - Collapsible Profile Settings and Subjects sections (accordion pattern,
+  state persisted in _S.settingsOpen / _S.subjectsOpen) - Slot letters ({A}, {B}, …) shown inline
+  after subject labels and updated live on checkbox toggle - Proxy dirty tracking: times_changed_at
+  / proxy_built_at ISO timestamps stored on each clip and persisted via _persistClip; dirty clips
+  show amber "needs rebuild" badge and amber dot in timeline band; _refreshProxyStatus advances
+  proxy_built_at when server confirms fresh
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Add clips timeline panel to Source Profile editor
+  ([`dc5de68`](https://github.com/frost-byte/fbTools/commit/dc5de684f4c0ff937cc37313e8ca897e3beac889))
+
+Adds a collapsible Clips section to the profile detail view (video profiles only) with:
+
+- Canvas-based timeline rendering colored bands per clip with internal boundary handles that can be
+  dragged left/right to adjust split points - Gold dashed markers showing VLM-detected boundary
+  suggestions - Time axis ticks and per-clip labels scaled to total video duration - Auto-detect
+  video duration via hidden <video> loadedmetadata - "Auto-segment" button — calls REST
+  autoPartition, replaces clip list - "Detect boundaries" button — calls detectSegments VLM
+  endpoint, renders suggestions on timeline without committing - Per-clip cards: label, start/end
+  time inputs, action textarea, subject checkboxes (linked to profile subjects), Describe button
+  (describeClip) - Manual "Add clip" appends at end with configured segment duration - All mutations
+  sync to profile.clips and trigger onClipsChanged so the Save button picks them up via collectMeta
+  spread
+
+Also adds SourceProfilesAPI methods: detectSegments, describeClip, autoPartition, upsertClip,
+  removeClip.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Add dedicated LLM tab with Local/Modal/Gemini backend sub-tabs
+  ([`8a5e01c`](https://github.com/frost-byte/fbTools/commit/8a5e01c1f49dcb21add01fffcbe84b92c6c32630))
+
+- js/api/modal.js: ModalAPI (status/activate/deactivate) + VlmActivityAPI - js/ui/llm_panel.js:
+  renderLlmPanel with three sub-tabs; getActiveCaptionerType() returns "modal" | "auto" |
+  "gemini_flash" based on active backend; onBackendChange hook so header bar stays in sync; Modal
+  tab has preset selector, custom HF ID history, quantize toggle, idle timeout, keep-warm,
+  connect/disconnect button - js/ui/fbt_panel.js: add LLM tab to TABS; header bar shows active
+  backend label (Modal: blue dot, Local: green, fallback: "No backend — configure in LLM tab"); wire
+  onBackendChange to re-sync header on Modal state change - js/ui/source_profile_editor.js: remove
+  CAPTIONER_TYPES dropdown and Gemini checkbox; replace with read-only backend badge driven by
+  getActiveCaptionerType(); all three VLM request paths (analyze, detect_segments, describe_clip)
+  now call getActiveCaptionerType() rather than reading local state
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Add Source Profiles sidebar panel
+  ([`a444878`](https://github.com/frost-byte/fbTools/commit/a444878f9c04ea10eda0a602927c0a07cdde8dde))
+
+- js/api/source_profiles.js — REST client for source profile CRUD, reload, LLM analyze, and analysis
+  history endpoints - js/ui/source_profile_editor.js — full catalog browser panel: profile list with
+  search, detail view (meta form + media preview), subject annotation list (add/edit/delete), LLM
+  focused-pass analyze section (pass-type pills, captioner selector, prompt override, candidate
+  review with add/add-all, history accordion), and auto-save - js/fb_tools.js — import and
+  registerSidebarTab for 'fbt.source-profiles'
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Consolidate sidebar into single fbTools panel with lazy tabs
+  ([`8511bc1`](https://github.com/frost-byte/fbTools/commit/8511bc19c7a8636c119b38b806a437fd71ae2520))
+
+Replaces five separate sidebar tab registrations with one unified panel:
+
+- js/ui/fbt_panel.js (new): shell with persistent LLM status bar in the header, horizontal tab strip
+  (Compose/Bundles/Casts/Sources/History), and lazy mounting — each tab's DOM is created once on
+  first activation and kept alive hidden on switch so state is never lost - js/fb_tools.js: single
+  registerSidebarTab("fbt.panel") replaces the five individual registrations -
+  composition_editor.js: _llmUpdateStatus now pushes state to the panel header via
+  window._fbtUpdateLlmStatus (synchronous, no extra fetch) so the LLM badge reflects load/unload
+  instantly from any tab
+
+The shared fbtLlm object (exported from fbt_panel.js) will serve as the source of truth for tabs
+  that need to check whether a model is loaded before routing inference calls.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Refactoring
+
+- **gemini**: Move API key to server-side env var only
+  ([`07a8beb`](https://github.com/frost-byte/fbTools/commit/07a8beb9c68e008a88a8019c15b3bd85af62329d))
+
+Remove gemini_api_key from all frontend-to-backend paths. The key is now read exclusively from the
+  GEMINI_API_KEY environment variable in extension.py. No credentials are accepted from request
+  bodies or widget inputs.
+
+- DatasetCaptioner node: remove gemini_api_key widget input and execute() parameter -
+  _run_vision_inference(): remove api_key parameter; Gemini path reads
+  os.environ.get("GEMINI_API_KEY") internally - _run_vision_inference_clip(): remove unused api_key
+  parameter - /analyze, /detect_segments, /describe_clip, /recaption_single endpoints: drop
+  body.get("gemini_api_key") fallback
+
+- js/api/source_profiles.js: remove gemini_api_key from analyze(), detectSegments(), describeClip()
+  signatures and request bodies - js/nodes/dataset_caption_viewer.js: remove from state, widget
+  sync, and recaption request body - Tests updated accordingly
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Panel consolidation, bundle editor, node inspector
+  ([`344d3cb`](https://github.com/frost-byte/fbTools/commit/344d3cb00af1601224402c6f58fcd217376d5d91))
+
+- Consolidate sidebar into unified fbTools panel with lazy tabs (fb_tools.js + fbt_panel.js) -
+  Bundle editor updates: pronoun style, short name field, image list improvements, appearance
+  analyzer integration - Node inspector tab: collapsible JSON tree for selected node data - Run
+  history: capture map extraction, run parsing improvements - File tree: path insertion and
+  filtering fixes - story.js: remove stale widget helpers - lora.js: LoraStackBuilder active-row
+  display fix - style.css: new panel, clip, and inspector styles
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Testing
+
+- Widget name contract checks and dataset caption API tests
+  ([`c23678b`](https://github.com/frost-byte/fbTools/commit/c23678b100140a6d0f6eba19d2e00d1d35e6710b))
+
+- test_widget_name_contracts.py: cross-layer test that fails when any JS w.name === "x" lookup
+  references a widget name not present in the Python node schema; run after any node schema change -
+  test_dataset_caption_api.py: updated for refactored captioner API
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.23.0 (2026-08-21)
 
 ### Documentation
