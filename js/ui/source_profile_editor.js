@@ -11,6 +11,7 @@
 import { sourceProfilesApi }        from "../api/source_profiles.js";
 import { bundlesApi }               from "../api/bundles.js";
 import { getActiveCaptionerType }   from "./llm_panel.js";
+import { api }                      from "../../../scripts/api.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -393,7 +394,21 @@ function _fmtT(sec) {
     return (Math.round(sec * 10) / 10).toFixed(1) + "s";
 }
 
-function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1, dirtyIds = null) {
+function _mergeLoras(lorasA, lorasB) {
+    const merged = lorasA.map(l => ({ ...l }));
+    for (const lb of lorasB) {
+        const ex = merged.find(la => la.name === lb.name);
+        if (ex) {
+            ex.strength_model = Math.max(ex.strength_model ?? 1, lb.strength_model ?? 1);
+            ex.strength_clip  = Math.max(ex.strength_clip  ?? 1, lb.strength_clip  ?? 1);
+        } else {
+            merged.push({ ...lb });
+        }
+    }
+    return merged;
+}
+
+function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1, dirtyIds = null, hoverIdx = -1) {
     const W = canvas.width;
     const H = canvas.height;
     const ctx = canvas.getContext("2d");
@@ -405,18 +420,24 @@ function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1
     ctx.fillRect(0, 0, W, H);
 
     const BAND_TOP = 10, BAND_BOT = H - 20;
+    const HOVER_RISE = 6;  // px the hovered band extends above BAND_TOP
 
     // Clip bands
     clips.forEach((clip, i) => {
         const x1 = toX(clip.start_time);
         const x2 = toX(clip.end_time);
+        const clipW = x2 - x1;
         const col = CLIP_COLORS[i % CLIP_COLORS.length];
-        const isActive = i === activeIdx;
-        ctx.fillStyle = isActive ? col + "55" : col + "22";
-        ctx.fillRect(x1, BAND_TOP, x2 - x1, BAND_BOT - BAND_TOP);
+        const isActive  = i === activeIdx;
+        const isHovered = i === hoverIdx && !isActive;
+        const bandTop   = isHovered ? BAND_TOP - HOVER_RISE : BAND_TOP;
+
+        ctx.fillStyle = isActive ? col + "55" : isHovered ? col + "44" : col + "22";
+        ctx.fillRect(x1, bandTop, clipW, BAND_BOT - bandTop);
         ctx.strokeStyle = col;
-        ctx.lineWidth = isActive ? 2.5 : 1;
-        ctx.strokeRect(x1 + 0.5, BAND_TOP + 0.5, x2 - x1 - 1, BAND_BOT - BAND_TOP - 1);
+        ctx.lineWidth = isActive ? 2.5 : isHovered ? 1.5 : 1;
+        ctx.strokeRect(x1 + 0.5, bandTop + 0.5, clipW - 1, BAND_BOT - bandTop - 1);
+
         // Active indicator: small filled triangle above the band
         if (isActive) {
             const mid = (x1 + x2) / 2;
@@ -437,13 +458,34 @@ function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1
         }
         // Label
         const label = clip.label || `Clip ${i + 1}`;
-        ctx.fillStyle = isActive ? "#fff" : "#aaa";
-        ctx.font = isActive ? "bold 10px sans-serif" : "10px sans-serif";
-        ctx.textAlign = "center";
         const mid = (x1 + x2) / 2;
-        const maxW = x2 - x1 - 6;
-        const text = ctx.measureText(label).width > maxW ? "" : label;
-        if (text) ctx.fillText(text, mid, (BAND_TOP + BAND_BOT) / 2 + 4);
+        ctx.fillStyle = isActive ? "#fff" : isHovered ? "#eee" : "#aaa";
+        ctx.font = (isActive || isHovered) ? "bold 10px sans-serif" : "10px sans-serif";
+        ctx.textAlign = "center";
+        const textW = ctx.measureText(label).width;
+
+        if (isHovered && clipW < 32) {
+            // Narrow hovered clip: draw a flag-pole + label pill above the band
+            const poleX = Math.max(x1 + 1, Math.min(x2 - 1, mid));
+            ctx.strokeStyle = col + "bb";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(poleX, bandTop - 1);
+            ctx.lineTo(poleX, 2);
+            ctx.stroke();
+            const pillPad = 3, pillH = 12;
+            const pillW = textW + pillPad * 2;
+            const pillX = Math.max(1, Math.min(W - pillW - 1, poleX - pillW / 2));
+            ctx.fillStyle = col + "dd";
+            ctx.beginPath();
+            ctx.roundRect?.(pillX, 1, pillW, pillH, 3) || ctx.rect(pillX, 1, pillW, pillH);
+            ctx.fill();
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 9px sans-serif";
+            ctx.fillText(label, pillX + pillPad + textW / 2, 10);
+        } else if (textW <= clipW - 6) {
+            ctx.fillText(label, mid, (BAND_TOP + BAND_BOT) / 2 + 4);
+        }
     });
 
     // Internal boundary handles
@@ -660,11 +702,13 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
 
     let clipsOpen = false;
     let suggestions = [];
+    let inferredSubjects = [];
     let detecting = false;
     let autoSegRunning = false;
     // captioner_type for clip requests comes from the global active backend (LLM tab)
     let videoDuration = 0;
     let activeClipIdx = 0;
+    let hoverClipIdx  = -1;
     let detectFlags = { camera_cuts: true, subject_changes: false, lower_threshold: false };
     let detectPromptOverride = "";
     let lastRawResponse = "";
@@ -751,8 +795,15 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     const detectSpinner = _mk("span", { style: { fontSize: "11px", color: "#888", display: "none" } }, [" Detecting…"]);
     let detNoteEl = null;
 
+    const applySugBtn = _mk("button", {
+        cls: "spe-btn sm",
+        onclick: runApplySuggestions,
+        disabled: true,
+        title: "Create clips from detected segment boundaries, pre-filling action descriptions",
+    }, ["Apply suggestions"]);
+
     body.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
-        backendNote, detectBtn, detectSpinner,
+        backendNote, detectBtn, detectSpinner, applySugBtn,
     ]));
 
     // Detect flags row
@@ -803,12 +854,54 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     body.appendChild(rawWrap);
 
     // ── Timeline canvas ───────────────────────────────────────────────────────
-    const canvasWrap = _mk("div", { cls: "spe-timeline-wrap" });
+    const canvasWrap = _mk("div", { cls: "spe-timeline-wrap", style: { position: "relative" } });
     const canvas = document.createElement("canvas");
     canvas.className = "spe-timeline";
     canvas.height = 72;
     canvasWrap.appendChild(canvas);
+
+    // Floating tooltip for narrow clips that are hard to identify on hover
+    const hoverTooltipEl = _mk("div", { style: {
+        position: "absolute", top: "-26px", left: "0",
+        background: "#1a1a2e", border: "1px solid #555", borderRadius: "4px",
+        padding: "3px 8px", fontSize: "11px", color: "#ddd",
+        pointerEvents: "none", whiteSpace: "nowrap",
+        boxShadow: "0 2px 8px rgba(0,0,0,.5)", display: "none", zIndex: "10",
+    }});
+    canvasWrap.appendChild(hoverTooltipEl);
+
     body.appendChild(canvasWrap);
+
+    // ── Describe prompt override ──────────────────────────────────────────────
+    const DEFAULT_DESCRIBE_PROMPT =
+        "Examine this video frame carefully.  Describe in 1-2 sentences " +
+        "what action or situation is visually depicted — focus on what the " +
+        "subjects are doing or what is occurring in the scene at this moment.";
+
+    const promptOverrideWrap = _mk("div", { style: { marginBottom: "6px" } });
+    const promptOverrideLabel = _mk("label", {
+        style: { fontSize: "11px", color: "#888", display: "block", marginBottom: "2px" },
+        title: "Replaces the opening instruction sent to the VLM when you click Describe. Leave blank to use the default. The JSON schema is always appended after this text.",
+    }, ["Describe instruction (leave blank for default)"]);
+    const promptOverrideTa = _mk("textarea", {
+        cls: "spe-clip-ta",
+        rows: 3,
+        placeholder: DEFAULT_DESCRIBE_PROMPT,
+        title: "Replaces the opening instruction sent to the VLM when you click Describe. Leave blank to use the default. The JSON schema is always appended after this text.",
+    });
+    promptOverrideTa.value = profile.describe_prompt_override || "";
+
+    let _promptSaveTimer = null;
+    promptOverrideTa.onchange = () => {
+        profile.describe_prompt_override = promptOverrideTa.value.trim();
+        clearTimeout(_promptSaveTimer);
+        _promptSaveTimer = setTimeout(() => {
+            sourceProfilesApi.save(profile)
+                .catch(err => _toast(`Prompt override save failed: ${err.message}`, "error"));
+        }, 800);
+    };
+    promptOverrideWrap.append(promptOverrideLabel, promptOverrideTa);
+    body.appendChild(promptOverrideWrap);
 
     // ── Clip list ─────────────────────────────────────────────────────────────
     const listEl = _mk("div");
@@ -859,7 +952,8 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     // ── Redraw ────────────────────────────────────────────────────────────────
     function redraw() {
         canvas.width = canvas.offsetWidth || 380;
-        _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx, new Set(clips.filter(_isProxyDirty).map(c => c.id)));
+        _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx,
+            new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx);
         renderClipList();
     }
 
@@ -877,31 +971,73 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         }
     });
 
+    function _updateHoverTooltip(e, totalDur) {
+        if (hoverClipIdx < 0) { hoverTooltipEl.style.display = "none"; return; }
+        const clip = clips[hoverClipIdx];
+        const x1 = (clip.start_time / totalDur) * canvas.offsetWidth;
+        const x2 = (clip.end_time   / totalDur) * canvas.offsetWidth;
+        if (x2 - x1 >= 40) { hoverTooltipEl.style.display = "none"; return; }
+        const dur = (clip.end_time - clip.start_time).toFixed(1);
+        hoverTooltipEl.textContent =
+            `${clip.label || `Clip ${hoverClipIdx + 1}`}  ${clip.start_time.toFixed(1)}–${clip.end_time.toFixed(1)}s  (${dur}s)`;
+        const wrapRect = canvasWrap.getBoundingClientRect();
+        const tipWidth = hoverTooltipEl.offsetWidth || 160;
+        const mouseX   = e.clientX - wrapRect.left;
+        hoverTooltipEl.style.left = Math.max(0, Math.min(canvas.offsetWidth - tipWidth, mouseX - tipWidth / 2)) + "px";
+        hoverTooltipEl.style.display = "block";
+    }
+
     canvas.addEventListener("mousemove", e => {
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const totalDur = getTotalDuration() || 1;
+        const BAND_TOP = 10, BAND_BOT = canvas.height - 20;
+        const y = e.clientY - rect.top;
+
+        // Handle hover tracking (skip during active drag)
+        if (!_drag) {
+            let newHoverIdx = -1;
+            if (y >= BAND_TOP - 6 && y <= BAND_BOT) {
+                for (let i = 0; i < clips.length; i++) {
+                    const x1 = (clips[i].start_time / totalDur) * canvas.offsetWidth;
+                    const x2 = (clips[i].end_time   / totalDur) * canvas.offsetWidth;
+                    if (x >= x1 && x <= x2) { newHoverIdx = i; break; }
+                }
+            }
+            if (newHoverIdx !== hoverClipIdx) {
+                hoverClipIdx = newHoverIdx;
+                canvas.width = canvas.offsetWidth;
+                _drawTimeline(canvas, clips, suggestions, totalDur, activeClipIdx,
+                    new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx);
+            }
+            _updateHoverTooltip(e, totalDur);
+        }
+
+        // Cursor: col-resize for boundary handles, but only when adjacent clips are wide enough to click
         let overHandle = false;
         for (let i = 1; i < clips.length; i++) {
             const hx = (clips[i].start_time / totalDur) * canvas.offsetWidth;
-            if (Math.abs(x - hx) <= 8) { overHandle = true; break; }
+            if (Math.abs(x - hx) <= 8) {
+                const leftW  = hx - (clips[i - 1].start_time / totalDur) * canvas.offsetWidth;
+                const rightW = (clips[i].end_time / totalDur) * canvas.offsetWidth - hx;
+                if (leftW >= 16 && rightW >= 16) overHandle = true;
+                break;
+            }
         }
         if (overHandle) {
             canvas.style.cursor = "col-resize";
         } else {
-            // Show pointer when hovering over any clip band
-            const BAND_TOP = 10, BAND_BOT = canvas.height - 20;
-            const y = e.clientY - rect.top;
             let overBand = false;
             if (y >= BAND_TOP && y <= BAND_BOT) {
                 for (let i = 0; i < clips.length; i++) {
                     const x1 = (clips[i].start_time / totalDur) * canvas.offsetWidth;
-                    const x2 = (clips[i].end_time / totalDur) * canvas.offsetWidth;
+                    const x2 = (clips[i].end_time   / totalDur) * canvas.offsetWidth;
                     if (x >= x1 && x <= x2) { overBand = true; break; }
                 }
             }
             canvas.style.cursor = overBand ? "pointer" : "default";
         }
+
         if (!_drag) return;
         const i = _drag.i;
         const t = Math.round(((x / canvas.offsetWidth) * totalDur) * 10) / 10;
@@ -912,7 +1048,8 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
           : j === i     ? { ...c, start_time: clamped }
           : c);
         canvas.width = canvas.offsetWidth;
-        _drawTimeline(canvas, clips, suggestions, totalDur, activeClipIdx, new Set(clips.filter(_isProxyDirty).map(c => c.id)));
+        _drawTimeline(canvas, clips, suggestions, totalDur, activeClipIdx,
+            new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx);
     });
 
     canvas.addEventListener("mouseup", e => {
@@ -942,6 +1079,8 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         }
     });
     canvas.addEventListener("mouseleave", () => {
+        hoverClipIdx = -1;
+        hoverTooltipEl.style.display = "none";
         if (!_drag) return;
         const dragI = _drag.i;
         _drag = null;
@@ -1025,15 +1164,19 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         const i = activeClipIdx;
 
         // Nav bar: ← Segment N / M →
-        const prevBtn = _mk("button", { cls: "spe-btn sm ghost" }, ["←"]);
-        const nextBtn = _mk("button", { cls: "spe-btn sm ghost" }, ["→"]);
-        if (i === 0)               prevBtn.disabled = true;
-        if (i === clips.length - 1) nextBtn.disabled = true;
+        const prevBtn  = _mk("button", { cls: "spe-btn sm ghost" }, ["←"]);
+        const nextBtn  = _mk("button", { cls: "spe-btn sm ghost" }, ["→"]);
+        const mergeBtn = _mk("button", { cls: "spe-btn sm ghost",
+            title: "Merge with next clip — combines timing, subjects, action, dialogue flag, and LoRAs",
+            style: { fontSize: "10px" } }, ["⊕ merge →"]);
+        if (i === 0) prevBtn.disabled = true;
+        if (i === clips.length - 1) { nextBtn.disabled = true; mergeBtn.disabled = true; }
         const navLabel = _mk("span", { cls: "spe-clip-nav-label" },
             [`${clips[i].label || "Segment " + (i + 1)}  (${i + 1}/${clips.length})`]);
-        prevBtn.onclick = () => { activeClipIdx = Math.max(0, i - 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
-        nextBtn.onclick = () => { activeClipIdx = Math.min(clips.length - 1, i + 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
-        listEl.appendChild(_mk("div", { cls: "spe-clip-nav" }, [prevBtn, navLabel, nextBtn]));
+        prevBtn.onclick  = () => { activeClipIdx = Math.max(0, i - 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
+        nextBtn.onclick  = () => { activeClipIdx = Math.min(clips.length - 1, i + 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
+        mergeBtn.onclick = () => mergeWithNext(i);
+        listEl.appendChild(_mk("div", { cls: "spe-clip-nav" }, [prevBtn, navLabel, nextBtn, mergeBtn]));
 
         {   // single-clip block (braces preserve the original forEach-scoped variable names)
             const clip = clips[i];
@@ -1082,7 +1225,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             musicEl.onchange = () => { clips[i] = { ...clips[i], non_diegetic_music: musicEl.value }; commitClip(i); };
 
             const subjWrap = _mk("div", { cls: "spe-clip-subj-list" });
-            const CLIP_SLOTS = ["A", "B", "C", "D"];
+            const CLIP_SLOTS = ["A","B","C","D","E","F","G","H","I","J"];
             const slotSpans = {};  // subjectId → span element showing "{A}" etc.
 
             const updateSlotLabels = () => {
@@ -1091,7 +1234,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                     const span = slotSpans[s.id];
                     if (!span) return;
                     const idx = tagged.indexOf(s.id);
-                    span.textContent = (idx >= 0 && idx < 4) ? ` {${CLIP_SLOTS[idx]}}` : "";
+                    span.textContent = (idx >= 0 && idx < CLIP_SLOTS.length) ? ` {${CLIP_SLOTS[idx]}}` : "";
                 });
             };
 
@@ -1178,7 +1321,8 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         profile.clips = clips;
         onClipsChanged(clips);
         canvas.width = canvas.offsetWidth;
-        _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx, new Set(clips.filter(_isProxyDirty).map(c => c.id)));
+        _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx,
+            new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx);
         _persistClip(clips[i]);
     }
 
@@ -1190,6 +1334,32 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         redraw();
         sourceProfilesApi.removeClip({ profile_id: profile.id, clip_id: clipId })
             .catch(err => _toast(`Clip remove failed: ${err.message}`, "error"));
+    }
+
+    function mergeWithNext(i) {
+        if (i >= clips.length - 1) return;
+        const a = clips[i];
+        const b = clips[i + 1];
+        const aSubjects = a.subjects || [];
+        const merged = {
+            ...a,
+            end_time:           b.end_time,
+            action:             [a.action, b.action].filter(Boolean).join("\n\n"),
+            subjects:           [...aSubjects, ...(b.subjects || []).filter(id => !aSubjects.includes(id))],
+            allows_dialogue:    (a.allows_dialogue !== false) || (b.allows_dialogue !== false),
+            overall_soundscape: [a.overall_soundscape, b.overall_soundscape].filter(Boolean).join("\n\n") || undefined,
+            non_diegetic_music: [a.non_diegetic_music, b.non_diegetic_music].filter(Boolean).join("\n\n") || undefined,
+            loras:              _mergeLoras(a.loras || [], b.loras || []),
+        };
+        const removedId = b.id;
+        clips = [...clips.slice(0, i), merged, ...clips.slice(i + 2)];
+        profile.clips = clips;
+        onClipsChanged(clips);
+        _markTimesDirty(i);
+        commitClip(i);
+        sourceProfilesApi.removeClip({ profile_id: profile.id, clip_id: removedId })
+            .catch(err => _toast(`Merge cleanup failed: ${err.message}`, "error"));
+        _toast(`Merged → ${_fmtT(merged.start_time)}–${_fmtT(merged.end_time)} (${(merged.end_time - merged.start_time).toFixed(1)}s)`, "success");
     }
 
     function addNewClip() {
@@ -1235,6 +1405,62 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         }
     }
 
+    async function runApplySuggestions() {
+        if (!suggestions.length) return;
+        const subjectIds = (profile.subjects || []).map(s => s.id || s).filter(Boolean);
+        const defNth     = profile.default_select_every_nth ?? 1;
+        const defCap     = profile.default_frame_load_cap   ?? 0;
+        const newClips   = suggestions.map((seg, idx) => ({
+            id:               `clip_${idx + 1}`,
+            label:            seg.label  || `Segment ${idx + 1}`,
+            start_time:       seg.start_time,
+            end_time:         seg.end_time,
+            action:           seg.action || "",
+            subjects:         subjectIds,
+            select_every_nth: defNth,
+            frame_load_cap:   defCap,
+        }));
+        applySugBtn.disabled = true;
+        applySugBtn.textContent = "…";
+        try {
+            await onEnsureSaved?.();
+            // Apply clips
+            const clipsRes = await sourceProfilesApi.setClips({ profile_id: profile.id, clips: newClips });
+            clips = clipsRes.profile?.clips || [];
+            profile.clips = clips;
+
+            // Merge inferred subjects (dedup by label server-side)
+            let addedSubjects = 0;
+            if (inferredSubjects.length) {
+                try {
+                    const subjRes = await sourceProfilesApi.mergeSubjects({
+                        profile_id: profile.id,
+                        subjects:   inferredSubjects,
+                    });
+                    addedSubjects = subjRes.added ?? 0;
+                    if (subjRes.profile) {
+                        profile.subjects = subjRes.profile.subjects || [];
+                    }
+                } catch (subjErr) {
+                    console.warn("mergeSubjects failed:", subjErr);
+                }
+            }
+
+            suggestions      = [];
+            inferredSubjects = [];
+            if (detNoteEl) { detNoteEl.remove(); detNoteEl = null; }
+            onClipsChanged(clips);
+            redraw();
+            const subjNote = addedSubjects ? `, ${addedSubjects} subject(s) added` : "";
+            _toast(`Applied ${newClips.length} clip(s)${subjNote}`, "success");
+        } catch (err) {
+            _toast(`Apply failed: ${_errMsg(err)}`, "error");
+            applySugBtn.disabled = false;
+        } finally {
+            applySugBtn.textContent = "Apply suggestions";
+        }
+    }
+
     async function runDetect() {
         const totalDur = getTotalDuration();
         if (totalDur <= 0) { _toast("Set video duration first", "warn"); return; }
@@ -1243,6 +1469,17 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         detecting = true;
         detectBtn.disabled = true;
         detectSpinner.style.display = "inline";
+        detectSpinner.textContent = " Detecting…";
+
+        // Live status updates from the backend — update spinner text while active
+        const _onStatus = (event) => {
+            const d = event?.detail || {};
+            if (d.source !== "source_profile_analysis") return;
+            const msg = String(d.status || "").trim();
+            if (msg && detecting) detectSpinner.textContent = ` ${msg}`;
+        };
+        api.addEventListener("fbtools.status", _onStatus);
+
         try {
             await onEnsureSaved?.();
             const res = await sourceProfilesApi.detectSegments({
@@ -1252,25 +1489,32 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 flags:           detectPromptOverride.trim() ? null : { ...detectFlags },
                 captioner_type:  getActiveCaptionerType(),
             });
-            suggestions = res.segments || [];
-            lastRawResponse = res.raw_response || "";
+            suggestions      = res.segments          || [];
+            inferredSubjects = res.inferred_subjects || [];
+            lastRawResponse  = res.raw_response      || "";
+            applySugBtn.disabled = suggestions.length === 0;
             if (detNoteEl) detNoteEl.remove();
             if (suggestions.length) {
+                const subjNote = inferredSubjects.length
+                    ? ` and ${inferredSubjects.length} subject(s)` : "";
                 detNoteEl = _mk("div", { cls: "spe-clips-det-note" },
-                    [`${suggestions.length} suggested boundary(s) shown as gold markers. Auto-segment to apply.`]);
+                    [`${suggestions.length} suggested boundary(s)${subjNote} — click "Apply suggestions" to create clips.`]);
                 canvasWrap.after(detNoteEl);
             }
             // Show raw response section
             rawPre.textContent = lastRawResponse;
             rawWrap.style.display = "block";
             redraw();
-            _toast(`${suggestions.length} suggested boundary(s)`, "info");
+            const subjHint = inferredSubjects.length ? `, ${inferredSubjects.length} subject(s)` : "";
+            _toast(`${suggestions.length} suggested boundary(s)${subjHint}`, "info");
         } catch (err) {
             _toast(`Detection failed: ${_errMsg(err)}`, "error");
         } finally {
+            api.removeEventListener("fbtools.status", _onStatus);
             detecting = false;
             detectBtn.disabled = false;
             detectSpinner.style.display = "none";
+            detectSpinner.textContent = " Detecting…";
         }
     }
 
@@ -1280,15 +1524,15 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         btn.disabled = true;
         btn.textContent = "…";
 
-        // Map the subjects tagged in this clip to slot letters (A, B, C, D).
+        // Map the subjects tagged in this clip to slot letters (A–J).
         // The VLM will use {A}, {B} etc. instead of repeating appearance inline.
-        const SLOTS = ["A", "B", "C", "D"];
+        const SLOTS = ["A","B","C","D","E","F","G","H","I","J"];
         const taggedIds = clip.subjects || [];
         const allSubjects = profile.subjects || [];
         const subjects = taggedIds
             .map(id => allSubjects.find(s => s.id === id))
             .filter(Boolean)
-            .slice(0, 4)
+            .slice(0, SLOTS.length)
             .map((s, idx) => ({
                 slot:       SLOTS[idx],
                 name:       s.label || s.id,
@@ -1298,11 +1542,13 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         try {
             await onEnsureSaved?.();
             const res = await sourceProfilesApi.describeClip({
-                profile_id: profile.id,
-                start_time:     clip.start_time,
-                end_time:       clip.end_time,
+                profile_id:      profile.id,
+                start_time:      clip.start_time,
+                end_time:        clip.end_time,
                 subjects,
-                captioner_type: getActiveCaptionerType(),
+                existing_action: clip.action || "",
+                captioner_type:  getActiveCaptionerType(),
+                prompt_override: profile.describe_prompt_override || "",
             });
             if (res.action) {
                 clips[i] = { ...clips[i], action: res.action };
@@ -1448,7 +1694,7 @@ async function _renderDetail(root) {
 
     // ── Header
     const header = _mk("div", { cls: "spe-detail-header" }, [
-        _mk("button", { cls: "spe-btn sm ghost", onclick: () => { _S.selected = null; _render(root.parentElement?.parentElement || root); } }, ["← Back"]),
+        _mk("button", { cls: "spe-btn sm ghost", onclick: () => { _S.selected = null; _render(root); } }, ["← Back"]),
         _mk("h3", {}, [profile.name || profile.id]),
         _mk("button", { cls: "spe-btn sm primary", onclick: () => _saveProfile(root, profile) }, ["Save"]),
     ]);
@@ -1840,6 +2086,9 @@ async function _runAnalysis(profile, analyzeBody, onSubjectsChanged) {
             end_time:         clip ? clip.end_time   : null,
             select_every_nth: _S.analyzeSelectNth ?? 1,
             max_frames:       _S.analyzeMaxFrames  ?? 20,
+            // Whole-video mode: pass duration so the backend can window the video
+            // instead of falling back to a single representative frame.
+            video_duration:   clip ? 0 : getTotalDuration(),
         });
 
         _S.analyzeCandidates = res.candidates ?? [];
@@ -1851,7 +2100,9 @@ async function _runAnalysis(profile, analyzeBody, onSubjectsChanged) {
             _renderHistory(analyzeBody._histWrap, profile, onSubjectsChanged);
         }
 
-        const modeNote = res.frame_count > 1 ? ` · ${res.frame_count} frames` : "";
+        const modeNote = res.frame_mode === "windowed_multi"
+            ? ` · ${res.frame_count} frames across full video`
+            : res.frame_count > 1 ? ` · ${res.frame_count} frames` : "";
         _toast(`Found ${_S.analyzeCandidates.length} candidate(s)${modeNote}`, "success");
     } catch (err) {
         _toast(`Analysis failed: ${_errMsg(err)}`, "error");
@@ -2005,7 +2256,10 @@ function _renderList(root) {
     }
 
     filtered.forEach(p => {
-        const subjects = p.subjects || [];
+        // subjects array is only present after the profile is opened (full fetch).
+        // subject_count comes from the list endpoint summary and is always available.
+        const subjects = Array.isArray(p.subjects) ? p.subjects : [];
+        const subjectCount = p.subject_count ?? subjects.length;
         const chips = subjects.slice(0, 4).map(s =>
             _mk("span", { cls: "spe-subject-chip" }, [
                 (() => { const i = _mk("i", {}); i.className = (ENTITY_ICONS[s.entity_type] || "pi pi-circle") + " spe-subj-icon"; i.style.fontSize = "10px"; return i; })(),
@@ -2014,17 +2268,24 @@ function _renderList(root) {
         );
         if (subjects.length > 4) chips.push(_mk("span", { cls: "spe-subject-chip" }, [`+${subjects.length - 4} more`]));
 
+        let bodyContent;
+        if (chips.length) {
+            bodyContent = chips;
+        } else if (subjectCount > 0) {
+            bodyContent = [_mk("span", { style: { color: "#888", fontSize: "11px" } }, [`${subjectCount} subject${subjectCount !== 1 ? "s" : ""} · open to view`])];
+        } else {
+            bodyContent = [_mk("span", { style: { color: "#666", fontSize: "11px" } }, ["No subjects annotated yet"])];
+        }
+
         const card = _mk("div", { cls: "spe-profile-card" + (p.id === _S.selected ? " active" : ""),
             onclick: () => { _S.selected = p.id; _S.editingSubject = null; _S.analyzeCandidates = []; _renderDetail(root); }
         }, [
             _mk("div", { cls: "spe-card-header" }, [
                 _mk("i", { cls: "pi pi-film" }),
                 _mk("span", { cls: "spe-card-name" }, [p.name || p.id]),
-                _mk("span", { cls: "spe-card-meta" }, [`${p.media_type || "video"} · ${subjects.length} subj`]),
+                _mk("span", { cls: "spe-card-meta" }, [`${p.media_type || "video"} · ${subjectCount} subj`]),
             ]),
-            _mk("div", { cls: "spe-card-body" }, chips.length ? chips : [
-                _mk("span", { style: { color: "#666", fontSize: "11px" } }, ["No subjects annotated yet"]),
-            ]),
+            _mk("div", { cls: "spe-card-body" }, bodyContent),
         ]);
         listEl.appendChild(card);
     });
