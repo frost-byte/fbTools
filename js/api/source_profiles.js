@@ -57,11 +57,12 @@ export class SourceProfilesAPI extends BaseAPI {
     detectSegments({ profile_id, video_duration = 0, interval_seconds = 0,
                      prompt_override = "", flags = null,
                      captioner_type = "qwen_vl", device = "auto",
-                     use_8bit = false }) {
+                     use_8bit = false, batch_window_seconds = 60 }) {
         return this.post("/source_profiles/detect_segments", {
             profile_id, video_duration, interval_seconds,
             prompt_override, flags,
             captioner_type, device, use_8bit,
+            batch_window_seconds,
         });
     }
 
@@ -71,11 +72,12 @@ export class SourceProfilesAPI extends BaseAPI {
      */
     describeClip({ profile_id, start_time, end_time,
                    captioner_type = "auto", device = "auto",
-                   use_8bit = false, subjects = [] }) {
+                   use_8bit = false, subjects = [],
+                   existing_action = "", prompt_override = "" }) {
         return this.post("/source_profiles/describe_clip", {
             profile_id, start_time, end_time,
             captioner_type, device, use_8bit,
-            subjects,
+            subjects, existing_action, prompt_override,
         });
     }
 
@@ -87,6 +89,20 @@ export class SourceProfilesAPI extends BaseAPI {
         return this.post("/source_profiles/auto_partition", {
             profile_id, video_duration, segment_duration,
         });
+    }
+
+    /** Replace a profile's entire clip list. Returns the updated profile. */
+    setClips({ profile_id, clips }) {
+        return this.post("/source_profiles/set_clips", { profile_id, clips });
+    }
+
+    /**
+     * Add inferred subjects to a profile, skipping any whose label already exists.
+     * subjects: [{label, role_description, entity_type}, ...]
+     * Returns { profile, added }.
+     */
+    mergeSubjects({ profile_id, subjects }) {
+        return this.post("/source_profiles/merge_subjects", { profile_id, subjects });
     }
 
     /** Save a single clip update to a profile. Returns the updated profile. */

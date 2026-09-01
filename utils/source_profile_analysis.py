@@ -539,6 +539,12 @@ _DETECT_BOUNDARY_TAIL = """\
 Minor continuous motion (walking, talking) within the same scene is NOT a
 transition unless there is a clear shift in what is happening.
 
+HARD CONSTRAINT: No segment may exceed 15 seconds. If a stretch of footage
+has no clear transition but would produce a segment longer than 15 seconds,
+subdivide it at natural midpoints (e.g. a pause, a movement beat, or simply
+the midpoint) until all segments are ≤15 seconds. Label subdivided segments
+with a sequential suffix (e.g. "Walking — part 1", "Walking — part 2").
+
 For each segment between transitions, provide:
 - start_time / end_time  (seconds)
 - label  (very short title, ≤8 words)
@@ -592,6 +598,7 @@ def build_segment_detection_prompt(
 def build_clip_description_prompt(
     prompt_override: str = "",
     subjects: list[tuple[str, str, str]] | None = None,
+    existing_action: str = "",
 ) -> str:
     """Return the VLM prompt for describing the action in a single clip frame.
 
@@ -601,36 +608,47 @@ def build_clip_description_prompt(
             [("A", "Elena", "woman with auburn hair"), ("B", "Marcus", "tall man")].
             When provided, the prompt instructs the VLM to use {A}, {B} placeholders
             instead of describing subjects' appearance inline.
+        existing_action: If non-empty, the current description for this clip. The VLM
+            is asked to refine/correct it rather than generating from scratch.
     """
-    if prompt_override.strip():
-        body = prompt_override.strip()
-        if _CLIP_DESCRIPTION_SCHEMA not in body:
-            body = body.rstrip() + "\n\n" + _CLIP_DESCRIPTION_SCHEMA
-        return body
-
     base = (
-        "Examine this video frame carefully.  Describe in 1-2 sentences "
-        "what action or situation is visually depicted — focus on what the "
-        "subjects are doing or what is occurring in the scene at this moment."
+        prompt_override.strip()
+        if prompt_override.strip()
+        else (
+            "Examine this video frame carefully.  Describe in 1-2 sentences "
+            "what action or situation is visually depicted — focus on what the "
+            "subjects are doing or what is occurring in the scene at this moment."
+        )
     )
 
-    if not subjects:
-        return base + "\n\n" + _CLIP_DESCRIPTION_SCHEMA
+    if subjects:
+        subject_lines = "\n".join(
+            f"  {{{slot}}} — {name}: {appearance}" if appearance else f"  {{{slot}}} — {name}"
+            for slot, name, appearance in subjects
+        )
+        placeholders = " / ".join(f"{{{slot}}}" for slot, _, _ in subjects)
+        subject_block = (
+            _SUBJECT_CONTEXT_HEADER
+            + subject_lines
+            + f"\n\nUse {placeholders} to refer to these subjects. "
+            + "Describe only the action, framing, and emotional register — "
+            + "not the subjects' appearance."
+        )
+    else:
+        subject_block = ""
 
-    subject_lines = "\n".join(
-        f"  {{{slot}}} — {name}: {appearance}" if appearance else f"  {{{slot}}} — {name}"
-        for slot, name, appearance in subjects
-    )
-    placeholders = " / ".join(f"{{{slot}}}" for slot, _, _ in subjects)
-    subject_block = (
-        _SUBJECT_CONTEXT_HEADER
-        + subject_lines
-        + f"\n\nUse {placeholders} to refer to these subjects. "
-        + "Describe only the action, framing, and emotional register — "
-        + "not the subjects' appearance."
-    )
+    if existing_action.strip():
+        refine_block = (
+            f'\n\nThe current description for this moment is:\n"{existing_action.strip()}"\n\n'
+            "Compare this description against what you actually see in the frame. "
+            "Keep what is accurate, correct any inaccuracies, and add any important "
+            "visual details that were missed. Return the refined description below."
+        )
+    else:
+        refine_block = ""
 
-    return base + subject_block + "\n\n" + _CLIP_DESCRIPTION_SCHEMA_WITH_SLOTS
+    schema = _CLIP_DESCRIPTION_SCHEMA_WITH_SLOTS if subjects else _CLIP_DESCRIPTION_SCHEMA
+    return base + subject_block + refine_block + "\n\n" + schema
 
 
 def _parse_segments_response(raw: str, video_duration: float = 0.0) -> list[dict]:
@@ -713,3 +731,106 @@ def parse_clip_description_response(raw: str) -> str:
         pass
     # Fallback: return raw stripped text
     return text[:300]
+
+
+_SUBJECT_INFERENCE_SCHEMA = """\
+Return ONLY valid JSON — no markdown fences, no prose:
+{
+  "subjects": [
+    {
+      "label": "brief 1–6 word identifier, e.g. 'woman in red jacket'",
+      "role_description": "1-2 sentences describing their role or recurring activity",
+      "entity_type": "person | object | location | animal | soundscape"
+    }
+  ]
+}"""
+
+
+def build_subject_inference_prompt(
+    action_texts: list[str],
+    existing_labels: list[str] | None = None,
+) -> str:
+    """Build a text-only prompt that asks the LLM to identify recurring subjects.
+
+    action_texts is the list of action-description strings from detect-segments output.
+    existing_labels, if provided, tells the LLM to reuse those names rather than
+    inventing new ones — preventing semantic duplicates across detect runs.
+    Returns at most 40 descriptions to stay within token limits.
+    """
+    sample = action_texts[:40]
+    numbered = "\n".join(f"{i + 1}. {t.strip()}" for i, t in enumerate(sample) if t.strip())
+
+    existing_block = ""
+    if existing_labels:
+        label_list = "\n".join(f'  - "{lbl}"' for lbl in existing_labels if lbl.strip())
+        existing_block = (
+            "\n\nThe following subjects are already defined for this video. "
+            "If a subject in the descriptions matches one of these, use the EXACT same label "
+            "rather than inventing a new name:\n"
+            + label_list
+            + "\n"
+        )
+
+    return (
+        "The following action descriptions were extracted from different moments in a video.\n\n"
+        f"{numbered}\n"
+        f"{existing_block}\n"
+        "Based on these descriptions, identify the distinct recurring subjects "
+        "(people, objects, or locations) that appear across multiple descriptions. "
+        "Focus on subjects mentioned in at least 2 descriptions. "
+        "Only return subjects not already covered by the existing labels above. "
+        "For each subject provide a short label, a 1–2 sentence role description, "
+        "and an entity type.\n\n"
+        + _SUBJECT_INFERENCE_SCHEMA
+    )
+
+
+def parse_inferred_subjects_response(raw: str) -> list[dict]:
+    """Parse the LLM subject inference response into a list of subject dicts.
+
+    Each returned dict has: label, role_description, entity_type.
+    Malformed entries are silently skipped.
+    """
+    _VALID_ENTITY_TYPES = {"person", "object", "location", "animal", "soundscape"}
+
+    text = raw.strip()
+    m = _FENCE_RE.search(text)
+    if m:
+        text = m.group(1).strip()
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        brace_m = re.search(r"\{.*\}", text, re.DOTALL)
+        if brace_m:
+            try:
+                data = json.loads(brace_m.group(0))
+            except json.JSONDecodeError:
+                return []
+        else:
+            return []
+
+    if isinstance(data, dict):
+        raw_subjects = data.get("subjects", [])
+    elif isinstance(data, list):
+        raw_subjects = data
+    else:
+        return []
+
+    results: list[dict] = []
+    for entry in raw_subjects:
+        if not isinstance(entry, dict):
+            continue
+        label = str(entry.get("label", "")).strip()
+        if not label:
+            continue
+        entity_type = str(entry.get("entity_type", "person")).strip().lower()
+        if entity_type not in _VALID_ENTITY_TYPES:
+            entity_type = "person"
+        results.append({
+            "label":            label,
+            "role_description": str(entry.get("role_description", "")).strip(),
+            "entity_type":      entity_type,
+        })
+
+    return results

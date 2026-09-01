@@ -18,6 +18,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+modal = [
+    "modal>=0.70",
+]
+scripts = [
+    "playwright>=1.40",
+]
 dev = [
     "python-semantic-release",
     "coverage",

@@ -14,14 +14,39 @@ class ModalAPI extends BaseAPI {
         return this.get("/status");
     }
 
-    /** Activate the Modal backend.  body: { model_key, quantize }. */
-    activate(modelKey, quantize = true) {
-        return this.post("/activate", { model_key: modelKey, quantize });
+    /** Activate the Modal backend.  body: { model_key, quantize, gpu }. */
+    activate(modelKey, quantize = true, gpu = "L40S") {
+        return this.post("/activate", { model_key: modelKey, quantize, gpu });
     }
 
     /** Deactivate the Modal backend (clears local state only). */
     deactivate() {
         return this.post("/deactivate", {});
+    }
+
+    /**
+     * Compute a VRAM estimate and GPU recommendation for the given model+config.
+     * opts: { quantize, contextLength, frameBudget, modality, priority }
+     */
+    recommend(modelKey, opts = {}) {
+        const { quantize = true, contextLength = 8192, frameBudget = 20,
+                modality = "image", priority = "cost" } = opts;
+        return this.get("/recommend", {
+            model_key:      modelKey,
+            quantize:       quantize ? "true" : "false",
+            context_length: contextLength,
+            frame_budget:   frameBudget,
+            modality,
+            priority,
+        });
+    }
+
+    /**
+     * Fetch and cache a VRAM profile for a custom HuggingFace repo.
+     * opts: { refresh }
+     */
+    profileRepo(repoId, opts = {}) {
+        return this.post("/profile_repo", { repo_id: repoId, refresh: !!opts.refresh });
     }
 }
 

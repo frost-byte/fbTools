@@ -27,6 +27,10 @@ Welcome to the comfyui-fbTools documentation. This directory contains all docume
 - [Video Prompt UI Layout](VIDEO_PROMPT_UI_LAYOUT.md) - Video prompt interface design
 - [Video Prompt UX Implementation](VIDEO_PROMPT_UX_IMPLEMENTATION.md) - User experience details
 
+### VLM / LLM Systems
+- [VLM Systems](vlm_systems.md) - The two existing VLM backends (dataset captioning vs. Compose LLM panel) and their routing rule
+- [Modal Vision Backend Integration](modal_vision_backend_integration.md) - Handoff notes for wiring in a Modal-cloud-hosted vision LLM as a third backend option
+
 ### Development
 - [Debugging Guide](DEBUGGING.md) - Runtime debug flags and troubleshooting
 - [Development Notes](DEVELOPMENT_NOTES.md) - Developer notes and implementation details
