@@ -354,6 +354,10 @@ const _CSS = `
 .spe-lora-rm { background:transparent; border:none; color:var(--p-red-400,#f87171);
     cursor:pointer; font-size:13px; padding:0 3px; line-height:1; }
 .spe-lora-rm:hover { color:var(--p-red-300,#fca5a5); }
+.spe-lora-apply-all { background:transparent; border:none; color:var(--p-blue-400,#60a5fa);
+    cursor:pointer; font-size:10px; padding:0 4px; line-height:1; opacity:0.65; white-space:nowrap; }
+.spe-lora-apply-all:hover { opacity:1; }
+.spe-lora-apply-all:disabled { opacity:0.25; cursor:default; }
 .spe-lora-empty { font-size:11px; color:var(--p-text-muted-color,#666);
     font-style:italic; margin-bottom:3px; }
 .spe-lora-add { background:transparent; border:1px dashed var(--p-surface-border,#444);
@@ -635,7 +639,7 @@ function _makeLoraNameInput(currentValue, onChange) {
     return wrap;
 }
 
-function _buildClipLoraSection(clip, onCommit) {
+function _buildClipLoraSection(clip, onCommit, onApplyToAll = null) {
     const section = _mk("div", { cls: "spe-lora-section" });
     const header  = _mk("div", { cls: "spe-lora-header" }, [
         _mk("span", {}, ["LoRAs"]),
@@ -671,6 +675,16 @@ function _buildClipLoraSection(clip, onCommit) {
                 onCommit();
             });
 
+            const applyAllBtn = _mk("button", {
+                cls: "spe-lora-apply-all",
+                title: "Apply to all segments (skips any that already have this LoRA; preserves their weight)",
+                textContent: "→ all",
+                disabled: !entry.name,
+            });
+            applyAllBtn.addEventListener("click", () => {
+                if (entry.name && onApplyToAll) onApplyToAll({ ...loras[i] });
+            });
+
             const rmBtn = _mk("button", { cls: "spe-lora-rm", title: "Remove", textContent: "✕" });
             rmBtn.addEventListener("click", () => {
                 loras.splice(i, 1);
@@ -679,7 +693,7 @@ function _buildClipLoraSection(clip, onCommit) {
                 _rebuild();
             });
 
-            listEl.appendChild(_mk("div", { cls: "spe-lora-row" }, [nameWrap, strengthInp, rmBtn]));
+            listEl.appendChild(_mk("div", { cls: "spe-lora-row" }, [nameWrap, strengthInp, applyAllBtn, rmBtn]));
         });
 
         const addBtn = _mk("button", { cls: "spe-lora-add", textContent: "+ Add LoRA" });
@@ -1250,12 +1264,105 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                     commitClip(i);
                     updateSlotLabels();
                 };
-                subjWrap.appendChild(_mk("label", { cls: "spe-clip-subj-check" },
-                    [cb, " " + (s.label || s.id), slotSpan]));
+
+                const addAllBtn = _mk("button", {
+                    cls: "spe-btn sm ghost",
+                    title: `Check "${s.label || s.id}" in all segments`,
+                    textContent: "→ all",
+                    style: { padding: "1px 5px", fontSize: "10px", opacity: "0.6" },
+                });
+                addAllBtn.addEventListener("click", e => {
+                    e.preventDefault();
+                    clips.forEach((c, j) => {
+                        const cur = new Set(c.subjects || []);
+                        if (cur.has(s.id)) return;
+                        cur.add(s.id);
+                        clips[j] = { ...clips[j], subjects: [...cur] };
+                        commitClip(j);
+                    });
+                    renderClipList();
+                    _toast(`"${s.label || s.id}" added to all segments`, "success");
+                });
+
+                const rmAllBtn = _mk("button", {
+                    cls: "spe-btn sm ghost",
+                    title: `Uncheck "${s.label || s.id}" in all segments`,
+                    textContent: "✕ all",
+                    style: { padding: "1px 5px", fontSize: "10px", opacity: "0.6", color: "var(--p-red-400,#f87171)" },
+                });
+                rmAllBtn.addEventListener("click", e => {
+                    e.preventDefault();
+                    clips.forEach((c, j) => {
+                        const cur = new Set(c.subjects || []);
+                        if (!cur.has(s.id)) return;
+                        cur.delete(s.id);
+                        clips[j] = { ...clips[j], subjects: [...cur] };
+                        commitClip(j);
+                    });
+                    renderClipList();
+                    _toast(`"${s.label || s.id}" removed from all segments`, "success");
+                });
+
+                subjWrap.appendChild(
+                    _mk("div", { style: { display: "flex", alignItems: "center", gap: "4px", marginBottom: "2px" } }, [
+                        _mk("label", { cls: "spe-clip-subj-check", style: { flex: "1", marginBottom: "0" } },
+                            [cb, " " + (s.label || s.id), slotSpan]),
+                        addAllBtn,
+                        rmAllBtn,
+                    ])
+                );
             });
             updateSlotLabels();
 
-            const loraSection = _buildClipLoraSection(clips[i], () => commitClip(i));
+            const applyLoraToAll = (loraEntry) => {
+                if (!loraEntry.name) return;
+                let applied = 0;
+                clips.forEach((c, j) => {
+                    if (j === i) return;
+                    if ((c.loras || []).some(l => l.name === loraEntry.name)) return;
+                    clips[j] = { ...clips[j], loras: [...(c.loras || []), { ...loraEntry }] };
+                    commitClip(j);
+                    applied++;
+                });
+                _toast(
+                    applied ? `LoRA added to ${applied} segment${applied !== 1 ? "s" : ""}` : "All segments already have this LoRA",
+                    applied ? "success" : "info"
+                );
+            };
+
+            const applySoundscapeAllBtn = _mk("button", {
+                cls: "spe-btn sm ghost",
+                title: "Copy this soundscape to all segments",
+                textContent: "→ all",
+                style: { padding: "1px 5px", fontSize: "10px", opacity: "0.65" },
+            });
+            applySoundscapeAllBtn.addEventListener("click", () => {
+                const val = soundscapeEl.value;
+                clips.forEach((c, j) => {
+                    if (j === i) return;
+                    clips[j] = { ...clips[j], overall_soundscape: val };
+                    commitClip(j);
+                });
+                _toast("Soundscape applied to all segments", "success");
+            });
+
+            const applyMusicAllBtn = _mk("button", {
+                cls: "spe-btn sm ghost",
+                title: "Copy this music to all segments",
+                textContent: "→ all",
+                style: { padding: "1px 5px", fontSize: "10px", opacity: "0.65" },
+            });
+            applyMusicAllBtn.addEventListener("click", () => {
+                const val = musicEl.value;
+                clips.forEach((c, j) => {
+                    if (j === i) return;
+                    clips[j] = { ...clips[j], non_diegetic_music: val };
+                    commitClip(j);
+                });
+                _toast("Music applied to all segments", "success");
+            });
+
+            const loraSection = _buildClipLoraSection(clips[i], () => commitClip(i), applyLoraToAll);
 
             const dlgCb = _mk("input", { type: "checkbox" });
             dlgCb.checked = clip.allows_dialogue !== false;
@@ -1269,9 +1376,15 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 actionEl,
                 subjects.length ? subjWrap : null,
                 _mk("div", { style: { display: "flex", gap: "4px" } }, [describeBtn]),
-                _mk("div", { cls: "spe-clip-field-label", textContent: "Overall soundscape" }),
+                _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" } }, [
+                    _mk("span", { cls: "spe-clip-field-label", style: { flex: "1", marginBottom: "0" } }, ["Overall soundscape"]),
+                    applySoundscapeAllBtn,
+                ]),
                 soundscapeEl,
-                _mk("div", { cls: "spe-clip-field-label", textContent: "Non-diegetic music" }),
+                _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" } }, [
+                    _mk("span", { cls: "spe-clip-field-label", style: { flex: "1", marginBottom: "0" } }, ["Non-diegetic music"]),
+                    applyMusicAllBtn,
+                ]),
                 musicEl,
                 _mk("label", { cls: "spe-clip-subj-check", style: { marginTop: "4px" }, title: "When off, dialogue from cast entries is ignored for this segment" }, [dlgCb, " Allows dialogue"]),
                 loraSection,
@@ -1285,9 +1398,21 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                     buildProxyBtn.disabled = true;
                     buildProxyBtn.textContent = "…";
                     try {
-                        await sourceProfilesApi.prebuildProxies({ profile_id: profile.id, clip_id: clip.id });
-                        setTimeout(() => _refreshProxyStatus(), 3000);
-                        setTimeout(() => _refreshProxyStatus(), 8000);
+                        const res = await sourceProfilesApi.prebuildProxies({ profile_id: profile.id, clip_id: clip.id });
+                        if ((res.clip_count ?? 1) === 0) {
+                            _toast("Clip not found on server — try saving the profile first", "warn");
+                        } else {
+                            _toast(`Building proxy for "${clip.label || `Clip ${i + 1}`}" in background`, "info");
+                            // Poll with increasing intervals; stop early once the proxy is marked fresh
+                            const _pollDelays = [5000, 10000, 15000, 20000, 30000, 60000];
+                            let _pi = 0;
+                            const _poll = async () => {
+                                await _refreshProxyStatus();
+                                if (_proxyStatusMap[clip.id]?.fresh && !_isProxyDirty(clips[i])) return;
+                                if (++_pi < _pollDelays.length) setTimeout(_poll, _pollDelays[_pi]);
+                            };
+                            setTimeout(_poll, _pollDelays[0]);
+                        }
                     } catch (err) {
                         _toast(`Proxy build failed: ${err.message}`, "error");
                     } finally {
