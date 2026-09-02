@@ -391,6 +391,7 @@ import { setupDatasetCaptionerStatus } from "./nodes/dataset_caption_status.js";
 import { setupLoraEntryDefine, setupLoraPresetDefine, setupLoraPresetSelect, setupWanPresetDefine, setupWanPresetSelect, setupLoraStackBuilder } from "./nodes/lora.js";
 import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.js";
 import { setupSceneCastBuild } from "./nodes/scene_cast_build.js";
+import { setupSourceProfileLoad } from "./nodes/source_profile_load.js";
 import { setupSourceProfileClipPrompt } from "./nodes/source_profile_clip_prompt.js";
 import { renderFbtPanel } from "./ui/fbt_panel.js";
 import { patchNodeForTracking } from "./utils/run_tracker.js";
@@ -529,6 +530,9 @@ app.registerExtension({
         // Scene Cast nodes
         else if (isNode("SceneCastBuild")) {
             setupSceneCastBuild(nodeType, nodeData, app);
+        }
+        else if (isNode("SourceProfileLoad")) {
+            setupSourceProfileLoad(nodeType, nodeData, app);
         }
         else if (isNode("SourceProfileClipPrompt")) {
             setupSourceProfileClipPrompt(nodeType, nodeData, app);
