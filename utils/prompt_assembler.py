@@ -439,6 +439,7 @@ def _build_ref_map(
             "soundtrack_num": soundtrack_num,
             "soundtrack_retention": soundtrack_retention,
             "soundtrack_role": soundtrack_role,
+            "entity_type": subject.get("entity_type", "person"),
             "retention_marker": (
                 retention_markers.get(slot_id)
                 or subject.get("_cast_retention", "fully_preserved")
@@ -1120,6 +1121,13 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 detail_parts.append(f"wearing {info['outfit']}")
             detail_phrase = f", with {_join_details(detail_parts)}" if detail_parts else ""
             preserve_desc = f"{summary_body}{detail_phrase}" if summary_body else "appearance retained"
+            # For non-person subjects (objects, locations, animals) sourced from a video,
+            # anchor the preserve description to the source video so H3 knows where to
+            # sample the visual reference from.
+            if (info["video_num"] is not None
+                    and not info.get("picture_nums")
+                    and info.get("entity_type", "person") != "person"):
+                preserve_desc = preserve_desc.rstrip(". ") + f", as seen in <Video {info['video_num']}>"
 
         ra_retention = "fully_preserved" if subj_retention == "attribute_transfer" else subj_retention
         ra.append(f"{label} ({appears_clause}): {ra_retention} - {preserve_desc}.")

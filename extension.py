@@ -12445,9 +12445,10 @@ class SourceProfileClipPrompt(io.ComfyNode):
 
         for i, sid in enumerate(source_subject_ids):
             src_slot = SOURCE_SLOTS[i]
-            subj     = subject_index[sid]
-            label    = subj.get("label", sid)
-            etype    = subj.get("entity_type", "person").lower()
+            subj      = subject_index[sid]
+            label     = subj.get("label", sid)
+            etype     = subj.get("entity_type", "person").lower()
+            role_desc = subj.get("role_description", "")
 
             # Pronoun style: prefer explicit field on the subject; fall back to
             # entity_type-based default so location/object subjects say "its"/"the X's"
@@ -12466,7 +12467,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
                 "concept_id":             None,
                 "character_sheet_images": [],
                 "appearance": {
-                    "summary":        label,   # concise label, not the full action sentence
+                    "summary":        role_desc or label,
                     "hair":           "",
                     "face":           "",
                     "body":           "",
@@ -12476,6 +12477,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
                 "_cast_retention": "fully_preserved",
                 "_pronoun_style":  pronoun_style,
                 "_short_name":     short_name,
+                "entity_type":     etype,
             }
 
             # If a bundle is assigned to this source subject, add a replacement slot.
