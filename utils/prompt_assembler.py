@@ -1296,24 +1296,6 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 "The target video is a photorealistic, seamless identity-replacement edit "
                 "with strong temporal consistency."
             )
-            for _s in _bun_slots:
-                _bun_info = ref_map[_s]
-                _src_slot_id = _bun_info.get("transfer_to_slot", "")
-                _src_info = ref_map.get(_src_slot_id)
-                if not _src_info:
-                    continue
-                _src_vnum = _src_info.get("video_num")
-                _src_raw = _src_info.get("appearance_summary", "") or _src_info.get("name", "")
-                _src_lower = (_src_raw[0].lower() + _src_raw[1:]).rstrip(". ") if _src_raw else ""
-                # Strip leading article so we can wrap uniformly in "The …"
-                _src_desc = re.sub(r"^(?:an? |the )", "", _src_lower).strip() if _src_lower else "replaced subject"
-                _bun_label = _bun_info["subject_label"]
-                if _src_vnum is not None:
-                    dd.append(
-                        f"The {_src_desc} in <Video {_src_vnum}> is completely replaced by {_bun_label}."
-                    )
-                else:
-                    dd.append(f"The {_src_desc} is completely replaced by {_bun_label}.")
 
     seen_globally: set[str] = set()
 
