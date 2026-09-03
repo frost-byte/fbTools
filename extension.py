@@ -12293,6 +12293,19 @@ class SourceProfileClipPrompt(io.ComfyNode):
                         "and images replace raw source-profile role descriptions for matched subjects."
                     ),
                 ),
+                io.Boolean.Input(
+                    "include_original_subject_tags",
+                    display_name="Tag Replaced Subjects",
+                    default=False,
+                    tooltip=(
+                        "When enabled, each source-profile subject being replaced by a SceneCastBuild bundle "
+                        "gets its own <Subject N> tag in subject_definitions (minimal description) and an "
+                        "attribute_transfer entry in retention_analysis that explicitly scopes motion transfer "
+                        "to the replacement while stating that face, hair, and clothing are NOT copied. "
+                        "Use to A/B test whether explicit original-subject tagging improves swap quality."
+                    ),
+                    optional=True,
+                ),
             ],
             outputs=[
                 io.String.Output(
@@ -12358,6 +12371,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         model_type: str = "h3_ref2va",
         filename_prefix: str = "",
         scene_cast=None,
+        include_original_subject_tags: bool = False,
     ) -> io.NodeOutput:
         if source_profile is None:
             return io.NodeOutput("", None, [], "", 0, 0, 0, "No source profile connected.", "")
@@ -12708,13 +12722,14 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # ── Build scene_instance ────────────────────────────────────────────────
         _shot_id = f"{clip_id_used}_shot_1"
         scene_instance = {
-            "template_id":      profile_id,
-            "template_name":    profile_name,
-            "task_flags":       task_flags,
-            "scene_synopsis":   scene_synopsis,
-            "slot_assignments": slot_assignments,
-            "dialogue":         {},
-            "outfit_overrides": {},
+            "template_id":                  profile_id,
+            "template_name":                profile_name,
+            "task_flags":                   task_flags,
+            "scene_synopsis":               scene_synopsis,
+            "slot_assignments":             slot_assignments,
+            "dialogue":                     {},
+            "outfit_overrides":             {},
+            "include_original_subject_tags": include_original_subject_tags,
             "template": {
                 "shots": [
                     {

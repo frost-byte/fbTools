@@ -330,7 +330,11 @@ def _build_ref_map(
     # Pre-assign Subject N numbers with bundle subjects first.
     # Processing order (audio ordinals, picture ordinals) stays alphabetical so
     # it matches _build_h3_refplan().  Only the visible Subject label uses this
-    # bundle-first numbering.  Replaced source slots get no Subject label.
+    # bundle-first numbering.  Replaced source slots get no Subject label by
+    # default; they receive one only when include_original_subject_tags is set,
+    # so the assembler can emit a minimal original-subject definition and a
+    # scoped attribute_transfer entry in retention_analysis.
+    _include_orig_tags: bool = bool(scene_instance.get("include_original_subject_tags", False))
     _pre_subject_nums: dict[str, int] = {}
     _sub_ctr = 1
     for _sid in ordered_slots:  # bundles (attribute_transfer) first
@@ -342,7 +346,11 @@ def _build_ref_map(
         if _m not in ("attribute_transfer", "replaced"):
             _pre_subject_nums[_sid] = _sub_ctr
             _sub_ctr += 1
-    # Replaced source slots intentionally omitted — they get no Subject N label.
+    if _include_orig_tags:
+        for _sid in ordered_slots:  # replaced source subjects last (flag-gated)
+            if assignments.get(_sid, {}).get("_cast_retention", "fully_preserved") == "replaced":
+                _pre_subject_nums[_sid] = _sub_ctr
+                _sub_ctr += 1
 
     for slot_id in ordered_slots:
         subject = assignments.get(slot_id)
@@ -700,6 +708,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     dialogue_map = scene_instance.get("dialogue", {})
     ordered_slots = sorted(ref_map.keys())
     sections: list[str] = []
+    include_orig_tags: bool = bool(scene_instance.get("include_original_subject_tags", False))
 
     # Resolve task flags early — needed in both subject_definitions and summary
     user_flags: list[str] = scene_instance.get("task_flags") or []
@@ -765,6 +774,10 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         + [s for s in ordered_slots
            if ref_map[s].get("retention_marker") not in ("attribute_transfer", "replaced")
            and bool(ref_map[s].get("subject_label"))]
+        + ([s for s in ordered_slots
+            if ref_map[s].get("retention_marker") == "replaced"
+            and bool(ref_map[s].get("subject_label"))]
+           if include_orig_tags else [])
     )
 
     sd: list[str] = []
@@ -1082,6 +1095,10 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         + [s for s in ordered_slots
            if ref_map[s].get("retention_marker") not in ("attribute_transfer", "replaced")
            and bool(ref_map[s].get("subject_label"))]
+        + ([s for s in ordered_slots
+            if ref_map[s].get("retention_marker") == "replaced"
+            and bool(ref_map[s].get("subject_label"))]
+           if include_orig_tags else [])
     )
     for slot_id in _ra_display_slots:
         info = ref_map[slot_id]
@@ -1113,6 +1130,27 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 preserve_desc = (
                     f"The appearance of {bun_desc} overrides that of {src_desc} in the source video"
                 )
+            ra_retention = "fully_preserved"
+        elif subj_retention == "replaced":
+            # Original source subject being replaced — scoped attribute_transfer.
+            # Motion/pose/timing transfer to the bundle; appearance does NOT carry over.
+            bun_slot_id = info.get("transfer_to_slot", "")
+            bun_info = ref_map.get(bun_slot_id)
+            bun_label = bun_info["subject_label"] if bun_info else "<Subject ?>"
+            if bun_info and bun_info.get("picture_nums"):
+                bun_ref = f"<Picture {bun_info['picture_nums'][0]}>"
+            elif bun_info and bun_info.get("video_num") is not None:
+                bun_ref = f"<Video {bun_info['video_num']}>"
+            else:
+                bun_ref = ""
+            preserve_desc = (
+                f"pose, movement, gestures, timing and screen position transfer to {bun_label}; "
+                f"the original's appearance, including face, hair, and clothing, is NOT copied "
+                f"and is fully replaced by {bun_label}'s appearance"
+            )
+            if bun_ref:
+                preserve_desc += f" from {bun_ref}"
+            ra_retention = "attribute_transfer"
         else:
             # Build the same appearance phrase used in subject_definitions (minus the ref anchor).
             summary = info["appearance_summary"]
@@ -1132,8 +1170,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                     and not info.get("picture_nums")
                     and info.get("entity_type", "person") != "person"):
                 preserve_desc = preserve_desc.rstrip(". ") + f", as seen in <Video {info['video_num']}>"
+            ra_retention = subj_retention
 
-        ra_retention = "fully_preserved" if subj_retention == "attribute_transfer" else subj_retention
         ra.append(f"{label} ({appears_clause}): {ra_retention} - {preserve_desc}.")
 
     # Video entries: "<Video N> (role): <status> - ..."
