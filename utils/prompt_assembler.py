@@ -1145,8 +1145,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 bun_ref = ""
             preserve_desc = (
                 f"pose, movement, gestures, timing and screen position transfer to {bun_label}; "
-                f"the original's appearance, including face, hair, and clothing, is NOT copied "
-                f"and is fully replaced by {bun_label}'s appearance"
+                f"the original's appearance, including face, hair, and clothing, is fully replaced "
+                f"by {bun_label}'s appearance"
             )
             if bun_ref:
                 preserve_desc += f" from {bun_ref}"
