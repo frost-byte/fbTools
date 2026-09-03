@@ -1,6 +1,143 @@
 # CHANGELOG
 
 
+## v1.25.0 (2026-09-03)
+
+### Bug Fixes
+
+- **h3**: Drop per-replacement sentences from detailed_description preamble
+  ([`4508930`](https://github.com/frost-byte/fbTools/commit/45089307c35b230f9931f142a4cc91f70683ec41))
+
+The "The man in gray shirt is completely replaced by <Subject 1>." lines reiterated what
+  subject_definitions and retention_analysis already cover. Keep only the single quality directive
+  ("The target video is a photorealistic, seamless identity-replacement edit with strong temporal
+  consistency.") before the shot descriptions begin.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **h3**: Simplify attribute_transfer replaced-subject prose
+  ([`5651a99`](https://github.com/frost-byte/fbTools/commit/5651a996422d2de5e407e6ed48b263c5463dc59b))
+
+Remove the redundant "is NOT copied and" phrase — "is fully replaced by" carries the intent
+  unambiguously on its own and avoids double-encoding the same constraint for the model.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **h3**: Use appearance descriptions (not identifiers) in attribute_transfer prose
+  ([`964a80c`](https://github.com/frost-byte/fbTools/commit/964a80c28128fd8b81d3dc81b76ed7ac2715cda1))
+
+Two fixes in prompt_assembler.py:
+
+1. subject_definitions motion clause: `src_info.get("name")` was always truthy so
+  `appearance_summary` never fired — flipped priority to prefer appearance_summary over name for the
+  "match those of ... in <Video N>" clause.
+
+2. retention_analysis attribute_transfer branch: replaced `info['name']` (bundle identifier like
+  "demon_3") and `src_name` (bare source label) with full appearance descriptions for both parties.
+  Restructured the sentence from "{name}'s appearance overrides that of {label}" to "The appearance
+  of {bun_desc} overrides that of {src_desc}" to avoid possessive-on-description grammar problems.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **h3**: Use role_description and video anchor in retention_analysis for non-person subjects
+  ([`1389501`](https://github.com/frost-byte/fbTools/commit/13895010282baaf69bd4d16bf8bc435fa4e6411a))
+
+Source profile subjects (objects, locations, animals) were emitting only the bare label in both
+  subject_definitions and retention_analysis because appearance.summary was set to just the label
+  rather than role_description.
+
+Changes: - extension.py SceneCastBuild: set appearance.summary to role_description when available
+  (fallback to label); store entity_type in slot_assignments - prompt_assembler.py _build_ref_map:
+  propagate entity_type into ref_map - prompt_assembler.py retention_analysis: append ", as seen in
+  <Video N>" for non-person subjects that have a video reference but no picture references
+
+Result: a bed subject with a rich role_description now emits a full description in
+  subject_definitions and retention_analysis, plus a <Video N> anchor so H3 knows which source video
+  to sample the visual reference from.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Always persist proxy_built_at when server reports a fresh proxy
+  ([`c2cfbb0`](https://github.com/frost-byte/fbTools/commit/c2cfbb09df122a24d27e987cf0d2862ecef875a3))
+
+The !_isProxyDirty() guard in _refreshProxyStatus prevented proxy_built_at from ever being written
+  back to disk after a browser reload. Because proxy_built_at was undefined after reload,
+  _isProxyDirty returned true, the guard blocked _persistClip, and the badge permanently showed
+  "needs rebuild" even for cached proxies. On click, the backend correctly found the proxy fresh and
+  skipped ffmpeg — leaving the user with a toast but no machine activity.
+
+Fix: when the server authoritatively says c.fresh = true, always update and persist proxy_built_at
+  regardless of the client-side dirty state.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Clip segment QoL — apply-all for LoRA/subjects/soundscape/music, proxy status polling
+  ([`376764a`](https://github.com/frost-byte/fbTools/commit/376764a05756a5da434277772785cc1610bb4c8a))
+
+Source profile editor clip section: - Add "→ all" button per LoRA entry: copies LoRA to all other
+  segments that lack it; preserves existing weight in segments that already have it - Add "→ all" /
+  "✕ all" per subject: bulk-checks or unchecks a subject across every segment in the profile - Add
+  "→ all" per soundscape and non-diegetic music field: copies current segment's value to all other
+  segments - Single-clip proxy build now shows a toast on success/failure and detects clip_count=0
+  (clip not yet persisted on server) - Replace fixed 3s/8s status timeouts with adaptive poll
+  (5→10→15→20→30→60s) that stops early once the proxy is marked fresh, fixing stale "needs rebuild"
+  badge after a single-clip proxy build completes
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Features
+
+- **h3**: Tag Replaced Subjects toggle for original-subject attribute_transfer
+  ([`0f0eda8`](https://github.com/frost-byte/fbTools/commit/0f0eda83df65ac7ef6008761b30b8009a89d1ff7))
+
+Adds an opt-in "Tag Replaced Subjects" boolean input to SourceProfileClipPrompt.
+
+When enabled, each source-profile subject that is being replaced by a SceneCastBuild bundle
+  receives:
+
+- A <Subject N> tag in subject_definitions with their role_description (identifiable but no
+  structured hair/face/body detail fields, which are empty for source subjects). - A scoped
+  attribute_transfer entry in retention_analysis that explicitly states: pose, movement, gestures,
+  timing and screen position transfer to <Subject M>; the original's appearance, including face,
+  hair, and clothing, is NOT copied and is fully replaced by <Subject M>'s appearance from <Picture
+  P>/<Video N>.
+
+The original subject numbers are assigned last (after bundle replacements and retained subjects), so
+  existing Subject N ordinals are unaffected.
+
+Gated behind the checkbox (default off) so the user can A/B the scoped-tag version against no-tag at
+  a fixed seed before committing. Plan documented in docs/h3_attribute_transfer_assembler_plan.md.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **ui**: Propagate SourceProfileLoad combo changes to downstream nodes
+  ([`4793832`](https://github.com/frost-byte/fbTools/commit/47938329f3f8862ff1b717f1951f94be2e85646d))
+
+Hook profile_name widget callback on SourceProfileLoad to fire onConnectionsChange on every node
+  connected to its output when the selected profile changes. SceneCastBuild (and
+  SourceProfileClipPrompt) now refresh their clip selectors and source subject columns immediately
+  on combo change without requiring the user to disconnect and reconnect the wire or execute the
+  graph.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.24.0 (2026-09-01)
 
 ### Bug Fixes
