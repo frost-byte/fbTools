@@ -836,7 +836,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             src_info = ref_map.get(src_slot_id)
             if src_info:
                 src_vnum = src_info.get("video_num")
-                src_name = src_info.get("name") or src_info.get("appearance_summary") or "the replaced subject"
+                src_name = src_info.get("appearance_summary") or src_info.get("name") or "the replaced subject"
                 if src_vnum is not None:
                     motion_clause = (
                         f" Their pose, movement, and screen position in the scene "
@@ -1098,16 +1098,20 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             # Bundle subject replacing a source profile subject.
             src_slot_id = info.get("transfer_to_slot", "")
             src_info = ref_map.get(src_slot_id)
-            src_name = src_info.get("name", "the replaced subject") if src_info else "the replaced subject"
+            bun_desc = info.get("appearance_summary") or info["name"]
+            src_desc = (
+                (src_info.get("appearance_summary") or src_info.get("name", "the replaced subject"))
+                if src_info else "the replaced subject"
+            )
             src_vnum = src_info.get("video_num") if src_info else None
             if src_vnum is not None:
                 preserve_desc = (
-                    f"{info['name']}'s appearance overrides that of {src_name} in the source video. "
-                    f"Their pose, movement, and screen position match those of {src_name} in <Video {src_vnum}>"
+                    f"The appearance of {bun_desc} overrides that of {src_desc} in the source video. "
+                    f"Their pose, movement, and screen position match those of {src_desc} in <Video {src_vnum}>"
                 )
             else:
                 preserve_desc = (
-                    f"{info['name']}'s appearance overrides that of {src_name} in the source video"
+                    f"The appearance of {bun_desc} overrides that of {src_desc} in the source video"
                 )
         else:
             # Build the same appearance phrase used in subject_definitions (minus the ref anchor).
