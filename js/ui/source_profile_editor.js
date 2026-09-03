@@ -1134,7 +1134,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 _proxyStatusMap[c.clip_id] = c;
                 if (c.fresh) {
                     const idx = clips.findIndex(cl => cl.id === c.clip_id);
-                    if (idx >= 0 && !_isProxyDirty(clips[idx])) {
+                    if (idx >= 0) {
                         clips[idx] = { ...clips[idx], proxy_built_at: now };
                         profile.clips = clips;
                         _persistClip(clips[idx]);
