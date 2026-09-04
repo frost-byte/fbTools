@@ -17062,13 +17062,17 @@ async def _route_text(
 ) -> dict:
     """Route text-only inference: Unsloth when active, llm_client otherwise."""
     if _unsloth_client.is_active():
-        return await asyncio.to_thread(
-            _unsloth_client.generate,
-            prompt,
-            system_prompt=system_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        try:
+            return await asyncio.to_thread(
+                _unsloth_client.generate,
+                prompt,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception:
+            _unsloth_client.mark_container_gone()
+            raise
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
@@ -17107,15 +17111,19 @@ async def _route_vision(
                     "Switch to the 27B or Flash-Next endpoint for vision tasks."
                 ),
             }
-        return await asyncio.to_thread(
-            _unsloth_client.generate,
-            prompt,
-            images=images,
-            video_frames=video_frames,
-            system_prompt=system_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        try:
+            return await asyncio.to_thread(
+                _unsloth_client.generate,
+                prompt,
+                images=images,
+                video_frames=video_frames,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception:
+            _unsloth_client.mark_container_gone()
+            raise
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
