@@ -862,6 +862,7 @@ function _renderModalTab(pane) {
 
 function _renderUnslothTab(pane) {
     let _pollTimer           = null;
+    let _setupPollTimer      = null;   // polls setup_status every 15 s while incomplete
     let _bootstrapping       = false;
     let _bootstrapStart      = null;
     let _bootstrapInterval   = null;
@@ -1039,9 +1040,21 @@ function _renderUnslothTab(pane) {
         try {
             const r = await unslothApi.setupStatus();
             _applyCheck(wsRow,  r.workspace_set, r.workspace || "not configured");
-            _applyCheck(keyRow, r.api_key_set,   r.api_key_set ? "set" : "not set — Bootstrap Key below");
-            _applyCheck(appRow, r.app_deployed,  r.app_deployed ? "deployed" : "not deployed — Deploy App below");
+            _applyCheck(keyRow, r.api_key_set,   r.api_key_set ? "set ✓" : "not set — Bootstrap Key below");
+            _applyCheck(appRow, r.app_deployed,  r.app_deployed ? "deployed ✓" : "not deployed — Deploy App below");
+            // Auto-stop setup poll once all three checks pass
+            if (r.workspace_set && r.api_key_set && r.app_deployed) _stopSetupPoll();
         } catch (_) {}
+    }
+
+    function _startSetupPoll() {
+        if (_setupPollTimer) return;
+        _setupPollTimer = setInterval(_fetchSetupStatus, 15_000);
+    }
+
+    function _stopSetupPoll() {
+        clearInterval(_setupPollTimer);
+        _setupPollTimer = null;
     }
 
     // ── Deploy / Undeploy ──────────────────────────────────────────────────────
@@ -1106,6 +1119,10 @@ function _renderUnslothTab(pane) {
         bootstrapBtn.textContent = "Bootstrapping…";
         bootstrapMsg.textContent = "Installing Unsloth Studio and capturing API key. This may take 5–30 minutes.";
         bootstrapMsg.style.color = "#888";
+
+        // Poll setup_status every 15 s so the checklist updates even if this
+        // fetch is dropped by an intermediate proxy or browser idle timer.
+        _startSetupPoll();
 
         _bootstrapInterval = setInterval(() => {
             const secs = Math.round((Date.now() - _bootstrapStart) / 1000);
@@ -1193,9 +1210,26 @@ function _renderUnslothTab(pane) {
         _pollTimer = null;
     }
 
-    // ── Helper ─────────────────────────────────────────────────────────────────
+    // ── Helpers ────────────────────────────────────────────────────────────────
     function _sep(text) {
         return _mk("div", { cls: "llmp-section-sep" }, [text]);
+    }
+
+    function _sepWithRefresh(text, onRefresh) {
+        const refreshBtn = _mk("button", {
+            style: {
+                background: "transparent", border: "none", cursor: "pointer",
+                fontSize: "12px", color: "#555", padding: "0 0 0 6px",
+                lineHeight: "1", verticalAlign: "middle",
+            },
+            title: "Refresh status",
+        }, ["↻"]);
+        refreshBtn.onclick = () => {
+            refreshBtn.style.color = "#888";
+            onRefresh().finally(() => { refreshBtn.style.color = "#555"; });
+        };
+        const el = _mk("div", { cls: "llmp-section-sep" }, [text, refreshBtn]);
+        return el;
     }
 
     // ── Init ───────────────────────────────────────────────────────────────────
@@ -1203,6 +1237,7 @@ function _renderUnslothTab(pane) {
     _fetchSetupStatus();
     _fetchContainers();
     if (_state.unslothActive) _startPoll();
+    _startSetupPoll();   // polls every 15 s; self-terminates once all checks pass
 
     // ── Layout ─────────────────────────────────────────────────────────────────
     pane.append(
@@ -1212,7 +1247,7 @@ function _renderUnslothTab(pane) {
         epRow,
         actionBtn,
 
-        _sep("Setup"),
+        _sepWithRefresh("Setup", _fetchSetupStatus),
         wsRow,
         keyRow,
         appRow,
@@ -1260,6 +1295,7 @@ function _renderUnslothTab(pane) {
 
     pane._llmpCleanup = () => {
         _stopPoll();
+        _stopSetupPoll();
         clearInterval(_bootstrapInterval);
     };
 }
