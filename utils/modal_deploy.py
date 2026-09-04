@@ -203,6 +203,7 @@ def deploy(data_dir: str) -> dict:
     output = (result.stdout or "") + (result.stderr or "")
     if result.returncode == 0:
         logger.info("Unsloth Studio deployed successfully")
+        _app_status_cache.clear()
         return {"success": True, "message": "Deployed successfully.", "output": output}
     return {"success": False, "message": f"Deploy failed (exit {result.returncode})", "output": output}
 
@@ -227,7 +228,9 @@ def undeploy() -> dict:
         return {"success": True, "message": f"App '{APP_NAME}' stopped."}
     # "not found" is acceptable — already stopped
     if "not found" in output.lower() or "no app" in output.lower():
+        _app_status_cache.clear()
         return {"success": True, "message": f"App '{APP_NAME}' was not running."}
+    _app_status_cache.clear()
     return {"success": False, "message": f"Stop failed: {output.strip()}"}
 
 
