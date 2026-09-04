@@ -209,6 +209,16 @@ const _CSS = `
 /* Check-item row */
 .llmp-check-icon { width:14px; display:inline-block; font-family:monospace; flex-shrink:0; }
 
+/* Inline info icon */
+.llmp-iicon {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:15px; height:15px; border-radius:50%;
+    background:rgba(255,255,255,.07); color:#666;
+    font-size:10px; font-style:normal; cursor:help; flex-shrink:0;
+    line-height:1; user-select:none;
+}
+.llmp-iicon:hover { color:var(--p-primary-color,#58a6ff); background:rgba(255,255,255,.14); }
+
 /* Custom model input row */
 .llmp-custom-row { display:flex; gap:6px; align-items:center; }
 .llmp-history-list { display:flex; flex-direction:column; gap:3px; }
@@ -1288,6 +1298,10 @@ function _renderUnslothTab(pane) {
         return _mk("div", { cls: "llmp-section-sep" }, [text]);
     }
 
+    function _iicon(tooltip) {
+        return _mk("span", { cls: "llmp-iicon", title: tooltip }, ["ⓘ"]);
+    }
+
     function _sepWithRefresh(text, onRefresh) {
         const refreshBtn = _mk("button", {
             style: {
@@ -1318,7 +1332,15 @@ function _renderUnslothTab(pane) {
         capRow,
         errNote,
         epRow,
-        actionBtn,
+        _mk("div", { cls: "llmp-row", style: { gap: "8px" } }, [
+            actionBtn,
+            _iicon(
+                "Activate / Deactivate only controls which backend this extension routes " +
+                "inference through — it does not start or stop the Modal container. " +
+                "The container stays running (and billing) until Modal's 10-minute idle " +
+                "scaledown fires. Use Stop All under Containers to kill it immediately."
+            ),
+        ]),
 
         _sepWithRefresh("Setup", _fetchSetupStatus),
         wsRow,
@@ -1351,6 +1373,12 @@ function _renderUnslothTab(pane) {
             _mk("span", { cls: "llmp-label" }, ["Running"]),
             containerInfo,
             stopAllBtn,
+            _iicon(
+                "Force-stops the GPU container immediately — billing ends within seconds. " +
+                "The next inference request will trigger a fresh cold start (2-5 min for 27B). " +
+                "If you just want to switch backends, use Deactivate instead and let the " +
+                "container idle out on its own after 10 minutes."
+            ),
         ]),
         containerMsg,
 
