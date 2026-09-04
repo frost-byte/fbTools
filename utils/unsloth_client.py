@@ -292,6 +292,19 @@ def _start_warmup(endpoint_key: str) -> None:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def mark_container_gone() -> None:
+    """Reset warmup state after a generate() call fails.
+
+    Only transitions from "warm" → "cold" so it doesn't clobber an active
+    warmup thread that is still retrying.
+    """
+    with _warmup_lock:
+        if _state["warmup_status"] == "warm":
+            _state["warmup_status"] = "cold"
+            _state["warmup_phase"]  = "Container unavailable — click Restart Warmup"
+            _state["warmup_error"]  = "Container unreachable (may have scaled to zero)"
+
+
 def backend_status() -> dict:
     """Return Unsloth backend state (mirrors modal_vision_client shape)."""
     ep_key = _state["endpoint_key"]

@@ -944,7 +944,12 @@ function _renderUnslothTab(pane) {
     _updateCapRow(_ENDPOINTS[0]);
 
     // ── Activate / Deactivate ──────────────────────────────────────────────────
-    const actionBtn = _mk("button", { cls: "llmp-btn primary" }, ["Activate"]);
+    const actionBtn    = _mk("button", { cls: "llmp-btn primary" }, ["Activate"]);
+    const restartBtn   = _mk("button", {
+        cls: "llmp-btn ghost",
+        style: { display: "none", fontSize: "11px", padding: "3px 10px" },
+        title: "The container scaled to zero. Click to send a new warm-up request and restart it.",
+    }, ["Restart Warmup"]);
     let _acting = false;
 
     function _syncStatus(st) {
@@ -961,6 +966,7 @@ function _renderUnslothTab(pane) {
             actionBtn.className   = "llmp-btn primary";
             actionBtn.textContent = "Activate";
             capRow.innerHTML = "";
+            restartBtn.style.display = "none";
             _stopElapsed();
             activityBlock.style.display = "none";
         } else {
@@ -968,6 +974,7 @@ function _renderUnslothTab(pane) {
             lbl.textContent = `${warmLabel[warmup] ?? warmup} — ${epLabel}`;
             actionBtn.className   = "llmp-btn danger";
             actionBtn.textContent = "Deactivate";
+            restartBtn.style.display = (warmup !== "warm") ? "" : "none";
             activityBlock.style.display = "";
             if (warmup === "warm") {
                 _stopElapsed();
@@ -1039,6 +1046,23 @@ function _renderUnslothTab(pane) {
         } finally {
             _acting = false;
             actionBtn.disabled = false;
+        }
+    };
+
+    restartBtn.onclick = async () => {
+        restartBtn.disabled = true;
+        try {
+            const res = await unslothApi.activate(_selectedEpKey);
+            if (!res.success) {
+                errNote.textContent = `⚠ ${res.message}`;
+            } else {
+                _activatedAt = Date.now();
+                await _poll();
+            }
+        } catch (err) {
+            errNote.textContent = `⚠ ${err.message}`;
+        } finally {
+            restartBtn.disabled = false;
         }
     };
 
@@ -1321,13 +1345,17 @@ function _renderUnslothTab(pane) {
         capRow,
         errNote,
         epRow,
-        _mk("div", { cls: "llmp-row", style: { gap: "8px" } }, [
+        _mk("div", { cls: "llmp-row", style: { gap: "8px", flexWrap: "wrap" } }, [
             actionBtn,
+            restartBtn,
             _iicon(
-                "Activate / Deactivate only controls which backend this extension routes " +
-                "inference through — it does not start or stop the Modal container. " +
-                "The container stays running (and billing) until Modal's 10-minute idle " +
-                "scaledown fires. Use Stop All under Containers to kill it immediately."
+                "Activate routes inference through Unsloth and sends a warm-up request to " +
+                "the Modal container. If the container has scaled to zero (10-min idle), " +
+                "the warm-up triggers a cold start — expect 2-5 min for 27B. " +
+                "Deactivate stops routing but does not kill the container; it keeps running " +
+                "(and billing) until Modal's idle scaledown fires. " +
+                "If the container scaled to zero while active, click Restart Warmup to " +
+                "cold-start it again without deactivating."
             ),
         ]),
 
