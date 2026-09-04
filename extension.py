@@ -225,7 +225,7 @@ DEFAULT_INSTRUCTION = (
     "Write in flowing prose. Do not use subjective quality descriptors."
 )
 
-CAPTIONER_OPTIONS = ["llm_client", "gemini_flash"]
+CAPTIONER_OPTIONS = ["llm_client", "gemini_flash", "modal", "unsloth"]
 DEVICE_OPTIONS    = ["auto", "cuda", "cpu"]
 DATASET_CAPTION_STATUS_ID = prefixed_node_id("DatasetCaptioner")
 
@@ -13150,10 +13150,32 @@ def _run_vision_inference(
         return text
 
     if captioner_type == "unsloth":
-        raise RuntimeError(
-            "The Unsloth backend is text-only and cannot process images. "
-            "Select a vision-capable backend (modal, llm_client, or gemini_flash)."
+        if not _unsloth_client.is_active():
+            raise RuntimeError(
+                "Unsloth backend is not active. Activate it in the LLM panel first."
+            )
+        if not _unsloth_client.active_endpoint_supports_vision():
+            raise RuntimeError(
+                f"The active Unsloth endpoint ({_unsloth_client.backend_status()['endpoint_label']}) "
+                "is text-only. Switch to the 27B or Flash-Next endpoint for vision tasks."
+            )
+        from PIL import Image as _PIL_Image
+
+        def _status_cb_unsloth(msg: str) -> None:
+            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
+
+        result = _unsloth_client.generate(
+            prompt,
+            images=[_PIL_Image.open(image_path).convert("RGB")],
+            status_callback=_status_cb_unsloth,
+            max_tokens=max_tokens,
         )
+        if not result.get("success"):
+            raise RuntimeError(result.get("message") or "Unsloth generate returned no text")
+        text = result.get("text", "")
+        _vlm_log.record(user_data_dir(), "unsloth", _unsloth_client.backend_status()["model"], operation, profile_id)
+        from .captioner import clean_caption_text as _cc_u
+        return _cc_u(text) if clean else text
 
     if captioner_type == "modal":
         if not _modal_client.is_active():
@@ -13285,17 +13307,52 @@ def _run_vision_inference_clip(
 ) -> str:
     """Run a multi-frame VLM call, routing by captioner_type and model capabilities.
 
-    Three explicit paths — no silent fallback:
+    Four explicit paths — no silent fallback:
 
-    1. modal      — Modal cloud VisionLLM; uses native_video if the active model
+    1. unsloth    — Unsloth Studio on Modal; uses native_video for vision-capable
+                    endpoints (27B, flash_next), contact-sheet fallback otherwise.
+    2. modal      — Modal cloud VisionLLM; uses native_video if the active model
                     supports it, otherwise contact-sheet fallback.
-    2. llm_client — local model; routes by native_video capability.
+    3. llm_client — local model; routes by native_video capability.
 
     (gemini_flash is handled at the call site with a contact sheet + image path.)
 
     Raises RuntimeError if the required backend is unavailable.
     Every call is recorded in the VLM activity log.
     """
+    if captioner_type == "unsloth":
+        if not _unsloth_client.is_active():
+            raise RuntimeError(
+                "Unsloth backend is not active. Activate it in the LLM panel first."
+            )
+        if not _unsloth_client.active_endpoint_supports_vision():
+            raise RuntimeError(
+                f"The active Unsloth endpoint ({_unsloth_client.backend_status()['endpoint_label']}) "
+                "is text-only. Switch to the 27B or Flash-Next endpoint for vision tasks."
+            )
+
+        def _status_cb_clip(msg: str) -> None:
+            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
+
+        if _unsloth_client.active_endpoint_supports_native_video():
+            result = _unsloth_client.generate(
+                prompt,
+                video_frames=frames,
+                status_callback=_status_cb_clip,
+            )
+        else:
+            sheet = _spa_build_contact_sheet(frames, timestamps)
+            result = _unsloth_client.generate(
+                prompt,
+                images=[sheet],
+                status_callback=_status_cb_clip,
+            )
+        if not result.get("success"):
+            raise RuntimeError(result.get("message") or "Unsloth generate returned no text")
+        st = _unsloth_client.backend_status()
+        _vlm_log.record(user_data_dir(), "unsloth", st["model"], operation, profile_id)
+        return result.get("text", "")
+
     if captioner_type == "modal":
         if not _modal_client.is_active():
             raise RuntimeError(

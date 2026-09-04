@@ -42,19 +42,25 @@ _APP_NAME = "unsloth-studio"
 
 _ENDPOINT_SLUGS: dict[str, dict] = {
     "27b": {
-        "slug":  "serve-l4-qwen3-8-27b",
-        "model": "unsloth/Qwen3.8-27B-GGUF",
-        "label": "Qwen3.8 27B (recommended)",
+        "slug":         "serve-l4-qwen3-8-27b",
+        "model":        "unsloth/Qwen3.8-27B-GGUF",
+        "label":        "Qwen3.8 27B (recommended)",
+        "vision":       True,   # native VLM: images + video
+        "native_video": True,   # supports hour-scale video via image_url frames
     },
     "8b": {
-        "slug":  "serve-l4-qwen3-8b",
-        "model": "unsloth/Qwen3-8B-GGUF",
-        "label": "Qwen3 8B (fast / lower quality)",
+        "slug":         "serve-l4-qwen3-8b",
+        "model":        "unsloth/Qwen3-8B-GGUF",
+        "label":        "Qwen3 8B (fast / text-only)",
+        "vision":       False,
+        "native_video": False,
     },
     "flash_next": {
-        "slug":  "serve-l4-qwen3-8-flash-next",
-        "model": "unsloth/Qwen3.8-Flash-Next-GGUF",
-        "label": "Qwen3.8 Flash Next 125B MoE (slow cold start)",
+        "slug":         "serve-l4-qwen3-8-flash-next",
+        "model":        "unsloth/Qwen3.8-Flash-Next-GGUF",
+        "label":        "Qwen3.8 Flash Next 125B MoE (slow cold start)",
+        "vision":       True,   # has mmproj (vision projector loaded by default)
+        "native_video": True,
     },
 }
 
@@ -70,13 +76,27 @@ def endpoint_list(workspace: str | None = None) -> list[dict]:
     ws = workspace or _state.get("workspace") or ""
     return [
         {
-            "key":   key,
-            "label": ep["label"],
-            "model": ep["model"],
-            "url":   _build_url(ws, ep["slug"]) if ws else "",
+            "key":          key,
+            "label":        ep["label"],
+            "model":        ep["model"],
+            "vision":       ep.get("vision", False),
+            "native_video": ep.get("native_video", False),
+            "url":          _build_url(ws, ep["slug"]) if ws else "",
         }
         for key, ep in _ENDPOINT_SLUGS.items()
     ]
+
+
+def active_endpoint_supports_vision() -> bool:
+    """True when the currently selected endpoint is a vision-language model."""
+    ep = _ENDPOINT_SLUGS.get(_state["endpoint_key"], {})
+    return bool(ep.get("vision", False))
+
+
+def active_endpoint_supports_native_video() -> bool:
+    """True when the currently selected endpoint supports native video frames."""
+    ep = _ENDPOINT_SLUGS.get(_state["endpoint_key"], {})
+    return bool(ep.get("native_video", False))
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -270,17 +290,19 @@ def backend_status() -> dict:
         ws_status = _state["warmup_status"]
         ws_error  = _state["warmup_error"]
     return {
-        "active":         _state["active"],
-        "endpoint_key":   ep_key,
-        "endpoint_label": ep.get("label", ep_key),
-        "endpoint_url":   _build_url(ws, ep["slug"]) if ws else "",
-        "model":          ep.get("model", ""),
-        "workspace":      ws,
-        "workspace_set":  bool(ws),
-        "api_key_set":    bool(_api_key()),
-        "warmup_status":  ws_status,
-        "warmup_error":   ws_error,
-        "endpoints":      endpoint_list(ws),
+        "active":          _state["active"],
+        "endpoint_key":    ep_key,
+        "endpoint_label":  ep.get("label", ep_key),
+        "endpoint_url":    _build_url(ws, ep["slug"]) if ws else "",
+        "model":           ep.get("model", ""),
+        "vision":          ep.get("vision", False),
+        "native_video":    ep.get("native_video", False),
+        "workspace":       ws,
+        "workspace_set":   bool(ws),
+        "api_key_set":     bool(_api_key()),
+        "warmup_status":   ws_status,
+        "warmup_error":    ws_error,
+        "endpoints":       endpoint_list(ws),
     }
 
 
@@ -396,9 +418,43 @@ def health_check(endpoint_key: str | None = None) -> dict:
         return {"status": "down", "message": f"Connection failed: {exc}"}
 
 
+def _encode_image(image: Any) -> str:
+    """Return a base64-encoded JPEG data URI for a PIL Image or file path."""
+    import base64
+    import io
+    if isinstance(image, str):
+        with open(image, "rb") as f:
+            raw = f.read()
+        # Preserve original format; default to JPEG for display
+        mime = "image/jpeg"
+        if image.lower().endswith(".png"):
+            mime = "image/png"
+        return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+    # PIL Image
+    buf = io.BytesIO()
+    img = image.convert("RGB")
+    img.save(buf, format="JPEG", quality=90)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return f"data:image/jpeg;base64,{b64}"
+
+
+def _build_vision_content(prompt: str, images: list[Any]) -> list[dict]:
+    """Build an OpenAI-format multimodal content array (images + text)."""
+    content: list[dict] = []
+    for img in images:
+        content.append({
+            "type":      "image_url",
+            "image_url": {"url": _encode_image(img)},
+        })
+    content.append({"type": "text", "text": prompt})
+    return content
+
+
 def generate(
     prompt: str,
     *,
+    images: list[Any] | None = None,
+    video_frames: list[Any] | None = None,
     system_prompt: str = "",
     max_tokens: int = 512,
     temperature: float = 0.7,
@@ -406,9 +462,13 @@ def generate(
 ) -> dict:
     """Generate text via the Unsloth Studio endpoint.
 
-    Text-only — no image or video inputs.  Returns {success, text, message}.
+    Supports vision when the active endpoint is a vision-language model
+    (27B and flash_next).  Pass PIL Images or file paths via `images`.
+    `video_frames` is treated as a list of images (frame-by-frame).
 
-    max_tokens should be ≥300 when using Qwen3 models: they emit a
+    Returns {success, text, message}.
+
+    max_tokens should be ≥300 for Qwen3 models: they emit a
     <think>…</think> reasoning block first; if max_tokens is too small the
     response can be all reasoning with empty content.  The reasoning block
     is stripped before returning.
@@ -421,10 +481,27 @@ def generate(
     if not ep:
         return {"success": False, "text": "", "message": f"Unknown endpoint {ep_key!r}"}
 
+    all_images = list(images or []) + list(video_frames or [])
+    if all_images and not ep.get("vision"):
+        return {
+            "success": False,
+            "text":    "",
+            "message": (
+                f"Endpoint '{ep['label']}' is text-only and cannot process images. "
+                "Switch to the 27B or Flash-Next endpoint for vision tasks."
+            ),
+        }
+
     messages: list[dict] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+
+    if all_images:
+        user_content = _build_vision_content(prompt, all_images)
+    else:
+        user_content = prompt
+
+    messages.append({"role": "user", "content": user_content})
 
     payload: dict = {
         "model":       ep["model"],
@@ -434,8 +511,8 @@ def generate(
     }
 
     if status_callback:
-        ws = _state.get("warmup_status", "cold")
-        if ws != "warm":
+        warmup = _state.get("warmup_status", "cold")
+        if warmup != "warm":
             status_callback(
                 f"Calling Unsloth ({ep['label']}) — container may need 2-5 min if cold"
             )

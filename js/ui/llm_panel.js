@@ -18,15 +18,18 @@ import { modalApi, vlmActivityApi } from "../api/modal.js";
 // ── Shared backend state (read by source_profile_editor and fbt_panel header) ─
 
 const _state = {
-    modalActive:  false,
-    modalModel:   "qwen3-vl-8b",
-    modalQuant:   true,
-    modalGpu:     "L40S",
-    modalNativeV: true,
-    idleMinutes:  10,
-    keepWarm:     false,
-    presets:      [],
-    modelHistory: [],   // custom HF repo IDs from activity log
+    modalActive:    false,
+    modalModel:     "qwen3-vl-8b",
+    modalQuant:     true,
+    modalGpu:       "L40S",
+    modalNativeV:   true,
+    idleMinutes:    10,
+    keepWarm:       false,
+    presets:        [],
+    modelHistory:   [],   // custom HF repo IDs from activity log
+    unslothActive:  false,
+    unslothVision:  false,
+    unslothLabel:   "",
 };
 
 const STORAGE_KEY = "fbt_llm_panel_v1";
@@ -39,17 +42,23 @@ function _loadState() {
         if (s.modalGpu)    _state.modalGpu    = s.modalGpu;
         if (s.idleMinutes) _state.idleMinutes = s.idleMinutes;
         if (s.keepWarm     !== undefined) _state.keepWarm     = !!s.keepWarm;
+        if (s.unslothActive !== undefined) _state.unslothActive = !!s.unslothActive;
+        if (s.unslothVision !== undefined) _state.unslothVision = !!s.unslothVision;
+        if (s.unslothLabel)  _state.unslothLabel  = s.unslothLabel;
     } catch (_) {}
 }
 
 function _saveState() {
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
-            modalModel:  _state.modalModel,
-            modalQuant:  _state.modalQuant,
-            modalGpu:    _state.modalGpu,
-            idleMinutes: _state.idleMinutes,
-            keepWarm:    _state.keepWarm,
+            modalModel:     _state.modalModel,
+            modalQuant:     _state.modalQuant,
+            modalGpu:       _state.modalGpu,
+            idleMinutes:    _state.idleMinutes,
+            keepWarm:       _state.keepWarm,
+            unslothActive:  _state.unslothActive,
+            unslothVision:  _state.unslothVision,
+            unslothLabel:   _state.unslothLabel,
         }));
     } catch (_) {}
 }
@@ -60,18 +69,36 @@ _loadState();
 
 /** Returns the captioner_type string to use for VLM inference requests. */
 export function getActiveCaptionerType() {
-    if (_state.modalActive) return "modal";
+    if (_state.unslothActive) return "unsloth";
+    if (_state.modalActive)   return "modal";
     const llm = window._fbtGetLlmStatus?.() || {};
     if (llm.loaded && llm.vision) return "auto";
     return "gemini_flash";
 }
 
+/** True when the currently active backend supports vision (image/video) inputs. */
+export function activeBackendSupportsVision() {
+    if (_state.unslothActive) return _state.unslothVision;
+    if (_state.modalActive)   return true;  // Modal VisionLLM always vision-capable
+    const llm = window._fbtGetLlmStatus?.() || {};
+    return !!(llm.loaded && llm.vision);
+}
+
 /** Human-readable active backend description for status bars. */
 export function getActiveBackendLabel() {
-    if (_state.modalActive) return `Modal: ${_state.modalModel}`;
+    if (_state.unslothActive) return `Unsloth: ${_state.unslothLabel || "27B"}`;
+    if (_state.modalActive)   return `Modal: ${_state.modalModel}`;
     const llm = window._fbtGetLlmStatus?.() || {};
     if (llm.loaded && llm.vision) return `Local: ${llm.loaded}`;
     return "Gemini";
+}
+
+/** Called by the Unsloth tab after activate/deactivate to sync panel state. */
+export function setUnslothActive(active, { vision = false, label = "" } = {}) {
+    _state.unslothActive = !!active;
+    _state.unslothVision = !!vision;
+    _state.unslothLabel  = label || "";
+    _notify();
 }
 
 // Internal change listeners (used by fbt_panel header)
