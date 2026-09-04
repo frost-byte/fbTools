@@ -1,10 +1,11 @@
 /**
  * LLM Backend panel — rendered in the dedicated "LLM" sidebar tab.
  *
- * Three sub-tabs:
- *   Local  — shows current local model status; model management stays in Compose tab.
- *   Modal  — activate/deactivate Modal cloud VLM; model selector + timeout config.
- *   Gemini — setup info for the GEMINI_API_KEY environment variable.
+ * Four sub-tabs:
+ *   Local   — shows current local model status; model management stays in Compose tab.
+ *   Modal   — activate/deactivate Modal cloud VLM; model selector + timeout config.
+ *   Unsloth — deploy/setup/activate Unsloth Studio on Modal; endpoint selector, bootstrap.
+ *   Gemini  — setup info for the GEMINI_API_KEY environment variable.
  *
  * Exports:
  *   renderLlmPanel(container)
@@ -14,6 +15,7 @@
 
 import { llmApi }           from "../api/llm.js";
 import { modalApi, vlmActivityApi } from "../api/modal.js";
+import { unslothApi }       from "../api/unsloth.js";
 
 // ── Shared backend state (read by source_profile_editor and fbt_panel header) ─
 
@@ -197,6 +199,15 @@ const _CSS = `
 /* Idle indicator */
 .llmp-idle { font-size:11px; color:var(--p-text-muted-color,#888); text-align:right; }
 .llmp-idle.warn { color:#f59e0b; }
+
+/* Section separator (used in Unsloth tab) */
+.llmp-section-sep {
+    font-size:10px; color:#555; text-transform:uppercase; letter-spacing:.08em;
+    border-top:1px solid var(--p-surface-border,#444); padding-top:8px; margin-top:2px;
+}
+
+/* Check-item row */
+.llmp-check-icon { width:14px; display:inline-block; font-family:monospace; flex-shrink:0; }
 
 /* Custom model input row */
 .llmp-custom-row { display:flex; gap:6px; align-items:center; }
@@ -847,6 +858,412 @@ function _renderModalTab(pane) {
     };
 }
 
+// ── Unsloth sub-tab ───────────────────────────────────────────────────────────
+
+function _renderUnslothTab(pane) {
+    let _pollTimer           = null;
+    let _bootstrapping       = false;
+    let _bootstrapStart      = null;
+    let _bootstrapInterval   = null;
+
+    // Endpoint descriptors (mirrors _ENDPOINT_SLUGS in unsloth_client.py)
+    const _ENDPOINTS = [
+        { key: "27b",        label: "27B",        recommended: true,  vision: true,  native_video: true,
+          title: "Qwen3.8 27B — recommended, native vision + video" },
+        { key: "8b",         label: "8B",         recommended: false, vision: false, native_video: false,
+          title: "Qwen3 8B — fast, text-only" },
+        { key: "flash_next", label: "Flash Next", recommended: false, vision: true,  native_video: true,
+          title: "Qwen3.8 Flash Next 125B MoE — slow cold start, vision capable" },
+    ];
+    let _selectedEpKey = "27b";
+
+    // ── Status badge ───────────────────────────────────────────────────────────
+    const dot      = _mk("div", { cls: "llmp-status-dot" });
+    const lbl      = _mk("span", { cls: "llmp-status-text" }, ["Checking…"]);
+    const statusEl = _mk("div", { cls: "llmp-status" }, [dot, lbl]);
+    const capRow   = _mk("div", { cls: "llmp-row", style: { gap: "8px", flexWrap: "wrap" } });
+    const errNote  = _mk("div", { style: { fontSize: "11px", color: "#f87171", minHeight: "16px" } });
+
+    // ── Endpoint selector (GPU-style button row) ───────────────────────────────
+    const epBtns = {};
+    const epRow  = _mk("div", { cls: "llmp-vram-gpu-row" }, [
+        _mk("span", { cls: "llmp-gpu-label" }, ["Model"]),
+    ]);
+
+    function _updateCapRow(ep) {
+        capRow.innerHTML = "";
+        if (ep.vision) {
+            capRow.appendChild(_mk("span", {
+                cls: "llmp-value",
+                style: { fontSize: "11px", color: "#22c55e" },
+            }, ["✓ vision"]));
+            if (ep.native_video) {
+                capRow.appendChild(_mk("span", {
+                    cls: "llmp-value",
+                    style: { fontSize: "11px", color: "#60a5fa" },
+                }, ["✓ native-video"]));
+            }
+        } else {
+            capRow.appendChild(_mk("span", {
+                style: { fontSize: "11px", color: "#888" },
+            }, ["✗ vision (text-only)"]));
+        }
+    }
+
+    _ENDPOINTS.forEach(ep => {
+        const btn = _mk("button", {
+            cls:   "llmp-gpu-btn" + (ep.key === _selectedEpKey ? " selected" : "") +
+                   (ep.recommended ? " recommended" : ""),
+            title: ep.title,
+        }, [ep.label]);
+        if (ep.recommended) {
+            btn.prepend(_mk("span", { cls: "llmp-gpu-rec-dot", title: "Recommended" }, ["●"]));
+        }
+        btn.onclick = () => {
+            _selectedEpKey = ep.key;
+            _ENDPOINTS.forEach(e => epBtns[e.key].classList.remove("selected"));
+            btn.classList.add("selected");
+            _updateCapRow(ep);
+        };
+        epBtns[ep.key] = btn;
+        epRow.appendChild(btn);
+    });
+    _updateCapRow(_ENDPOINTS[0]);
+
+    // ── Activate / Deactivate ──────────────────────────────────────────────────
+    const actionBtn = _mk("button", { cls: "llmp-btn primary" }, ["Activate"]);
+    let _acting = false;
+
+    function _syncStatus(st) {
+        const active   = st?.active ?? false;
+        const warmup   = st?.warmup_status ?? "cold";
+        const epLabel  = st?.endpoint_label ?? "";
+        const wsErr    = st?.warmup_error ?? "";
+
+        const dotCls = { warm: " ok", warming: " blue", error: " warn" }[warmup] || "";
+        dot.className = "llmp-status-dot" + dotCls;
+
+        if (!active) {
+            lbl.textContent = "Inactive";
+            actionBtn.className   = "llmp-btn primary";
+            actionBtn.textContent = "Activate";
+            capRow.innerHTML = "";
+        } else {
+            const warmLabel = { cold: "Cold — starting", warming: "Warming up…", warm: "Warm", error: "Error" };
+            lbl.textContent = `${warmLabel[warmup] ?? warmup} — ${epLabel}`;
+            actionBtn.className   = "llmp-btn danger";
+            actionBtn.textContent = "Deactivate";
+
+            // Mirror server endpoint selection in buttons
+            const srvKey = st?.endpoint_key;
+            if (srvKey && epBtns[srvKey] && srvKey !== _selectedEpKey) {
+                _ENDPOINTS.forEach(e => epBtns[e.key].classList.remove("selected"));
+                epBtns[srvKey].classList.add("selected");
+                _selectedEpKey = srvKey;
+                _updateCapRow(_ENDPOINTS.find(e => e.key === srvKey));
+            }
+
+            // Keep module state in sync for getActiveCaptionerType()
+            _state.unslothActive = true;
+            _state.unslothVision = st?.vision ?? false;
+            _state.unslothLabel  = epLabel;
+            _saveState();
+        }
+
+        if (!active || wsErr) {
+            errNote.textContent = wsErr ? `⚠ ${wsErr}` : "";
+        }
+    }
+
+    actionBtn.onclick = async () => {
+        if (_acting) return;
+        _acting = true;
+        actionBtn.disabled = true;
+        errNote.textContent = "";
+        try {
+            if (_state.unslothActive) {
+                await unslothApi.deactivate();
+                _state.unslothActive = false;
+                _state.unslothVision = false;
+                _state.unslothLabel  = "";
+                _saveState();
+                _notify();
+                _syncStatus({ active: false });
+                _stopPoll();
+            } else {
+                const res = await unslothApi.activate(_selectedEpKey);
+                if (!res.success) {
+                    errNote.textContent = `⚠ ${res.message}`;
+                } else {
+                    _state.unslothActive = true;
+                    _saveState();
+                    _notify();
+                    await _poll();          // immediate first read
+                    _startPoll();
+                }
+            }
+        } catch (err) {
+            errNote.textContent = `⚠ ${err.message}`;
+        } finally {
+            _acting = false;
+            actionBtn.disabled = false;
+        }
+    };
+
+    // ── Setup checklist ────────────────────────────────────────────────────────
+    function _mkCheckRow(labelText) {
+        const icon  = _mk("span", { cls: "llmp-check-icon" }, ["?"]);
+        const valEl = _mk("span", { style: { fontSize: "11px", color: "#aaa" } }, ["—"]);
+        const row   = _mk("div", { cls: "llmp-row", style: { gap: "6px" } }, [
+            _mk("span", { cls: "llmp-label" }, [labelText]),
+            icon,
+            valEl,
+        ]);
+        row._icon  = icon;
+        row._valEl = valEl;
+        return row;
+    }
+
+    function _applyCheck(row, ok, text) {
+        row._icon.textContent = ok ? "✓" : "✗";
+        row._icon.style.color = ok ? "#22c55e" : "#f87171";
+        row._valEl.textContent = text;
+        row._valEl.style.color = ok ? "#aaa" : "#f87171";
+    }
+
+    const wsRow  = _mkCheckRow("Workspace");
+    const keyRow = _mkCheckRow("API Key");
+    const appRow = _mkCheckRow("App");
+
+    async function _fetchSetupStatus() {
+        try {
+            const r = await unslothApi.setupStatus();
+            _applyCheck(wsRow,  r.workspace_set, r.workspace || "not configured");
+            _applyCheck(keyRow, r.api_key_set,   r.api_key_set ? "set" : "not set — Bootstrap Key below");
+            _applyCheck(appRow, r.app_deployed,  r.app_deployed ? "deployed" : "not deployed — Deploy App below");
+        } catch (_) {}
+    }
+
+    // ── Deploy / Undeploy ──────────────────────────────────────────────────────
+    const deployBtn   = _mk("button", { cls: "llmp-btn ghost" }, ["Deploy App"]);
+    const undeployBtn = _mk("button", { cls: "llmp-btn danger", style: { fontSize: "11px", padding: "4px 10px" } }, ["Undeploy"]);
+    const deployMsg   = _mk("div", { style: { fontSize: "11px", color: "#888", minHeight: "16px" } });
+
+    deployBtn.onclick = async () => {
+        deployBtn.disabled    = true;
+        deployBtn.textContent = "Deploying…";
+        deployMsg.textContent = "Running modal deploy (30–90 s)…";
+        try {
+            const r = await unslothApi.deploy();
+            deployMsg.textContent = r.success ? "Deployed successfully." : `⚠ ${r.message}`;
+            if (r.success) _fetchSetupStatus();
+        } catch (err) {
+            deployMsg.textContent = `⚠ ${err.message}`;
+        } finally {
+            deployBtn.disabled    = false;
+            deployBtn.textContent = "Deploy App";
+        }
+    };
+
+    undeployBtn.onclick = async () => {
+        if (!confirm("Stop the Unsloth Studio app? All endpoints go offline immediately.")) return;
+        undeployBtn.disabled    = true;
+        undeployBtn.textContent = "Stopping…";
+        try {
+            const r = await unslothApi.undeploy();
+            deployMsg.textContent = r.success ? "App stopped." : `⚠ ${r.message}`;
+            if (r.success) {
+                if (_state.unslothActive) {
+                    _state.unslothActive = false;
+                    _state.unslothVision = false;
+                    _state.unslothLabel  = "";
+                    _saveState();
+                    _notify();
+                    _syncStatus({ active: false });
+                    _stopPoll();
+                }
+                _fetchSetupStatus();
+            }
+        } catch (err) {
+            deployMsg.textContent = `⚠ ${err.message}`;
+        } finally {
+            undeployBtn.disabled    = false;
+            undeployBtn.textContent = "Undeploy";
+        }
+    };
+
+    // ── Bootstrap Key ──────────────────────────────────────────────────────────
+    const bootstrapBtn   = _mk("button", { cls: "llmp-btn ghost" }, ["Bootstrap Key"]);
+    const bootstrapTimer = _mk("span", { style: { fontSize: "11px", color: "#888", marginLeft: "8px" } });
+    const bootstrapMsg   = _mk("div", { style: { fontSize: "11px", color: "#888", minHeight: "16px" } });
+    const forceReinCb    = _mk("input", { type: "checkbox", id: "llmp-unsloth-force-reinst" });
+
+    bootstrapBtn.onclick = async () => {
+        if (_bootstrapping) return;
+        _bootstrapping       = true;
+        _bootstrapStart      = Date.now();
+        bootstrapBtn.disabled    = true;
+        bootstrapBtn.textContent = "Bootstrapping…";
+        bootstrapMsg.textContent = "Installing Unsloth Studio and capturing API key. This may take 5–30 minutes.";
+        bootstrapMsg.style.color = "#888";
+
+        _bootstrapInterval = setInterval(() => {
+            const secs = Math.round((Date.now() - _bootstrapStart) / 1000);
+            bootstrapTimer.textContent = `${secs}s elapsed`;
+        }, 1000);
+
+        try {
+            const r = await unslothApi.bootstrapKey(forceReinCb.checked);
+            clearInterval(_bootstrapInterval);
+            bootstrapTimer.textContent = "";
+            if (r.success) {
+                bootstrapMsg.textContent = "API key captured and stored. You can now activate the backend.";
+                bootstrapMsg.style.color = "#22c55e";
+                _fetchSetupStatus();
+            } else {
+                bootstrapMsg.textContent = `⚠ ${r.message}`;
+                bootstrapMsg.style.color = "#f87171";
+            }
+        } catch (err) {
+            clearInterval(_bootstrapInterval);
+            bootstrapTimer.textContent = "";
+            bootstrapMsg.textContent   = `⚠ ${err.message}`;
+            bootstrapMsg.style.color   = "#f87171";
+        } finally {
+            _bootstrapping           = false;
+            bootstrapBtn.disabled    = false;
+            bootstrapBtn.textContent = "Bootstrap Key";
+        }
+    };
+
+    // ── Containers ─────────────────────────────────────────────────────────────
+    const containerInfo = _mk("span", { style: { fontSize: "11px", color: "#888" } }, ["—"]);
+    const stopAllBtn    = _mk("button", {
+        cls: "llmp-btn ghost",
+        style: { fontSize: "11px", padding: "3px 10px" },
+        disabled: true,
+    }, ["Stop All"]);
+    const containerMsg  = _mk("div", { style: { fontSize: "11px", color: "#888", minHeight: "14px" } });
+
+    stopAllBtn.onclick = async () => {
+        if (!confirm("Force-stop all running Unsloth containers? They will restart on the next request.")) return;
+        stopAllBtn.disabled = true;
+        try {
+            const r = await unslothApi.stopContainers();
+            containerMsg.textContent = r.success ? `Stopped ${r.stopped ?? "all"}.` : `⚠ ${r.message}`;
+            _fetchContainers();
+        } catch (err) {
+            containerMsg.textContent = `⚠ ${err.message}`;
+        } finally {
+            stopAllBtn.disabled = false;
+        }
+    };
+
+    async function _fetchContainers() {
+        try {
+            const r  = await unslothApi.containers();
+            const cs = r.containers || [];
+            containerInfo.textContent = cs.length === 0
+                ? "None (scaled to zero)"
+                : `${cs.length} running`;
+            stopAllBtn.disabled = cs.length === 0;
+        } catch (_) {}
+    }
+
+    // ── Polling ────────────────────────────────────────────────────────────────
+    async function _poll() {
+        try {
+            const st = await unslothApi.status();
+            _syncStatus(st);
+            // Slow poll once warm — no need to check every 5 s
+            if (st.active && st.warmup_status === "warm" && _pollTimer) {
+                _stopPoll();
+                _pollTimer = setInterval(_poll, 30_000);
+            }
+        } catch (_) {}
+    }
+
+    function _startPoll(intervalMs = 5_000) {
+        _stopPoll();
+        _pollTimer = setInterval(_poll, intervalMs);
+    }
+
+    function _stopPoll() {
+        clearInterval(_pollTimer);
+        _pollTimer = null;
+    }
+
+    // ── Helper ─────────────────────────────────────────────────────────────────
+    function _sep(text) {
+        return _mk("div", { cls: "llmp-section-sep" }, [text]);
+    }
+
+    // ── Init ───────────────────────────────────────────────────────────────────
+    _poll();
+    _fetchSetupStatus();
+    _fetchContainers();
+    if (_state.unslothActive) _startPoll();
+
+    // ── Layout ─────────────────────────────────────────────────────────────────
+    pane.append(
+        statusEl,
+        capRow,
+        errNote,
+        epRow,
+        actionBtn,
+
+        _sep("Setup"),
+        wsRow,
+        keyRow,
+        appRow,
+        _mk("div", { cls: "llmp-row", style: { gap: "6px", flexWrap: "wrap", marginTop: "4px" } }, [
+            deployBtn,
+            undeployBtn,
+        ]),
+        deployMsg,
+
+        _mk("div", { cls: "llmp-row", style: { gap: "6px", flexWrap: "wrap", marginTop: "4px", alignItems: "center" } }, [
+            bootstrapBtn,
+            bootstrapTimer,
+        ]),
+        _mk("div", { cls: "llmp-row", style: { gap: "4px", alignItems: "center" } }, [
+            forceReinCb,
+            _mk("label", {
+                htmlFor: "llmp-unsloth-force-reinst",
+                style: { fontSize: "11px", color: "#888" },
+            }, [" Force reinstall Studio"]),
+        ]),
+        bootstrapMsg,
+
+        _sep("Containers"),
+        _mk("div", { cls: "llmp-row", style: { gap: "8px" } }, [
+            _mk("span", { cls: "llmp-label" }, ["Running"]),
+            containerInfo,
+            stopAllBtn,
+        ]),
+        containerMsg,
+
+        _mk("div", { cls: "llmp-info", style: { marginTop: "4px" } }, [
+            _mk("strong", {}, ["Cold start"]),
+            ": 27B ~2-5 min; Flash Next ~37 min first run. Containers scale to zero after 10 min idle.",
+            _mk("br", {}),
+            _mk("br", {}),
+            "Auth uses ",
+            _mk("code", {}, ["~/.modal.toml"]),
+            " — run ",
+            _mk("code", {}, ["modal token new"]),
+            " to authenticate. Set ",
+            _mk("code", {}, ["MODAL_WORKSPACE"]),
+            " env var to override workspace detection.",
+        ]),
+    );
+
+    pane._llmpCleanup = () => {
+        _stopPoll();
+        clearInterval(_bootstrapInterval);
+    };
+}
+
 // ── Gemini sub-tab ────────────────────────────────────────────────────────────
 
 function _renderGeminiTab(pane) {
@@ -899,9 +1316,10 @@ export function renderLlmPanel(container) {
     container.appendChild(wrap);
 
     const TABS = [
-        { id: "local",  label: "Local",  dot: "ok",   render: _renderLocalTab },
-        { id: "modal",  label: "Modal",  dot: "blue", render: _renderModalTab },
-        { id: "gemini", label: "Gemini", dot: "warn", render: _renderGeminiTab },
+        { id: "local",   label: "Local",   dot: "ok",   render: _renderLocalTab   },
+        { id: "modal",   label: "Modal",   dot: "blue", render: _renderModalTab   },
+        { id: "unsloth", label: "Unsloth", dot: "ok",   render: _renderUnslothTab },
+        { id: "gemini",  label: "Gemini",  dot: "warn", render: _renderGeminiTab  },
     ];
 
     const strip = _mk("div", { cls: "llmp-tabs" });
@@ -925,9 +1343,10 @@ export function renderLlmPanel(container) {
 
     function _refreshTabDots() {
         const llm = window._fbtGetLlmStatus?.() || {};
-        btns.local.dot.className  = "llmp-tab-dot" + (llm.loaded && llm.vision ? " ok" : "");
-        btns.modal.dot.className  = "llmp-tab-dot" + (_state.modalActive ? " blue" : "");
-        btns.gemini.dot.className = "llmp-tab-dot";  // no good way to check without an endpoint
+        btns.local.dot.className   = "llmp-tab-dot" + (llm.loaded && llm.vision ? " ok" : "");
+        btns.modal.dot.className   = "llmp-tab-dot" + (_state.modalActive   ? " blue" : "");
+        btns.unsloth.dot.className = "llmp-tab-dot" + (_state.unslothActive ? " ok"   : "");
+        btns.gemini.dot.className  = "llmp-tab-dot";
     }
 
     _refreshTabDots();
