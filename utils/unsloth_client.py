@@ -119,6 +119,7 @@ _state: dict[str, Any] = {
     "api_key":       "",     # set by configure()
     # cold | warming | warm | error
     "warmup_status": "cold",
+    "warmup_phase":  "",     # human-readable phase updated by the warmup thread
     "warmup_error":  "",
 }
 _warmup_lock = threading.Lock()
@@ -205,6 +206,8 @@ def _call_with_retry(
             with httpx.Client(timeout=_PER_ATTEMPT_TIMEOUT, follow_redirects=False) as client:
                 r = client.post(url, headers=headers, json=payload)
         except httpx.TimeoutException:
+            with _warmup_lock:
+                _state["warmup_phase"] = "Waiting for available L4 GPU…"
             if status_callback:
                 status_callback(
                     f"Unsloth ({ep['label']}): waiting for container "
@@ -215,9 +218,13 @@ def _call_with_retry(
             raise RuntimeError(f"Unsloth HTTP error: {exc}") from exc
 
         if r.status_code == 200:
+            with _warmup_lock:
+                _state["warmup_phase"] = "Ready"
             return r.json()
 
         if r.status_code == 303:
+            with _warmup_lock:
+                _state["warmup_phase"] = "Container starting up (GPU worker assigned)…"
             if status_callback:
                 status_callback(
                     f"Unsloth ({ep['label']}): container starting, "
@@ -233,6 +240,8 @@ def _call_with_retry(
             except Exception:
                 body_text = ""
             if "no model" in body_text or "model loaded" in body_text:
+                with _warmup_lock:
+                    _state["warmup_phase"] = "Container running — loading LLM weights into VRAM…"
                 if status_callback:
                     status_callback(
                         f"Unsloth ({ep['label']}): model loading, "
@@ -255,6 +264,7 @@ def _run_warmup(endpoint_key: str) -> None:
     label = ep.get("label", endpoint_key)
     with _warmup_lock:
         _state["warmup_status"] = "warming"
+        _state["warmup_phase"]  = "Starting warm-up…"
         _state["warmup_error"]  = ""
 
     payload = {
@@ -270,6 +280,7 @@ def _run_warmup(endpoint_key: str) -> None:
     except Exception as exc:
         with _warmup_lock:
             _state["warmup_status"] = "error"
+            _state["warmup_phase"]  = f"Warm-up failed: {exc}"
             _state["warmup_error"]  = str(exc)
         logger.warning("Unsloth warm-up failed (%s): %s", label, exc)
 
@@ -288,6 +299,7 @@ def backend_status() -> dict:
     ws     = _state.get("workspace", "")
     with _warmup_lock:
         ws_status = _state["warmup_status"]
+        ws_phase  = _state["warmup_phase"]
         ws_error  = _state["warmup_error"]
     return {
         "active":          _state["active"],
@@ -301,6 +313,7 @@ def backend_status() -> dict:
         "workspace_set":   bool(ws),
         "api_key_set":     bool(_api_key()),
         "warmup_status":   ws_status,
+        "warmup_phase":    ws_phase,
         "warmup_error":    ws_error,
         "endpoints":       endpoint_list(ws),
     }
