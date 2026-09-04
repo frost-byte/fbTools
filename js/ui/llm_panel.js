@@ -1207,6 +1207,8 @@ function _renderUnslothTab(pane) {
         }
     };
 
+    let _containerPollTimer = null;
+
     async function _fetchContainers() {
         try {
             const r  = await unslothApi.containers();
@@ -1216,6 +1218,15 @@ function _renderUnslothTab(pane) {
                 : `${cs.length} running`;
             stopAllBtn.disabled = cs.length === 0;
         } catch (_) {}
+    }
+
+    function _startContainerPoll() {
+        if (_containerPollTimer) return;
+        _containerPollTimer = setInterval(_fetchContainers, 30_000);
+    }
+
+    function _stopContainerPoll() {
+        clearInterval(_containerPollTimer); _containerPollTimer = null;
     }
 
     // ── Activity section ───────────────────────────────────────────────────────
@@ -1301,7 +1312,8 @@ function _renderUnslothTab(pane) {
     _fetchSetupStatus();
     _fetchContainers();
     if (_state.unslothActive) _startPoll();
-    _startSetupPoll();   // polls every 15 s; self-terminates once all checks pass
+    _startSetupPoll();      // polls every 15 s; self-terminates once all checks pass
+    _startContainerPoll();  // refreshes container count every 30 s
 
     // ── Layout ─────────────────────────────────────────────────────────────────
     pane.append(
@@ -1378,6 +1390,7 @@ function _renderUnslothTab(pane) {
         _stopPoll();
         _stopSetupPoll();
         _stopElapsed();
+        _stopContainerPoll();
         clearInterval(_bootstrapInterval);
     };
 }
