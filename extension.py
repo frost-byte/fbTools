@@ -13149,6 +13149,12 @@ def _run_vision_inference(
         _vlm_log.record(user_data_dir(), "gemini", "gemini-flash", operation, profile_id)
         return text
 
+    if captioner_type == "unsloth":
+        raise RuntimeError(
+            "The Unsloth backend is text-only and cannot process images. "
+            "Select a vision-capable backend (modal, llm_client, or gemini_flash)."
+        )
+
     if captioner_type == "modal":
         if not _modal_client.is_active():
             raise RuntimeError(
@@ -13203,13 +13209,33 @@ def _run_text_inference(
 ) -> str:
     """Run a text-only LLM call (no image) through the active backend.
 
-    modal and llm_client paths are supported.  gemini_flash requires an image
-    and returns "" if selected.  Also returns "" if no backend is active.
-    Every successful call is recorded in the VLM activity log.
+    modal, unsloth, and llm_client paths are supported.  gemini_flash requires
+    an image and returns "" if selected.  Also returns "" if no backend is
+    active.  Every successful call is recorded in the VLM activity log.
     """
     if captioner_type == "gemini_flash":
         logger.debug("_run_text_inference: gemini_flash does not support text-only; skipping")
         return ""
+
+    if captioner_type == "unsloth":
+        if not _unsloth_client.is_active():
+            return ""
+
+        def _unsloth_status_cb(msg: str) -> None:
+            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
+
+        result = _unsloth_client.generate(
+            prompt,
+            max_tokens=max_tokens,
+            status_callback=_unsloth_status_cb,
+        )
+        if not result.get("success"):
+            logger.warning("Unsloth text inference failed: %s", result.get("message"))
+            return ""
+        text = result.get("text", "")
+        st = _unsloth_client.backend_status()
+        _vlm_log.record(user_data_dir(), "unsloth", st.get("model", ""), operation, profile_id)
+        return text
 
     if captioner_type == "modal":
         if not _modal_client.is_active():
@@ -16894,9 +16920,24 @@ async def _compositions_settings_post(request):
 from .utils.llm_scanner import scan_llm_dirs as _llm_scan_dirs, DEFAULT_MODEL as _LLM_DEFAULT_MODEL
 from .utils import llm_client as _llm_client
 from .utils import modal_vision_client as _modal_client
+from .utils import unsloth_client as _unsloth_client
+from .utils import modal_deploy as _modal_deploy
 from .utils import vlm_activity_log as _vlm_log
 from .utils import modal_vram_profiler as _vram_profiler
 import asyncio
+
+# ── Unsloth client startup configuration ──────────────────────────────────────
+# Resolve workspace and stored API key at import time so the client is ready
+# the moment the user opens the LLM panel, without any extra button clicks.
+try:
+    _unsloth_workspace = _modal_deploy.get_workspace() or ""
+    _unsloth_api_key   = _modal_deploy.load_api_key(user_data_dir()) or ""
+    _unsloth_client.configure(workspace=_unsloth_workspace, api_key=_unsloth_api_key)
+    if _unsloth_workspace:
+        logger.info("Unsloth client configured: workspace=%s key=%s",
+                    _unsloth_workspace, "stored" if _unsloth_api_key else "not found")
+except Exception as _exc:
+    logger.debug("Unsloth startup configure skipped: %s", _exc)
 
 
 @routes.get("/fbtools/llm/models")
@@ -17429,6 +17470,170 @@ async def _modal_profile_repo(request):
         return web.json_response({"profile": profile, "recommendation": rec, "cached": False})
     except RuntimeError as exc:
         return web.json_response({"error": str(exc)}, status=422)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── Unsloth Studio routes ─────────────────────────────────────────────────────
+
+@routes.get("/fbtools/unsloth/status")
+async def _unsloth_status(request):
+    """Return Unsloth backend status (active endpoint, warmup state, endpoint list)."""
+    try:
+        return web.json_response(_unsloth_client.backend_status())
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/unsloth/activate")
+async def _unsloth_activate(request):
+    """Activate the Unsloth backend and start container warm-up.
+
+    Body: { endpoint_key }  — one of "27b" (default), "8b", "flash_next".
+    Returns immediately; warm-up runs in a background thread.
+    """
+    try:
+        body         = await request.json()
+        endpoint_key = str(body.get("endpoint_key", _unsloth_client.DEFAULT_ENDPOINT)).strip()
+        result       = _unsloth_client.activate(endpoint_key)
+        if result["success"]:
+            st = _unsloth_client.backend_status()
+            _vlm_log.record(user_data_dir(), "unsloth", st.get("model", endpoint_key), "activate")
+        return web.json_response(result, status=200 if result["success"] else 400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/unsloth/deactivate")
+async def _unsloth_deactivate(request):
+    """Deactivate the Unsloth backend (clears local state only)."""
+    try:
+        result = _unsloth_client.deactivate()
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/unsloth/health")
+async def _unsloth_health(request):
+    """Fast probe: check if the active endpoint's container is warm.
+
+    Query param: endpoint_key (optional; defaults to currently active endpoint).
+    Returns {status: warm|starting|down|error, message}.
+    """
+    try:
+        params       = request.rel_url.query
+        endpoint_key = params.get("endpoint_key", None)
+        result = await asyncio.to_thread(_unsloth_client.health_check, endpoint_key)
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/unsloth/setup_status")
+async def _unsloth_setup_status(request):
+    """Return setup readiness: workspace known, API key stored, app deployed.
+
+    Used by the LLM panel to show the user what setup steps remain.
+    Returns {workspace, workspace_set, api_key_set, app_deployed, ready}.
+    """
+    try:
+        st         = _unsloth_client.backend_status()
+        app_info   = await asyncio.to_thread(_modal_deploy.app_status)
+        return web.json_response({
+            "workspace":     st.get("workspace", ""),
+            "workspace_set": st.get("workspace_set", False),
+            "api_key_set":   st.get("api_key_set", False),
+            "app_deployed":  app_info.get("deployed", False),
+            "app_message":   app_info.get("message", ""),
+            "ready":         st.get("workspace_set") and st.get("api_key_set") and app_info.get("deployed"),
+        })
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/unsloth/deploy")
+async def _unsloth_deploy(request):
+    """Deploy the bundled Unsloth Studio app to the user's Modal workspace.
+
+    Runs `modal deploy modal/unsloth_studio.py` as a subprocess.
+    Typical duration: 30-90 seconds.
+    Returns {success, message, output}.
+    """
+    try:
+        result = await asyncio.to_thread(_modal_deploy.deploy, user_data_dir())
+        return web.json_response(result, status=200 if result["success"] else 503)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/unsloth/undeploy")
+async def _unsloth_undeploy(request):
+    """Stop (undeploy) the Unsloth Studio app — all endpoints go offline.
+
+    Returns {success, message}.
+    """
+    try:
+        result = await asyncio.to_thread(_modal_deploy.undeploy)
+        return web.json_response(result, status=200 if result["success"] else 503)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.get("/fbtools/unsloth/containers")
+async def _unsloth_containers(request):
+    """List running Unsloth Studio containers (warm = actively billing).
+
+    Returns {success, containers: [{id, raw}]}.
+    """
+    try:
+        result = await asyncio.to_thread(_modal_deploy.list_containers)
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/unsloth/containers/stop")
+async def _unsloth_containers_stop(request):
+    """Force-stop running containers immediately (don't wait for idle scaledown).
+
+    Body: { container_id } to stop one, or omit to stop all.
+    Returns {success, message} or {success, stopped, message}.
+    """
+    try:
+        body         = await request.json()
+        container_id = str(body.get("container_id", "")).strip()
+        if container_id:
+            result = await asyncio.to_thread(_modal_deploy.stop_container, container_id)
+        else:
+            result = await asyncio.to_thread(_modal_deploy.stop_all_containers)
+        return web.json_response(result, status=200 if result["success"] else 503)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/unsloth/bootstrap_key")
+async def _unsloth_bootstrap_key(request):
+    """Run Unsloth Studio setup: install Studio + capture API key.
+
+    Long-running (~5-30 min).  Runs in a background thread; the response
+    is returned when complete.  The captured key is stored in user data dir
+    and the client is reconfigured immediately.
+
+    Body: { force_reinstall: bool }  (default false)
+    Returns {success, api_key, message}.
+    """
+    try:
+        body            = await request.json()
+        force_reinstall = bool(body.get("force_reinstall", False))
+        result = await asyncio.to_thread(
+            _modal_deploy.run_bootstrap, user_data_dir(), force_reinstall
+        )
+        if result["success"] and result.get("api_key"):
+            # Reconfigure the live client with the new key
+            _unsloth_client.configure(api_key=result["api_key"])
+            _vlm_log.record(user_data_dir(), "unsloth", "", "bootstrap_key")
+        return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
