@@ -233,27 +233,45 @@ def undeploy() -> dict:
 
 # ── App status ────────────────────────────────────────────────────────────────
 
-def app_status() -> dict:
+import time as _time
+_app_status_cache: dict = {}
+_APP_STATUS_TTL = 60  # seconds — avoids hitting Modal API on every setup-status poll
+
+
+def app_status(force: bool = False) -> dict:
     """Check whether the Unsloth Studio app is currently deployed.
+
+    Result is cached for 60 s to avoid hammering the Modal API during
+    the frontend's 15 s setup-status poll loop.  Pass force=True (e.g.
+    after an explicit deploy/undeploy action) to bypass the cache.
 
     Returns {deployed: bool, app_name, message}.
     """
+    now = _time.monotonic()
+    if not force and _app_status_cache.get("ts") and now - _app_status_cache["ts"] < _APP_STATUS_TTL:
+        return _app_status_cache["result"]
+
     if not _has_modal():
-        return {"deployed": False, "app_name": APP_NAME,
-                "message": "modal package is not installed."}
+        result = {"deployed": False, "app_name": APP_NAME,
+                  "message": "modal package is not installed."}
+        _app_status_cache.update(ts=now, result=result)
+        return result
     try:
-        result = _modal_cmd("app", "list", timeout=30)
-        output = (result.stdout or "") + (result.stderr or "")
+        proc = _modal_cmd("app", "list", timeout=30)
+        output = (proc.stdout or "") + (proc.stderr or "")
         deployed = APP_NAME in output
-        return {
+        result = {
             "deployed": deployed,
             "app_name": APP_NAME,
             "message": "Running" if deployed else "Not deployed",
         }
     except subprocess.TimeoutExpired:
-        return {"deployed": False, "app_name": APP_NAME, "message": "modal app list timed out."}
+        result = {"deployed": False, "app_name": APP_NAME, "message": "modal app list timed out."}
     except Exception as exc:
-        return {"deployed": False, "app_name": APP_NAME, "message": str(exc)}
+        result = {"deployed": False, "app_name": APP_NAME, "message": str(exc)}
+
+    _app_status_cache.update(ts=now, result=result)
+    return result
 
 
 # ── Container management ──────────────────────────────────────────────────────
