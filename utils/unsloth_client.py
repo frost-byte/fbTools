@@ -406,16 +406,16 @@ def health_check(endpoint_key: str | None = None) -> dict:
                 _state["warmup_status"] = "warm"
             return {"status": "warm", "message": "Container is ready."}
         if r.status_code == 303:
-            return {"status": "starting", "message": "Container is booting (HTTP 303)."}
+            return {"status": "starting", "message": "Container is starting up (GPU worker assigned)."}
         if r.status_code == 400:
             body = r.text.lower()
             if "no model" in body or "model loaded" in body:
-                return {"status": "starting", "message": "Container up, model still loading."}
-        return {"status": "error", "message": f"Unexpected status {r.status_code}"}
+                return {"status": "starting", "message": "Container running — loading LLM weights into VRAM."}
+        return {"status": "error", "message": f"Unexpected HTTP {r.status_code}."}
     except httpx.TimeoutException:
-        return {"status": "starting", "message": "Probe timed out — container may be booting."}
+        return {"status": "starting", "message": "No response yet — waiting for an available L4 GPU."}
     except Exception as exc:
-        return {"status": "down", "message": f"Connection failed: {exc}"}
+        return {"status": "starting", "message": f"No connection yet — waiting for GPU worker ({type(exc).__name__})."}
 
 
 def _encode_image(image: Any) -> str:

@@ -863,6 +863,9 @@ function _renderModalTab(pane) {
 function _renderUnslothTab(pane) {
     let _pollTimer           = null;
     let _setupPollTimer      = null;   // polls setup_status every 15 s while incomplete
+    let _healthPollTimer     = null;   // polls health every 20 s while warming
+    let _elapsedInterval     = null;   // 1 s tick for elapsed display
+    let _activatedAt         = null;   // Date.now() when Activate was clicked
     let _bootstrapping       = false;
     let _bootstrapStart      = null;
     let _bootstrapInterval   = null;
@@ -949,11 +952,28 @@ function _renderUnslothTab(pane) {
             actionBtn.className   = "llmp-btn primary";
             actionBtn.textContent = "Activate";
             capRow.innerHTML = "";
+            _stopHealthPoll();
+            activityBlock.style.display = "none";
         } else {
-            const warmLabel = { cold: "Cold — starting", warming: "Warming up…", warm: "Warm", error: "Error" };
+            const warmLabel = { cold: "Cold — starting", warming: "Warming up…", warm: "Warm ✓", error: "Error" };
             lbl.textContent = `${warmLabel[warmup] ?? warmup} — ${epLabel}`;
             actionBtn.className   = "llmp-btn danger";
             actionBtn.textContent = "Deactivate";
+            if (warmup === "warm") {
+                _stopHealthPoll();
+                activityBlock.style.display = "";
+                const totalSecs = _activatedAt ? Math.round((Date.now() - _activatedAt) / 1000) : null;
+                const timeStr   = totalSecs != null
+                    ? ` after ${Math.floor(totalSecs/60)}m ${totalSecs%60}s`
+                    : "";
+                actMsg.textContent = `Container ready${timeStr}.`;
+                actProbeAge.textContent = "";
+                actElapsed.textContent  = totalSecs != null
+                    ? `${Math.floor(totalSecs/60)}m ${totalSecs%60}s`
+                    : "—";
+            } else {
+                _startHealthPoll();
+            }
 
             // Mirror server endpoint selection in buttons
             const srvKey = st?.endpoint_key;
@@ -996,10 +1016,11 @@ function _renderUnslothTab(pane) {
                 if (!res.success) {
                     errNote.textContent = `⚠ ${res.message}`;
                 } else {
+                    _activatedAt = Date.now();
                     _state.unslothActive = true;
                     _saveState();
                     _notify();
-                    await _poll();          // immediate first read
+                    await _poll();          // immediate first read — also starts health poll via _syncStatus
                     _startPoll();
                 }
             }
@@ -1187,6 +1208,58 @@ function _renderUnslothTab(pane) {
         } catch (_) {}
     }
 
+    // ── Activity section ───────────────────────────────────────────────────────
+    const actElapsed  = _mk("span", { style: { fontVariantNumeric: "tabular-nums" } }, ["—"]);
+    const actMsg      = _mk("div",  { style: { marginTop: "4px", lineHeight: "1.5" } });
+    const actProbeAge = _mk("div",  { style: { fontSize: "10px", color: "#555", marginTop: "2px" } });
+    let   _lastProbeAt = null;
+
+    const activityBlock = _mk("div", { cls: "llmp-info", style: { display: "none" } }, [
+        _mk("div", { cls: "llmp-row", style: { gap: "6px" } }, [
+            _mk("span", { style: { color: "var(--p-text-muted-color,#888)" } }, ["Elapsed:"]),
+            actElapsed,
+        ]),
+        actMsg,
+        actProbeAge,
+    ]);
+
+    function _updateElapsed() {
+        if (!_activatedAt) return;
+        const secs = Math.round((Date.now() - _activatedAt) / 1000);
+        const m = Math.floor(secs / 60), s = secs % 60;
+        actElapsed.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
+        if (_lastProbeAt) {
+            const ago = Math.round((Date.now() - _lastProbeAt) / 1000);
+            actProbeAge.textContent = `Last probe: ${ago < 5 ? "just now" : ago + "s ago"}`;
+        }
+    }
+
+    async function _fetchHealth() {
+        try {
+            const r = await unslothApi.health();
+            _lastProbeAt = Date.now();
+            const dot = { warm: "●", starting: "◌", error: "✗", down: "✗" }[r.status] || "◌";
+            const col = { warm: "#22c55e", starting: "#60a5fa", error: "#f87171", down: "#f87171" }[r.status] || "#888";
+            actMsg.innerHTML = "";
+            actMsg.appendChild(_mk("span", { style: { color: col, marginRight: "5px" } }, [dot]));
+            actMsg.appendChild(document.createTextNode(r.message || r.status));
+            _updateElapsed();
+        } catch (_) {}
+    }
+
+    function _startHealthPoll() {
+        if (_healthPollTimer) return;
+        activityBlock.style.display = "";
+        _fetchHealth();
+        _healthPollTimer  = setInterval(_fetchHealth,     20_000);
+        _elapsedInterval  = setInterval(_updateElapsed,    1_000);
+    }
+
+    function _stopHealthPoll() {
+        clearInterval(_healthPollTimer); _healthPollTimer = null;
+        clearInterval(_elapsedInterval); _elapsedInterval = null;
+    }
+
     // ── Polling ────────────────────────────────────────────────────────────────
     async function _poll() {
         try {
@@ -1270,6 +1343,9 @@ function _renderUnslothTab(pane) {
         ]),
         bootstrapMsg,
 
+        _sep("Activity"),
+        activityBlock,
+
         _sep("Containers"),
         _mk("div", { cls: "llmp-row", style: { gap: "8px" } }, [
             _mk("span", { cls: "llmp-label" }, ["Running"]),
@@ -1296,6 +1372,7 @@ function _renderUnslothTab(pane) {
     pane._llmpCleanup = () => {
         _stopPoll();
         _stopSetupPoll();
+        _stopHealthPoll();
         clearInterval(_bootstrapInterval);
     };
 }
