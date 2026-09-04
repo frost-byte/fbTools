@@ -282,48 +282,35 @@ def app_status(force: bool = False) -> dict:
 def list_containers() -> dict:
     """List running containers for the Unsloth Studio app.
 
-    Returns {success, containers: [{id, state, created_at, function_name}]}.
+    Uses `modal container list --json` for reliable parsing.
+    Returns {success, containers: [{id, app_id, app_name, started_at}]}.
     """
     if not _has_modal():
         return {"success": False, "containers": [],
                 "message": "modal package is not installed."}
     try:
-        result = _modal_cmd("container", "list", timeout=30)
-        output = (result.stdout or "") + (result.stderr or "")
-        containers = _parse_container_list(output, filter_app=APP_NAME)
+        result = _modal_cmd("container", "list", "--json", timeout=30)
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            return {"success": False, "containers": [], "message": err or "modal container list failed"}
+        raw = (result.stdout or "").strip()
+        import json as _json
+        all_containers = _json.loads(raw) if raw else []
+        containers = [
+            {
+                "id":         c.get("container_id", c.get("id", "")),
+                "app_id":     c.get("app_id", ""),
+                "app_name":   c.get("app_name", ""),
+                "started_at": c.get("start_time", ""),
+            }
+            for c in all_containers
+            if c.get("app_name") == APP_NAME
+        ]
         return {"success": True, "containers": containers, "message": ""}
     except subprocess.TimeoutExpired:
         return {"success": False, "containers": [], "message": "modal container list timed out."}
     except Exception as exc:
         return {"success": False, "containers": [], "message": str(exc)}
-
-
-def _parse_container_list(output: str, filter_app: str = "") -> list[dict]:
-    """Parse `modal container list` tabular output into a list of dicts."""
-    containers = []
-    lines = output.splitlines()
-    # Find header line to identify column positions
-    header_idx = next(
-        (i for i, l in enumerate(lines) if "Container ID" in l or "CONTAINER" in l.upper()),
-        None,
-    )
-    if header_idx is None:
-        return containers
-    for line in lines[header_idx + 1:]:
-        if not line.strip() or line.startswith("-") or line.startswith("="):
-            continue
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        container_id = parts[0]
-        # Filter to this app's containers if requested
-        if filter_app and filter_app not in line:
-            continue
-        containers.append({
-            "id": container_id,
-            "raw": line.strip(),
-        })
-    return containers
 
 
 def stop_container(container_id: str) -> dict:
