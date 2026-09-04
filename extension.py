@@ -17049,9 +17049,93 @@ async def _llm_unload(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+# ── Active-backend routing helpers (llm_client ↔ unsloth_client) ─────────────
+# These are called by the /fbtools/llm/generate* and describe_video routes to
+# transparently swap the active inference backend without duplicating logic.
+
+async def _route_text(
+    prompt: str,
+    *,
+    system_prompt: str = "",
+    max_tokens: int = 512,
+    temperature: float = 0.7,
+) -> dict:
+    """Route text-only inference: Unsloth when active, llm_client otherwise."""
+    if _unsloth_client.is_active():
+        return await asyncio.to_thread(
+            _unsloth_client.generate,
+            prompt,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: _llm_client.generate(
+            prompt,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        ),
+    )
+
+
+async def _route_vision(
+    prompt: str,
+    *,
+    images: list | None = None,
+    video_frames: list | None = None,
+    system_prompt: str = "",
+    max_tokens: int = 512,
+    temperature: float = 0.7,
+    video_meta: dict | None = None,
+) -> dict:
+    """Route vision/video inference: Unsloth when active, llm_client otherwise.
+
+    When Unsloth is active but the selected endpoint is text-only (8B), returns
+    a descriptive error rather than silently stripping the images.
+    """
+    if _unsloth_client.is_active():
+        if not _unsloth_client.active_endpoint_supports_vision():
+            ep_label = _unsloth_client.backend_status().get("endpoint_label", "")
+            return {
+                "success": False,
+                "text":    "",
+                "message": (
+                    f"Active Unsloth endpoint ({ep_label}) is text-only. "
+                    "Switch to the 27B or Flash-Next endpoint for vision tasks."
+                ),
+            }
+        return await asyncio.to_thread(
+            _unsloth_client.generate,
+            prompt,
+            images=images,
+            video_frames=video_frames,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: _llm_client.generate(
+            prompt,
+            images=images,
+            video_frames=video_frames,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            video_meta=video_meta,
+        ),
+    )
+
+
 @routes.post("/fbtools/llm/generate")
 async def _llm_generate(request):
     """Generate text (optionally with image filenames from ComfyUI input dir).
+
+    Routes through Unsloth when active; falls back to local llm_client otherwise.
 
     Body fields:
         prompt (str)           — user prompt
@@ -17062,10 +17146,10 @@ async def _llm_generate(request):
     """
     try:
         body = await request.json()
-        prompt = body.get("prompt", "")
+        prompt        = body.get("prompt", "")
         system_prompt = body.get("system_prompt", "")
-        max_tokens = int(body.get("max_tokens", 512))
-        temperature = float(body.get("temperature", 0.7))
+        max_tokens    = int(body.get("max_tokens", 512))
+        temperature   = float(body.get("temperature", 0.7))
         image_filenames: list[str] = body.get("images", [])
 
         pil_images = []
@@ -17088,19 +17172,23 @@ async def _llm_generate(request):
             except Exception as img_err:
                 logger.warning("LLM generate: image load error: %s", img_err)
 
-        def _do_generate():
-            return _llm_client.generate(
+        if pil_images:
+            result = await _route_vision(
                 prompt,
-                images=pil_images or None,
+                images=pil_images,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        else:
+            result = await _route_text(
+                prompt,
                 system_prompt=system_prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
 
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _do_generate)
-        status = 200 if result["success"] else 503
-        return web.json_response(result, status=status)
+        return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
         logger.error("LLM generate error: %s", exc)
         return web.json_response({"error": str(exc)}, status=500)
@@ -17110,20 +17198,16 @@ async def _llm_generate(request):
 async def _llm_gen_shot_action(request):
     """Generate a shot action description using template-aware prompt builder."""
     try:
-        body = await request.json()
+        body        = await request.json()
         shot_number = int(body.get("shot_number", 1))
-        subjects = body.get("subjects", [])
+        subjects    = body.get("subjects", [])
         environment = body.get("environment", "")
-        style = body.get("style", "cinematic")
-        existing = body.get("existing", "")
+        style       = body.get("style", "cinematic")
+        existing    = body.get("existing", "")
         system, user = _llm_client.prompt_for_shot_action(
             shot_number, subjects, environment, style, existing
         )
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: _llm_client.generate(user, system_prompt=system, max_tokens=256),
-        )
+        result = await _route_text(user, system_prompt=system, max_tokens=256)
         return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -17133,17 +17217,13 @@ async def _llm_gen_shot_action(request):
 async def _llm_gen_dialogue(request):
     """Generate a dialogue line for a named speaker."""
     try:
-        body = await request.json()
-        speaker = body.get("speaker", "Character")
-        context = body.get("context", "")
-        tone = body.get("tone", "")
+        body     = await request.json()
+        speaker  = body.get("speaker", "Character")
+        context  = body.get("context", "")
+        tone     = body.get("tone", "")
         language = body.get("language", "en-us")
         system, user = _llm_client.prompt_for_shot_dialogue(speaker, context, tone, language)
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: _llm_client.generate(user, system_prompt=system, max_tokens=128),
-        )
+        result = await _route_text(user, system_prompt=system, max_tokens=128)
         return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -17153,15 +17233,11 @@ async def _llm_gen_dialogue(request):
 async def _llm_gen_polish(request):
     """Polish existing text for clarity and vividness."""
     try:
-        body = await request.json()
-        text = body.get("text", "")
+        body    = await request.json()
+        text    = body.get("text", "")
         context = body.get("context", "")
         system, user = _llm_client.prompt_for_polish(text, context)
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: _llm_client.generate(user, system_prompt=system, max_tokens=512),
-        )
+        result = await _route_text(user, system_prompt=system, max_tokens=512)
         return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -17253,12 +17329,12 @@ async def _llm_describe_video(request):
             "describe_video: %d frames, sample_fps=%.2f, raw_fps=%.2f, duration=%.1fs",
             len(frames), video_meta["sample_fps"], video_meta["raw_fps"], video_meta["duration"],
         )
-        result = await loop.run_in_executor(
-            None,
-            lambda: _llm_client.generate(
-                user, system_prompt=system, video_frames=frames,
-                max_tokens=512, video_meta=video_meta,
-            ),
+        result = await _route_vision(
+            user,
+            video_frames=frames,
+            system_prompt=system,
+            max_tokens=512,
+            video_meta=video_meta,
         )
         return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
