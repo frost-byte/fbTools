@@ -983,6 +983,14 @@ function _renderUnslothTab(pane) {
             restartBtn.style.display = "none";
             _stopElapsed();
             activityBlock.style.display = "none";
+            // Keep local state in sync with server — clears stale localStorage active flag
+            if (_state.unslothActive) {
+                _state.unslothActive = false;
+                _state.unslothVision = false;
+                _state.unslothLabel  = "";
+                _saveState();
+                _notify();
+            }
         } else {
             const warmLabel = { cold: "Cold — starting", warming: "Warming up…", warm: "Warm ✓", error: "Error" };
             lbl.textContent = `${warmLabel[warmup] ?? warmup} — ${epLabel}`;
