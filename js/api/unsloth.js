@@ -11,6 +11,8 @@ class UnslothAPI extends BaseAPI {
     status()                     { return this.get("/status"); }
     setupStatus()                { return this.get("/setup_status"); }
     health(endpoint_key = null)  { return this.get("/health", endpoint_key ? { endpoint_key } : {}); }
+    serveMode()                  { return this.get("/serve_mode"); }
+    setServeMode(api_only)       { return this.post("/serve_mode", { api_only }); }
     activate(endpoint_key)       { return this.post("/activate", { endpoint_key }); }
     deactivate()                 { return this.post("/deactivate", {}); }
     deploy()                     { return this.post("/deploy", {}); }

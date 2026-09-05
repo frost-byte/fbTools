@@ -169,6 +169,60 @@ def save_api_key(data_dir: str, key: str) -> None:
     logger.info("Unsloth API key saved to %s", p)
 
 
+# ── Serve mode config ────────────────────────────────────────────────────────
+
+def _serve_config_path(data_dir: str) -> Path:
+    return Path(data_dir) / "unsloth_studio_config.json"
+
+
+def load_serve_config(data_dir: str) -> dict:
+    """Load local serve config {api_only, last_deployed_api_only}."""
+    p = _serve_config_path(data_dir)
+    try:
+        import json as _json
+        return _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_serve_config(data_dir: str, config: dict) -> None:
+    import json as _json
+    p = _serve_config_path(data_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps(config, indent=2), encoding="utf-8")
+
+
+def set_serve_mode(data_dir: str, api_only: bool) -> dict:
+    """Persist serve mode preference locally and write it to the Modal Volume.
+
+    The Modal container reads fbtools_serve_config.json from STUDIO_HOME at
+    startup, so this takes effect on the next cold-start or redeployment.
+
+    Returns {success, message}.
+    """
+    import json as _json
+
+    # Always update local config first
+    config = load_serve_config(data_dir)
+    config["api_only"] = api_only
+    _save_serve_config(data_dir, config)
+
+    if not _has_modal():
+        return {"success": False, "message": "modal package is not installed."}
+    try:
+        import modal as _modal
+        vol = _modal.Volume.from_name("unsloth-studio-home", create_if_missing=False)
+        content = _json.dumps({"api_only": api_only}).encode()
+        with vol.batch_upload() as batch:
+            batch.put_bytes(content, "fbtools_serve_config.json")
+        mode_label = "API only" if api_only else "Full Studio UI"
+        logger.info("Unsloth serve mode set to: %s", mode_label)
+        return {"success": True, "message": f"Serve mode set to '{mode_label}'. Takes effect on next cold-start or redeployment."}
+    except Exception as exc:
+        logger.warning("Could not write serve mode to Modal Volume: %s", exc)
+        return {"success": False, "message": f"Saved locally but could not write to Modal Volume: {exc}"}
+
+
 # ── Deploy / undeploy ─────────────────────────────────────────────────────────
 
 def deploy(data_dir: str) -> dict:
@@ -204,6 +258,10 @@ def deploy(data_dir: str) -> dict:
     if result.returncode == 0:
         logger.info("Unsloth Studio deployed successfully")
         _app_status_cache.clear()
+        # Record which serve mode was active at deploy time
+        cfg = load_serve_config(data_dir)
+        cfg["last_deployed_api_only"] = cfg.get("api_only", True)
+        _save_serve_config(data_dir, cfg)
         return {"success": True, "message": "Deployed successfully.", "output": output}
     return {"success": False, "message": f"Deploy failed (exit {result.returncode})", "output": output}
 
