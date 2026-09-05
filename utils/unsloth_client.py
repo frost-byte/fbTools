@@ -516,23 +516,25 @@ def health_check(endpoint_key: str | None = None) -> dict:
         return {"status": "starting", "message": f"No connection yet — waiting for GPU worker ({type(exc).__name__})."}
 
 
-def _tile_frames(frames: list) -> Any:
-    """Tile a list of PIL Images into a single contact-sheet image (max 4 per row)."""
+def _tile_frames(frames: list, tile_w: int = 320, tile_h: int = 180) -> Any:
+    """Tile PIL Images into a contact-sheet downscaled to tile_w×tile_h per cell.
+
+    Matches the 320×180 thumbnail size used by _spa_build_contact_sheet so a
+    4-column, 2-row grid (8 frames) is 1280×360 — roughly 150 KB as JPEG.
+    """
     import math
     from PIL import Image as _PILImage
 
     if len(frames) == 1:
-        return frames[0]
+        img = frames[0].convert("RGB")
+        return img.resize((tile_w, tile_h), _PILImage.LANCZOS)
 
-    cols   = min(4, len(frames))
-    rows   = math.ceil(len(frames) / cols)
-    thumb  = frames[0].copy()
-    tw, th = thumb.width, thumb.height
-    sheet  = _PILImage.new("RGB", (tw * cols, th * rows), (20, 20, 20))
+    cols  = min(4, len(frames))
+    rows  = math.ceil(len(frames) / cols)
+    sheet = _PILImage.new("RGB", (tile_w * cols, tile_h * rows), (20, 20, 20))
     for i, fr in enumerate(frames):
         r, c = divmod(i, cols)
-        img  = fr.resize((tw, th), _PILImage.LANCZOS) if (fr.width != tw or fr.height != th) else fr
-        sheet.paste(img.convert("RGB"), (c * tw, r * th))
+        sheet.paste(fr.convert("RGB").resize((tile_w, tile_h), _PILImage.LANCZOS), (c * tile_w, r * tile_h))
     return sheet
 
 
