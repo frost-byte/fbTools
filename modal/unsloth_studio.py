@@ -42,7 +42,8 @@ import modal
 APP_NAME = "unsloth-studio"
 app = modal.App(APP_NAME)
 
-STUDIO_PORT = 8888
+STUDIO_PORT = 8888      # nginx front-door (what @modal.web_server exposes)
+STUDIO_API_PORT = 8889  # Studio FastAPI internal port when running Full UI mode
 STUDIO_HOME = "/studio"  # UNSLOTH_STUDIO_HOME -- auth DB + model cache
 
 studio_volume = modal.Volume.from_name("unsloth-studio-home", create_if_missing=True)
@@ -50,7 +51,7 @@ VOLUME_CONFIG = {STUDIO_HOME: studio_volume}
 
 unsloth_image = (
     modal.Image.debian_slim(python_version="3.13")
-    .apt_install("git", "curl")
+    .apt_install("git", "curl", "nginx")
     .pip_install("unsloth")
 )
 
@@ -112,6 +113,65 @@ def _unsloth_env(*, set_password: bool = False, extra_env: dict | None = None) -
     return env
 
 
+def _start_nginx(frontend_dist: str) -> None:
+    """Start nginx on STUDIO_PORT as a reverse proxy + SPA static server.
+
+    Serves the pre-built React frontend from *frontend_dist* and proxies API
+    calls to Studio on STUDIO_API_PORT.  Studio's own middleware blocks the SPA
+    for requests that don't come through Cloudflare or the LAN listener; serving
+    the static files directly from nginx sidesteps that gate entirely.
+    """
+    import subprocess
+    import textwrap
+    from pathlib import Path
+
+    # Paths that belong to Studio's API — proxy them to STUDIO_API_PORT.
+    # Everything else is served as SPA static files with index.html fallback.
+    api_prefixes = (
+        "api", "v1", "docs", "openapi.json", "mcp",
+        "tokenize", "metrics", "auth", "assets",
+    )
+    api_location = "|".join(api_prefixes)
+
+    conf = textwrap.dedent(f"""
+        worker_processes 1;
+        pid /tmp/studio-nginx.pid;
+        error_log /tmp/studio-nginx-error.log warn;
+        events {{ worker_connections 1024; }}
+        http {{
+            include /etc/nginx/mime.types;
+            default_type application/octet-stream;
+            sendfile on;
+            server {{
+                listen {STUDIO_PORT};
+                root {frontend_dist};
+
+                # Studio API + assets → internal FastAPI
+                location ~ ^/({api_location})(/|$) {{
+                    proxy_pass http://127.0.0.1:{STUDIO_API_PORT};
+                    proxy_http_version 1.1;
+                    proxy_set_header Host $http_host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                    proxy_read_timeout 600s;
+                    proxy_buffering off;
+                }}
+
+                # SPA catch-all: serve index.html for unknown paths
+                location / {{
+                    try_files $uri $uri/ /index.html;
+                }}
+            }}
+        }}
+    """).strip()
+
+    conf_path = Path("/tmp/studio-nginx.conf")
+    conf_path.write_text(conf)
+    subprocess.Popen(["nginx", "-c", str(conf_path), "-g", "daemon off;"])
+    print(f"[fbtools] nginx started: frontend from {frontend_dist}, API proxied to :{STUDIO_API_PORT}")
+
+
 def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
                        extra_flags: list[str] | None = None,
                        mmproj_filename: str | None = None) -> None:
@@ -130,11 +190,16 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
         except Exception:
             pass
 
+    # In Full Studio UI mode, Studio runs on STUDIO_API_PORT (8889) behind an nginx
+    # reverse proxy on STUDIO_PORT (8888).  This bypasses Studio's middleware that gates
+    # the SPA to Cloudflare-tunnel or LAN-listener requests only.
+    studio_port = STUDIO_API_PORT if not api_only else STUDIO_PORT
+
     cmd = [
         "unsloth", "studio", "run",
         "--model", repo_id,
         "--host", "0.0.0.0",
-        "--port", str(STUDIO_PORT),
+        "--port", str(studio_port),
         "--no-cloudflare",
         "--silent",
     ]
@@ -163,6 +228,18 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
             print(f"[fbtools] mmproj pre-cache failed, Studio may start without vision: {exc}")
 
     subprocess.Popen(cmd, env=_unsloth_env())
+
+    # In Full Studio UI mode, start nginx on STUDIO_PORT to serve the SPA and
+    # proxy API calls to Studio on STUDIO_API_PORT.
+    if not api_only:
+        import glob
+        candidates = glob.glob(
+            f"{STUDIO_HOME}/unsloth_studio/lib/python*/site-packages/studio/frontend/dist"
+        )
+        if candidates:
+            _start_nginx(candidates[0])
+        else:
+            print(f"[fbtools] frontend/dist not found under {STUDIO_HOME}; nginx skipped")
 
 
 # ── Serve endpoints ───────────────────────────────────────────────────────────
@@ -323,6 +400,90 @@ def bootstrap_api_key(repo_id: str = BOOTSTRAP_MODEL_REPO,
     studio_volume.commit()
     print(f"\nCaptured API key: {api_key}")
     return api_key
+
+
+@app.function(gpu="L4", memory=CONFIGS["qwen3.8-27b"]["memory"], **SERVE_KWARGS)
+def probe_ports(wait_seconds: int = 90) -> str:
+    """Probe which ports Unsloth Studio opens in Full Studio UI mode.
+
+    Forces api_only=False so the web UI frontend starts, then reads /proc/net/tcp
+    to list every listening port without needing iproute2/ss.
+
+    Usage:
+        python -m modal run modal/unsloth_studio.py::probe_ports
+    """
+    import json
+    import time
+    from pathlib import Path
+
+    # Force Full Studio UI mode so the web UI frontend process starts.
+    config_path = Path(STUDIO_HOME) / "fbtools_serve_config.json"
+    orig_text = config_path.read_text() if config_path.exists() else None
+    config_path.write_text(json.dumps({"api_only": False}))
+
+    c = CONFIGS["qwen3.8-27b"]
+    _run_unsloth_serve(c["repo_id"], gguf_variant=c.get("gguf_variant"),
+                       extra_flags=c.get("extra_flags"), mmproj_filename=c.get("mmproj_filename"))
+
+    print(f"Waiting {wait_seconds}s for Studio to finish starting…")
+    time.sleep(wait_seconds)
+
+    # Read listening ports from /proc/net/tcp{,6} — no ss/netstat needed.
+    ports: set[int] = set()
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path) as f:
+                for line in f.readlines()[1:]:
+                    fields = line.split()
+                    if len(fields) >= 4 and fields[3] == "0A":  # TCP_LISTEN
+                        ports.add(int(fields[1].split(":")[1], 16))
+        except OSError:
+            pass
+
+    report = f"Listening TCP ports: {sorted(ports)}"
+    print(report)
+
+    # Restore the original config so the volume isn't left in Full UI mode.
+    if orig_text is not None:
+        config_path.write_text(orig_text)
+    else:
+        config_path.unlink(missing_ok=True)
+
+    return report
+
+
+@app.function(image=unsloth_image, volumes=VOLUME_CONFIG, timeout=120)
+def inspect_studio_routes() -> str:
+    """Inspect the Studio install to find the frontend mount path.
+
+    Usage:
+        python -m modal run modal/unsloth_studio.py::inspect_studio_routes
+    """
+    import subprocess
+
+    site_packages = f"{STUDIO_HOME}/unsloth_studio/lib/python3.13/site-packages"
+    lines: list[str] = []
+
+    # Find index.html files (React/Next.js build outputs)
+    r = subprocess.run(
+        ["find", site_packages, "-name", "index.html"],
+        capture_output=True, text=True,
+    )
+    lines.append("=== index.html locations ===")
+    lines.append(r.stdout.strip() or "(none)")
+
+    # Show context around every app.mount() call in the Studio backend
+    main_py = f"{site_packages}/studio/backend/main.py"
+    r = subprocess.run(
+        ["grep", "-n", "app.mount\\|frontend\\|/ui\\|/app\\|api_only", main_py],
+        capture_output=True, text=True,
+    )
+    lines.append("\n=== mount / frontend / api_only lines in main.py ===")
+    lines.append(r.stdout.strip() or "(no matches)")
+
+    report = "\n".join(lines)
+    print(report)
+    return report
 
 
 @app.local_entrypoint()
