@@ -294,6 +294,17 @@ def _call_with_retry(
                 )
             continue
 
+        # 503 = nginx placeholder is up but Studio is still loading behind it.
+        if r.status_code == 503:
+            with _warmup_lock:
+                _state["warmup_phase"] = "Container running — Studio loading (503 placeholder)…"
+            if status_callback:
+                status_callback(
+                    f"Unsloth ({ep['label']}): Studio loading, "
+                    f"please wait… (attempt {attempt}/{_MAX_ATTEMPTS})"
+                )
+            continue
+
         # Fast 400 "No model loaded" on the very first request to a freshly
         # booted container (before the model finishes loading).
         if r.status_code == 400:
@@ -347,9 +358,17 @@ def _run_warmup(endpoint_key: str) -> None:
         logger.warning("Unsloth warm-up failed (%s): %s", label, exc)
 
 
+_warmup_thread: threading.Thread | None = None
+
+
 def _start_warmup(endpoint_key: str) -> None:
-    t = threading.Thread(target=_run_warmup, args=(endpoint_key,), daemon=True)
-    t.start()
+    global _warmup_thread
+    with _warmup_lock:
+        if _warmup_thread is not None and _warmup_thread.is_alive():
+            logger.info("Unsloth: warmup already running for %s — skipping duplicate start", endpoint_key)
+            return
+        _warmup_thread = threading.Thread(target=_run_warmup, args=(endpoint_key,), daemon=True)
+        _warmup_thread.start()
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
