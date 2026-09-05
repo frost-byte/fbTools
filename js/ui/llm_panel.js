@@ -963,7 +963,7 @@ function _renderUnslothTab(pane) {
         const warmup   = st?.warmup_status ?? "cold";
         const epLabel  = st?.endpoint_label ?? "";
         const wsErr    = st?.warmup_error ?? "";
-        const epUrl    = st?.endpoint_url ?? "";
+        const epUrl    = st?.endpoint_docs_url ?? st?.endpoint_url ?? "";
 
         const dotCls = { warm: " ok", warming: " blue", error: " warn" }[warmup] || "";
         dot.className = "llmp-status-dot" + dotCls;
