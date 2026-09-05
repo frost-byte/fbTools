@@ -234,9 +234,29 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
     subprocess.Popen(cmd, env=_unsloth_env())
 
     # In Full Studio UI mode, start nginx on STUDIO_PORT to serve the SPA and
-    # proxy API calls to Studio on STUDIO_API_PORT.
+    # proxy API calls to Studio on STUDIO_API_PORT.  We must wait for Studio to
+    # be ready on studio_port BEFORE starting nginx — otherwise nginx opens
+    # STUDIO_PORT immediately (causing Modal's startup check to pass), but every
+    # request 502s until Studio is actually up.
     if not api_only:
         import glob
+        import time
+        import urllib.request
+
+        print(f"[fbtools] waiting for Studio to become ready on port {studio_port}…")
+        deadline = time.monotonic() + 1500   # match @modal.web_server startup_timeout
+        while time.monotonic() < deadline:
+            try:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{studio_port}/api/health", timeout=5
+                )
+                print(f"[fbtools] Studio ready on port {studio_port}")
+                break
+            except Exception:
+                time.sleep(10)
+        else:
+            print(f"[fbtools] Studio did not become ready within 1500s; starting nginx anyway")
+
         candidates = glob.glob(
             f"{STUDIO_HOME}/unsloth_studio/lib/python*/site-packages/studio/frontend/dist"
         )
