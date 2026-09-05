@@ -575,7 +575,6 @@ def generate(
     system_prompt: str = "",
     max_tokens: int = 2048,
     thinking: bool = True,
-    reasoning_effort: str | None = None,
     temperature: float | None = None,
     top_p: float | None = None,
     top_k: int | None = None,
@@ -589,9 +588,6 @@ def generate(
     thinking=True  → Unsloth thinking-mode defaults (temp 1.0, top_p 0.95, presence_penalty 0.0)
     thinking=False → instruct-mode defaults (temp 0.7, top_p 0.80, presence_penalty 1.5)
     Any explicit kwarg overrides the mode default for that parameter only.
-
-    reasoning_effort: "xhigh" (default on server), "medium", "low", or "none" — controls
-    depth of the chain-of-thought trace via chat_template_kwargs.
 
     Supports vision when the active endpoint is a VLM (27B, flash_next).
     Pass PIL Images or file paths via `images`; `video_frames` is treated
@@ -651,10 +647,6 @@ def generate(
         "presence_penalty":    resolved_presence,
         "repetition_penalty":  resolved_repetition,
     }
-
-    # reasoning_effort controls thinking trace depth via llama.cpp chat template
-    if reasoning_effort is not None:
-        payload["chat_template_kwargs"] = {"reasoning_effort": reasoning_effort}
 
     with _warmup_lock:
         warmup = _state.get("warmup_status", "cold")

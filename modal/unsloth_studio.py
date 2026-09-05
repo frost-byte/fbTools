@@ -143,16 +143,16 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
         cmd += ["--gguf-variant", gguf_variant]
     cmd += extra_flags or []
 
-    # Pre-fetch mmproj (vision projector) into the HF cache on the Volume so
-    # Unsloth Studio can auto-detect it alongside the model weights.
-    # Do NOT pass --mmproj on the CLI — unsloth studio run does not accept it.
+    # Download mmproj (vision projector) into the HF cache on the Volume.
+    # Unknown flags pass through to llama-server, so --mmproj is valid.
     if mmproj_filename:
         from huggingface_hub import hf_hub_download
-        hf_hub_download(
+        mmproj_path = hf_hub_download(
             repo_id=repo_id,
             filename=mmproj_filename,
             cache_dir=f"{STUDIO_HOME}/hf-cache",
         )
+        cmd += ["--mmproj", mmproj_path]
 
     subprocess.Popen(cmd, env=_unsloth_env())
 
