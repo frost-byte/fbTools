@@ -61,8 +61,8 @@ _ENDPOINT_SLUGS: dict[str, dict] = {
         "slug":         "serve-l4-qwen3-8-flash-next",
         "model":        "unsloth/Qwen3.8-Flash-Next-GGUF",
         "label":        "Qwen3.8 Flash Next 125B MoE (slow cold start)",
-        "vision":       False,  # text-generation only; no mmproj in HF cache
-        "native_video": False,
+        "vision":       True,   # VLM; mmproj-F16.gguf loaded at container start
+        "native_video": True,
     },
 }
 
