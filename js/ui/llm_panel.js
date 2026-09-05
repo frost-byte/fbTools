@@ -952,14 +952,28 @@ function _renderUnslothTab(pane) {
     }, ["Restart Warmup"]);
     let _acting = false;
 
+    const apiLink = _mk("a", {
+        target: "_blank",
+        rel:    "noopener noreferrer",
+        style:  { fontSize: "11px", display: "none" },
+    }, ["Open API ↗"]);
+
     function _syncStatus(st) {
         const active   = st?.active ?? false;
         const warmup   = st?.warmup_status ?? "cold";
         const epLabel  = st?.endpoint_label ?? "";
         const wsErr    = st?.warmup_error ?? "";
+        const epUrl    = st?.endpoint_url ?? "";
 
         const dotCls = { warm: " ok", warming: " blue", error: " warn" }[warmup] || "";
         dot.className = "llmp-status-dot" + dotCls;
+
+        if (epUrl) {
+            apiLink.href = epUrl;
+            apiLink.style.display = active ? "" : "none";
+        } else {
+            apiLink.style.display = "none";
+        }
 
         if (!active) {
             lbl.textContent = "Inactive";
@@ -1341,7 +1355,10 @@ function _renderUnslothTab(pane) {
 
     // ── Layout ─────────────────────────────────────────────────────────────────
     pane.append(
-        statusEl,
+        _mk("div", { cls: "llmp-row", style: { gap: "8px", alignItems: "center" } }, [
+            statusEl,
+            apiLink,
+        ]),
         capRow,
         errNote,
         epRow,
