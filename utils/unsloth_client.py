@@ -143,9 +143,10 @@ def configure(workspace: str = "", api_key: str = "") -> None:
 
 # ── HTTP call ─────────────────────────────────────────────────────────────────
 
-_PER_ATTEMPT_TIMEOUT = 200   # seconds — long enough to survive one 303 cycle
-_MAX_ATTEMPTS        = 20    # ~66 min ceiling; cold start is 2-5 min in practice
-_WARMUP_MAX_TOKENS   = 1
+_PER_ATTEMPT_TIMEOUT  = 200   # seconds — long enough to survive one 303 cycle
+_MAX_ATTEMPTS         = 20    # ~66 min ceiling; cold start is 2-5 min in practice
+_WARMUP_MAX_TOKENS    = 1
+_GENERATE_TIMEOUT     = 180   # seconds — single-shot inference timeout (no retry)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
@@ -153,6 +154,41 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 def _strip_reasoning(text: str) -> str:
     """Remove Qwen3 chain-of-thought <think>…</think> blocks."""
     return _THINK_RE.sub("", text).strip()
+
+
+def _post_once(endpoint_key: str, payload: dict) -> dict:
+    """Single-shot POST to the inference endpoint — no cold-start retry.
+
+    Used by generate().  Raises RuntimeError on any non-200 response so the
+    caller can surface the error immediately rather than blocking for minutes.
+    """
+    url    = _endpoint_url(endpoint_key)
+    key    = _api_key()
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    with httpx.Client(timeout=_GENERATE_TIMEOUT, follow_redirects=False) as client:
+        r = client.post(url, json=payload, headers=headers)
+    if r.status_code == 200:
+        return r.json()
+    if r.status_code == 303:
+        raise RuntimeError(
+            "Unsloth container is still starting up (303 redirect). "
+            "Wait for warmup to complete before running inference."
+        )
+    if r.status_code == 400:
+        try:
+            body = r.text.lower()
+        except Exception:
+            body = ""
+        if "no model" in body or "model loaded" in body:
+            raise RuntimeError(
+                "Unsloth container is loading model weights. "
+                "Wait for warmup to complete before running inference."
+            )
+    raise RuntimeError(
+        f"Unsloth inference failed (HTTP {r.status_code}): {r.text[:200]}"
+    )
 
 
 def _endpoint_url(endpoint_key: str) -> str:
@@ -536,21 +572,27 @@ def generate(
         "temperature": temperature,
     }
 
-    if status_callback:
+    with _warmup_lock:
         warmup = _state.get("warmup_status", "cold")
-        if warmup != "warm":
-            status_callback(
-                f"Calling Unsloth ({ep['label']}) — container may need 2-5 min if cold"
-            )
+
+    if warmup != "warm":
+        msg = (
+            f"Unsloth container is not ready (status: {warmup}). "
+            "Wait for the warm-up to complete in the LLM panel before running inference."
+        )
+        if status_callback:
+            status_callback(msg)
+        return {"success": False, "text": "", "message": msg}
+
+    if status_callback:
+        status_callback(f"Calling Unsloth ({ep['label']})…")
 
     try:
-        data = _call_with_retry(ep_key, payload, status_callback=status_callback)
+        data = _post_once(ep_key, payload)
         raw  = data["choices"][0]["message"].get("content") or ""
         text = _strip_reasoning(raw)
         if status_callback:
             status_callback(f"Unsloth ({ep['label']}) responded")
-        with _warmup_lock:
-            _state["warmup_status"] = "warm"
         return {"success": True, "text": text, "message": ""}
     except Exception as exc:
         logger.error("Unsloth generate failed: %s", exc)
