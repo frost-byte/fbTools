@@ -112,16 +112,30 @@ def _unsloth_env(*, set_password: bool = False, extra_env: dict | None = None) -
 
 def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
                        extra_flags: list[str] | None = None) -> None:
+    import json
     import subprocess
+    from pathlib import Path
+
+    # Read serve config written by the fbTools frontend (via Modal Volume).
+    # Defaults to api_only=True (safe: no extra VRAM, Swagger UI still works).
+    api_only = True
+    config_path = Path(STUDIO_HOME) / "fbtools_serve_config.json"
+    if config_path.exists():
+        try:
+            api_only = bool(json.loads(config_path.read_text()).get("api_only", True))
+        except Exception:
+            pass
+
     cmd = [
         "unsloth", "studio", "run",
         "--model", repo_id,
         "--host", "0.0.0.0",
         "--port", str(STUDIO_PORT),
-        "--api-only",
         "--no-cloudflare",
         "--silent",
     ]
+    if api_only:
+        cmd.append("--api-only")
     if gguf_variant:
         cmd += ["--gguf-variant", gguf_variant]
     cmd += extra_flags or []

@@ -17721,6 +17721,40 @@ async def _unsloth_undeploy(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@routes.get("/fbtools/unsloth/serve_mode")
+async def _unsloth_get_serve_mode(request):
+    """Return current serve mode preference and last-deployed mode.
+
+    Returns {api_only, last_deployed_api_only}.
+    """
+    try:
+        cfg = _modal_deploy.load_serve_config(user_data_dir())
+        return web.json_response({
+            "api_only":              cfg.get("api_only", True),
+            "last_deployed_api_only": cfg.get("last_deployed_api_only", None),
+        })
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/unsloth/serve_mode")
+async def _unsloth_set_serve_mode(request):
+    """Update serve mode preference and write to Modal Volume.
+
+    Body: {api_only: bool}
+    Returns {success, message}.
+    """
+    try:
+        body     = await request.json()
+        api_only = bool(body.get("api_only", True))
+        result   = await asyncio.to_thread(
+            _modal_deploy.set_serve_mode, user_data_dir(), api_only
+        )
+        return web.json_response(result, status=200 if result["success"] else 503)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 @routes.get("/fbtools/unsloth/containers")
 async def _unsloth_containers(request):
     """List running Unsloth Studio containers (warm = actively billing).
