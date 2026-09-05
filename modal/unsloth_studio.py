@@ -426,6 +426,102 @@ def bootstrap_api_key(repo_id: str = BOOTSTRAP_MODEL_REPO,
     return api_key
 
 
+@app.function(
+    image=unsloth_image,
+    volumes=VOLUME_CONFIG,
+    secrets=[modal.Secret.from_name("unsloth-studio-password")],
+    timeout=600,
+)
+def reset_password() -> str:
+    """Delete the Unsloth Studio auth DB and re-bootstrap with the current UNSLOTH_STUDIO_PASSWORD secret.
+
+    Run this when you've forgotten the Studio web UI password.  Updates the
+    Modal secret first if you want a new password:
+        modal secret create unsloth-studio-password UNSLOTH_STUDIO_PASSWORD=<new-password>
+
+    Then run:
+        python -m modal run modal/unsloth_studio.py::reset_password
+
+    Returns the new API key.
+    """
+    import re
+    import select
+    import shutil
+    import subprocess
+    import time
+    from pathlib import Path
+
+    # Find and wipe the auth database (SQLite file Unsloth Studio uses for passwords/keys).
+    studio_pkg = Path(STUDIO_HOME) / "unsloth_studio" / "lib"
+    deleted: list[str] = []
+    for candidate in studio_pkg.rglob("studio.db"):
+        candidate.unlink()
+        deleted.append(str(candidate))
+    # Also wipe any auth-specific directories the installer may use.
+    for name in ("auth", "auth_db", ".auth"):
+        for p in studio_pkg.rglob(name):
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+                deleted.append(str(p))
+    if deleted:
+        print(f"[fbtools] Deleted auth artifacts: {deleted}")
+    else:
+        print("[fbtools] No auth DB found — proceeding with fresh bootstrap anyway")
+
+    # Re-run Studio with set_password=True so it sets the new UNSLOTH_STUDIO_PASSWORD.
+    env = _unsloth_env(set_password=True)
+    env["PYTHONUNBUFFERED"] = "1"
+    proc = subprocess.Popen(
+        [
+            "unsloth", "studio", "run",
+            "--model", BOOTSTRAP_MODEL_REPO,
+            "--host", "0.0.0.0",
+            "--port", str(STUDIO_PORT),
+            "--api-only",
+            "--no-cloudflare",
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    api_key = None
+    output_lines: list[str] = []
+    deadline = time.monotonic() + 480
+    try:
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 5))
+            if proc.stdout in ready:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                output_lines.append(line)
+                print(line, end="")
+                match = re.search(r"API Key:\s+(sk-unsloth-\S+)", line)
+                if match:
+                    api_key = match.group(1)
+                    break
+            if proc.poll() is not None:
+                break
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    if not api_key:
+        raise RuntimeError(
+            "Password reset: could not find API Key in output.\n"
+            f"Output:\n{''.join(output_lines)}"
+        )
+    studio_volume.commit()
+    print(f"\n[fbtools] Password reset complete. New API key: {api_key}")
+    return api_key
+
+
 @app.function(image=unsloth_image, volumes=VOLUME_CONFIG, timeout=30)
 def read_serve_config() -> str:
     """Print the current fbtools_serve_config.json from the Modal Volume.
