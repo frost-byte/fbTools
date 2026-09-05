@@ -47,8 +47,8 @@ _ENDPOINT_SLUGS: dict[str, dict] = {
         "slug":         "serve-l4-qwen3-8-27b",
         "model":        "unsloth/Qwen3.8-27B-GGUF",
         "label":        "Qwen3.8 27B (recommended)",
-        "vision":       True,   # native VLM: images + video
-        "native_video": True,   # supports hour-scale video via image_url frames
+        "vision":       False,  # text-generation only; no mmproj in HF cache
+        "native_video": False,
     },
     "8b": {
         "slug":         "serve-l4-qwen3-8b",
@@ -61,8 +61,8 @@ _ENDPOINT_SLUGS: dict[str, dict] = {
         "slug":         "serve-l4-qwen3-8-flash-next",
         "model":        "unsloth/Qwen3.8-Flash-Next-GGUF",
         "label":        "Qwen3.8 Flash Next 125B MoE (slow cold start)",
-        "vision":       True,   # has mmproj (vision projector loaded by default)
-        "native_video": True,
+        "vision":       False,  # text-generation only; no mmproj in HF cache
+        "native_video": False,
     },
 }
 
