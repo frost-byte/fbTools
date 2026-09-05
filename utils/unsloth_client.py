@@ -32,6 +32,8 @@ import re
 import threading
 from typing import Any, Callable
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 # ── Endpoint definitions ──────────────────────────────────────────────────────
@@ -241,13 +243,7 @@ def _call_with_retry(
 
     Returns the parsed JSON body on 200, raises on unrecoverable errors.
     """
-    try:
-        import httpx
-    except ImportError:
-        raise RuntimeError(
-            "httpx is required for the Unsloth backend. "
-            "Install with: pip install httpx"
-        )
+
 
     ep = _ENDPOINT_SLUGS.get(endpoint_key)
     if not ep:
@@ -483,11 +479,6 @@ def health_check(endpoint_key: str | None = None) -> dict:
     Uses a 10s timeout — does NOT follow the full cold-start retry loop.
     Returns {status: warm|starting|down|error, message}.
     """
-    try:
-        import httpx
-    except ImportError:
-        return {"status": "error", "message": "httpx not installed"}
-
     key = endpoint_key or _state["endpoint_key"]
     ep  = _ENDPOINT_SLUGS.get(key)
     if not ep:
