@@ -67,8 +67,12 @@ _ENDPOINT_SLUGS: dict[str, dict] = {
 DEFAULT_ENDPOINT = "27b"
 
 
+def _build_base_url(workspace: str, slug: str) -> str:
+    return f"https://{workspace}--{_APP_NAME}-{slug}.modal.run"
+
+
 def _build_url(workspace: str, slug: str) -> str:
-    return f"https://{workspace}--{_APP_NAME}-{slug}.modal.run/v1/chat/completions"
+    return f"{_build_base_url(workspace, slug)}/v1/chat/completions"
 
 
 def endpoint_list(workspace: str | None = None) -> list[dict]:
@@ -154,6 +158,32 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 def _strip_reasoning(text: str) -> str:
     """Remove Qwen3 chain-of-thought <think>…</think> blocks."""
     return _THINK_RE.sub("", text).strip()
+
+
+def _probe_warmth(endpoint_key: str) -> bool:
+    """Quick 5-second probe to check if the container is already warm.
+
+    Used by activate() so that reconnecting after a ComfyUI restart
+    (when the Modal container is still running) shows "Warm ✓" immediately
+    instead of going through the warmup thread.
+    """
+    try:
+        ep = _ENDPOINT_SLUGS.get(endpoint_key, {})
+        payload = {
+            "model":    ep.get("model", ""),
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": _WARMUP_MAX_TOKENS,
+        }
+        url = _endpoint_url(endpoint_key)
+        key = _api_key()
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        with httpx.Client(timeout=5, follow_redirects=False) as client:
+            r = client.post(url, json=payload, headers=headers)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 
 def _post_once(endpoint_key: str, payload: dict) -> dict:
@@ -355,6 +385,7 @@ def backend_status() -> dict:
         "endpoint_key":    ep_key,
         "endpoint_label":  ep.get("label", ep_key),
         "endpoint_url":    _build_url(ws, ep["slug"]) if ws else "",
+        "endpoint_docs_url": f"{_build_base_url(ws, ep['slug'])}/docs" if ws else "",
         "model":           ep.get("model", ""),
         "vision":          ep.get("vision", False),
         "native_video":    ep.get("native_video", False),
@@ -402,11 +433,25 @@ def activate(endpoint_key: str = DEFAULT_ENDPOINT) -> dict:
 
     _state["active"]       = True
     _state["endpoint_key"] = endpoint_key
+    ep = _ENDPOINT_SLUGS[endpoint_key]
+
+    # Quick probe: if the container is already warm (e.g. after a ComfyUI restart)
+    # skip the warmup thread and go straight to "warm".
+    if _probe_warmth(endpoint_key):
+        with _warmup_lock:
+            _state["warmup_status"] = "warm"
+            _state["warmup_phase"]  = "Ready"
+            _state["warmup_error"]  = ""
+        logger.info("Unsloth backend activated: %s — container already warm", ep["label"])
+        return {
+            "success": True,
+            "message": f"Unsloth activated ({ep['label']}). Container is already warm.",
+        }
+
     with _warmup_lock:
         _state["warmup_status"] = "cold"
+        _state["warmup_phase"]  = ""
         _state["warmup_error"]  = ""
-
-    ep = _ENDPOINT_SLUGS[endpoint_key]
     _start_warmup(endpoint_key)
     logger.info("Unsloth backend activated: %s — warm-up started", ep["label"])
     return {
