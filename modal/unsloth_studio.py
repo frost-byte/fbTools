@@ -150,6 +150,7 @@ def _start_nginx(frontend_dist: str) -> None:
             include /etc/nginx/mime.types;
             default_type application/octet-stream;
             sendfile on;
+            client_max_body_size 100m;
             server {{
                 listen {STUDIO_PORT};
                 root {frontend_dist};
