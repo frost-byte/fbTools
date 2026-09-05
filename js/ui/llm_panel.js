@@ -885,8 +885,8 @@ function _renderUnslothTab(pane) {
           title: "Qwen3.8 27B — recommended, vision + video (mmproj-F16)" },
         { key: "8b",         label: "8B",         recommended: false, vision: false, native_video: false,
           title: "Qwen3 8B — fast, text-only" },
-        { key: "flash_next", label: "Flash Next", recommended: false, vision: false, native_video: false,
-          title: "Qwen3.8 Flash Next 125B MoE — slow cold start (text only; no mmproj)" },
+        { key: "flash_next", label: "Flash Next", recommended: false, vision: true,  native_video: true,
+          title: "Qwen3.8 Flash Next 125B MoE — slow cold start, vision + video (mmproj-F16)" },
     ];
     let _selectedEpKey = "27b";
 

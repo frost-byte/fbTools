@@ -80,6 +80,7 @@ CONFIGS: dict[str, dict] = {
         # --spec-type broke MTP auto-detection.  Let --fit and Unsloth's MTP
         # auto-detection keep full control of everything else.
         "extra_flags": ["--gpu-memory-mode", "auto", "--disable-tools", "-c", "131072"],
+        "mmproj_filename": "mmproj-F16.gguf",
     },
 }
 
@@ -181,9 +182,10 @@ def serve_l4_qwen3_8b():
 @modal.concurrent(max_inputs=4)
 @modal.web_server(STUDIO_PORT, startup_timeout=1800)
 def serve_l4_qwen3_8_flash_next():
-    """Qwen3.8 Flash Next 125B MoE (UD-IQ1_M) — very slow cold start (~37 min uncached)."""
+    """Qwen3.8 Flash Next 125B MoE (UD-IQ1_M) — very slow cold start (~37 min uncached), vision via mmproj-F16."""
     c = CONFIGS["qwen3.8-flash-next"]
-    _run_unsloth_serve(c["repo_id"], gguf_variant=c.get("gguf_variant"), extra_flags=c.get("extra_flags"))
+    _run_unsloth_serve(c["repo_id"], gguf_variant=c.get("gguf_variant"),
+                       extra_flags=c.get("extra_flags"), mmproj_filename=c.get("mmproj_filename"))
 
 
 # ── Setup functions ───────────────────────────────────────────────────────────
