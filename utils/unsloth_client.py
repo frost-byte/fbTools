@@ -48,7 +48,7 @@ _ENDPOINT_SLUGS: dict[str, dict] = {
         "model":        "unsloth/Qwen3.8-27B-GGUF",
         "label":        "Qwen3.8 27B (recommended)",
         "vision":       True,   # VLM; mmproj-F16.gguf loaded at container start
-        "native_video": True,
+        "native_video": False,  # llama-server (gguf) does not reliably support multi-image; use contact sheet
     },
     "8b": {
         "slug":         "serve-l4-qwen3-8b",
@@ -62,7 +62,7 @@ _ENDPOINT_SLUGS: dict[str, dict] = {
         "model":        "unsloth/Qwen3.8-Flash-Next-GGUF",
         "label":        "Qwen3.8 Flash Next 125B MoE (slow cold start)",
         "vision":       True,   # VLM; mmproj-F16.gguf loaded at container start
-        "native_video": True,
+        "native_video": False,  # llama-server (gguf) does not reliably support multi-image; use contact sheet
     },
 }
 
@@ -516,6 +516,26 @@ def health_check(endpoint_key: str | None = None) -> dict:
         return {"status": "starting", "message": f"No connection yet — waiting for GPU worker ({type(exc).__name__})."}
 
 
+def _tile_frames(frames: list) -> Any:
+    """Tile a list of PIL Images into a single contact-sheet image (max 4 per row)."""
+    import math
+    from PIL import Image as _PILImage
+
+    if len(frames) == 1:
+        return frames[0]
+
+    cols   = min(4, len(frames))
+    rows   = math.ceil(len(frames) / cols)
+    thumb  = frames[0].copy()
+    tw, th = thumb.width, thumb.height
+    sheet  = _PILImage.new("RGB", (tw * cols, th * rows), (20, 20, 20))
+    for i, fr in enumerate(frames):
+        r, c = divmod(i, cols)
+        img  = fr.resize((tw, th), _PILImage.LANCZOS) if (fr.width != tw or fr.height != th) else fr
+        sheet.paste(img.convert("RGB"), (c * tw, r * th))
+    return sheet
+
+
 def _encode_image(image: Any) -> str:
     """Return a base64-encoded JPEG data URI for a PIL Image or file path."""
     import base64
@@ -604,7 +624,17 @@ def generate(
     if not ep:
         return {"success": False, "text": "", "message": f"Unknown endpoint {ep_key!r}"}
 
-    all_images = list(images or []) + list(video_frames or [])
+    still_images  = list(images or [])
+    frame_images  = list(video_frames or [])
+
+    # llama-server (GGUF) does not reliably support multiple image_url entries.
+    # When the endpoint has native_video=False and video frames were supplied,
+    # tile them into a single contact-sheet so only one image is sent.
+    if frame_images and not ep.get("native_video"):
+        frame_images = [_tile_frames(frame_images)]
+
+    all_images = still_images + frame_images
+
     if all_images and not ep.get("vision"):
         return {
             "success": False,
