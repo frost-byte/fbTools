@@ -116,6 +116,7 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
                        extra_flags: list[str] | None = None,
                        mmproj_filename: str | None = None) -> None:
     import json
+    import os
     import subprocess
     from pathlib import Path
 
@@ -143,16 +144,23 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
         cmd += ["--gguf-variant", gguf_variant]
     cmd += extra_flags or []
 
-    # Download mmproj (vision projector) into the HF cache on the Volume.
-    # Unknown flags pass through to llama-server, so --mmproj is valid.
+    # Pre-cache the mmproj (vision projector) file so Unsloth Studio can auto-detect it.
+    # --mmproj cannot be passed directly: Studio validates extra args and rejects it
+    # ("llama-server flag '--mmproj' is managed by Unsloth Studio").  Studio finds the
+    # mmproj automatically when it is present in the same HF cache directory as the model.
     if mmproj_filename:
-        from huggingface_hub import hf_hub_download
-        mmproj_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=mmproj_filename,
-            cache_dir=f"{STUDIO_HOME}/hf-cache",
-        )
-        cmd += ["--mmproj", mmproj_path]
+        try:
+            from huggingface_hub import hf_hub_download
+            hf_cache = f"{STUDIO_HOME}/hf-cache"
+            raw_path  = hf_hub_download(repo_id=repo_id, filename=mmproj_filename,
+                                         cache_dir=hf_cache)
+            real_path = os.path.realpath(raw_path)
+            if os.path.isfile(real_path):
+                print(f"[fbtools] mmproj pre-cached: {real_path} ({os.path.getsize(real_path) // 1_000_000} MB) — Studio will auto-detect")
+            else:
+                print(f"[fbtools] mmproj path missing after realpath: {real_path} (raw: {raw_path})")
+        except Exception as exc:
+            print(f"[fbtools] mmproj pre-cache failed, Studio may start without vision: {exc}")
 
     subprocess.Popen(cmd, env=_unsloth_env())
 

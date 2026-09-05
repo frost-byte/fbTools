@@ -882,7 +882,7 @@ function _renderUnslothTab(pane) {
     // Endpoint descriptors (mirrors _ENDPOINT_SLUGS in unsloth_client.py)
     const _ENDPOINTS = [
         { key: "27b",        label: "27B",        recommended: true,  vision: true,  native_video: true,
-          title: "Qwen3.8 27B — recommended, vision + video (mmproj-F16)" },
+          title: "Qwen3.8 27B — recommended, native vision + video (mmproj-F16)" },
         { key: "8b",         label: "8B",         recommended: false, vision: false, native_video: false,
           title: "Qwen3 8B — fast, text-only" },
         { key: "flash_next", label: "Flash Next", recommended: false, vision: true,  native_video: true,
