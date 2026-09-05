@@ -186,9 +186,13 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
     config_path = Path(STUDIO_HOME) / "fbtools_serve_config.json"
     if config_path.exists():
         try:
-            api_only = bool(json.loads(config_path.read_text()).get("api_only", True))
-        except Exception:
-            pass
+            raw = config_path.read_text()
+            api_only = bool(json.loads(raw).get("api_only", True))
+            print(f"[fbtools] serve config read: {raw.strip()} → api_only={api_only}")
+        except Exception as exc:
+            print(f"[fbtools] serve config parse error (defaulting api_only=True): {exc}")
+    else:
+        print(f"[fbtools] serve config not found at {config_path} (defaulting api_only=True)")
 
     # In Full Studio UI mode, Studio runs on STUDIO_API_PORT (8889) behind an nginx
     # reverse proxy on STUDIO_PORT (8888).  This bypasses Studio's middleware that gates
@@ -402,12 +406,51 @@ def bootstrap_api_key(repo_id: str = BOOTSTRAP_MODEL_REPO,
     return api_key
 
 
+@app.function(image=unsloth_image, volumes=VOLUME_CONFIG, timeout=30)
+def read_serve_config() -> str:
+    """Print the current fbtools_serve_config.json from the Modal Volume.
+
+    Usage:
+        python -m modal run modal/unsloth_studio.py::read_serve_config
+    """
+    from pathlib import Path
+    config_path = Path(STUDIO_HOME) / "fbtools_serve_config.json"
+    if config_path.exists():
+        content = config_path.read_text()
+        print(f"[fbtools] {config_path}: {content}")
+        return content
+    else:
+        msg = f"[fbtools] {config_path} does not exist"
+        print(msg)
+        return msg
+
+
+@app.function(image=unsloth_image, volumes=VOLUME_CONFIG, timeout=30)
+def write_serve_config(api_only: bool = False) -> str:
+    """Forcibly write the serve config to the Modal Volume.
+
+    Usage (Full UI mode):
+        python -m modal run modal/unsloth_studio.py::write_serve_config
+    Usage (API-only mode):
+        python -m modal run modal/unsloth_studio.py::write_serve_config --api-only
+    """
+    import json
+    from pathlib import Path
+    config_path = Path(STUDIO_HOME) / "fbtools_serve_config.json"
+    config_path.write_text(json.dumps({"api_only": api_only}))
+    studio_volume.commit()
+    mode = "api_only" if api_only else "full_studio_ui"
+    print(f"[fbtools] wrote {mode} to {config_path}")
+    return mode
+
+
 @app.function(gpu="L4", memory=CONFIGS["qwen3.8-27b"]["memory"], **SERVE_KWARGS)
 def probe_ports(wait_seconds: int = 90) -> str:
     """Probe which ports Unsloth Studio opens in Full Studio UI mode.
 
-    Forces api_only=False so the web UI frontend starts, then reads /proc/net/tcp
-    to list every listening port without needing iproute2/ss.
+    Temporarily overrides the volume config to api_only=False in memory only —
+    restores it via a separate write_serve_config call is NOT needed since
+    probe_ports now writes back explicitly with studio_volume.commit().
 
     Usage:
         python -m modal run modal/unsloth_studio.py::probe_ports
@@ -416,7 +459,7 @@ def probe_ports(wait_seconds: int = 90) -> str:
     import time
     from pathlib import Path
 
-    # Force Full Studio UI mode so the web UI frontend process starts.
+    # Temporarily override config to force Full UI mode without touching volume.
     config_path = Path(STUDIO_HOME) / "fbtools_serve_config.json"
     orig_text = config_path.read_text() if config_path.exists() else None
     config_path.write_text(json.dumps({"api_only": False}))
@@ -443,11 +486,13 @@ def probe_ports(wait_seconds: int = 90) -> str:
     report = f"Listening TCP ports: {sorted(ports)}"
     print(report)
 
-    # Restore the original config so the volume isn't left in Full UI mode.
+    # Restore original config and commit so the volume is left unchanged.
     if orig_text is not None:
         config_path.write_text(orig_text)
     else:
         config_path.unlink(missing_ok=True)
+    studio_volume.commit()
+    print(f"[fbtools] volume config restored to: {orig_text!r}")
 
     return report
 
