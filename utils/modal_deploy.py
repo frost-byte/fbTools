@@ -201,26 +201,44 @@ def set_serve_mode(data_dir: str, api_only: bool) -> dict:
     Returns {success, message}.
     """
     import json as _json
+    import shutil
 
     # Always update local config first
     config = load_serve_config(data_dir)
     config["api_only"] = api_only
     _save_serve_config(data_dir, config)
 
-    if not _has_modal():
-        return {"success": False, "message": "modal package is not installed."}
-    try:
-        import modal as _modal
-        vol = _modal.Volume.from_name("unsloth-studio-home", create_if_missing=False)
-        content = _json.dumps({"api_only": api_only}).encode()
-        with vol.batch_upload() as batch:
-            batch.put_bytes(content, "fbtools_serve_config.json")
-        mode_label = "API only" if api_only else "Full Studio UI"
-        logger.info("Unsloth serve mode set to: %s", mode_label)
-        return {"success": True, "message": f"Serve mode set to '{mode_label}'. Takes effect on next cold-start or redeployment."}
-    except Exception as exc:
-        logger.warning("Could not write serve mode to Modal Volume: %s", exc)
-        return {"success": False, "message": f"Saved locally but could not write to Modal Volume: {exc}"}
+    mode_label = "API only" if api_only else "Full Studio UI"
+
+    # Try SDK path (works when modal is installed in ComfyUI's Python)
+    if _has_modal():
+        try:
+            import modal as _modal
+            vol = _modal.Volume.from_name("unsloth-studio-home", create_if_missing=False)
+            content = _json.dumps({"api_only": api_only}).encode()
+            with vol.batch_upload() as batch:
+                batch.put_bytes(content, "fbtools_serve_config.json")
+            logger.info("Unsloth serve mode set to: %s (SDK)", mode_label)
+            return {"success": True, "message": f"Serve mode set to '{mode_label}'. Takes effect on next cold-start."}
+        except Exception as exc:
+            logger.warning("SDK volume write failed, trying CLI: %s", exc)
+
+    # Fallback: invoke write_serve_config via the modal CLI (works when modal
+    # is in PATH but not in ComfyUI's own Python venv).
+    modal_exe = shutil.which("modal") or "/mnt/comfy_ssd/venvs/comfy-preflight/bin/modal"
+    if Path(modal_exe).exists():
+        cmd = [modal_exe, "run", str(_MODAL_APP_FILE) + "::write_serve_config"]
+        if api_only:
+            cmd.append("--api-only")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            logger.info("Unsloth serve mode set to: %s (CLI)", mode_label)
+            return {"success": True, "message": f"Serve mode set to '{mode_label}'. Takes effect on next cold-start."}
+        err = (result.stderr or result.stdout)[-300:]
+        logger.warning("CLI volume write failed: %s", err)
+        return {"success": False, "message": f"Could not write serve mode to Modal Volume: {err}"}
+
+    return {"success": False, "message": "modal not found (checked PATH and /mnt/comfy_ssd/venvs/comfy-preflight/bin/modal)."}
 
 
 # ── Deploy / undeploy ─────────────────────────────────────────────────────────
