@@ -585,8 +585,8 @@ def generate(
 ) -> dict:
     """Generate text via the Unsloth Studio endpoint.
 
-    thinking=True  → Unsloth thinking-mode defaults (temp 1.0, top_p 0.95, presence_penalty 0.0)
-    thinking=False → instruct-mode defaults (temp 0.7, top_p 0.80, presence_penalty 1.5)
+    thinking=True  → enable_thinking in payload + thinking-mode defaults (temp 1.0, top_p 0.95, presence_penalty 0.0)
+    thinking=False → enable_thinking=False in payload + instruct-mode defaults (temp 0.7, top_p 0.80, presence_penalty 1.5)
     Any explicit kwarg overrides the mode default for that parameter only.
 
     Supports vision when the active endpoint is a VLM (27B, flash_next).
@@ -624,7 +624,6 @@ def generate(
     resolved_presence    = presence_penalty  if presence_penalty  is not None else defaults["presence_penalty"]
     resolved_repetition  = repetition_penalty if repetition_penalty is not None else defaults["repetition_penalty"]
 
-    # Build messages; prefix /no_think for instruct mode so the model skips CoT
     messages: list[dict] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -632,7 +631,7 @@ def generate(
     if all_images:
         user_content = _build_vision_content(prompt, all_images)
     else:
-        user_content = ("/no_think\n" + prompt) if not thinking else prompt
+        user_content = prompt
 
     messages.append({"role": "user", "content": user_content})
 
@@ -646,6 +645,7 @@ def generate(
         "min_p":               resolved_min_p,
         "presence_penalty":    resolved_presence,
         "repetition_penalty":  resolved_repetition,
+        "enable_thinking":     thinking,
     }
 
     with _warmup_lock:
