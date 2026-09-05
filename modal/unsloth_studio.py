@@ -113,29 +113,46 @@ def _unsloth_env(*, set_password: bool = False, extra_env: dict | None = None) -
     return env
 
 
-def _start_nginx(frontend_dist: str) -> None:
-    """Start nginx on STUDIO_PORT as a reverse proxy + SPA static server.
+_NGINX_CONF = "/tmp/studio-nginx.conf"
+_NGINX_PID  = "/tmp/studio-nginx.pid"
 
-    Serves the pre-built React frontend from *frontend_dist* and proxies API
-    calls to Studio on STUDIO_API_PORT.  Studio's own middleware blocks the SPA
-    for requests that don't come through Cloudflare or the LAN listener; serving
-    the static files directly from nginx sidesteps that gate entirely.
+# API path prefixes to proxy to Studio; everything else serves the SPA.
+_API_PREFIXES = ("api", "v1", "docs", "openapi.json", "mcp",
+                 "tokenize", "metrics", "auth", "assets")
+
+
+def _nginx_placeholder_conf() -> str:
+    """Minimal nginx config for port 8888 while Studio is loading.
+
+    Returns 503 Service Unavailable for all requests so Modal's startup
+    check sees the port open, but callers know the backend isn't ready yet.
     """
-    import subprocess
     import textwrap
-    from pathlib import Path
-
-    # Paths that belong to Studio's API — proxy them to STUDIO_API_PORT.
-    # Everything else is served as SPA static files with index.html fallback.
-    api_prefixes = (
-        "api", "v1", "docs", "openapi.json", "mcp",
-        "tokenize", "metrics", "auth", "assets",
-    )
-    api_location = "|".join(api_prefixes)
-
-    conf = textwrap.dedent(f"""
+    return textwrap.dedent(f"""
         worker_processes 1;
-        pid /tmp/studio-nginx.pid;
+        pid {_NGINX_PID};
+        error_log /tmp/studio-nginx-error.log warn;
+        events {{ worker_connections 64; }}
+        http {{
+            client_max_body_size 100m;
+            server {{
+                listen {STUDIO_PORT};
+                location / {{
+                    return 503 'Studio is loading — please wait';
+                    add_header Content-Type text/plain;
+                }}
+            }}
+        }}
+    """).strip()
+
+
+def _nginx_proxy_conf(frontend_dist: str) -> str:
+    """Full nginx config: SPA static files + reverse proxy to Studio on STUDIO_API_PORT."""
+    import textwrap
+    api_location = "|".join(_API_PREFIXES)
+    return textwrap.dedent(f"""
+        worker_processes 1;
+        pid {_NGINX_PID};
         error_log /tmp/studio-nginx-error.log warn;
 
         # Proper WebSocket upgrade: only set Connection: upgrade for actual WS requests;
@@ -177,10 +194,29 @@ def _start_nginx(frontend_dist: str) -> None:
         }}
     """).strip()
 
-    conf_path = Path("/tmp/studio-nginx.conf")
-    conf_path.write_text(conf)
+
+def _start_nginx_placeholder() -> None:
+    """Start nginx immediately on STUDIO_PORT with a 503 placeholder.
+
+    This keeps Modal's startup_timeout from firing while Studio is still
+    loading its model weights.  Call _reload_nginx_proxy() once Studio is ready.
+    """
+    import subprocess
+    from pathlib import Path
+    conf_path = Path(_NGINX_CONF)
+    conf_path.write_text(_nginx_placeholder_conf())
     subprocess.Popen(["nginx", "-c", str(conf_path), "-g", "daemon off;"])
-    print(f"[fbtools] nginx started: frontend from {frontend_dist}, API proxied to :{STUDIO_API_PORT}")
+    print(f"[fbtools] nginx placeholder started on port {STUDIO_PORT} (503 until Studio is ready)")
+
+
+def _reload_nginx_proxy(frontend_dist: str) -> None:
+    """Swap the placeholder config for the full proxy config and reload nginx."""
+    import subprocess
+    from pathlib import Path
+    conf_path = Path(_NGINX_CONF)
+    conf_path.write_text(_nginx_proxy_conf(frontend_dist))
+    subprocess.run(["nginx", "-c", str(conf_path), "-s", "reload"], check=False)
+    print(f"[fbtools] nginx reloaded: frontend from {frontend_dist}, API proxied to :{STUDIO_API_PORT}")
 
 
 def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
@@ -244,18 +280,18 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
 
     subprocess.Popen(cmd, env=_unsloth_env())
 
-    # In Full Studio UI mode, start nginx on STUDIO_PORT to serve the SPA and
-    # proxy API calls to Studio on STUDIO_API_PORT.  We must wait for Studio to
-    # be ready on studio_port BEFORE starting nginx — otherwise nginx opens
-    # STUDIO_PORT immediately (causing Modal's startup check to pass), but every
-    # request 502s until Studio is actually up.
+    # In Full Studio UI mode, start nginx immediately on STUDIO_PORT with a 503
+    # placeholder so Modal's startup_timeout check passes.  Then poll Studio on
+    # STUDIO_API_PORT and reload nginx with the full proxy config once it's ready.
     if not api_only:
         import glob
         import time
         import urllib.request
 
+        _start_nginx_placeholder()   # port 8888 open immediately; returns 503 until Studio ready
+
         print(f"[fbtools] waiting for Studio to become ready on port {studio_port}…")
-        deadline = time.monotonic() + 1500   # match @modal.web_server startup_timeout
+        deadline = time.monotonic() + 1500
         while time.monotonic() < deadline:
             try:
                 urllib.request.urlopen(
@@ -266,15 +302,15 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
             except Exception:
                 time.sleep(10)
         else:
-            print(f"[fbtools] Studio did not become ready within 1500s; starting nginx anyway")
+            print(f"[fbtools] Studio did not become ready within 1500s; reloading nginx anyway")
 
         candidates = glob.glob(
             f"{STUDIO_HOME}/unsloth_studio/lib/python*/site-packages/studio/frontend/dist"
         )
         if candidates:
-            _start_nginx(candidates[0])
+            _reload_nginx_proxy(candidates[0])
         else:
-            print(f"[fbtools] frontend/dist not found under {STUDIO_HOME}; nginx skipped")
+            print(f"[fbtools] frontend/dist not found under {STUDIO_HOME}; nginx stays in placeholder mode")
 
 
 # ── Serve endpoints ───────────────────────────────────────────────────────────
