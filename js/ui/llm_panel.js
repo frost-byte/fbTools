@@ -1186,17 +1186,21 @@ function _renderUnslothTab(pane) {
     let _serveModeApiOnly = true;
     let _serveModeLast    = null;   // null = unknown (never deployed via this UI)
 
-    const serveModeBtn    = _mk("button", {
+    const serveModeApiBtn = _mk("button", {
         cls: "llmp-btn ghost",
-        style: { fontSize: "11px", padding: "3px 10px" },
+        style: { fontSize: "11px", padding: "3px 10px", borderRadius: "4px 0 0 4px", borderRight: "none" },
     }, ["API Only"]);
+    const serveModeUiBtn  = _mk("button", {
+        cls: "llmp-btn ghost",
+        style: { fontSize: "11px", padding: "3px 10px", borderRadius: "0 4px 4px 0" },
+    }, ["Full Studio UI"]);
     const serveModeStatus = _mk("div", { style: { fontSize: "11px", color: "#888", minHeight: "14px" } });
 
     function _renderServeMode() {
-        serveModeBtn.textContent = _serveModeApiOnly ? "API Only" : "Full Studio UI";
-        serveModeBtn.title = _serveModeApiOnly
-            ? "Current preference: API Only — click to switch to Full Studio UI"
-            : "Current preference: Full Studio UI — click to switch to API Only";
+        serveModeApiBtn.classList.toggle("primary", _serveModeApiOnly);
+        serveModeApiBtn.classList.toggle("ghost",   !_serveModeApiOnly);
+        serveModeUiBtn.classList.toggle("primary",  !_serveModeApiOnly);
+        serveModeUiBtn.classList.toggle("ghost",    _serveModeApiOnly);
         const lastText = _serveModeLast === null ? "unknown"
                        : _serveModeLast ? "API Only" : "Full Studio UI";
         const mismatch = _serveModeLast !== null && _serveModeLast !== _serveModeApiOnly;
@@ -1212,9 +1216,9 @@ function _renderUnslothTab(pane) {
         } catch (_) {}
     }
 
-    serveModeBtn.onclick = async () => {
-        const newApiOnly = !_serveModeApiOnly;
-        serveModeBtn.disabled = true;
+    async function _setServeMode(newApiOnly) {
+        serveModeApiBtn.disabled = true;
+        serveModeUiBtn.disabled  = true;
         try {
             const r = await unslothApi.setServeMode(newApiOnly);
             if (r && r.success !== false) {
@@ -1226,9 +1230,13 @@ function _renderUnslothTab(pane) {
         } catch (err) {
             serveModeStatus.textContent = `⚠ ${err.message}`;
         } finally {
-            serveModeBtn.disabled = false;
+            serveModeApiBtn.disabled = false;
+            serveModeUiBtn.disabled  = false;
         }
-    };
+    }
+
+    serveModeApiBtn.onclick = () => { if (!_serveModeApiOnly) _setServeMode(true);  };
+    serveModeUiBtn.onclick  = () => { if (_serveModeApiOnly)  _setServeMode(false); };
 
     // ── Bootstrap Key ──────────────────────────────────────────────────────────
     const bootstrapBtn   = _mk("button", { cls: "llmp-btn ghost" }, ["Bootstrap Key"]);
@@ -1445,7 +1453,7 @@ function _renderUnslothTab(pane) {
         _mk("div", { style: { marginTop: "8px" } }, [
             _mk("div", { cls: "llmp-row", style: { gap: "6px", alignItems: "center", marginBottom: "2px" } }, [
                 _mk("span", { cls: "llmp-label" }, ["Serve Mode"]),
-                serveModeBtn,
+                _mk("div", { style: { display: "flex" } }, [serveModeApiBtn, serveModeUiBtn]),
                 _iicon(
                     "API Only: exposes only the OpenAI-compatible /v1/ endpoints (default, no extra VRAM). " +
                     "Full Studio UI: also serves the Unsloth Studio web interface on port 8888. " +
