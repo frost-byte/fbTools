@@ -548,28 +548,57 @@ def _build_vision_content(prompt: str, images: list[Any]) -> list[dict]:
     return content
 
 
+# Unsloth-recommended sampling defaults for Qwen3.8-27B (source: unsloth.ai/docs/models/qwen3.8)
+_THINKING_DEFAULTS: dict = {
+    "temperature":       1.0,
+    "top_p":             0.95,
+    "top_k":             20,
+    "min_p":             0.0,
+    "presence_penalty":  0.0,
+    "repetition_penalty": 1.0,
+}
+_INSTRUCT_DEFAULTS: dict = {
+    "temperature":       0.7,
+    "top_p":             0.80,
+    "top_k":             20,
+    "min_p":             0.0,
+    "presence_penalty":  1.5,
+    "repetition_penalty": 1.0,
+}
+
+
 def generate(
     prompt: str,
     *,
     images: list[Any] | None = None,
     video_frames: list[Any] | None = None,
     system_prompt: str = "",
-    max_tokens: int = 512,
-    temperature: float = 0.7,
+    max_tokens: int = 2048,
+    thinking: bool = True,
+    reasoning_effort: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    min_p: float | None = None,
+    presence_penalty: float | None = None,
+    repetition_penalty: float | None = None,
     status_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Generate text via the Unsloth Studio endpoint.
 
-    Supports vision when the active endpoint is a vision-language model
-    (27B and flash_next).  Pass PIL Images or file paths via `images`.
-    `video_frames` is treated as a list of images (frame-by-frame).
+    thinking=True  → Unsloth thinking-mode defaults (temp 1.0, top_p 0.95, presence_penalty 0.0)
+    thinking=False → instruct-mode defaults (temp 0.7, top_p 0.80, presence_penalty 1.5)
+    Any explicit kwarg overrides the mode default for that parameter only.
 
-    Returns {success, text, message}.
+    reasoning_effort: "xhigh" (default on server), "medium", "low", or "none" — controls
+    depth of the chain-of-thought trace via chat_template_kwargs.
 
-    max_tokens should be ≥300 for Qwen3 models: they emit a
-    <think>…</think> reasoning block first; if max_tokens is too small the
-    response can be all reasoning with empty content.  The reasoning block
-    is stripped before returning.
+    Supports vision when the active endpoint is a VLM (27B, flash_next).
+    Pass PIL Images or file paths via `images`; `video_frames` is treated
+    as a list of image frames.
+
+    Returns {success, text, message}.  The <think>…</think> reasoning block
+    is stripped from the returned text.
     """
     if not _state["active"]:
         return {"success": False, "text": "", "message": "Unsloth backend is not active."}
@@ -590,6 +619,16 @@ def generate(
             ),
         }
 
+    # Resolve sampling params: mode defaults, then caller overrides
+    defaults = _THINKING_DEFAULTS if thinking else _INSTRUCT_DEFAULTS
+    resolved_temp        = temperature        if temperature        is not None else defaults["temperature"]
+    resolved_top_p       = top_p             if top_p             is not None else defaults["top_p"]
+    resolved_top_k       = top_k             if top_k             is not None else defaults["top_k"]
+    resolved_min_p       = min_p             if min_p             is not None else defaults["min_p"]
+    resolved_presence    = presence_penalty  if presence_penalty  is not None else defaults["presence_penalty"]
+    resolved_repetition  = repetition_penalty if repetition_penalty is not None else defaults["repetition_penalty"]
+
+    # Build messages; prefix /no_think for instruct mode so the model skips CoT
     messages: list[dict] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -597,16 +636,25 @@ def generate(
     if all_images:
         user_content = _build_vision_content(prompt, all_images)
     else:
-        user_content = prompt
+        user_content = ("/no_think\n" + prompt) if not thinking else prompt
 
     messages.append({"role": "user", "content": user_content})
 
     payload: dict = {
-        "model":       ep["model"],
-        "messages":    messages,
-        "max_tokens":  max_tokens,
-        "temperature": temperature,
+        "model":               ep["model"],
+        "messages":            messages,
+        "max_tokens":          max_tokens,
+        "temperature":         resolved_temp,
+        "top_p":               resolved_top_p,
+        "top_k":               resolved_top_k,
+        "min_p":               resolved_min_p,
+        "presence_penalty":    resolved_presence,
+        "repetition_penalty":  resolved_repetition,
     }
+
+    # reasoning_effort controls thinking trace depth via llama.cpp chat template
+    if reasoning_effort is not None:
+        payload["chat_template_kwargs"] = {"reasoning_effort": reasoning_effort}
 
     with _warmup_lock:
         warmup = _state.get("warmup_status", "cold")
