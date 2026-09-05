@@ -260,14 +260,23 @@ def app_status(force: bool = False) -> dict:
         _app_status_cache.update(ts=now, result=result)
         return result
     try:
-        proc = _modal_cmd("app", "list", timeout=30)
-        output = (proc.stdout or "") + (proc.stderr or "")
-        deployed = APP_NAME in output
-        result = {
-            "deployed": deployed,
-            "app_name": APP_NAME,
-            "message": "Running" if deployed else "Not deployed",
-        }
+        import json as _json
+        proc = _modal_cmd("app", "list", "--json", timeout=30)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            result = {"deployed": False, "app_name": APP_NAME, "message": err or "modal app list failed"}
+        else:
+            raw = (proc.stdout or "").strip()
+            apps = _json.loads(raw) if raw else []
+            deployed = any(
+                a.get("description") == APP_NAME and a.get("state") == "deployed"
+                for a in apps
+            )
+            result = {
+                "deployed": deployed,
+                "app_name": APP_NAME,
+                "message": "Deployed" if deployed else "Not deployed",
+            }
     except subprocess.TimeoutExpired:
         result = {"deployed": False, "app_name": APP_NAME, "message": "modal app list timed out."}
     except Exception as exc:
