@@ -48,7 +48,7 @@ _ENDPOINT_SLUGS: dict[str, dict] = {
         "model":        "unsloth/Qwen3.8-27B-GGUF",
         "label":        "Qwen3.8 27B (recommended)",
         "vision":       True,   # VLM; mmproj-F16.gguf loaded at container start
-        "native_video": False,  # llama-server (gguf) does not reliably support multi-image; use contact sheet
+        "native_video": True,   # llama-server supports multiple image_url entries
     },
     "8b": {
         "slug":         "serve-l4-qwen3-8b",
@@ -62,7 +62,7 @@ _ENDPOINT_SLUGS: dict[str, dict] = {
         "model":        "unsloth/Qwen3.8-Flash-Next-GGUF",
         "label":        "Qwen3.8 Flash Next 125B MoE (slow cold start)",
         "vision":       True,   # VLM; mmproj-F16.gguf loaded at container start
-        "native_video": False,  # llama-server (gguf) does not reliably support multi-image; use contact sheet
+        "native_video": True,   # llama-server supports multiple image_url entries
     },
 }
 
@@ -516,26 +516,15 @@ def health_check(endpoint_key: str | None = None) -> dict:
         return {"status": "starting", "message": f"No connection yet — waiting for GPU worker ({type(exc).__name__})."}
 
 
-def _tile_frames(frames: list, tile_w: int = 320, tile_h: int = 180) -> Any:
-    """Tile PIL Images into a contact-sheet downscaled to tile_w×tile_h per cell.
-
-    Matches the 320×180 thumbnail size used by _spa_build_contact_sheet so a
-    4-column, 2-row grid (8 frames) is 1280×360 — roughly 150 KB as JPEG.
-    """
-    import math
+def _downscale_frame(img: Any, max_dim: int = 480) -> Any:
+    """Downscale a PIL Image so its longest side is at most max_dim, preserving aspect ratio."""
     from PIL import Image as _PILImage
-
-    if len(frames) == 1:
-        img = frames[0].convert("RGB")
-        return img.resize((tile_w, tile_h), _PILImage.LANCZOS)
-
-    cols  = min(4, len(frames))
-    rows  = math.ceil(len(frames) / cols)
-    sheet = _PILImage.new("RGB", (tile_w * cols, tile_h * rows), (20, 20, 20))
-    for i, fr in enumerate(frames):
-        r, c = divmod(i, cols)
-        sheet.paste(fr.convert("RGB").resize((tile_w, tile_h), _PILImage.LANCZOS), (c * tile_w, r * tile_h))
-    return sheet
+    img = img.convert("RGB")
+    w, h = img.size
+    if max(w, h) <= max_dim:
+        return img
+    scale = max_dim / max(w, h)
+    return img.resize((max(1, int(w * scale)), max(1, int(h * scale))), _PILImage.LANCZOS)
 
 
 def _encode_image(image: Any) -> str:
@@ -629,11 +618,25 @@ def generate(
     still_images  = list(images or [])
     frame_images  = list(video_frames or [])
 
-    # llama-server (GGUF) does not reliably support multiple image_url entries.
-    # When the endpoint has native_video=False and video frames were supplied,
-    # tile them into a single contact-sheet so only one image is sent.
-    if frame_images and not ep.get("native_video"):
-        frame_images = [_tile_frames(frame_images)]
+    if ep.get("native_video") and frame_images:
+        # Send each frame as a separate image_url entry so the model can reason
+        # over them sequentially.  Downscale to ≤480px on the longest side so
+        # 8+ frames stay well under nginx's 100 MB body limit.
+        frame_images = [_downscale_frame(f) for f in frame_images]
+    elif frame_images and not ep.get("native_video"):
+        # Non-native endpoint: build a contact sheet (single image).
+        # Import lazily to avoid pulling PIL into non-vision paths.
+        import math
+        from PIL import Image as _PILImage
+        tw, th = 320, 180
+        cols   = min(4, len(frame_images))
+        rows   = math.ceil(len(frame_images) / cols)
+        sheet  = _PILImage.new("RGB", (tw * cols, th * rows), (20, 20, 20))
+        for i, fr in enumerate(frame_images):
+            r, c = divmod(i, cols)
+            sheet.paste(_downscale_frame(fr, max_dim=max(tw, th)).resize(
+                (tw, th), _PILImage.LANCZOS).convert("RGB"), (c * tw, r * th))
+        frame_images = [sheet]
 
     all_images = still_images + frame_images
 
