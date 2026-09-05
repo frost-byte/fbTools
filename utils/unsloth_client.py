@@ -47,8 +47,8 @@ _ENDPOINT_SLUGS: dict[str, dict] = {
         "slug":         "serve-l4-qwen3-8-27b",
         "model":        "unsloth/Qwen3.8-27B-GGUF",
         "label":        "Qwen3.8 27B (recommended)",
-        "vision":       False,  # text-generation only; no mmproj in HF cache
-        "native_video": False,
+        "vision":       True,   # VLM; mmproj-F16.gguf loaded at container start
+        "native_video": True,
     },
     "8b": {
         "slug":         "serve-l4-qwen3-8b",

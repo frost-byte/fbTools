@@ -64,6 +64,7 @@ CONFIGS: dict[str, dict] = {
         "gguf_variant": "UD-Q3_K_XL",  # 13.15 GB; leaves ~9 GB headroom for KV cache
         "memory": 24576,                # 24 GB; model fits fully in VRAM
         "extra_flags": ["--gpu-memory-mode", "auto", "--disable-tools", "-c", "131072"],
+        "mmproj_filename": "mmproj-F16.gguf",
     },
     "qwen3-8b": {
         "repo_id": "unsloth/Qwen3-8B-GGUF",
@@ -111,7 +112,8 @@ def _unsloth_env(*, set_password: bool = False, extra_env: dict | None = None) -
 
 
 def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
-                       extra_flags: list[str] | None = None) -> None:
+                       extra_flags: list[str] | None = None,
+                       mmproj_filename: str | None = None) -> None:
     import json
     import subprocess
     from pathlib import Path
@@ -139,6 +141,18 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
     if gguf_variant:
         cmd += ["--gguf-variant", gguf_variant]
     cmd += extra_flags or []
+
+    # Download mmproj (vision projector) if specified; cached on the Volume so
+    # subsequent cold starts skip the download.
+    if mmproj_filename:
+        from huggingface_hub import hf_hub_download
+        mmproj_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=mmproj_filename,
+            cache_dir=f"{STUDIO_HOME}/hf-cache",
+        )
+        cmd += ["--mmproj", mmproj_path]
+
     subprocess.Popen(cmd, env=_unsloth_env())
 
 
@@ -148,9 +162,10 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
 @modal.concurrent(max_inputs=4)
 @modal.web_server(STUDIO_PORT, startup_timeout=1800)
 def serve_l4_qwen3_8_27b():
-    """Recommended: Qwen3.8 27B (UD-Q3_K_XL, dense, fully GPU-resident)."""
+    """Recommended: Qwen3.8 27B (UD-Q3_K_XL, dense, fully GPU-resident, vision via mmproj-F16)."""
     c = CONFIGS["qwen3.8-27b"]
-    _run_unsloth_serve(c["repo_id"], gguf_variant=c.get("gguf_variant"), extra_flags=c.get("extra_flags"))
+    _run_unsloth_serve(c["repo_id"], gguf_variant=c.get("gguf_variant"),
+                       extra_flags=c.get("extra_flags"), mmproj_filename=c.get("mmproj_filename"))
 
 
 @app.function(gpu="L4", memory=CONFIGS["qwen3-8b"]["memory"], **SERVE_KWARGS)
