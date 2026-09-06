@@ -17813,6 +17813,95 @@ async def _unsloth_bootstrap_key(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@routes.post("/fbtools/unsloth/inference_settings")
+async def _unsloth_inference_settings(request):
+    """Set thinking mode and reasoning depth for all Unsloth inference calls.
+
+    Body: { thinking: bool, reasoning_effort: "low"|"medium"|"xhigh"|null }
+    thinking=false → instruct mode (reasoning_effort ignored)
+    thinking=true  → thinking mode with specified depth (default "xhigh")
+    """
+    try:
+        body             = await request.json()
+        thinking         = bool(body.get("thinking", True))
+        reasoning_effort = body.get("reasoning_effort") or None
+        result = _unsloth_client.set_inference_settings(thinking, reasoning_effort)
+        return web.json_response(result)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/llm/generate/stream")
+async def _llm_generate_stream(request):
+    """Streaming text generation via SSE (text/event-stream).
+
+    Routes through Unsloth when active; returns a 503 for local llm_client
+    (streaming not supported for local models).
+
+    Body: same fields as /fbtools/llm/generate (prompt, system_prompt, max_tokens).
+    Response: SSE stream — data: {"text": "<chunk>"} per token, then data: [DONE].
+    """
+    import json as _json
+
+    if not _unsloth_client.is_active():
+        return web.json_response(
+            {"error": "Streaming requires the Unsloth backend to be active."},
+            status=503,
+        )
+
+    try:
+        body          = await request.json()
+        prompt        = body.get("prompt", "")
+        system_prompt = body.get("system_prompt", "")
+        max_tokens    = int(body.get("max_tokens", 2048))
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+    response = web.StreamResponse()
+    response.headers["Content-Type"]  = "text/event-stream"
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    await response.prepare(request)
+
+    queue: asyncio.Queue = asyncio.Queue()
+    loop  = asyncio.get_event_loop()
+
+    def _stream_worker():
+        try:
+            for chunk in _unsloth_client.generate_stream(
+                prompt,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+            ):
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, exc)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    import threading as _threading
+    _threading.Thread(target=_stream_worker, daemon=True).start()
+
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                await response.write(
+                    f"data: {_json.dumps({'error': str(item)})}\n\n".encode()
+                )
+                break
+            await response.write(
+                f"data: {_json.dumps({'text': item})}\n\n".encode()
+            )
+        await response.write(b"data: [DONE]\n\n")
+    except Exception:
+        pass
+
+    return response
+
+
 # ── VLM activity log routes ────────────────────────────────────────────────────
 
 @routes.get("/fbtools/vlm/activity")
@@ -19413,6 +19502,77 @@ class RunMetaCapture(io.ComfyNode):
 # =============================================================================
 
 
+# ── Job Complete Notifier ──────────────────────────────────────────────────────
+
+_NOTIFY_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "..", "..", "user", "default", "fbtools", "notifications",
+)
+_NOTIFY_DIR = os.path.normpath(_NOTIFY_DIR)
+os.makedirs(_NOTIFY_DIR, exist_ok=True)
+
+
+class JobCompleteNotifier(io.ComfyNode):
+    """
+    Output node — place at the end of any workflow to emit a completion
+    notification that Claude Code (or any file watcher) can pick up.
+
+    Writes a small JSON file to:
+        ComfyUI/user/default/fbtools/notifications/<uuid>.json
+
+    The file is picked up by the active Claude Code session watcher, which
+    fires a push notification to your phone and then purges the file.
+    """
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=prefixed_node_id("JobCompleteNotifier"),
+            display_name="Job Complete Notifier",
+            category="🧊 frost-byte/Nodes",
+            description="Write a completion signal file so Claude Code can push a notification when this workflow finishes.",
+            is_output_node=True,
+            outputs=[],
+            inputs=[
+                io.String.Input(
+                    "label",
+                    display_name="Label",
+                    default="Workflow complete",
+                    tooltip="Short description included in the notification.",
+                ),
+                io.String.Input(
+                    "details",
+                    display_name="Details",
+                    default="",
+                    optional=True,
+                    tooltip="Extra info (e.g. checkpoint name, prompt snippet). Optional.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, label: str = "Workflow complete", details: str = ""):
+        import uuid as _uuid
+        import datetime as _dt
+        import json as _json
+
+        payload = {
+            "id":        str(_uuid.uuid4()),
+            "timestamp": _dt.datetime.now(tz=_dt.timezone.utc).isoformat(),
+            "label":     label,
+            "details":   details,
+        }
+        fname = os.path.join(_NOTIFY_DIR, f"{payload['id']}.json")
+        try:
+            with open(fname, "w", encoding="utf-8") as fh:
+                _json.dump(payload, fh)
+            logger.info("JobCompleteNotifier: wrote %s", fname)
+        except Exception as exc:
+            logger.warning("JobCompleteNotifier: could not write notification file: %s", exc)
+
+        return io.NodeOutput()
+
+
 class FBToolsExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
@@ -19501,4 +19661,6 @@ class FBToolsExtension(ComfyExtension):
             SceneCastBuild,
             # Run tracking
             RunMetaCapture,
+            # Notifications
+            JobCompleteNotifier,
         ]

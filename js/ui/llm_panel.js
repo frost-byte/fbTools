@@ -32,6 +32,8 @@ const _state = {
     unslothActive:  false,
     unslothVision:  false,
     unslothLabel:   "",
+    // "instruct" | "low" | "medium" | "high" (maps to reasoning_effort xhigh)
+    reasoningMode:  "high",
 };
 
 const STORAGE_KEY = "fbt_llm_panel_v1";
@@ -47,6 +49,7 @@ function _loadState() {
         if (s.unslothActive !== undefined) _state.unslothActive = !!s.unslothActive;
         if (s.unslothVision !== undefined) _state.unslothVision = !!s.unslothVision;
         if (s.unslothLabel)  _state.unslothLabel  = s.unslothLabel;
+        if (s.reasoningMode) _state.reasoningMode = s.reasoningMode;
     } catch (_) {}
 }
 
@@ -61,6 +64,7 @@ function _saveState() {
             unslothActive:  _state.unslothActive,
             unslothVision:  _state.unslothVision,
             unslothLabel:   _state.unslothLabel,
+            reasoningMode:  _state.reasoningMode,
         }));
     } catch (_) {}
 }
@@ -943,6 +947,56 @@ function _renderUnslothTab(pane) {
     });
     _updateCapRow(_ENDPOINTS[0]);
 
+    // ── Reasoning mode selector ────────────────────────────────────────────────
+    // Maps UI label → { thinking, reasoning_effort } sent to /fbtools/unsloth/inference_settings
+    const _REASONING_MODES = [
+        { key: "instruct", label: "Instruct", thinking: false, effort: null,
+          title: "No chain-of-thought — fast, direct answers (instruct mode)" },
+        { key: "low",      label: "Low",      thinking: true,  effort: "low",
+          title: "Brief reasoning — good for quick summaries and captions" },
+        { key: "medium",   label: "Medium",   thinking: true,  effort: "medium",
+          title: "Balanced reasoning — accuracy vs. speed" },
+        { key: "high",     label: "High",     thinking: true,  effort: "xhigh",
+          title: "Full reasoning — thorough analysis (default)" },
+    ];
+
+    const reasoningErrNote = _mk("div", { style: { fontSize: "11px", color: "#f87171", minHeight: "14px" } });
+
+    async function _applyReasoningMode(key) {
+        const mode = _REASONING_MODES.find(m => m.key === key);
+        if (!mode) return;
+        _state.reasoningMode = key;
+        _saveState();
+        // Update button styles
+        reasoningRow.querySelectorAll(".llmp-gpu-btn").forEach(b => b.classList.remove("selected"));
+        const sel = reasoningRow.querySelector(`[data-rkey="${key}"]`);
+        if (sel) sel.classList.add("selected");
+        // Persist to backend (only matters when active — backend ignores it otherwise)
+        try {
+            await unslothApi.inferenceSettings(mode.thinking, mode.effort);
+            reasoningErrNote.textContent = "";
+        } catch (err) {
+            reasoningErrNote.textContent = `⚠ ${err.message}`;
+        }
+    }
+
+    const reasoningRow = _mk("div", { cls: "llmp-vram-gpu-row" }, [
+        _mk("span", {
+            cls: "llmp-label",
+            style: { fontSize: "11px", marginRight: "4px", whiteSpace: "nowrap" },
+        }, ["Reasoning:"]),
+        ..._REASONING_MODES.map(mode => {
+            const btn = _mk("button", {
+                cls:   "llmp-gpu-btn" + (mode.key === _state.reasoningMode ? " selected" : ""),
+                title: mode.title,
+                style: { fontSize: "11px" },
+            }, [mode.label]);
+            btn.dataset.rkey = mode.key;
+            btn.onclick = () => _applyReasoningMode(mode.key);
+            return btn;
+        }),
+    ]);
+
     // ── Activate / Deactivate ──────────────────────────────────────────────────
     const actionBtn    = _mk("button", { cls: "llmp-btn primary" }, ["Activate"]);
     const restartBtn   = _mk("button", {
@@ -996,7 +1050,8 @@ function _renderUnslothTab(pane) {
             lbl.textContent = `${warmLabel[warmup] ?? warmup} — ${epLabel}`;
             actionBtn.className   = "llmp-btn danger";
             actionBtn.textContent = "Deactivate";
-            restartBtn.style.display = (warmup !== "warm") ? "" : "none";
+            restartBtn.style.display    = (warmup !== "warm") ? "" : "none";
+            restartBtn.disabled         = (warmup === "warming");
             activityBlock.style.display = "";
             if (warmup === "warm") {
                 _stopElapsed();
@@ -1021,6 +1076,23 @@ function _renderUnslothTab(pane) {
                 epBtns[srvKey].classList.add("selected");
                 _selectedEpKey = srvKey;
                 _updateCapRow(_ENDPOINTS.find(e => e.key === srvKey));
+            }
+
+            // Mirror server reasoning mode in buttons
+            const srvThinking = st?.thinking;
+            const srvEffort   = st?.reasoning_effort;
+            if (srvThinking !== undefined) {
+                let srvMode = "instruct";
+                if (srvThinking) {
+                    srvMode = srvEffort === "low" ? "low" : srvEffort === "medium" ? "medium" : "high";
+                }
+                if (srvMode !== _state.reasoningMode) {
+                    _state.reasoningMode = srvMode;
+                    _saveState();
+                    reasoningRow.querySelectorAll(".llmp-gpu-btn").forEach(b => b.classList.remove("selected"));
+                    const sel = reasoningRow.querySelector(`[data-rkey="${srvMode}"]`);
+                    if (sel) sel.classList.add("selected");
+                }
             }
 
             // Keep module state in sync for getActiveCaptionerType()
@@ -1051,6 +1123,10 @@ function _renderUnslothTab(pane) {
                 _syncStatus({ active: false });
                 _stopPoll();
             } else {
+                // Sync reasoning mode to backend before activating
+                const curMode = _REASONING_MODES.find(m => m.key === _state.reasoningMode)
+                             || _REASONING_MODES[_REASONING_MODES.length - 1];
+                await unslothApi.inferenceSettings(curMode.thinking, curMode.effort).catch(() => {});
                 const res = await unslothApi.activate(_selectedEpKey);
                 if (!res.success) {
                     errNote.textContent = `⚠ ${res.message}`;
@@ -1427,6 +1503,8 @@ function _renderUnslothTab(pane) {
         capRow,
         errNote,
         epRow,
+        reasoningRow,
+        reasoningErrNote,
         _mk("div", { cls: "llmp-row", style: { gap: "8px", flexWrap: "wrap" } }, [
             actionBtn,
             restartBtn,

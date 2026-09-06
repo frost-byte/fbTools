@@ -20,6 +20,11 @@ class UnslothAPI extends BaseAPI {
     containers()                 { return this.get("/containers"); }
     stopContainers(container_id) { return this.post("/containers/stop", container_id ? { container_id } : {}); }
 
+    /** Set thinking mode and reasoning depth for all subsequent Unsloth calls. */
+    inferenceSettings(thinking, reasoning_effort = null) {
+        return this.post("/inference_settings", { thinking, reasoning_effort });
+    }
+
     /**
      * Long-running (~5-30 min) — runs install_studio + bootstrap_api_key on Modal.
      * Uses a 35-minute AbortController timeout so the browser doesn't drop the request.

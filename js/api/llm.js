@@ -138,6 +138,57 @@ export class LlmAPI extends BaseAPI {
     }
 
     /**
+     * Streaming text generation via SSE — Unsloth backend only.
+     * Calls onChunk(text) for each arriving token chunk.
+     * Returns a promise that resolves when the stream ends.
+     *
+     * @param {string}   prompt
+     * @param {object}   opts  - { system_prompt, max_tokens }
+     * @param {Function} onChunk  - called with each text chunk
+     * @param {Function} [onError] - called if the stream errors
+     */
+    async generateStream(prompt, opts = {}, onChunk, onError) {
+        const res = await fetch("/fbtools/llm/generate/stream", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({
+                prompt,
+                system_prompt: opts.system_prompt ?? "",
+                max_tokens:    opts.max_tokens    ?? 2048,
+            }),
+        });
+        if (!res.ok) {
+            const err = new Error(`Stream request failed (HTTP ${res.status})`);
+            if (onError) onError(err); else throw err;
+            return;
+        }
+        const reader  = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop();
+                for (const line of lines) {
+                    if (!line.startsWith("data: ")) continue;
+                    const data = line.slice(6).trim();
+                    if (data === "[DONE]") return;
+                    try {
+                        const chunk = JSON.parse(data);
+                        if (chunk.error) { if (onError) onError(new Error(chunk.error)); return; }
+                        if (chunk.text)  onChunk(chunk.text);
+                    } catch { /* malformed chunk */ }
+                }
+            }
+        } finally {
+            reader.releaseLock();
+        }
+    }
+
+    /**
      * Download the default recommended model.
      * Long-running — takes minutes.
      */
