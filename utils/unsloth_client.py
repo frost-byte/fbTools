@@ -119,14 +119,17 @@ def _api_key() -> str:
 # ── Module-level state ────────────────────────────────────────────────────────
 
 _state: dict[str, Any] = {
-    "active":        False,
-    "endpoint_key":  DEFAULT_ENDPOINT,
-    "workspace":     "",     # set by configure()
-    "api_key":       "",     # set by configure()
+    "active":           False,
+    "endpoint_key":     DEFAULT_ENDPOINT,
+    "workspace":        "",     # set by configure()
+    "api_key":          "",     # set by configure()
     # cold | warming | warm | error
-    "warmup_status": "cold",
-    "warmup_phase":  "",     # human-readable phase updated by the warmup thread
-    "warmup_error":  "",
+    "warmup_status":    "cold",
+    "warmup_phase":     "",     # human-readable phase updated by the warmup thread
+    "warmup_error":     "",
+    # Inference mode — shared by all callers (generate, route_text, route_vision)
+    "thinking":         True,           # True = thinking mode; False = instruct mode
+    "reasoning_effort": "xhigh",        # "low" | "medium" | "xhigh" (only when thinking=True)
 }
 _warmup_lock = threading.Lock()
 
@@ -150,7 +153,7 @@ def configure(workspace: str = "", api_key: str = "") -> None:
 # ── HTTP call ─────────────────────────────────────────────────────────────────
 
 _PER_ATTEMPT_TIMEOUT  = 200   # seconds — long enough to survive one 303 cycle
-_MAX_ATTEMPTS         = 20    # ~66 min ceiling; cold start is 2-5 min in practice
+_MAX_ATTEMPTS         = 40    # up to ~20 min at 30s/retry for 503; 27B cold start can take 10-15 min
 _WARMUP_MAX_TOKENS    = 1
 _GENERATE_TIMEOUT     = 180   # seconds — single-shot inference timeout (no retry)
 
@@ -261,6 +264,17 @@ def _call_with_retry(
         "Content-Type":  "application/json",
     }
 
+    import time as _time
+
+    # Delay between retries in seconds for each transient state.
+    # Without this, fast 503/303 responses exhaust all 20 attempts in seconds.
+    _RETRY_SLEEP = {
+        "timeout": 15,   # httpx timeout — no connection yet
+        303:       20,   # Modal cold-start redirect
+        503:       30,   # nginx placeholder: Studio still loading (can take 10-15 min)
+        400:       20,   # llama-server "No model loaded" (model in VRAM)
+    }
+
     attempt = 0
     while attempt < _MAX_ATTEMPTS:
         attempt += 1
@@ -275,6 +289,7 @@ def _call_with_retry(
                     f"Unsloth ({ep['label']}): waiting for container "
                     f"(attempt {attempt}/{_MAX_ATTEMPTS})…"
                 )
+            _time.sleep(_RETRY_SLEEP["timeout"])
             continue
         except Exception as exc:
             raise RuntimeError(f"Unsloth HTTP error: {exc}") from exc
@@ -292,6 +307,7 @@ def _call_with_retry(
                     f"Unsloth ({ep['label']}): container starting, "
                     f"please wait… (attempt {attempt}/{_MAX_ATTEMPTS})"
                 )
+            _time.sleep(_RETRY_SLEEP[303])
             continue
 
         # 503 = nginx placeholder is up but Studio is still loading behind it.
@@ -303,6 +319,7 @@ def _call_with_retry(
                     f"Unsloth ({ep['label']}): Studio loading, "
                     f"please wait… (attempt {attempt}/{_MAX_ATTEMPTS})"
                 )
+            _time.sleep(_RETRY_SLEEP[503])
             continue
 
         # Fast 400 "No model loaded" on the very first request to a freshly
@@ -320,6 +337,7 @@ def _call_with_retry(
                         f"Unsloth ({ep['label']}): model loading, "
                         f"retrying… (attempt {attempt}/{_MAX_ATTEMPTS})"
                     )
+                _time.sleep(_RETRY_SLEEP[400])
                 continue
 
         r.raise_for_status()
@@ -396,22 +414,42 @@ def backend_status() -> dict:
         ws_phase  = _state["warmup_phase"]
         ws_error  = _state["warmup_error"]
     return {
-        "active":          _state["active"],
-        "endpoint_key":    ep_key,
-        "endpoint_label":  ep.get("label", ep_key),
-        "endpoint_url":    _build_url(ws, ep["slug"]) if ws else "",
+        "active":            _state["active"],
+        "endpoint_key":      ep_key,
+        "endpoint_label":    ep.get("label", ep_key),
+        "endpoint_url":      _build_url(ws, ep["slug"]) if ws else "",
         "endpoint_docs_url": f"{_build_base_url(ws, ep['slug'])}/docs" if ws else "",
-        "model":           ep.get("model", ""),
-        "vision":          ep.get("vision", False),
-        "native_video":    ep.get("native_video", False),
-        "workspace":       ws,
-        "workspace_set":   bool(ws),
-        "api_key_set":     bool(_api_key()),
-        "warmup_status":   ws_status,
-        "warmup_phase":    ws_phase,
-        "warmup_error":    ws_error,
-        "endpoints":       endpoint_list(ws),
+        "model":             ep.get("model", ""),
+        "vision":            ep.get("vision", False),
+        "native_video":      ep.get("native_video", False),
+        "workspace":         ws,
+        "workspace_set":     bool(ws),
+        "api_key_set":       bool(_api_key()),
+        "warmup_status":     ws_status,
+        "warmup_phase":      ws_phase,
+        "warmup_error":      ws_error,
+        "thinking":          _state["thinking"],
+        "reasoning_effort":  _state["reasoning_effort"],
+        "endpoints":         endpoint_list(ws),
     }
+
+
+def set_inference_settings(thinking: bool, reasoning_effort: str | None = None) -> dict:
+    """Set thinking mode and reasoning depth for all subsequent generate() calls.
+
+    thinking=True  + reasoning_effort in {"low","medium","xhigh"} → thinking mode
+    thinking=False → instruct mode; reasoning_effort is ignored
+    """
+    valid_efforts = {"low", "medium", "xhigh"}
+    if thinking and reasoning_effort not in valid_efforts:
+        reasoning_effort = "xhigh"
+    _state["thinking"]         = thinking
+    _state["reasoning_effort"] = reasoning_effort if thinking else None
+    logger.info(
+        "Unsloth inference settings: thinking=%s reasoning_effort=%s",
+        thinking, reasoning_effort,
+    )
+    return {"success": True, "thinking": thinking, "reasoning_effort": _state["reasoning_effort"]}
 
 
 def activate(endpoint_key: str = DEFAULT_ENDPOINT) -> dict:
@@ -597,6 +635,41 @@ _INSTRUCT_DEFAULTS: dict = {
 }
 
 
+def _build_payload(
+    ep: dict,
+    messages: list[dict],
+    max_tokens: int,
+    thinking: bool,
+    reasoning_effort: str | None,
+    temperature: float | None,
+    top_p: float | None,
+    top_k: int | None,
+    min_p: float | None,
+    presence_penalty: float | None,
+    repetition_penalty: float | None,
+    stream: bool = False,
+) -> dict:
+    """Build the OpenAI-compat chat completions payload."""
+    defaults = _THINKING_DEFAULTS if thinking else _INSTRUCT_DEFAULTS
+    payload: dict = {
+        "model":              ep["model"],
+        "messages":           messages,
+        "max_tokens":         max_tokens,
+        "temperature":        temperature        if temperature        is not None else defaults["temperature"],
+        "top_p":              top_p              if top_p              is not None else defaults["top_p"],
+        "top_k":              top_k              if top_k              is not None else defaults["top_k"],
+        "min_p":              min_p              if min_p              is not None else defaults["min_p"],
+        "presence_penalty":   presence_penalty   if presence_penalty   is not None else defaults["presence_penalty"],
+        "repetition_penalty": repetition_penalty if repetition_penalty is not None else defaults["repetition_penalty"],
+        "enable_thinking":    thinking,
+    }
+    if thinking and reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+    if stream:
+        payload["stream"] = True
+    return payload
+
+
 def generate(
     prompt: str,
     *,
@@ -604,7 +677,8 @@ def generate(
     video_frames: list[Any] | None = None,
     system_prompt: str = "",
     max_tokens: int = 2048,
-    thinking: bool = True,
+    thinking: bool | None = None,
+    reasoning_effort: str | None = None,
     temperature: float | None = None,
     top_p: float | None = None,
     top_k: int | None = None,
@@ -615,16 +689,10 @@ def generate(
 ) -> dict:
     """Generate text via the Unsloth Studio endpoint.
 
-    thinking=True  → enable_thinking in payload + thinking-mode defaults (temp 1.0, top_p 0.95, presence_penalty 0.0)
-    thinking=False → enable_thinking=False in payload + instruct-mode defaults (temp 0.7, top_p 0.80, presence_penalty 1.5)
-    Any explicit kwarg overrides the mode default for that parameter only.
+    thinking/reasoning_effort default to the values set by set_inference_settings().
+    Explicit kwargs override state for this call only.
 
-    Supports vision when the active endpoint is a VLM (27B, flash_next).
-    Pass PIL Images or file paths via `images`; `video_frames` is treated
-    as a list of image frames.
-
-    Returns {success, text, message}.  The <think>…</think> reasoning block
-    is stripped from the returned text.
+    Returns {success, text, message}.  The <think>…</think> block is stripped.
     """
     if not _state["active"]:
         return {"success": False, "text": "", "message": "Unsloth backend is not active."}
@@ -634,17 +702,18 @@ def generate(
     if not ep:
         return {"success": False, "text": "", "message": f"Unknown endpoint {ep_key!r}"}
 
+    # Use state defaults when not explicitly overridden by the caller
+    if thinking is None:
+        thinking = _state["thinking"]
+    if reasoning_effort is None:
+        reasoning_effort = _state.get("reasoning_effort")
+
     still_images  = list(images or [])
     frame_images  = list(video_frames or [])
 
     if ep.get("native_video") and frame_images:
-        # Send each frame as a separate image_url entry so the model can reason
-        # over them sequentially.  Downscale to ≤480px on the longest side so
-        # 8+ frames stay well under nginx's 100 MB body limit.
         frame_images = [_downscale_frame(f) for f in frame_images]
     elif frame_images and not ep.get("native_video"):
-        # Non-native endpoint: build a contact sheet (single image).
-        # Import lazily to avoid pulling PIL into non-vision paths.
         import math
         from PIL import Image as _PILImage
         tw, th = 320, 180
@@ -669,38 +738,16 @@ def generate(
             ),
         }
 
-    # Resolve sampling params: mode defaults, then caller overrides
-    defaults = _THINKING_DEFAULTS if thinking else _INSTRUCT_DEFAULTS
-    resolved_temp        = temperature        if temperature        is not None else defaults["temperature"]
-    resolved_top_p       = top_p             if top_p             is not None else defaults["top_p"]
-    resolved_top_k       = top_k             if top_k             is not None else defaults["top_k"]
-    resolved_min_p       = min_p             if min_p             is not None else defaults["min_p"]
-    resolved_presence    = presence_penalty  if presence_penalty  is not None else defaults["presence_penalty"]
-    resolved_repetition  = repetition_penalty if repetition_penalty is not None else defaults["repetition_penalty"]
-
     messages: list[dict] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-
-    if all_images:
-        user_content = _build_vision_content(prompt, all_images)
-    else:
-        user_content = prompt
-
+    user_content = _build_vision_content(prompt, all_images) if all_images else prompt
     messages.append({"role": "user", "content": user_content})
 
-    payload: dict = {
-        "model":               ep["model"],
-        "messages":            messages,
-        "max_tokens":          max_tokens,
-        "temperature":         resolved_temp,
-        "top_p":               resolved_top_p,
-        "top_k":               resolved_top_k,
-        "min_p":               resolved_min_p,
-        "presence_penalty":    resolved_presence,
-        "repetition_penalty":  resolved_repetition,
-        "enable_thinking":     thinking,
-    }
+    payload = _build_payload(
+        ep, messages, max_tokens, thinking, reasoning_effort,
+        temperature, top_p, top_k, min_p, presence_penalty, repetition_penalty,
+    )
 
     with _warmup_lock:
         warmup = _state.get("warmup_status", "cold")
@@ -727,3 +774,109 @@ def generate(
     except Exception as exc:
         logger.error("Unsloth generate failed: %s", exc)
         return {"success": False, "text": "", "message": str(exc)}
+
+
+def generate_stream(
+    prompt: str,
+    *,
+    system_prompt: str = "",
+    max_tokens: int = 2048,
+    thinking: bool | None = None,
+    reasoning_effort: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    min_p: float | None = None,
+    presence_penalty: float | None = None,
+    repetition_penalty: float | None = None,
+) -> "Generator[str, None, None]":
+    """Streaming variant of generate() — yields text chunks as they arrive.
+
+    Uses SSE (text/event-stream) from the llama-server.  The <think> block is
+    filtered out incrementally: chunks inside a think block are dropped.
+
+    Raises RuntimeError if the backend is not active or not warm.
+    """
+    import json as _json
+    from typing import Generator  # noqa: F401 (used in type hint above)
+
+    if not _state["active"]:
+        raise RuntimeError("Unsloth backend is not active.")
+
+    ep_key = _state["endpoint_key"]
+    ep     = _ENDPOINT_SLUGS.get(ep_key)
+    if not ep:
+        raise RuntimeError(f"Unknown endpoint {ep_key!r}")
+
+    with _warmup_lock:
+        warmup = _state.get("warmup_status", "cold")
+    if warmup != "warm":
+        raise RuntimeError(
+            f"Unsloth container is not ready (status: {warmup}). "
+            "Wait for warmup to complete before running inference."
+        )
+
+    if thinking is None:
+        thinking = _state["thinking"]
+    if reasoning_effort is None:
+        reasoning_effort = _state.get("reasoning_effort")
+
+    messages: list[dict] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = _build_payload(
+        ep, messages, max_tokens, thinking, reasoning_effort,
+        temperature, top_p, top_k, min_p, presence_penalty, repetition_penalty,
+        stream=True,
+    )
+
+    url     = _endpoint_url(ep_key)
+    key     = _api_key()
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+    # Incrementally filter <think>…</think> blocks.
+    in_think   = False
+    think_buf  = ""
+
+    with httpx.Client(timeout=_GENERATE_TIMEOUT, follow_redirects=False) as client:
+        with client.stream("POST", url, headers=headers, json=payload) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = _json.loads(data)
+                    delta = chunk["choices"][0]["delta"].get("content") or ""
+                except Exception:
+                    continue
+                if not delta:
+                    continue
+
+                # Filter think blocks token by token
+                remaining = delta
+                while remaining:
+                    if in_think:
+                        end = remaining.find("</think>")
+                        if end == -1:
+                            think_buf += remaining
+                            remaining = ""
+                        else:
+                            think_buf = ""
+                            in_think  = False
+                            remaining = remaining[end + len("</think>"):]
+                    else:
+                        start = remaining.find("<think>")
+                        if start == -1:
+                            yield remaining
+                            remaining = ""
+                        else:
+                            if start > 0:
+                                yield remaining[:start]
+                            in_think  = True
+                            think_buf = ""
+                            remaining = remaining[start + len("<think>"):]
