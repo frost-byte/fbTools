@@ -1012,12 +1012,19 @@ function _renderUnslothTab(pane) {
         style:  { fontSize: "11px", display: "none" },
     }, ["Open API ↗"]);
 
+    const studioLink = _mk("a", {
+        target: "_blank",
+        rel:    "noopener noreferrer",
+        style:  { fontSize: "11px", display: "none" },
+    }, ["Open Studio ↗"]);
+
     function _syncStatus(st) {
         const active   = st?.active ?? false;
         const warmup   = st?.warmup_status ?? "cold";
         const epLabel  = st?.endpoint_label ?? "";
         const wsErr    = st?.warmup_error ?? "";
-        const epUrl    = st?.endpoint_docs_url ?? st?.endpoint_url ?? "";
+        const epUrl       = st?.endpoint_docs_url ?? st?.endpoint_url ?? "";
+        const epStudioUrl = st?.endpoint_studio_url ?? "";
 
         const dotCls = { warm: " ok", warming: " blue", error: " warn" }[warmup] || "";
         dot.className = "llmp-status-dot" + dotCls;
@@ -1027,6 +1034,13 @@ function _renderUnslothTab(pane) {
             apiLink.style.display = active ? "" : "none";
         } else {
             apiLink.style.display = "none";
+        }
+
+        if (epStudioUrl) {
+            studioLink.href = epStudioUrl;
+            studioLink.style.display = active ? "" : "none";
+        } else {
+            studioLink.style.display = "none";
         }
 
         if (!active) {
@@ -1499,6 +1513,7 @@ function _renderUnslothTab(pane) {
         _mk("div", { cls: "llmp-row", style: { gap: "8px", alignItems: "center" } }, [
             statusEl,
             apiLink,
+            studioLink,
         ]),
         capRow,
         errNote,
