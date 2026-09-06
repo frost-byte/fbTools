@@ -348,7 +348,7 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
 # ── Serve endpoints ───────────────────────────────────────────────────────────
 
 @app.function(gpu="L4", memory=CONFIGS["qwen3.8-27b"]["memory"], **SERVE_KWARGS)
-@modal.concurrent(max_inputs=4)
+@modal.concurrent(max_inputs=4, max_containers=1)
 @modal.web_server(STUDIO_PORT, startup_timeout=1800)
 def serve_l4_qwen3_8_27b():
     """Recommended: Qwen3.8 27B (UD-Q3_K_XL, dense, fully GPU-resident, vision via mmproj-F16)."""
@@ -358,7 +358,7 @@ def serve_l4_qwen3_8_27b():
 
 
 @app.function(gpu="L4", memory=CONFIGS["qwen3-8b"]["memory"], **SERVE_KWARGS)
-@modal.concurrent(max_inputs=4)
+@modal.concurrent(max_inputs=4, max_containers=1)
 @modal.web_server(STUDIO_PORT, startup_timeout=600)
 def serve_l4_qwen3_8b():
     """Qwen3 8B (Q4_K_XL) — fast / lower quality sanity-check model."""
@@ -367,7 +367,7 @@ def serve_l4_qwen3_8b():
 
 
 @app.function(gpu="L4", memory=CONFIGS["qwen3.8-flash-next"]["memory"], **SERVE_KWARGS)
-@modal.concurrent(max_inputs=4)
+@modal.concurrent(max_inputs=4, max_containers=1)
 @modal.web_server(STUDIO_PORT, startup_timeout=1800)
 def serve_l4_qwen3_8_flash_next():
     """Qwen3.8 Flash Next 125B MoE (UD-IQ1_M) — very slow cold start (~37 min uncached), vision via mmproj-F16."""
