@@ -371,6 +371,106 @@ def _call_with_retry(
 
 # ── Warm-up ───────────────────────────────────────────────────────────────────
 
+def _get_models_with_retry(endpoint_key: str, status_callback=None) -> dict:
+    """GET /v1/models, following Modal 303 token redirects.
+
+    Used by the warmup thread: lighter than POST /v1/chat/completions because
+    it generates no tokens.  Returns the parsed JSON body on 200.
+
+    The same 303 Location-following logic as _call_with_retry applies so each
+    retry stays bound to the container already being provisioned.
+    """
+    import time as _time
+
+    ep = _ENDPOINT_SLUGS.get(endpoint_key)
+    if not ep:
+        raise ValueError(f"Unknown endpoint key: {endpoint_key!r}")
+
+    ws          = _state.get("workspace", "").strip()
+    origin_url  = f"{_build_base_url(ws, ep['slug'])}/v1/models"
+    current_url = origin_url
+    key         = _api_key()
+    if not key:
+        raise RuntimeError("Unsloth API key not set.")
+    headers = {"Authorization": f"Bearer {key}"}
+
+    _RETRY_SLEEP = {
+        "timeout": 15,
+        303:       20,
+        503:       30,
+        400:       20,
+    }
+
+    attempt = 0
+    while attempt < _MAX_ATTEMPTS:
+        if _warmup_cancel.is_set():
+            raise RuntimeError("Warmup cancelled (backend deactivated).")
+        attempt += 1
+        try:
+            with httpx.Client(timeout=_PER_ATTEMPT_TIMEOUT, follow_redirects=False) as client:
+                r = client.get(current_url, headers=headers)
+        except httpx.TimeoutException:
+            with _warmup_lock:
+                _state["warmup_phase"] = "Waiting for available L4 GPU…"
+            if status_callback:
+                status_callback(
+                    f"Unsloth ({ep['label']}): waiting for container "
+                    f"(attempt {attempt}/{_MAX_ATTEMPTS})…"
+                )
+            current_url = origin_url
+            _time.sleep(_RETRY_SLEEP["timeout"])
+            continue
+        except Exception as exc:
+            raise RuntimeError(f"Unsloth HTTP error: {exc}") from exc
+
+        if r.status_code == 200:
+            with _warmup_lock:
+                _state["warmup_phase"] = "Ready"
+            return r.json()
+
+        if r.status_code == 303:
+            location = r.headers.get("location", "").strip()
+            current_url = location if location else origin_url
+            logger.debug("Unsloth 303 → following token URL: %s", current_url)
+            with _warmup_lock:
+                _state["warmup_phase"] = "Container starting up (GPU worker assigned)…"
+            if status_callback:
+                status_callback(
+                    f"Unsloth ({ep['label']}): container starting, "
+                    f"please wait… (attempt {attempt}/{_MAX_ATTEMPTS})"
+                )
+            _time.sleep(_RETRY_SLEEP[303])
+            continue
+
+        if r.status_code == 503:
+            with _warmup_lock:
+                _state["warmup_phase"] = "Container running — Studio loading (503 placeholder)…"
+            if status_callback:
+                status_callback(
+                    f"Unsloth ({ep['label']}): Studio loading, "
+                    f"please wait… (attempt {attempt}/{_MAX_ATTEMPTS})"
+                )
+            _time.sleep(_RETRY_SLEEP[503])
+            continue
+
+        if r.status_code == 400:
+            with _warmup_lock:
+                _state["warmup_phase"] = "Container running — loading LLM weights into VRAM…"
+            if status_callback:
+                status_callback(
+                    f"Unsloth ({ep['label']}): model loading, "
+                    f"retrying… (attempt {attempt}/{_MAX_ATTEMPTS})"
+                )
+            _time.sleep(_RETRY_SLEEP[400])
+            continue
+
+        r.raise_for_status()
+
+    raise TimeoutError(
+        f"Unsloth ({ep['label']}): gave up after {_MAX_ATTEMPTS} attempts."
+    )
+
+
 def _run_warmup(endpoint_key: str) -> None:
     ep    = _ENDPOINT_SLUGS.get(endpoint_key, {})
     label = ep.get("label", endpoint_key)
@@ -379,13 +479,8 @@ def _run_warmup(endpoint_key: str) -> None:
         _state["warmup_phase"]  = "Starting warm-up…"
         _state["warmup_error"]  = ""
 
-    payload = {
-        "model":      ep.get("model", ""),
-        "messages":   [{"role": "user", "content": "ping"}],
-        "max_tokens": _WARMUP_MAX_TOKENS,
-    }
     try:
-        _call_with_retry(endpoint_key, payload)
+        _get_models_with_retry(endpoint_key)
         with _warmup_lock:
             _state["warmup_status"] = "warm"
         logger.info("Unsloth warm-up complete: %s", label)
