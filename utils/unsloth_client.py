@@ -269,9 +269,14 @@ def _call_with_retry(
 
     # Delay between retries in seconds for each transient state.
     # Without this, fast 503/303 responses exhaust all 20 attempts in seconds.
+    # 303 sleep is 120 s: Modal returns 303 during the ~155 s wait before the
+    # container's nginx placeholder starts.  Retrying too quickly (20 s) means
+    # our second POST arrives before nginx is up, which Modal's edge proxy may
+    # treat as new demand and spin up a second container.  120 s gives the
+    # container enough time to reach the nginx-placeholder (503) phase.
     _RETRY_SLEEP = {
         "timeout": 15,   # httpx timeout — no connection yet
-        303:       20,   # Modal cold-start redirect
+        303:       120,  # Modal cold-start redirect — wait for nginx placeholder
         503:       30,   # nginx placeholder: Studio still loading (can take 10-15 min)
         400:       20,   # llama-server "No model loaded" (model in VRAM)
     }
