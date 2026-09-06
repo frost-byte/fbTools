@@ -488,19 +488,11 @@ def activate(endpoint_key: str = DEFAULT_ENDPOINT) -> dict:
     _state["endpoint_key"] = endpoint_key
     ep = _ENDPOINT_SLUGS[endpoint_key]
 
-    # Quick probe: if the container is already warm (e.g. after a ComfyUI restart)
-    # skip the warmup thread and go straight to "warm".
-    if _probe_warmth(endpoint_key):
-        with _warmup_lock:
-            _state["warmup_status"] = "warm"
-            _state["warmup_phase"]  = "Ready"
-            _state["warmup_error"]  = ""
-        logger.info("Unsloth backend activated: %s — container already warm", ep["label"])
-        return {
-            "success": True,
-            "message": f"Unsloth activated ({ep['label']}). Container is already warm.",
-        }
-
+    # Do NOT probe before starting the warmup thread.  Probing sends a real POST
+    # to the Modal endpoint, which triggers a container cold-start.  The warmup
+    # thread then sends its own POST seconds later, and Modal interprets the two
+    # concurrent requests as demand for two containers.  The warmup thread handles
+    # the "already warm" case itself: a 200 on the first attempt finishes it immediately.
     with _warmup_lock:
         _state["warmup_status"] = "cold"
         _state["warmup_phase"]  = ""
