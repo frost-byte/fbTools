@@ -117,7 +117,7 @@ _NGINX_CONF = "/tmp/studio-nginx.conf"
 _NGINX_PID  = "/tmp/studio-nginx.pid"
 
 # API path prefixes to proxy to Studio; everything else serves the SPA.
-_API_PREFIXES = ("api", "v1", "docs", "openapi.json", "mcp",
+_API_PREFIXES = ("api", "v1", "docs", "docs-assets", "openapi.json", "mcp",
                  "tokenize", "metrics", "auth", "assets")
 
 
@@ -129,6 +129,7 @@ def _nginx_placeholder_conf() -> str:
     """
     import textwrap
     return textwrap.dedent(f"""
+        user root;
         worker_processes 1;
         pid {_NGINX_PID};
         error_log /tmp/studio-nginx-error.log warn;
@@ -151,6 +152,7 @@ def _nginx_proxy_conf(frontend_dist: str) -> str:
     import textwrap
     api_location = "|".join(_API_PREFIXES)
     return textwrap.dedent(f"""
+        user root;
         worker_processes 1;
         pid {_NGINX_PID};
         error_log /tmp/studio-nginx-error.log warn;
