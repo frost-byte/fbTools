@@ -10,12 +10,15 @@ so the client works out of the box for any user, not just the original deployer.
 Call configure(workspace, api_key) at startup (extension.py does this from the
 stored key and workspace resolved by modal_deploy.get_workspace()).
 
-Cold-start protocol (confirmed live 2026-09-04):
-  If the container is down, Modal's edge proxy returns HTTP 303 after ~155s.
-  The token URL in Location is a one-shot that does NOT work cleanly with a
-  fresh client connection; retry the *original* URL unconditionally.
-  _call_with_retry loops on any non-200 (303, or a fast 400 "No model loaded"
-  that fires on the very first request to a freshly booted container).
+Cold-start protocol (per modal.com/docs/guide/webhook-timeouts):
+  If the container is down, Modal's edge proxy holds the request for ~150 s
+  then returns HTTP 303 with a Location header pointing to the original URL
+  plus a token query parameter.  POSTing to that token URL tells Modal's LB
+  to route the retry to the container already being provisioned — it does NOT
+  spin up a second container.  _call_with_retry follows the Location on each
+  303 so subsequent retries stay bound to the same provisioning slot.
+  A fast 400 "No model loaded" fires on the very first request to a freshly
+  booted container (before the model finishes loading into VRAM).
 
 Idle scaledown: the Modal app is deployed with scaledown_window=10*60 and
 min_containers=0.  activate() fires a background daemon thread that sends a
@@ -245,16 +248,22 @@ def _call_with_retry(
 ) -> dict:
     """POST to the endpoint, retrying on 303 / 400 'No model loaded'.
 
+    Modal cold-start protocol (per modal.com/docs/guide/webhook-timeouts):
+      The 303 Location header points to the *same URL with a token query
+      parameter* that identifies the pending request.  POSTing to that URL
+      (not the bare original URL) lets Modal's LB route back to the container
+      already being provisioned — no second container is spun up.  We track
+      current_url and update it on every 303 so each retry follows the token.
+
     Returns the parsed JSON body on 200, raises on unrecoverable errors.
     """
-
-
     ep = _ENDPOINT_SLUGS.get(endpoint_key)
     if not ep:
         raise ValueError(f"Unknown endpoint key: {endpoint_key!r}")
 
-    url     = _endpoint_url(endpoint_key)
-    key     = _api_key()
+    origin_url  = _endpoint_url(endpoint_key)
+    current_url = origin_url          # updated to Location on each 303
+    key         = _api_key()
     if not key:
         raise RuntimeError(
             "Unsloth API key not set. Run the Setup step in the LLM panel, "
@@ -268,15 +277,9 @@ def _call_with_retry(
     import time as _time
 
     # Delay between retries in seconds for each transient state.
-    # Without this, fast 503/303 responses exhaust all 20 attempts in seconds.
-    # 303 sleep is 120 s: Modal returns 303 during the ~155 s wait before the
-    # container's nginx placeholder starts.  Retrying too quickly (20 s) means
-    # our second POST arrives before nginx is up, which Modal's edge proxy may
-    # treat as new demand and spin up a second container.  120 s gives the
-    # container enough time to reach the nginx-placeholder (503) phase.
     _RETRY_SLEEP = {
         "timeout": 15,   # httpx timeout — no connection yet
-        303:       120,  # Modal cold-start redirect — wait for nginx placeholder
+        303:       20,   # Modal cold-start redirect — follow Location token URL
         503:       30,   # nginx placeholder: Studio still loading (can take 10-15 min)
         400:       20,   # llama-server "No model loaded" (model in VRAM)
     }
@@ -288,7 +291,7 @@ def _call_with_retry(
         attempt += 1
         try:
             with httpx.Client(timeout=_PER_ATTEMPT_TIMEOUT, follow_redirects=False) as client:
-                r = client.post(url, headers=headers, json=payload)
+                r = client.post(current_url, headers=headers, json=payload)
         except httpx.TimeoutException:
             with _warmup_lock:
                 _state["warmup_phase"] = "Waiting for available L4 GPU…"
@@ -297,6 +300,8 @@ def _call_with_retry(
                     f"Unsloth ({ep['label']}): waiting for container "
                     f"(attempt {attempt}/{_MAX_ATTEMPTS})…"
                 )
+            # On timeout reset to origin URL so the next attempt starts fresh.
+            current_url = origin_url
             _time.sleep(_RETRY_SLEEP["timeout"])
             continue
         except Exception as exc:
@@ -308,6 +313,14 @@ def _call_with_retry(
             return r.json()
 
         if r.status_code == 303:
+            # Follow the Location token URL so Modal routes back to the same
+            # provisioning container rather than treating this as new demand.
+            location = r.headers.get("location", "").strip()
+            if location:
+                current_url = location
+                logger.debug("Unsloth 303 → following token URL: %s", location)
+            else:
+                current_url = origin_url   # fallback: no Location header
             with _warmup_lock:
                 _state["warmup_phase"] = "Container starting up (GPU worker assigned)…"
             if status_callback:
