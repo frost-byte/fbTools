@@ -162,7 +162,7 @@ def _nginx_proxy_conf(frontend_dist: str) -> str:
             sendfile on;
             client_max_body_size 100m;
 
-            # map must live inside http {}, not at top level.
+            # map must live inside http block, not at top level.
             # Only set Connection: upgrade for actual WS requests; regular HTTP gets close.
             map $http_upgrade $connection_upgrade {{
                 default upgrade;
