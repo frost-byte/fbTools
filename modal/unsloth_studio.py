@@ -155,19 +155,20 @@ def _nginx_proxy_conf(frontend_dist: str) -> str:
         pid {_NGINX_PID};
         error_log /tmp/studio-nginx-error.log warn;
 
-        # Proper WebSocket upgrade: only set Connection: upgrade for actual WS requests;
-        # regular HTTP gets Connection: close to avoid confusing Studio's thread tracking.
-        map $http_upgrade $connection_upgrade {{
-            default upgrade;
-            ''      close;
-        }}
-
         events {{ worker_connections 1024; }}
         http {{
             include /etc/nginx/mime.types;
             default_type application/octet-stream;
             sendfile on;
             client_max_body_size 100m;
+
+            # map must live inside http {}, not at top level.
+            # Only set Connection: upgrade for actual WS requests; regular HTTP gets close.
+            map $http_upgrade $connection_upgrade {{
+                default upgrade;
+                ''      close;
+            }}
+
             server {{
                 listen {STUDIO_PORT};
                 root {frontend_dist};
@@ -215,8 +216,14 @@ def _reload_nginx_proxy(frontend_dist: str) -> None:
     from pathlib import Path
     conf_path = Path(_NGINX_CONF)
     conf_path.write_text(_nginx_proxy_conf(frontend_dist))
-    subprocess.run(["nginx", "-c", str(conf_path), "-s", "reload"], check=False)
-    print(f"[fbtools] nginx reloaded: frontend from {frontend_dist}, API proxied to :{STUDIO_API_PORT}")
+    result = subprocess.run(
+        ["nginx", "-c", str(conf_path), "-s", "reload"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"[fbtools] nginx reload FAILED (rc={result.returncode}): {result.stderr.strip()}")
+    else:
+        print(f"[fbtools] nginx reloaded: frontend from {frontend_dist}, API proxied to :{STUDIO_API_PORT}")
 
 
 def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
