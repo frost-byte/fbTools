@@ -64,7 +64,7 @@ CONFIGS: dict[str, dict] = {
         "repo_id": "unsloth/Qwen3.8-27B-GGUF",
         "gguf_variant": "UD-Q3_K_XL",  # 13.15 GB; leaves ~9 GB headroom for KV cache
         "memory": 24576,                # 24 GB; model fits fully in VRAM
-        "extra_flags": ["--gpu-memory-mode", "auto", "--disable-tools", "-c", "131072"],
+        "extra_flags": ["--gpu-memory-mode", "auto", "--disable-tools", "-c", "65536"],
         "mmproj_filename": "mmproj-F16.gguf",
     },
     "qwen3-8b": {
@@ -80,7 +80,7 @@ CONFIGS: dict[str, dict] = {
         # -c only: `-ngl` disables --fit's own layer/context optimizer; explicit
         # --spec-type broke MTP auto-detection.  Let --fit and Unsloth's MTP
         # auto-detection keep full control of everything else.
-        "extra_flags": ["--gpu-memory-mode", "auto", "--disable-tools", "-c", "131072"],
+        "extra_flags": ["--gpu-memory-mode", "auto", "--disable-tools", "-c", "65536"],
         "mmproj_filename": "mmproj-F16.gguf",
     },
 }
@@ -239,12 +239,17 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
     # Read serve config written by the fbTools frontend (via Modal Volume).
     # Defaults to api_only=True (safe: no extra VRAM, Swagger UI still works).
     api_only = True
+    ctx_size_override: int | None = None
     config_path = Path(STUDIO_HOME) / "fbtools_serve_config.json"
     if config_path.exists():
         try:
             raw = config_path.read_text()
-            api_only = bool(json.loads(raw).get("api_only", True))
-            print(f"[fbtools] serve config read: {raw.strip()} → api_only={api_only}")
+            cfg = json.loads(raw)
+            api_only = bool(cfg.get("api_only", True))
+            if "ctx_size" in cfg:
+                ctx_size_override = int(cfg["ctx_size"])
+            print(f"[fbtools] serve config read: {raw.strip()} → api_only={api_only}"
+                  + (f", ctx_size={ctx_size_override}" if ctx_size_override else ""))
         except Exception as exc:
             print(f"[fbtools] serve config parse error (defaulting api_only=True): {exc}")
     else:
@@ -267,7 +272,23 @@ def _run_unsloth_serve(repo_id: str, *, gguf_variant: str | None = None,
         cmd.append("--api-only")
     if gguf_variant:
         cmd += ["--gguf-variant", gguf_variant]
-    cmd += extra_flags or []
+    # Merge extra_flags, letting ctx_size_override win over any -c/--ctx-size in flags.
+    flags = list(extra_flags or [])
+    if ctx_size_override is not None:
+        # Strip existing -c / --ctx-size pair so the override is authoritative.
+        filtered: list[str] = []
+        skip_next = False
+        for tok in flags:
+            if skip_next:
+                skip_next = False
+                continue
+            if tok in ("-c", "--ctx-size"):
+                skip_next = True
+                continue
+            filtered.append(tok)
+        flags = filtered + ["-c", str(ctx_size_override)]
+        print(f"[fbtools] ctx_size override applied: -c {ctx_size_override}")
+    cmd += flags
 
     # Pre-cache the mmproj (vision projector) file so Unsloth Studio can auto-detect it.
     # --mmproj cannot be passed directly: Studio validates extra args and rejects it
@@ -598,21 +619,29 @@ def read_serve_config() -> str:
 
 
 @app.function(image=unsloth_image, volumes=VOLUME_CONFIG, timeout=30)
-def write_serve_config(api_only: bool = False) -> str:
+def write_serve_config(api_only: bool = False, ctx_size: int = 0) -> str:
     """Forcibly write the serve config to the Modal Volume.
 
     Usage (Full UI mode):
         python -m modal run modal/unsloth_studio.py::write_serve_config
     Usage (API-only mode):
         python -m modal run modal/unsloth_studio.py::write_serve_config --api-only
+    Usage (override context window, e.g. for larger image batches):
+        python -m modal run modal/unsloth_studio.py::write_serve_config --ctx-size 131072
+    Usage (reset to compiled-in default):
+        python -m modal run modal/unsloth_studio.py::write_serve_config --ctx-size 0
     """
     import json
     from pathlib import Path
     config_path = Path(STUDIO_HOME) / "fbtools_serve_config.json"
-    config_path.write_text(json.dumps({"api_only": api_only}))
+    cfg: dict = {"api_only": api_only}
+    if ctx_size > 0:
+        cfg["ctx_size"] = ctx_size
+    config_path.write_text(json.dumps(cfg))
     studio_volume.commit()
     mode = "api_only" if api_only else "full_studio_ui"
-    print(f"[fbtools] wrote {mode} to {config_path}")
+    ctx_note = f", ctx_size={ctx_size}" if ctx_size > 0 else " (ctx_size uses compiled-in default)"
+    print(f"[fbtools] wrote {mode}{ctx_note} to {config_path}")
     return mode
 
 
