@@ -64,9 +64,11 @@ CONFIGS: dict[str, dict] = {
         "repo_id": "unsloth/Qwen3.8-27B-GGUF",
         "gguf_variant": "UD-Q3_K_XL",  # 13.15 GB; leaves ~9 GB headroom for KV cache
         "memory": 24576,                # 24 GB; model fits fully in VRAM
-        # --fit: lets llama-server place mmproj-F16 (0.9 GB) on GPU.
-        # At ctx=65536: 12.2+4.6+1.42 GB = 18.2 GB, leaving ~4.3 GB headroom.
-        "extra_flags": ["--gpu-memory-mode", "auto", "--disable-tools", "-c", "65536", "--fit"],
+        # --mmproj-offload: Unsloth's auto-detect is conservative and places the
+        # mmproj-F16 (0.9 GB) on CPU even though ~4.3 GB of headroom is available
+        # at ctx=65536 (12.2+4.6+1.42 GB = 18.2 GB used of 22.5 GB free).
+        # This flag overrides that decision and keeps mmproj on GPU.
+        "extra_flags": ["--gpu-memory-mode", "auto", "--disable-tools", "-c", "65536", "--mmproj-offload"],
         "mmproj_filename": "mmproj-F16.gguf",
     },
     "qwen3-8b": {
