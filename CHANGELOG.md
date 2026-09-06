@@ -1,6 +1,816 @@
 # CHANGELOG
 
 
+## v1.26.0 (2026-09-06)
+
+### Bug Fixes
+
+- **unsloth**: Add missing top-level httpx import
+  ([`7b432ac`](https://github.com/frost-byte/fbTools/commit/7b432acd8bcd6c2dab7cbe48623375de2f581e96))
+
+_post_once() and _probe_warmth() used httpx but the module-level import was missing — only
+  _call_with_retry() and health_check() had inline try/import guards. Moved httpx to top-level and
+  removed the now-redundant inline imports.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Add user root to nginx; proxy docs-assets; fix SPA 500 errors
+  ([`ac8454a`](https://github.com/frost-byte/fbTools/commit/ac8454a6460ab8335b89071c159f9fa8d2e5d37d))
+
+nginx workers default to www-data on Ubuntu/Debian, which cannot read Python package paths — causing
+  try_files to return 500 for all SPA routes. Add user root to both placeholder and proxy configs
+  since we run in a container.
+
+Also add docs-assets to _API_PREFIXES so Studio's Swagger UI assets are proxied to FastAPI instead
+  of falling through to the SPA catch-all.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Add vision/video support for Qwen3.8-27B and Flash-Next
+  ([`e800576`](https://github.com/frost-byte/fbTools/commit/e80057680417ee6081e4d04576cc4cd55e8320ab))
+
+Qwen3.8-27B and Flash-Next are native vision-language models; the 8B is text-only. Per-endpoint
+  vision/native_video flags gate the image and video_frames paths in generate(). _encode_image() and
+  _build_vision_content() produce OpenAI-format image_url content blocks for llama-server.
+  extension.py routes _run_vision_inference() and _run_vision_inference_clip() through the unsloth
+  client when active and the endpoint supports vision; native_video path sends raw frames, text-only
+  endpoints fall back to a contact sheet. llm_panel.js persists
+  unslothActive/unslothVision/unslothLabel to localStorage and exports activeBackendSupportsVision()
+  for downstream consumers.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Bust app_status cache on deploy/undeploy so UI reflects new state
+  ([`cffe8b5`](https://github.com/frost-byte/fbTools/commit/cffe8b52f05dd33e432caac26b4f96d03b5d4d31))
+
+The 60 s cache introduced in the prior commit caused the App checklist row to show stale "not
+  deployed" after a successful Deploy App action, since _fetchSetupStatus() was called immediately
+  but hit the cached result. Clear _app_status_cache on any deploy() success or undeploy()
+  completion so the next setup_status poll sees the real state.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Cache app_status for 60 s to reduce Modal API calls
+  ([`c6b7239`](https://github.com/frost-byte/fbTools/commit/c6b7239320bdff7ea067e8366ff837403d698ba7))
+
+The setup-status poll fires every 15 s while setup is incomplete. Each call previously ran \`modal
+  app list\` as a subprocess, generating Modal API traffic every 15 s throughout the bootstrap
+  window (up to 30 min = ~120 unnecessary calls).
+
+app_status() now caches its result for 60 s using monotonic time, so the Modal API is hit at most
+  once per minute during polling. force=True is available for callers that need a fresh check (not
+  currently needed — deploy/undeploy routes don't call app_status).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Cancel warmup thread on deactivate to prevent stale retry requests
+  ([`200e140`](https://github.com/frost-byte/fbTools/commit/200e140c37cea23ac96854fd37d344d201ef2f87))
+
+deactivate() now sets a _warmup_cancel Event that the _call_with_retry loop checks at the top of
+  each iteration. Previously, the warmup thread kept retrying Modal after deactivate, and when the
+  user stopped containers and re-activated, the old thread's next retry fired concurrently with the
+  new activation — causing Modal to spin up two containers.
+
+_start_warmup() clears the cancel flag before launching the new thread.
+
+Requires a ComfyUI restart to take effect (Python module change).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Cap all serve functions at max_containers=1
+  ([`157c448`](https://github.com/frost-byte/fbTools/commit/157c4483497dcfdc1abdb3d0a5158750f8a5bf4f))
+
+Prevents Modal from spinning up a second container when a retry request arrives during cold-start. A
+  single-user setup never needs more than one container; max_inputs=4 still allows up to 4
+  concurrent in-flight requests to share the same container.
+
+Requires a Modal redeploy to take effect.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Correct vision flags — all endpoints are text-only
+  ([`590ce72`](https://github.com/frost-byte/fbTools/commit/590ce72260381145f5a2cd50e0af53d325e404dd))
+
+Confirmed via /api/models/local: all three GGUF models in the HF cache report task=text-generation
+  with no mmproj file present. The vision:true flags were set optimistically and were never
+  validated.
+
+- utils/unsloth_client.py: vision/native_video → False for 27b and flash_next - js/ui/llm_panel.js:
+  same correction in _ENDPOINTS array + updated titles
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Downscale tiles in _tile_frames to 320×180 per cell
+  ([`4b77344`](https://github.com/frost-byte/fbTools/commit/4b7734437af6dc0dd5d1f07f31b998e84873afb6))
+
+Raw 1080p frames in an 8-cell grid would be 7680×2160 (~15 MB base64). Resizing each tile to 320×180
+  (matching _spa_build_contact_sheet) keeps the sheet at 1280×360 — roughly 150 KB as JPEG, ~200 KB
+  base64.
+
+Also downscales single-frame paths so a lone 4K frame doesn't balloon the payload unnecessarily.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Downscale video frames individually, keep native multi-image path
+  ([`0033092`](https://github.com/frost-byte/fbTools/commit/0033092b8d996c577d50d9eb6c97352bab1b7429))
+
+The contact-sheet approach gutted Analyze Media's per-frame reasoning. Revert native_video=True on
+  both endpoints.
+
+Root cause of the 413: full-resolution 832×832 frames sent as 6 separate image_url entries → ~2 MB,
+  exceeding nginx's 1 MB default.
+
+Fix: _downscale_frame(img, max_dim=480) shrinks each PIL Image so its longest side is ≤480 px before
+  encoding. 6 frames of 479×479 → ~530 KB total base64, well under the 1 MB nginx default (and under
+  the 100 MB cap from the nginx config fix).
+
+A contact-sheet fallback for non-native-video endpoints is kept inline in generate() so the branch
+  is explicit.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Drop --mmproj CLI flag; pre-fetch into HF cache instead
+  ([`7dd3b97`](https://github.com/frost-byte/fbTools/commit/7dd3b974604bff59776f70cc854baf5b7d6d4599))
+
+unsloth studio run does not accept --mmproj, causing the subprocess to exit immediately and port
+  8888 to never open (Modal health check failure). Keep the hf_hub_download() call so the file lands
+  in the Volume cache for Unsloth Studio's own auto-detection.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Escape f-string brace in nginx config comment
+  ([`769c3f7`](https://github.com/frost-byte/fbTools/commit/769c3f746ee9894654b14e672d1b0d5d8726646c))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Fall back to modal CLI for serve mode volume write
+  ([`a59f65c`](https://github.com/frost-byte/fbTools/commit/a59f65c84c9683d18aef0799ce2e37453dbb0788))
+
+When modal is not installed in ComfyUI's Python (batch_upload unavailable), fall back to invoking
+  write_serve_config via the modal CLI binary. Checks PATH first, then the known preflight venv path
+  as a hardcoded fallback.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Fast reconnect after restart + fix Open API link URL
+  ([`0105a99`](https://github.com/frost-byte/fbTools/commit/0105a9974d0d7b9e579db17d23eaab4f15f84c4e))
+
+Reconnect: activate() now probes the container with a 5s timeout before starting the warmup thread.
+  If it gets 200 (container still warm from a previous session), it sets warmup_status="warm"
+  immediately and skips the thread — no more brief "Warming up…" flash on reconnect.
+
+Open API link: _build_url returns /v1/chat/completions (POST-only), causing a 405 Method Not Allowed
+  in the browser. Add _build_base_url() and expose endpoint_docs_url ("{base}/docs") from
+  backend_status(). The frontend apiLink now uses endpoint_docs_url so it opens the Swagger UI.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Fix container list parser and add 30s auto-refresh
+  ([`1fa5ad4`](https://github.com/frost-byte/fbTools/commit/1fa5ad46cb201e97ca245e22b24d90abc2c57461))
+
+The previous parser tried to parse Rich unicode table output as plain text, silently counting
+  box-drawing lines as containers.
+
+Fixes: - Switch to `modal container list --json` for reliable parsing; filter by app_name ==
+  "unsloth-studio" from the structured output - JSON key is `start_time` (derived from "Start Time"
+  column header via Modal's snake_case conversion) - Add 30s _containerPollTimer so the count stays
+  current without manual refresh; stopped on tab cleanup
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Follow Modal 303 Location token URL to prevent second container
+  ([`4fb7e0a`](https://github.com/frost-byte/fbTools/commit/4fb7e0a09118e6de7f1c22fe4414001c744eaac6))
+
+Per modal.com/docs/guide/webhook-timeouts: the 303 Location header points to the original URL plus a
+  token query parameter. POSTing to *that* URL tells Modal's LB to route the retry to the container
+  already being provisioned, rather than treating it as new demand. Previously we ignored Location
+  and retried the bare URL, which Modal could interpret as a fresh request and respond by spinning
+  up a second container.
+
+Also reverts the 303 sleep from 120 s back to 20 s: with the token URL being followed correctly, the
+  sleep is just pacing rather than a workaround.
+
+Requires a ComfyUI restart to take effect.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Increase 303 retry sleep; add --fit to place mmproj on GPU
+  ([`ddb5e3a`](https://github.com/frost-byte/fbTools/commit/ddb5e3a37698bdf7f72ea379c1a414175abdd25b))
+
+303 sleep: 20 s → 120 s. After a 303 ("cold start redirect"), Modal's edge proxy may interpret a
+  rapid retry as new demand and spin up a second container. 120 s gives the container enough time to
+  start its nginx placeholder, so the next retry hits a 503 (from the container itself) rather than
+  another 303.
+
+--fit: the 27B model logged "--fit: off", meaning llama-server was not trying to fit the mmproj (0.9
+  GB) onto the GPU. At ctx=65536 the VRAM budget is 12.2 + 4.6 + 1.42 = 18.2 GB against 22.5 GB
+  free, leaving ~4.3 GB headroom — enough for the mmproj. --fit instructs llama-server to maximise
+  GPU layer placement.
+
+The unsloth_studio.py change requires a Modal redeploy to take effect. unsloth_client.py takes
+  effect after a ComfyUI restart.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Log serve config at startup; add read/write_serve_config helpers; fix probe_ports
+  volume restore
+  ([`dd80146`](https://github.com/frost-byte/fbTools/commit/dd80146c52dbc07791ee951efc031bf43c26c364))
+
+- Log the raw config value and resolved api_only at every container startup so the serve mode
+  decision is visible in Modal logs - Add read_serve_config() and write_serve_config() Modal
+  functions for manual inspection and override without starting the model - Fix probe_ports to call
+  studio_volume.commit() after restoring the config so the volume is actually left in its original
+  state
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Move max_containers=1 to @app.function() (correct API)
+  ([`9962739`](https://github.com/frost-byte/fbTools/commit/996273923d237d1df81a5016c936c2e3b463986b))
+
+@modal.concurrent() does not accept max_containers in Modal 1.5.5; it belongs on @app.function().
+  Deploy verified successfully.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Move nginx map directive inside http block; log reload failures
+  ([`4505389`](https://github.com/frost-byte/fbTools/commit/45053892ba907f7c8ec33c25b31a7aa0cb5bb002))
+
+The map directive for WebSocket Connection header handling was placed at the top level of the nginx
+  config, outside the http {} block, causing nginx -s reload to fail with [emerg] "map" directive is
+  not allowed here. The reload silently failed (check=False), leaving nginx in 503 placeholder mode
+  permanently after Studio became ready.
+
+Also surface reload failures explicitly instead of printing success unconditionally.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Poll Studio before starting nginx to prevent 502 on startup
+  ([`163df9e`](https://github.com/frost-byte/fbTools/commit/163df9efe653d76563e500359b61fd5a31b35126))
+
+nginx opened port 8888 immediately (passing Modal's startup check) while Studio took 60-90s to bind
+  to 8889, causing every request to 502. Now _run_unsloth_serve() blocks until /api/health on
+  studio_port returns 200 before starting nginx, so port 8888 only opens once the backend is ready.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Pre-cache mmproj for Studio auto-detection instead of passing --mmproj flag
+  ([`4f0bd7b`](https://github.com/frost-byte/fbTools/commit/4f0bd7bbe96cf67d28d127c42a7558664602f08e))
+
+Unsloth Studio rejects --mmproj as a CLI extra arg: "llama-server flag '--mmproj' is managed by
+  Unsloth Studio and cannot be passed as an extra arg". Keep hf_hub_download() to ensure the file is
+  in the HF cache so Studio can auto-detect it, but remove the flag from the cmd args.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Prevent duplicate warmup threads and handle 503 placeholder
+  ([`a657609`](https://github.com/frost-byte/fbTools/commit/a6576099b1bf76d53eb75ff4ccc2313b6f6808d8))
+
+Two root causes of multiple containers spinning up:
+
+1. _start_warmup() had no guard — calling activate() while a warmup thread was already running
+  (double-click, Restart, ComfyUI reload) launched a second thread that fired another cold POST to
+  Modal, causing Modal to queue a second container. Fixed with a global _warmup_thread ref: skip the
+  start if the thread is still alive.
+
+2. The nginx placeholder (503 while Studio loads behind it) was not in the retry list.
+  _call_with_retry raised immediately on 503, which propagated as a warmup error and could trigger
+  another activate(). Fixed: treat 503 the same as 303 — log phase and continue the loop.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Proper WebSocket vs HTTP Connection header in nginx config
+  ([`b5e61e2`](https://github.com/frost-byte/fbTools/commit/b5e61e248a19fe93ef2fc593080a60093cd77f7f))
+
+Hardcoded 'Connection: upgrade' on all proxied requests broke regular HTTP keepalive, which likely
+  caused Studio's thread creation API to fail on every request (producing 'Thread __LOCALID_ not
+  found' errors). Use a map to set Connection: upgrade only for actual WebSocket upgrades, close
+  otherwise. Also add X-Forwarded-For and X-Forwarded-Proto headers.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Remove pre-warmup probe that caused duplicate Modal containers
+  ([`f95961a`](https://github.com/frost-byte/fbTools/commit/f95961aa6c7b766c5b448db66243738c1e2c52eb))
+
+_probe_warmth() sent a real POST to the Modal endpoint before _start_warmup() launched the warmup
+  thread. Both requests hit Modal while no container was running, causing Modal's auto-scaler to
+  start two containers every time Activate was clicked on a cold endpoint.
+
+The warmup thread already handles the "already warm" case: a 200 on the first attempt finishes the
+  thread immediately with warmup_status="warm". Removing the pre-probe eliminates the race with no
+  functional regression.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Replace --fit with --mmproj-offload for 27B GPU placement
+  ([`54dd591`](https://github.com/frost-byte/fbTools/commit/54dd5919ce062525ddd555dc12ac2a6c9af5f59f))
+
+--fit is not a boolean flag in Unsloth Studio's llama-server; it requires a value. Passing it bare
+  caused a 400 error that crashed the container on every cold start.
+
+--mmproj-offload is the correct flag (per Unsloth's own log message) to force the mmproj-F16 (0.9
+  GB) onto GPU. Unsloth's auto-detect conservatively places it on CPU even though ~4.3 GB of
+  headroom exists at ctx=65536.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Replace frontend health poll with server-side warmup_phase
+  ([`ea5ea1b`](https://github.com/frost-byte/fbTools/commit/ea5ea1bc610f915f9a96f45256ab0f0e17c3e3d3))
+
+The 20s health poll was POSTing to /v1/chat/completions on the Modal container every 20 seconds,
+  queuing real inference requests during warm-up.
+
+Instead, _call_with_retry() now writes a human-readable warmup_phase into _state at each retry
+  outcome (timeout → GPU wait, 303 → container starting, 400 no-model → weight loading, 200 →
+  Ready). backend_status() exposes it and the existing 5s /status poll delivers it to the frontend.
+
+Frontend changes: - Remove _fetchHealth, _startHealthPoll, _stopHealthPoll, _healthPollTimer,
+  _lastProbeAt, actProbeAge (all health-probe machinery) - Add _startElapsed/_stopElapsed: a 1s tick
+  for the elapsed display only - _syncStatus shows st.warmup_phase as the phase message while
+  warming - Activity block is shown as soon as active (not gated on warm)
+
+Zero extra Modal traffic from the frontend during warm-up.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Restore --mmproj passthrough; drop reasoning_effort param
+  ([`92743c5`](https://github.com/frost-byte/fbTools/commit/92743c53dd0079881c900883ff9aadbc46206e42))
+
+- modal/unsloth_studio.py: re-add --mmproj <path> to llama-server command; confirmed via local
+  `unsloth studio run --help` that unknown flags pass through. File is now cached on Volume from
+  prior cold start so download is instant on next cold start. - utils/unsloth_client.py: remove
+  reasoning_effort parameter — it is a local CLI shorthand for `unsloth run`, not a llama-server API
+  field.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Self-healing setup checklist for dropped bootstrap connections
+  ([`f6db832`](https://github.com/frost-byte/fbTools/commit/f6db8328c5d6b4f94d2efe2325aaea0ff652c153))
+
+The Bootstrap Key HTTP call can be dropped by the browser or an idle proxy before the server's
+  asyncio thread finishes — the key IS stored server-side but the UI never saw the response.
+
+Three changes to recover without a page reload: - _startSetupPoll() / _stopSetupPoll(): poll
+  /unsloth/setup_status every 15 s while any check is incomplete; self-terminates once workspace +
+  api_key + app_deployed are all green - Poll is started both on tab mount and at the start of every
+  bootstrap attempt, so the checklist updates independently of the HTTP call result -
+  _sepWithRefresh(): "Setup" section header now has a ↻ button for instant manual refresh (e.g.
+  after a known-completed bootstrap that the UI missed)
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Separate warmup retry loop from inference path
+  ([`b404cf6`](https://github.com/frost-byte/fbTools/commit/b404cf6a2dac93389daaf5a9f039af71e5dbeb24))
+
+generate() was calling _call_with_retry() — the same 20-attempt × 200s cold-start loop used by the
+  warmup thread. Concurrent inference calls (e.g. Source Profile analysis) could each block for up
+  to 66 minutes if the container was not warm.
+
+Fix: - Add _post_once(): single-shot POST with _GENERATE_TIMEOUT (180s), raises immediately on
+  303/400-no-model with a clear "wait for warmup" message rather than retrying for minutes -
+  generate() now gates on warmup_status == "warm" and returns an error immediately if the container
+  is not ready — the LLM panel shows the warmup phase so users know to wait - Only _run_warmup()
+  uses _call_with_retry(); inference never retries through cold starts
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Serve mode button group — active state highlights current mode
+  ([`5daef59`](https://github.com/frost-byte/fbTools/commit/5daef598d7bddd155ea7563626cb3b3d69ec82cb))
+
+Replaces the ambiguous single toggle with two joined buttons (API Only | Full Studio UI). The active
+  mode uses the primary style; the inactive one uses ghost. Clicking the inactive button switches
+  and saves; clicking the already-active button is a no-op.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Start nginx placeholder immediately to avoid Modal startup_timeout
+  ([`8a13b14`](https://github.com/frost-byte/fbTools/commit/8a13b145b6b4814f6ae47a6ccb1a7bf88f0a7c43))
+
+Previously, nginx on port 8888 only started after Studio was ready on 8889 (poll up to 1500s). If
+  Studio took longer than Modal's startup_timeout, the container was killed before nginx ever opened
+  the port.
+
+New flow: 1. _start_nginx_placeholder() opens port 8888 immediately (returns 503) so Modal's
+  startup_timeout check passes within seconds 2. _run_unsloth_serve() polls Studio on 8889 as before
+  (up to 1500s) 3. _reload_nginx_proxy() swaps the placeholder with the full proxy config (SPA
+  static files + reverse-proxy to Studio) via `nginx -s reload`
+
+Also extracts _nginx_placeholder_conf() / _nginx_proxy_conf() / _reload_nginx_proxy() helpers to
+  keep _run_unsloth_serve() readable. client_max_body_size 100m is set in both configs.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Sync _state.unslothActive when server reports inactive
+  ([`0a741c9`](https://github.com/frost-byte/fbTools/commit/0a741c9528eb5c287c6f82d97f981b06c0c82e9c))
+
+_state.unslothActive was persisted in localStorage as true across ComfyUI restarts. When _syncStatus
+  received active:false from the server it updated the button label but not _state.unslothActive, so
+  clicking "Activate" triggered the deactivate() branch instead — doing nothing visible to the user.
+
+Fix: reset _state.unslothActive/Vision/Label and _saveState() in the inactive branch of _syncStatus
+  so the handler always uses the correct code path on the first click.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Use --json for app_status to avoid truncated name match
+  ([`aaff69e`](https://github.com/frost-byte/fbTools/commit/aaff69e5dfeb35dfb9d0a40b5943dfc81806f50b))
+
+modal app list truncates the Description column in Rich table output ("unsloth-stu…") so the
+  APP_NAME string check always failed, showing the App row as ✗ not deployed even when the app is
+  running.
+
+Switch to --json and match on description == APP_NAME and state == "deployed".
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Use contact sheet for video to avoid multi-image llama-server failures
+  ([`60c8cd1`](https://github.com/frost-byte/fbTools/commit/60c8cd1c6e1493dee0e6a0b14c05981a819219c6))
+
+llama-server (GGUF/llama.cpp) does not reliably support multiple image_url entries in a single
+  request. Sending video frames as separate image_url blocks caused "Failed to load image or audio
+  file" 400 errors.
+
+- Set native_video=False on 27b and flash_next endpoint descriptors; _run_vision_inference_clip
+  already has a contact-sheet fallback for endpoints where native_video is False - Add
+  _tile_frames() to unsloth_client.py: tiles PIL frames into a single contact-sheet image (≤4 per
+  row) so generate() sends at most one image_url when native_video=False, covering the
+  describe_video → _route_vision path - Add client_max_body_size 100m to the nginx config so large
+  vision payloads are not rejected before reaching Studio or llama-server - Update llm_panel.js
+  endpoint titles/native_video flags to match
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Use enable_thinking payload param instead of /no_think prefix
+  ([`84b2b93`](https://github.com/frost-byte/fbTools/commit/84b2b93a5725525eebfe38ed1be25a8fd99da144))
+
+Unsloth Studio supports enable_thinking as a proper request body field (confirmed in docs). Replace
+  the /no_think\n message prefix with "enable_thinking": false in the payload — cleaner and works
+  correctly with vision content where prepending a prefix to the user message is awkward.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Features
+
+- **unsloth**: Add Open API link to endpoint URL in status bar
+  ([`8cec7ce`](https://github.com/frost-byte/fbTools/commit/8cec7ceddb3dfc6b3ecf6d7c143ab4822d82ef6b))
+
+Shows a small "Open API ↗" link next to the status line when the backend is active. Href is set from
+  st.endpoint_url returned by the status poll; hidden when inactive or no URL is available.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Add Open Studio link to LLM panel status row
+  ([`a54db75`](https://github.com/frost-byte/fbTools/commit/a54db75045870ede2d5445f9bf6d683d1c30c7ee))
+
+Exposes endpoint_studio_url (base Modal URL) from backend_status() and adds an "Open Studio ↗" link
+  next to the existing "Open API ↗" link in the Unsloth tab. Both links are visible only while the
+  backend is active.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Add reset_password Modal function to recover from forgotten password
+  ([`b5d2042`](https://github.com/frost-byte/fbTools/commit/b5d2042a40e5293141a702e310a56c5fe773e0b5))
+
+Wipes the Unsloth Studio auth DB from the volume and re-bootstraps with the current
+  UNSLOTH_STUDIO_PASSWORD Modal secret value, returning a fresh API key.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Add Unsloth Studio tab to LLM panel
+  ([`9471489`](https://github.com/frost-byte/fbTools/commit/94714894b76457e94a8b8514c4725283a3ec9fdb))
+
+Adds a fourth "Unsloth" tab to the LLM Backend panel alongside Local, Modal, and Gemini. The tab
+  provides the full lifecycle UI for the Unsloth Studio Modal backend:
+
+- Status badge with warmup indicator (cold/warming/warm colored dot) - Endpoint selector buttons —
+  27B (recommended), 8B, Flash Next — with vision/native-video capability badges that update per
+  selection - Activate/Deactivate button; activate triggers server-side warm-up and polls /status
+  every 5 s (slows to 30 s once warm) - Setup checklist: workspace, API key, app deployed — each row
+  with ✓/✗ check icon fed by /setup_status - Deploy App button (30–90 s) and Undeploy with
+  confirmation dialog - Bootstrap Key button with live elapsed-second timer and 35-min fetch timeout
+  for the long-running install+key-capture operation - Force-reinstall checkbox for bootstrap -
+  Containers section: running count + Stop All with confirmation - Tab indicator dot goes green when
+  Unsloth is active - unslothActive/unslothVision/unslothLabel persisted in localStorage
+
+Also adds js/api/unsloth.js (UnslothAPI client) with typed methods for all 10 /fbtools/unsloth/*
+  routes, plus a custom bootstrapKey() fetch using AbortController for the 35-min timeout window.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Configurable ctx_size in serve config; default 131072→65536
+  ([`650ea30`](https://github.com/frost-byte/fbTools/commit/650ea305d39cb1e862bfdca1cae528f39b96ed50))
+
+Default context for 27B and flash-next endpoints changed from 131072 to 65536. At 131072 the KV
+  cache fills VRAM, evicting the mmproj to CPU and making image encoding 5-20× slower. At 65536 the
+  mmproj stays resident (~4 GB headroom) and MTP may also re-enable.
+
+The ctx_size is now overridable without redeploying:
+
+modal run modal/unsloth_studio.py::write_serve_config --ctx-size 131072
+
+_run_unsloth_serve reads ctx_size from fbtools_serve_config.json and strips any existing
+  -c/--ctx-size from extra_flags before injecting the override, so the volume config is always
+  authoritative.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Detect container scale-to-zero and add Restart Warmup button
+  ([`bafb189`](https://github.com/frost-byte/fbTools/commit/bafb18904e826df702565b4fad2de8c6ade0e9fc))
+
+Problem: when Modal's 10-min idle scaledown fires, the UI still shows "Warm ✓" with no way to
+  restart without Deactivate → Activate.
+
+Changes: - unsloth_client: add mark_container_gone() — transitions warmup_status from "warm" to
+  "cold" and sets warmup_phase to "Container unavailable — click Restart Warmup"; no-ops if a warmup
+  thread is already retrying - extension: _route_text() and _route_vision() call
+  mark_container_gone() on any generate() exception so the next /status poll reflects reality -
+  llm_panel: add Restart Warmup button (ghost, shown when active but not warm); calls activate()
+  directly to kick a new warmup thread without requiring Deactivate → Activate; hidden when warm or
+  inactive - llm_panel: update Activate/Deactivate tooltip to explain cold-start timing, idle
+  scaledown, and when to use Restart Warmup vs Deactivate
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Enable vision on 27B endpoint via mmproj-F16.gguf
+  ([`467958f`](https://github.com/frost-byte/fbTools/commit/467958f364d84014132a0abf43b13ee8797e59f6))
+
+- modal/unsloth_studio.py: add mmproj_filename to qwen3.8-27b CONFIGS; _run_unsloth_serve()
+  downloads it via hf_hub_download() (cached on Volume after first cold start) and passes --mmproj
+  <path> to unsloth studio run - utils/unsloth_client.py: restore vision/native_video=True for 27b -
+  js/ui/llm_panel.js: restore vision/native_video=true for 27b endpoint
+
+Flash Next left as text-only (mmproj not yet confirmed for that repo).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Enable vision on Flash Next endpoint via mmproj-F16.gguf
+  ([`ed4cf97`](https://github.com/frost-byte/fbTools/commit/ed4cf97a343944df678a65237b4ca46b8eae36df))
+
+Same mmproj pattern as the 27B endpoint — confirmed HF repo has the file.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Expose thinking mode and full sampling params in generate()
+  ([`f9b2732`](https://github.com/frost-byte/fbTools/commit/f9b2732f73f74341eae0b0041e95fc80b73ac437))
+
+Adds Unsloth-recommended defaults for Qwen3.8-27B (source: unsloth.ai/docs): thinking mode:
+  temp=1.0, top_p=0.95, top_k=20, min_p=0, presence=0.0 instruct mode: temp=0.7, top_p=0.80,
+  top_k=20, min_p=0, presence=1.5
+
+New generate() parameters: - thinking (bool, default True): selects mode defaults; instruct mode
+  prefixes /no_think to the user message - reasoning_effort ("xhigh"|"medium"|"low"|"none"): passed
+  via chat_template_kwargs to control CoT trace depth - temperature, top_p, top_k, min_p,
+  presence_penalty, repetition_penalty: all override the mode default when provided - max_tokens
+  default raised 512→2048 (thinking traces consume tokens)
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Info icons with tooltips on Activate and Stop All
+  ([`8938dec`](https://github.com/frost-byte/fbTools/commit/8938dec16307bd894aab772315a1b2b505d6bd73))
+
+Adds a small ⓘ icon (cursor:help, .llmp-iicon) next to the Activate/Deactivate button and the Stop
+  All Containers button. Each icon shows a native browser tooltip on hover explaining the
+  distinction:
+
+- Activate/Deactivate: local routing control only; container stays running on Modal until the 10-min
+  idle scaledown fires - Stop All: kills the GPU container immediately, ends billing, requires a
+  fresh cold start on the next request; prefer Deactivate if just switching backends temporarily
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Live activity section with health probe and elapsed timer
+  ([`fac96d2`](https://github.com/frost-byte/fbTools/commit/fac96d28c7df52bd48d423dba011c0b9f8ac7988))
+
+Adds an Activity section to the Unsloth tab that shows what the container is doing during the
+  cold-start window:
+
+- Elapsed timer counting from the moment Activate is clicked (1 s tick) - Health probe every 20 s
+  while warming, surfacing the modal-side phase: "No response yet — waiting for an available L4
+  GPU." "Container is starting up (GPU worker assigned)." "Container running — loading LLM weights
+  into VRAM." "Container is ready." - Probe age ("Last probe: 15s ago") so the user knows the data
+  is live - On warm: section updates to "Container ready after Xm Ys." and stops polling; on
+  deactivate: section hides - Health poll starts from _syncStatus so it also resumes correctly if
+  the tab is opened while already-active-and-warming
+
+Also improves health_check() messages to distinguish GPU queue wait (connection timeout/refused)
+  from container boot (HTTP 303) and model load (HTTP 400 "no model loaded").
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Nginx reverse proxy for Full Studio UI access via Modal
+  ([`64ea74d`](https://github.com/frost-byte/fbTools/commit/64ea74d8e52b41a423bd2d3802ffee127426eba3))
+
+Studio's middleware blocks the SPA for requests that don't arrive via Cloudflare tunnel or its LAN
+  listener — Modal's proxy comes in on loopback and is rejected. Fix: in Full Studio UI mode, run
+  nginx on port 8888 (what @modal.web_server exposes) to serve studio/frontend/dist/ directly and
+  proxy API paths (/api/, /v1/, /docs, etc.) to Studio on port 8889. API-only mode is unchanged
+  (Studio stays directly on 8888, no nginx).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Reasoning_effort selector, streaming SSE, retry sleep, job notifier
+  ([`deb2c89`](https://github.com/frost-byte/fbTools/commit/deb2c89027bee1950c6f8cb07251a2c38eea77be))
+
+**Retry loop** - Sleep 30 s on 503 (nginx placeholder), 20 s on 303/400, 15 s on timeout so warmup
+  retries don't burn through _MAX_ATTEMPTS in seconds on a cold 27B start - Bump _MAX_ATTEMPTS 20 →
+  40 (covers ~20 min of 503 polling) - Prevent duplicate warmup threads with is_alive() guard
+
+**Reasoning effort** - Add thinking + reasoning_effort to _state; persist across calls - New
+  _build_payload() centralises payload construction; injects reasoning_effort and optional stream
+  flag - New set_inference_settings() updates _state and validates effort values - generate() reads
+  state defaults when caller omits thinking/reasoning_effort - backend_status() surfaces thinking +
+  reasoning_effort fields - POST /fbtools/unsloth/inference_settings REST route - LLM panel:
+  4-button reasoning mode row (Instruct/Low/Medium/High), _applyReasoningMode(), _syncStatus()
+  mirrors server state to buttons - Disable Restart Warmup button while warming to prevent spam
+  clicks
+
+**Streaming** - New generate_stream() sync generator with incremental <think> block filter - POST
+  /fbtools/llm/generate/stream SSE route: asyncio.Queue bridges sync httpx generator to async
+  aiohttp StreamResponse - LlmAPI.generateStream() SSE reader in js/api/llm.js -
+  UnslothAPI.inferenceSettings() in js/api/unsloth.js
+
+**Job Complete Notifier** - _NOTIFY_DIR: ComfyUI user-data dir watched by this Claude session -
+  JobCompleteNotifier output node writes UUID-named JSON on workflow completion - Enables phone push
+  notifications via Claude Code Monitor
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Route llm/generate* and describe_video through Unsloth when active
+  ([`0867bac`](https://github.com/frost-byte/fbTools/commit/0867bacd18af0a350c36590903b6f2a1fc78202a))
+
+Adds _route_text() and _route_vision() async helpers that transparently dispatch to
+  _unsloth_client.generate() when Unsloth is active, falling back to _llm_client otherwise. Both
+  helpers share the same return shape {success, text, message} so callers need no per-backend logic.
+
+Wired routes: POST /fbtools/llm/generate — vision path when images present, text otherwise POST
+  /fbtools/llm/generate/shot_action — text-only POST /fbtools/llm/generate/dialogue — text-only POST
+  /fbtools/llm/generate/polish — text-only POST /fbtools/llm/describe_video — video_frames vision
+  path
+
+_route_vision() returns a descriptive error when the active Unsloth endpoint is text-only (8B)
+  rather than silently stripping images. prompt_for_* builders on _llm_client are still used for
+  structured prompt construction regardless of the active backend.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Self-contained Unsloth Studio Modal backend
+  ([`e97874d`](https://github.com/frost-byte/fbTools/commit/e97874de30277a29758a221ca9ffc10eab8f391c))
+
+Bundles the Unsloth Studio Modal app and wires it into the fbTools LLM backend system so a new user
+  can deploy and use it entirely from within this extension — no separate project needed.
+
+What's included: - modal/unsloth_studio.py: Modal app definition (3 endpoints: 27B, 8B, Flash-Next;
+  install_studio + bootstrap_api_key setup functions; 10-min scaledown window) -
+  utils/unsloth_client.py: HTTP client to the OpenAI-compatible endpoints; dynamic URL construction
+  from workspace name; cold-start 303 retry loop; background warm-up thread on activate(); Qwen3
+  reasoning-block stripping - utils/modal_deploy.py: workspace resolution (MODAL_WORKSPACE env var,
+  Modal SDK, ~/.modal.toml parse), deploy/undeploy/app-status via modal subprocess, container
+  list/stop, bootstrap_api_key capture + key persistence - extension.py: startup configure() from
+  stored key + resolved workspace; _run_text_inference unsloth branch; _run_vision_inference
+  text-only guard; REST routes: status, activate, deactivate, health, setup_status, deploy,
+  undeploy, containers, containers/stop, bootstrap_key
+
+New user setup flow (all from within ComfyUI after `modal token new`): 1. LLM panel > Unsloth >
+  Deploy (modal deploy, ~60s) 2. LLM panel > Unsloth > Setup (install + bootstrap key, ~5-30 min) 3.
+  Activate → warm-up starts in background → warm within 2-5 min
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **unsloth**: Serve mode toggle — API Only vs Full Studio UI
+  ([`fe47852`](https://github.com/frost-byte/fbTools/commit/fe47852d74d15a804add39f68df58877d30dd822))
+
+- modal/unsloth_studio.py: _run_unsloth_serve() reads fbtools_serve_config.json from the persistent
+  Volume; defaults to api_only=True when absent - utils/modal_deploy.py: add load_serve_config(),
+  _save_serve_config(), set_serve_mode() (writes local JSON + Modal Volume); deploy() records
+  last_deployed_api_only on success - extension.py: GET/POST /fbtools/unsloth/serve_mode routes -
+  js/api/unsloth.js: serveMode() and setServeMode(api_only) client methods - js/ui/llm_panel.js:
+  Serve Mode row in the Setup section — toggle button (API Only ↔ Full Studio UI), status line
+  showing last-deployed mode and mismatch hint; fetched on mount via _fetchServeMode()
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Refactoring
+
+- **unsloth**: Use GET /v1/models for warmup probe instead of POST
+  ([`3168c0d`](https://github.com/frost-byte/fbTools/commit/3168c0da891821cfc012df2b8a90a1185f89d34b))
+
+POST /v1/chat/completions with max_tokens=1 generated actual tokens on every warmup cycle. GET
+  /v1/models is semantically more appropriate (readiness check, not inference) and generates
+  nothing.
+
+Extracted _get_models_with_retry() with the same 303 Location token-following and cancel-event logic
+  as _call_with_retry(). _run_warmup() now calls this instead of the POST variant.
+
+Requires a ComfyUI restart to take effect.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.25.0 (2026-09-03)
 
 ### Bug Fixes
