@@ -97,6 +97,7 @@ from .utils.source_profile_analysis import (
     parse_inferred_subjects_response as _spa_parse_inferred_subjects,
     parse_clip_description_response as _spa_parse_clip_desc,
     build_prompt as _spa_build_prompt,
+    build_multi_prompt as _spa_build_multi_prompt,
     _parse_vlm_json_response as _spa_parse_response,
     append_history_entry as _spa_append_history,
     history_for_profile as _spa_history_for_profile,
@@ -13438,7 +13439,6 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
     try:
         body             = await request.json()
         profile_id       = str(body.get("profile_id", "")).strip()
-        pass_type        = str(body.get("pass_type", "people")).strip()
         prompt_override  = str(body.get("prompt_override", "")).strip()
         captioner_type   = str(body.get("captioner_type", "auto")).strip()
         api_key          = os.environ.get("GEMINI_API_KEY", "")
@@ -13450,12 +13450,20 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
         max_frames           = int(body.get("max_frames", 20)) or 20
         video_duration       = float(body.get("video_duration", 0.0)) or 0.0
         batch_window_seconds = max(30.0, float(body.get("batch_window_seconds", 60.0)))
+        # Accept either pass_types (list) or legacy pass_type (string)
+        _raw_pass_types = body.get("pass_types")
+        if isinstance(_raw_pass_types, list) and _raw_pass_types:
+            pass_types = [str(pt).strip() for pt in _raw_pass_types if str(pt).strip() in _SPA_PASS_TYPES]
+        else:
+            _single = str(body.get("pass_type", "people")).strip()
+            pass_types = [_single] if _single in _SPA_PASS_TYPES else ["people"]
+        pass_type = pass_types[0]  # primary type for single-pass history label
     except Exception as exc:
         return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
 
     if not profile_id:
         return web.json_response({"error": "profile_id is required"}, status=400)
-    if pass_type not in _SPA_PASS_TYPES:
+    if not pass_types:
         return web.json_response(
             {"error": f"pass_type must be one of {_SPA_PASS_TYPES}"}, status=400
         )
@@ -13485,13 +13493,14 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
     if not os.path.exists(abs_media):
         return web.json_response({"error": f"Media file not found: {abs_media}"}, status=404)
 
-    # Build the analysis prompt
-    prompt = _spa_build_prompt(pass_type, prompt_override)
+    # Build the analysis prompt — combined for multiple pass types, single otherwise
+    prompt = _spa_build_multi_prompt(pass_types, prompt_override)
 
+    pass_label = "+".join(pass_types)
     send_status_update(
         _SPA_STATUS_ID,
         f"Source analysis: preparing {media_type} {'clip' if use_clip_mode else 'frame'} "
-        f"for '{profile_id}' ({pass_type} pass)",
+        f"for '{profile_id}' ({pass_label} pass)",
         source="source_profile_analysis",
     )
 
@@ -13685,26 +13694,29 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
     if frame_mode != "windowed_multi":
         candidates = _spa_parse_response(raw_response, pass_type)
 
-    # Persist to history
+    # Persist to history — use joined label for multi-pass runs, store pass_types list
+    history_pass_type = "+".join(pass_types) if len(pass_types) > 1 else pass_type
     _spa_append_history(
         data_dir   = user_data_dir(),
         profile_id = profile_id,
         media_file = media_filename,
-        pass_type  = pass_type,
+        pass_type  = history_pass_type,
         prompt     = prompt,
         candidates = candidates,
+        pass_types = pass_types,
     )
 
     send_status_update(
         _SPA_STATUS_ID,
-        f"Source analysis: {len(candidates)} candidate(s) found ({pass_type} pass, "
+        f"Source analysis: {len(candidates)} candidate(s) found ({history_pass_type} pass, "
         f"{frame_count} frame(s))",
         source="source_profile_analysis",
     )
 
     return web.json_response({
         "candidates":  candidates,
-        "pass_type":   pass_type,
+        "pass_type":   history_pass_type,
+        "pass_types":  pass_types,
         "prompt":      prompt,
         "frame_mode":  frame_mode,
         "frame_count": frame_count,
@@ -14079,6 +14091,20 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
             False, profile_id, "describe_clip",
         )
         action = _spa_parse_clip_desc(raw)
+
+        # Persist to history so the user can review describe prompts and results
+        _spa_append_history(
+            data_dir   = user_data_dir(),
+            profile_id = profile_id,
+            media_file = media_filename,
+            pass_type  = "describe_clip",
+            prompt     = prompt,
+            candidates = [],
+            clip_start = start_time,
+            clip_end   = end_time,
+            action     = action,
+        )
+
         return web.json_response({"action": action})
 
     except Exception as exc:

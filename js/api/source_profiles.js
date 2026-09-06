@@ -34,14 +34,17 @@ export class SourceProfilesAPI extends BaseAPI {
         return this.post("/source_profiles/reload", {});
     }
 
-    /** Run a focused VLM analysis pass on a profile's media. */
-    analyze({ profile_id, pass_type, prompt_override = "", captioner_type = "auto",
-              start_time = null, end_time = null,
-              select_every_nth = 1, max_frames = 20 }) {
+    /** Run a focused VLM analysis pass on a profile's media.
+     *  pass_types (array) runs a combined single-request multi-category pass.
+     *  Legacy pass_type (string) is still accepted for backward compatibility.
+     */
+    analyze({ profile_id, pass_type = null, pass_types = null, prompt_override = "",
+              captioner_type = "auto", start_time = null, end_time = null,
+              select_every_nth = 1, max_frames = 20, video_duration = 0 }) {
         return this.post("/source_profiles/analyze", {
-            profile_id, pass_type, prompt_override,
+            profile_id, pass_type, pass_types, prompt_override,
             captioner_type,
-            start_time, end_time, select_every_nth, max_frames,
+            start_time, end_time, select_every_nth, max_frames, video_duration,
         });
     }
 

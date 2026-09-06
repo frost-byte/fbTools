@@ -111,6 +111,87 @@ _PASS_PROMPTS: dict[str, str] = {
 }
 
 
+_PASS_CATEGORY_LABELS: dict[str, str] = {
+    "people":     "People",
+    "setting":    "Setting / Location",
+    "soundscape": "Soundscape / Audio",
+    "objects":    "Objects & Props",
+    "animals":    "Animals",
+}
+
+_PASS_CATEGORY_INSTRUCTIONS: dict[str, str] = {
+    "people": (
+        "Identify every distinct person. Disambiguate by position, clothing colour, "
+        "or prominent feature (e.g. 'woman in blue top, stage left'). "
+        "entity_type must be 'person'."
+    ),
+    "setting": (
+        "Identify the overall location and any distinct sub-zones. Use the most specific "
+        "location name possible ('corner booth in a dimly-lit diner', not just 'restaurant'). "
+        "entity_type must be 'location'."
+    ),
+    "soundscape": (
+        "Based on visual cues (instruments, speakers, crowds, machinery, natural environment), "
+        "infer each distinct audio layer likely present in the original video. "
+        "entity_type must be 'soundscape'."
+    ),
+    "objects": (
+        "Identify visually prominent or narratively important props — items a director would "
+        "specifically reference. Exclude generic furniture unless it is a featured prop. "
+        "entity_type must be 'object'."
+    ),
+    "animals": (
+        "Identify each distinct animal visible — pets, wildlife, birds, fish in tanks, "
+        "insects if prominent. entity_type must be 'animal'."
+    ),
+}
+
+
+def build_multi_prompt(pass_types: list[str], prompt_override: str = "") -> str:
+    """Return a single combined prompt covering all specified pass types in one VLM call.
+
+    When prompt_override is non-empty it is used verbatim (schema appended if absent).
+    If only one pass_type is given, delegates to build_prompt() for the full single-type prompt.
+    Multiple types produce a combined instruction that asks the VLM to return subjects
+    across all categories in a single flat JSON array.
+    """
+    if prompt_override.strip():
+        body = prompt_override.strip()
+        if _JSON_SCHEMA_INSTRUCTION not in body:
+            body = body.rstrip() + "\n\n" + _JSON_SCHEMA_INSTRUCTION
+        return body
+
+    valid = [pt for pt in pass_types if pt in _PASS_CATEGORY_INSTRUCTIONS]
+    if not valid:
+        valid = [pass_types[0]] if pass_types else ["people"]
+    if len(valid) == 1:
+        return build_prompt(valid[0])
+
+    category_names = ", ".join(_PASS_CATEGORY_LABELS.get(pt, pt) for pt in valid)
+    entity_types   = list(dict.fromkeys(
+        PASS_ENTITY_DEFAULTS.get(pt, "object") for pt in valid
+    ))
+
+    lines = [
+        f"Examine this image carefully. Identify every distinct subject in ALL of "
+        f"the following categories: {category_names}.\n",
+        "Category-specific instructions:\n",
+    ]
+    for pt in valid:
+        label = _PASS_CATEGORY_LABELS.get(pt, pt)
+        instr = _PASS_CATEGORY_INSTRUCTIONS[pt]
+        lines.append(f"  • {label}: {instr}")
+
+    lines.append(
+        f"\nFor each subject, entity_type must be one of: "
+        f"{', '.join(repr(e) for e in entity_types)}."
+    )
+    lines.append("\nInclude subjects from ALL categories in a single flat list.\n")
+    lines.append(_JSON_SCHEMA_INSTRUCTION)
+
+    return "\n".join(lines)
+
+
 def build_prompt(pass_type: str, prompt_override: str = "") -> str:
     """Return the final prompt string for the given pass type.
 
@@ -241,8 +322,14 @@ def append_history_entry(
     prompt: str,
     candidates: list[dict],
     backup: bool = True,
+    **extra_fields,
 ) -> dict:
-    """Append a new history entry and save.  Returns the new entry dict."""
+    """Append a new history entry and save.  Returns the new entry dict.
+
+    Extra keyword arguments are merged into the entry dict verbatim, allowing
+    callers to attach supplementary data (e.g. ``pass_types``, ``clip_start``,
+    ``clip_end``, ``action`` for describe_clip entries).
+    """
     path = _history_path(data_dir)
     entries = load_history(data_dir)
 
@@ -253,6 +340,7 @@ def append_history_entry(
         "prompt":      prompt,
         "timestamp":   datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
         "candidates":  copy.deepcopy(candidates),
+        **extra_fields,
     }
     entries.append(entry)
 
