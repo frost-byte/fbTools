@@ -131,7 +131,8 @@ _state: dict[str, Any] = {
     "thinking":         True,           # True = thinking mode; False = instruct mode
     "reasoning_effort": "xhigh",        # "low" | "medium" | "xhigh" (only when thinking=True)
 }
-_warmup_lock = threading.Lock()
+_warmup_lock   = threading.Lock()
+_warmup_cancel = threading.Event()   # set → running warmup thread should abort
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -277,6 +278,8 @@ def _call_with_retry(
 
     attempt = 0
     while attempt < _MAX_ATTEMPTS:
+        if _warmup_cancel.is_set():
+            raise RuntimeError("Warmup cancelled (backend deactivated).")
         attempt += 1
         try:
             with httpx.Client(timeout=_PER_ATTEMPT_TIMEOUT, follow_redirects=False) as client:
@@ -385,6 +388,7 @@ def _start_warmup(endpoint_key: str) -> None:
         if _warmup_thread is not None and _warmup_thread.is_alive():
             logger.info("Unsloth: warmup already running for %s — skipping duplicate start", endpoint_key)
             return
+        _warmup_cancel.clear()
         _warmup_thread = threading.Thread(target=_run_warmup, args=(endpoint_key,), daemon=True)
         _warmup_thread.start()
 
@@ -510,12 +514,13 @@ def activate(endpoint_key: str = DEFAULT_ENDPOINT) -> dict:
 
 
 def deactivate() -> dict:
-    """Deactivate the Unsloth backend (clears local state only)."""
+    """Deactivate the Unsloth backend (clears local state and cancels warmup thread)."""
+    _warmup_cancel.set()   # signal any running warmup thread to stop
     _state["active"] = False
     with _warmup_lock:
         _state["warmup_status"] = "cold"
         _state["warmup_error"]  = ""
-    logger.info("Unsloth backend deactivated")
+    logger.info("Unsloth backend deactivated (warmup thread cancellation signalled)")
     return {"success": True, "message": "Unsloth backend deactivated."}
 
 
