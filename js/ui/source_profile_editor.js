@@ -2221,29 +2221,52 @@ function _renderAnalyzeSection(container, profile, rootEl, onSubjectsChanged) {
     const candidatesEl = _mk("div");
     body.appendChild(candidatesEl);
 
-    // History section
+    // History section — tabbed: Analyze runs | Describe runs
     const histToggle = _mk("div", { cls: "spe-section-head spe-collapse-toggle",
         style: { cursor: "pointer", marginTop: "8px" } }, ["▶ Previous runs"]);
     const histWrap = _mk("div", { cls: "spe-collapsible collapsed" });
+
+    // Tab bar
+    const histTabBar  = _mk("div", { style: { display: "flex", gap: "4px", marginBottom: "6px" } });
+    const histTabAnalyze  = _mk("button", { cls: "spe-btn sm", style: { fontWeight: "600" } }, ["Analyze"]);
+    const histTabDescribe = _mk("button", { cls: "spe-btn sm ghost" }, ["Describe"]);
+    histTabBar.append(histTabAnalyze, histTabDescribe);
+    const histBodyAnalyze  = _mk("div");
+    const histBodyDescribe = _mk("div", { style: { display: "none" } });
+    histWrap.append(histTabBar, histBodyAnalyze, histBodyDescribe);
+
+    let _activeHistTab = "analyze";
+    const _switchHistTab = (tab) => {
+        _activeHistTab = tab;
+        histTabAnalyze.className  = "spe-btn sm" + (tab === "analyze"  ? "" : " ghost");
+        histTabDescribe.className = "spe-btn sm" + (tab === "describe" ? "" : " ghost");
+        histBodyAnalyze.style.display  = tab === "analyze"  ? "" : "none";
+        histBodyDescribe.style.display = tab === "describe" ? "" : "none";
+    };
+    histTabAnalyze.onclick  = () => _switchHistTab("analyze");
+    histTabDescribe.onclick = () => _switchHistTab("describe");
+
     histToggle.onclick = async () => {
         const open = histWrap.classList.toggle("collapsed") === false;
         histToggle.textContent = (open ? "▼" : "▶") + " Previous runs";
         if (open) {
             await _loadHistory(profile.id);
-            _renderHistory(histWrap, profile, onSubjectsChanged);
+            _renderHistory(histBodyAnalyze, profile, onSubjectsChanged);
+            _renderDescribeHistory(histBodyDescribe, profile);
         }
     };
     body.appendChild(histToggle);
     body.appendChild(histWrap);
 
     // Stash refs so _runAnalysis can update them
-    body._runBtn      = runBtn;
-    body._spinnerEl   = spinnerEl;
-    body._candidatesEl = candidatesEl;
-    body._histWrap    = histWrap;
-    body._histToggle  = histToggle;
-    body._profile     = profile;
-    body._onChanged   = onSubjectsChanged;
+    body._runBtn          = runBtn;
+    body._spinnerEl       = spinnerEl;
+    body._candidatesEl    = candidatesEl;
+    body._histWrap        = histWrap;
+    body._histBodyAnalyze = histBodyAnalyze;
+    body._histBodyDescribe= histBodyDescribe;
+    body._profile         = profile;
+    body._onChanged       = onSubjectsChanged;
 }
 
 async function _runAnalysis(profile, analyzeBody, onSubjectsChanged) {
@@ -2254,44 +2277,33 @@ async function _runAnalysis(profile, analyzeBody, onSubjectsChanged) {
     analyzeBody._candidatesEl.innerHTML  = "";
 
     const passTypes = [..._S.analyzePassTypes];
-    const allCandidates = [];
 
     try {
         const clip = (_S.analyzeClipIdx != null)
             ? (profile.clips || [])[_S.analyzeClipIdx]
             : null;
 
-        for (const pt of passTypes) {
-            if (passTypes.length > 1) {
-                analyzeBody._spinnerEl.textContent = `Running ${PASS_LABELS[pt] ?? pt} pass…`;
-            }
+        const res = await sourceProfilesApi.analyze({
+            profile_id:       profile.id,
+            pass_types:       passTypes,
+            prompt_override:  _S.analyzePromptOverride,
+            captioner_type:   getActiveCaptionerType(),
+            start_time:       clip ? clip.start_time : null,
+            end_time:         clip ? clip.end_time   : null,
+            select_every_nth: _S.analyzeSelectNth ?? 1,
+            max_frames:       _S.analyzeMaxFrames  ?? 20,
+            video_duration:   clip ? 0 : 0,
+        });
 
-            const res = await sourceProfilesApi.analyze({
-                profile_id:       profile.id,
-                pass_type:        pt,
-                prompt_override:  _S.analyzePromptOverride,
-                captioner_type:   getActiveCaptionerType(),
-                start_time:       clip ? clip.start_time : null,
-                end_time:         clip ? clip.end_time   : null,
-                select_every_nth: _S.analyzeSelectNth ?? 1,
-                max_frames:       _S.analyzeMaxFrames  ?? 20,
-                video_duration:   clip ? 0 : 0,
-            });
-
-            (res.candidates ?? []).forEach(c => allCandidates.push({ ...c, _pass_type: pt }));
-        }
-
-        _S.analyzeCandidates = allCandidates;
+        _S.analyzeCandidates = res.candidates ?? [];
         _renderCandidates(analyzeBody._candidatesEl, profile, onSubjectsChanged);
 
         // Refresh history
         await _loadHistory(profile.id);
-        if (!analyzeBody._histWrap.classList.contains("collapsed")) {
-            _renderHistory(analyzeBody._histWrap, profile, onSubjectsChanged);
-        }
+        _refreshHistoryTabs(analyzeBody);
 
-        const passNote = passTypes.length > 1 ? ` across ${passTypes.length} passes` : "";
-        _toast(`Found ${allCandidates.length} candidate(s)${passNote}`, "success");
+        const passNote = passTypes.length > 1 ? ` (${passTypes.length} categories)` : "";
+        _toast(`Found ${_S.analyzeCandidates.length} candidate(s)${passNote}`, "success");
     } catch (err) {
         _toast(`Analysis failed: ${_errMsg(err)}`, "error");
     } finally {
@@ -2330,7 +2342,6 @@ function _renderCandidates(container, profile, onSubjectsChanged) {
             addBtn.textContent = "Added";
         }}, ["Add"]);
 
-        const passLabel = c._pass_type ? PASS_LABELS[c._pass_type] ?? c._pass_type : null;
         const row = _mk("div", { cls: "spe-candidate-row" + (isDup ? " dup" : "") }, [
             icon,
             _mk("div", { cls: "spe-cand-body" }, [
@@ -2338,7 +2349,6 @@ function _renderCandidates(container, profile, onSubjectsChanged) {
                     c.label,
                     " ",
                     _mk("span", { cls: "spe-badge" + (isDup ? " dup" : "") }, [isDup ? "duplicate" : c.entity_type]),
-                    passLabel ? _mk("span", { cls: "spe-badge", style: { marginLeft: "3px", opacity: "0.7" } }, [passLabel]) : null,
                 ]),
                 _mk("div", { cls: "spe-cand-role" }, [c.role_description || ""]),
             ]),
@@ -2348,20 +2358,29 @@ function _renderCandidates(container, profile, onSubjectsChanged) {
     });
 }
 
+function _refreshHistoryTabs(analyzeBody) {
+    if (analyzeBody._histWrap.classList.contains("collapsed")) return;
+    _renderHistory(analyzeBody._histBodyAnalyze, analyzeBody._profile, analyzeBody._onChanged);
+    _renderDescribeHistory(analyzeBody._histBodyDescribe, analyzeBody._profile);
+}
+
 function _renderHistory(container, profile, onSubjectsChanged) {
     container.innerHTML = "";
-    const entries = _S.analyzeHistory;
+    const entries = _S.analyzeHistory.filter(e => e.pass_type !== "describe_clip");
     if (!entries.length) {
         container.appendChild(_mk("div", { style: { color: "#888", fontSize: "11px", padding: "4px 0" } }, ["No analysis runs yet."]));
         return;
     }
     entries.forEach(entry => {
-        const ts   = entry.timestamp?.replace("T", " ").slice(0, 16) ?? "";
-        const n    = entry.candidates?.length ?? 0;
+        const ts      = entry.timestamp?.replace("T", " ").slice(0, 16) ?? "";
+        const n       = entry.candidates?.length ?? 0;
+        const ptLabel = entry.pass_types
+            ? entry.pass_types.map(pt => PASS_LABELS[pt] ?? pt).join(" + ")
+            : (PASS_LABELS[entry.pass_type] ?? entry.pass_type);
         const head = _mk("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center",
             padding: "4px 0", borderBottom: "1px solid var(--p-surface-border,#444)", cursor: "pointer",
             fontSize: "11px" } }, [
-            _mk("span", {}, [`${PASS_LABELS[entry.pass_type] ?? entry.pass_type} — ${n} candidate(s)`]),
+            _mk("span", {}, [`${ptLabel} — ${n} candidate(s)`]),
             _mk("span", { style: { color: "#888" } }, [ts]),
         ]);
         const cands = _mk("div", { cls: "spe-collapsible collapsed" });
@@ -2374,6 +2393,58 @@ function _renderHistory(container, profile, onSubjectsChanged) {
         };
         container.appendChild(head);
         container.appendChild(cands);
+    });
+}
+
+function _renderDescribeHistory(container, profile) {
+    container.innerHTML = "";
+    const entries = _S.analyzeHistory.filter(e => e.pass_type === "describe_clip");
+    if (!entries.length) {
+        container.appendChild(_mk("div", { style: { color: "#888", fontSize: "11px", padding: "4px 0" } }, ["No Describe runs yet."]));
+        return;
+    }
+    entries.forEach(entry => {
+        const ts    = entry.timestamp?.replace("T", " ").slice(0, 16) ?? "";
+        const start = typeof entry.clip_start === "number" ? entry.clip_start.toFixed(1) + "s" : "?";
+        const end   = typeof entry.clip_end   === "number" ? entry.clip_end.toFixed(1)   + "s" : "?";
+        const action = entry.action || "(no result)";
+
+        const head = _mk("div", { style: { display: "flex", justifyContent: "space-between",
+            alignItems: "center", padding: "4px 0",
+            borderBottom: "1px solid var(--p-surface-border,#444)", cursor: "pointer",
+            fontSize: "11px" } }, [
+            _mk("span", {}, [`${start}–${end} clip`]),
+            _mk("span", { style: { color: "#888" } }, [ts]),
+        ]);
+        const detail = _mk("div", { cls: "spe-collapsible collapsed",
+            style: { padding: "6px 0", fontSize: "11px" } });
+        head.onclick = () => { detail.classList.toggle("collapsed"); };
+
+        // Action result
+        detail.appendChild(_mk("div", { cls: "spe-clip-field-label" }, ["Result"]));
+        const actionEl = _mk("div", {
+            style: { background: "var(--p-surface-ground,#1a1a1a)", border: "1px solid var(--p-surface-border,#444)",
+                     borderRadius: "3px", padding: "5px 8px", marginBottom: "6px",
+                     whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: "1.5" },
+        }, [action]);
+        detail.appendChild(actionEl);
+
+        // Prompt (collapsible)
+        const promptToggle = _mk("div", { style: { color: "var(--p-text-muted-color,#888)", cursor: "pointer",
+            fontSize: "10px", marginBottom: "2px" } }, ["▸ Prompt used"]);
+        const promptEl = _mk("pre", { style: { fontSize: "10px", whiteSpace: "pre-wrap", wordBreak: "break-all",
+            maxHeight: "120px", overflowY: "auto", background: "var(--p-surface-ground,#1a1a1a)",
+            border: "1px solid var(--p-surface-border,#444)", borderRadius: "3px",
+            padding: "4px 6px", display: "none" } }, [entry.prompt || "(no prompt stored)"]);
+        promptToggle.onclick = () => {
+            const open = promptEl.style.display === "none";
+            promptEl.style.display = open ? "block" : "none";
+            promptToggle.textContent = (open ? "▾" : "▸") + " Prompt used";
+        };
+        detail.append(promptToggle, promptEl);
+
+        container.appendChild(head);
+        container.appendChild(detail);
     });
 }
 
