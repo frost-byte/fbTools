@@ -76,11 +76,13 @@ export class SourceProfilesAPI extends BaseAPI {
     describeClip({ profile_id, start_time, end_time,
                    captioner_type = "auto", device = "auto",
                    use_8bit = false, subjects = [],
-                   existing_action = "", prompt_override = "" }) {
+                   existing_action = "", prompt_override = "",
+                   max_frames = 5, select_every_nth = 1 }) {
         return this.post("/source_profiles/describe_clip", {
             profile_id, start_time, end_time,
             captioner_type, device, use_8bit,
             subjects, existing_action, prompt_override,
+            max_frames, select_every_nth,
         });
     }
 

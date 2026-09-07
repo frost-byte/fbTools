@@ -917,6 +917,35 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     promptOverrideWrap.append(promptOverrideLabel, promptOverrideTa);
     body.appendChild(promptOverrideWrap);
 
+    // ── Describe frame controls ───────────────────────────────────────────────
+    const descFrameRow = _mk("div", { style: { display: "flex", gap: "10px", alignItems: "center", marginBottom: "8px", fontSize: "11px" } });
+
+    const descMaxFrInp = _mk("input", { type: "number", min: 1, max: 30, step: 1,
+        value: profile.describe_max_frames ?? 5,
+        style: { width: "48px" },
+        title: "Maximum number of frames to sample from the clip for action description",
+    });
+    descMaxFrInp.onchange = () => {
+        profile.describe_max_frames = parseInt(descMaxFrInp.value) || 5;
+        sourceProfilesApi.save(profile).catch(() => {});
+    };
+
+    const descNthInp = _mk("input", { type: "number", min: 1, max: 30, step: 1,
+        value: profile.describe_select_every_nth ?? 1,
+        style: { width: "48px" },
+        title: "Sample every Nth frame from the clip (1 = every frame up to Max frames)",
+    });
+    descNthInp.onchange = () => {
+        profile.describe_select_every_nth = parseInt(descNthInp.value) || 1;
+        sourceProfilesApi.save(profile).catch(() => {});
+    };
+
+    descFrameRow.append(
+        _mk("label", {}, ["Max frames"]), descMaxFrInp,
+        _mk("label", { style: { marginLeft: "6px" } }, ["Every Nth"]), descNthInp,
+    );
+    body.appendChild(descFrameRow);
+
     // ── Clip list ─────────────────────────────────────────────────────────────
     const listEl = _mk("div");
     body.appendChild(listEl);
@@ -1702,13 +1731,15 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         try {
             await onEnsureSaved?.();
             const res = await sourceProfilesApi.describeClip({
-                profile_id:      profile.id,
-                start_time:      clip.start_time,
-                end_time:        clip.end_time,
+                profile_id:       profile.id,
+                start_time:       clip.start_time,
+                end_time:         clip.end_time,
                 subjects,
-                existing_action: clip.action || "",
-                captioner_type:  getActiveCaptionerType(),
-                prompt_override: profile.describe_prompt_override || "",
+                existing_action:  clip.action || "",
+                captioner_type:   getActiveCaptionerType(),
+                prompt_override:  profile.describe_prompt_override || "",
+                max_frames:       profile.describe_max_frames       ?? 5,
+                select_every_nth: profile.describe_select_every_nth ?? 1,
             });
             if (res.action) {
                 clips[i] = { ...clips[i], action: res.action };

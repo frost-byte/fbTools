@@ -13996,41 +13996,43 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
 
 @routes.post("/fbtools/source_profiles/describe_clip")
 async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
-    """Run VLM to generate an action description for a single clip frame.
+    """Run VLM to generate an action description for a clip.
 
-    Extracts a frame at the clip midpoint and asks the VLM to describe
-    what action is happening at that moment.
+    Extracts up to max_frames frames spread across [start_time, end_time] and
+    sends them to the VLM as a contact sheet (or natively for video-capable
+    backends).  Falls back to a single midpoint frame for non-video media.
 
     JSON body:
-        profile_id      str
-        start_time      float   — clip start (seconds)
-        end_time        float   — clip end (seconds)
-        prompt_override str     — optional
-        existing_action str     — optional; if set, VLM refines/corrects it rather
-                                  than generating from scratch
-        captioner_type  str
-        device          str
-        use_8bit        bool
+        profile_id        str
+        start_time        float   — clip start (seconds)
+        end_time          float   — clip end (seconds)
+        prompt_override   str     — optional
+        existing_action   str     — optional; VLM refines rather than generating fresh
+        captioner_type    str
+        device            str
+        use_8bit          bool
+        max_frames        int     — max frames to sample (default 5)
+        select_every_nth  int     — frame stride before applying max_frames cap (default 1)
 
     Returns:
-        { "action": "1-2 sentence action description" }
+        { "action": "1-2 sentence action description", "frame_count": int }
     """
     import tempfile
 
     try:
-        body            = await request.json()
-        profile_id      = str(body.get("profile_id", "")).strip()
-        start_time      = float(body.get("start_time", 0.0))
-        end_time        = float(body.get("end_time", 0.0))
-        prompt_override = str(body.get("prompt_override", "")).strip()
-        captioner_type  = str(body.get("captioner_type", "auto")).strip()
-        device          = str(body.get("device", "auto")).strip()
-        _use_8bit_raw   = body.get("use_8bit")
-        use_8bit        = bool(_use_8bit_raw) if _use_8bit_raw is not None else None
-        api_key         = os.environ.get("GEMINI_API_KEY", "")
-        existing_action = str(body.get("existing_action", "")).strip()
-        # Optional subject context: [{slot, name, appearance}] → list[tuple[str,str,str]]
-        raw_subjects    = body.get("subjects") or []
+        body             = await request.json()
+        profile_id       = str(body.get("profile_id", "")).strip()
+        start_time       = float(body.get("start_time", 0.0))
+        end_time         = float(body.get("end_time", 0.0))
+        prompt_override  = str(body.get("prompt_override", "")).strip()
+        captioner_type   = str(body.get("captioner_type", "auto")).strip()
+        device           = str(body.get("device", "auto")).strip()
+        _use_8bit_raw    = body.get("use_8bit")
+        use_8bit         = bool(_use_8bit_raw) if _use_8bit_raw is not None else None
+        existing_action  = str(body.get("existing_action", "")).strip()
+        max_frames       = int(body.get("max_frames", 5)) or 5
+        select_every_nth = int(body.get("select_every_nth", 1)) or 1
+        raw_subjects     = body.get("subjects") or []
         subjects: list[tuple[str, str, str]] = [
             (str(s.get("slot", "")).strip(),
              str(s.get("name", "")).strip(),
@@ -14051,6 +14053,7 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
 
     media_filename = profile.get("media_filename", "")
     media_dir      = profile.get("media_dir", "input")
+    media_type     = profile.get("media_type", "video")
     if not media_filename:
         return web.json_response({"error": "Profile has no media_filename set"}, status=400)
 
@@ -14059,63 +14062,108 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
     if not os.path.exists(video_path):
         return web.json_response({"error": f"Video not found: {media_filename}"}, status=404)
 
-    midpoint = (start_time + end_time) / 2.0 if end_time > start_time else start_time
+    prompt = _spa_build_clip_desc_prompt(
+        prompt_override,
+        subjects=subjects or None,
+        existing_action=existing_action,
+    )
 
-    _tmp_frame: "tempfile.NamedTemporaryFile | None" = None
+    send_status_update(
+        _SPA_STATUS_ID,
+        f"Describe clip: extracting frames for '{profile_id}' ({start_time:.1f}–{end_time:.1f}s)",
+        source="source_profile_analysis",
+    )
+
+    frame_count = 1
     try:
-        _tmp_frame = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-        _tmp_frame.close()
-        # Determine video duration for frac calculation via ffprobe
-        import subprocess
-        _dur: float = 0.0
-        try:
-            result = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", video_path],
-                capture_output=True, text=True, timeout=10,
+        if media_type == "video" and end_time > start_time:
+            # Multi-frame path — mirrors the analyze endpoint
+            raw_fps = _spa_probe_fps(video_path)
+            pil_frames, timestamps, sample_fps = _spa_extract_clip_frames(
+                video_path,
+                start_time=start_time,
+                end_time=end_time,
+                max_frames=max_frames,
+                select_every_nth=select_every_nth,
+                raw_fps=raw_fps,
             )
-            _dur = float(result.stdout.strip())
-        except Exception:
-            pass
-        frac = (midpoint / _dur) if _dur > 0 else 0.1
-        _spa_extract_frame(video_path, _tmp_frame.name, position_frac=max(0.0, min(1.0, frac)))
+            frame_count = len(pil_frames)
+            send_status_update(
+                _SPA_STATUS_ID,
+                f"Describe clip: {frame_count} frames extracted, calling LLM",
+                source="source_profile_analysis",
+            )
+            if captioner_type == "gemini_flash":
+                sheet = _spa_build_contact_sheet(pil_frames, timestamps)
+                import tempfile as _tf
+                tmp = _tf.NamedTemporaryFile(suffix=".jpg", delete=False)
+                try:
+                    sheet.save(tmp.name, quality=85)
+                    tmp.close()
+                    raw = await asyncio.to_thread(
+                        _run_vision_inference,
+                        tmp.name, prompt, "gemini_flash",
+                        device, use_8bit, False, profile_id, "describe_clip",
+                    )
+                finally:
+                    try: os.unlink(tmp.name)
+                    except Exception: pass
+            else:
+                raw = await asyncio.to_thread(
+                    _run_vision_inference_clip,
+                    pil_frames, timestamps, sample_fps, raw_fps,
+                    prompt, captioner_type, profile_id, "describe_clip",
+                )
+        else:
+            # Non-video or zero-duration: single midpoint frame fallback
+            midpoint = (start_time + end_time) / 2.0 if end_time > start_time else start_time
+            _dur: float = 0.0
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+                _dur = float(result.stdout.strip())
+            except Exception:
+                pass
+            frac = (midpoint / _dur) if _dur > 0 else 0.1
+            _tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            _tmp.close()
+            try:
+                _spa_extract_frame(video_path, _tmp.name, position_frac=max(0.0, min(1.0, frac)))
+                raw = await asyncio.to_thread(
+                    _run_vision_inference,
+                    _tmp.name, prompt, captioner_type, device, use_8bit,
+                    False, profile_id, "describe_clip",
+                )
+            finally:
+                try: os.unlink(_tmp.name)
+                except Exception: pass
 
-        prompt = _spa_build_clip_desc_prompt(
-            prompt_override,
-            subjects=subjects or None,
-            existing_action=existing_action,
-        )
-        raw    = await asyncio.to_thread(
-            _run_vision_inference,
-            _tmp_frame.name, prompt, captioner_type, device, use_8bit,
-            False, profile_id, "describe_clip",
-        )
         action = _spa_parse_clip_desc(raw)
 
-        # Persist to history so the user can review describe prompts and results
         _spa_append_history(
-            data_dir   = user_data_dir(),
-            profile_id = profile_id,
-            media_file = media_filename,
-            pass_type  = "describe_clip",
-            prompt     = prompt,
-            candidates = [],
-            clip_start = start_time,
-            clip_end   = end_time,
-            action     = action,
+            data_dir    = user_data_dir(),
+            profile_id  = profile_id,
+            media_file  = media_filename,
+            pass_type   = "describe_clip",
+            prompt      = prompt,
+            candidates  = [],
+            clip_start  = start_time,
+            clip_end    = end_time,
+            action      = action,
+            frame_count = frame_count,
         )
 
-        return web.json_response({"action": action})
+        return web.json_response({"action": action, "frame_count": frame_count})
 
     except Exception as exc:
         logger.exception("describe_clip failed for profile %r", profile_id)
         return web.json_response({"error": str(exc)}, status=500)
     finally:
-        if _tmp_frame and os.path.exists(_tmp_frame.name):
-            try:
-                os.unlink(_tmp_frame.name)
-            except OSError:
-                pass
+        pass  # temp files cleaned up inside each branch above
 
 
 @routes.post("/fbtools/source_profiles/auto_partition")
