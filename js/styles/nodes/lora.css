@@ -1,0 +1,28 @@
+/* ── Lora node styles ─────────────────────────────────────────────────────── */
+
+/* CivitAI image gallery (shown in the model-info overlay) */
+.fbt-civ-gallery { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+.fbt-civ-img-wrap { position:relative; overflow:hidden; border-radius:5px; background:#111; cursor:default; }
+.fbt-civ-img-wrap img { width:100%; display:block; max-height:200px; object-fit:cover; transition:opacity .18s; }
+.fbt-civ-img-overlay { position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.85); padding:8px 10px; transform:translateY(100%); transition:transform .18s; }
+.fbt-civ-img-wrap:hover .fbt-civ-img-overlay { transform:translateY(0); }
+.fbt-civ-img-wrap:hover img { opacity:.55; }
+.fbt-civ-prompt { margin:0 0 6px; font-size:11px; line-height:1.4; color:#dde; max-height:90px; overflow-y:auto; }
+.fbt-civ-img-link { font-size:11px; color:var(--fbt-blue); text-decoration:none; }
+.fbt-civ-img-link:hover { text-decoration:underline; }
+
+/* Lookup toast */
+.fbt-lsb-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 32px;
+    z-index: var(--fbt-z-toast);
+    transform: translateX(-50%);
+    border: 1px solid rgba(95,105,112,.95);
+    border-radius: var(--fbt-radius-pill);
+    background: rgba(31,33,36,.98);
+    color: #d7dce0;
+    padding: 8px 12px;
+    font: 700 12px/1 sans-serif;
+    box-shadow: 0 10px 28px rgba(0,0,0,.45);
+}

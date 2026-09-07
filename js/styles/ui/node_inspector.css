@@ -1,0 +1,58 @@
+/* ── Node Inspector panel ──────────────────────────────────────────────────── */
+.fbt-ni-panel {
+    display:flex; flex-direction:column; height:100%; overflow:hidden;
+    font-size:13px; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+}
+.fbt-ni-toolbar {
+    display:flex; align-items:center; gap:6px; padding:6px 10px;
+    background:var(--fbt-card);
+    border-bottom:1px solid var(--fbt-border); flex-shrink:0;
+}
+.fbt-ni-title {
+    font-size:11px; font-weight:600; letter-spacing:.05em;
+    text-transform:uppercase; color:var(--fbt-muted);
+    flex:1;
+}
+.fbt-ni-btn {
+    font-size:11px; padding:2px 8px; border-radius:var(--fbt-radius); cursor:pointer;
+    border:1px solid var(--fbt-border);
+    background:var(--fbt-bg);
+    color:var(--fbt-text);
+}
+.fbt-ni-btn:hover { background:var(--fbt-hover-bg); }
+.fbt-ni-empty {
+    padding:16px; color:var(--fbt-muted);
+    font-size:12px; font-style:italic;
+}
+.fbt-ni-content {
+    flex:1; min-height:0; overflow:auto; padding:8px 10px;
+    overscroll-behavior:contain;
+}
+/* jsnview dark-theme overrides — jsnview@3.0.0 ships Tailwind classes; we
+   remap every color + the white root background to ComfyUI palette tokens. */
+.fbt-ni-content .jsv {
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    color: var(--fbt-text) !important;
+}
+.fbt-ni-content .jsv-content {
+    border-color: var(--fbt-border) !important;
+}
+.fbt-ni-content .jsv-toggle {
+    color: var(--fbt-muted) !important;
+}
+/* object keys */
+.fbt-ni-content .text-amber-800 { color: var(--p-amber-400,  #fbbf24) !important; }
+/* property names */
+.fbt-ni-content .text-gray-600  { color: var(--p-surface-200, #e5e5e5) !important; }
+/* type/length hints */
+.fbt-ni-content .text-gray-500  { color: var(--fbt-muted) !important; }
+/* string values */
+.fbt-ni-content .text-green-700 { color: var(--p-green-400,  #4ade80) !important; }
+/* number values */
+.fbt-ni-content .text-blue-700  { color: var(--fbt-blue) !important; }
+/* boolean / null values */
+.fbt-ni-content .text-rose-700  { color: var(--fbt-error) !important; }
+/* type label (italic) */
+.fbt-ni-content .text-stone-700 { color: var(--p-stone-400,  #a8a29e) !important; }

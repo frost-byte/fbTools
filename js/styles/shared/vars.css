@@ -1,0 +1,63 @@
+/* ── fbt Design Tokens ─────────────────────────────────────────────────────────
+   Single source of truth for colour, spacing, and z-index values.
+   Maps onto ComfyUI's own token system (--p-* / --comfy-*) with
+   sensible dark-mode fallbacks.
+   ──────────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Surface */
+  --fbt-bg:           var(--p-surface-section,   #252525);
+  --fbt-card:         var(--p-surface-card,       #1e1e1e);
+  --fbt-ground:       var(--p-surface-ground,     #1a1a1a);
+  --fbt-input-bg:     var(--comfy-input-bg,       #1a1a1a);
+  --fbt-menu-bg:      var(--comfy-menu-bg,        #111);
+  --fbt-overlay-bg:   rgba(0,0,0,0.72);
+  --fbt-hover-bg:     var(--p-surface-hover,      #333);
+
+  /* Border */
+  --fbt-border:       var(--p-surface-border,     #444);
+  --fbt-border-sub:   #333;
+  --fbt-radius:       4px;
+  --fbt-radius-md:    6px;
+  --fbt-radius-lg:    8px;
+  --fbt-radius-pill:  999px;
+
+  /* Text */
+  --fbt-text:         var(--p-text-color,         #d0d0d0);
+  --fbt-muted:        var(--p-text-muted-color,   #888);
+  --fbt-input-text:   var(--input-text,           #d0d0d0);
+
+  /* Accent */
+  --fbt-accent:       var(--p-primary-color,      #58a6ff);
+  --fbt-accent-bg:    rgba(88,166,255,0.1);
+  --fbt-blue:         var(--p-blue-400,           #60a5fa);
+  --fbt-blue-active:  var(--p-blue-700,           #1d4ed8);
+
+  /* Semantic status — one authoritative set used everywhere */
+  --fbt-ok:           #22c55e;
+  --fbt-ok-border:    #3f7a4a;
+  --fbt-ok-text:      #b7e7c0;
+
+  --fbt-warn:         #f59e0b;
+  --fbt-warn-border:  #8e6d33;
+  --fbt-warn-text:    #f2d8a2;
+
+  --fbt-error:        #f87171;
+  --fbt-error-border: #a64b4b;
+  --fbt-error-text:   #f3b0b0;
+
+  --fbt-info:         #60a5fa;
+  --fbt-info-border:  #5599ff;
+
+  --fbt-idle:         #888;
+  --fbt-idle-border:  #444;
+  --fbt-idle-text:    #cfcfcf;
+
+  /* Red variants for destructive actions */
+  --fbt-red:          var(--p-red-400,            #f87171);
+  --fbt-red-light:    var(--p-red-300,            #fca5a5);
+
+  /* Z-index scale */
+  --fbt-z-dropdown:   9999;
+  --fbt-z-overlay:    9999;
+  --fbt-z-toast:      100001;
+}

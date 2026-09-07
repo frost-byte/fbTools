@@ -15,219 +15,10 @@ import { bundlesApi }       from "../api/bundles.js";
 const JSON_WIDGET = "cast_entries_json";
 const MAX_ENTRIES = 8;
 
-// ── CSS (injected once) ────────────────────────────────────────────────────────
-
-let _cssInjected = false;
-function _injectCss() {
-    if (_cssInjected) return;
-    _cssInjected = true;
-    const s = document.createElement("style");
-    s.textContent = `
-.fbt-scb-wrap {
-    width: 100%;
-    padding: 4px 6px 6px;
-    box-sizing: border-box;
-}
-.fbt-scb-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 11px;
-    table-layout: fixed;
-}
-.fbt-scb-table thead th {
-    padding: 2px 4px;
-    color: var(--p-surface-400, #888);
-    font-weight: 500;
-    text-align: left;
-    white-space: nowrap;
-}
-.fbt-scb-table thead th.fbt-scb-c { text-align: center; }
-.fbt-scb-table tbody tr {
-    border-top: 1px solid var(--border-color, #333);
-}
-.fbt-scb-table tbody tr.fbt-scb-empty { opacity: 0.38; }
-.fbt-scb-table tbody td {
-    padding: 3px 4px;
-    vertical-align: middle;
-}
-.fbt-scb-table tbody td.fbt-scb-c { text-align: center; }
-.fbt-scb-row-num {
-    color: var(--p-surface-400, #888);
-    font-size: 10px;
-    width: 16px;
-}
-.fbt-scb-sel {
-    width: 100%;
-    background: var(--comfy-input-bg, #222);
-    border: 1px solid var(--border-color, #444);
-    border-radius: 3px;
-    color: inherit;
-    font-size: 11px;
-    padding: 2px 3px;
-    box-sizing: border-box;
-    cursor: pointer;
-}
-.fbt-scb-sel:focus {
-    outline: none;
-    border-color: var(--p-blue-400, #60a5fa);
-}
-.fbt-scb-mode {
-    display: inline-flex;
-    border-radius: 3px;
-    overflow: hidden;
-    border: 1px solid var(--border-color, #444);
-}
-.fbt-scb-mode-btn {
-    padding: 2px 5px;
-    font-size: 10px;
-    background: var(--comfy-input-bg, #222);
-    border: none;
-    color: var(--p-surface-400, #888);
-    cursor: pointer;
-    line-height: 1.4;
-}
-.fbt-scb-mode-btn.active {
-    background: var(--p-blue-700, #1d4ed8);
-    color: #fff;
-}
-.fbt-scb-mode-btn:disabled {
-    cursor: default;
-    opacity: 0.3;
-}
-.fbt-scb-mode-btn:not(:disabled):not(.active):hover {
-    background: var(--comfy-menu-bg-secondary, #2a2a2a);
-    color: var(--p-surface-200, #ddd);
-}
-.fbt-scb-mode-num-wrap {
-    display: contents;
-}
-.fbt-scb-mode-btn-num {
-    min-width: 16px;
-    padding: 2px 3px;
-    border-left: 1px solid var(--border-color, #444);
-}
-.fbt-scb-mode-btn-vid {
-    border-left: 1px solid var(--border-color, #444);
-}
-.fbt-scb-audio {
-    width: 14px;
-    height: 14px;
-    cursor: pointer;
-    accent-color: var(--p-blue-400, #60a5fa);
-}
-.fbt-scb-dlg {
-    width: 100%;
-    background: var(--comfy-input-bg, #222);
-    border: 1px solid var(--border-color, #444);
-    border-radius: 3px;
-    color: inherit;
-    font-size: 11px;
-    padding: 2px 3px;
-    box-sizing: border-box;
-}
-.fbt-scb-dlg:focus {
-    outline: none;
-    border-color: var(--p-blue-400, #60a5fa);
-}
-.fbt-scb-rm-btn {
-    background: transparent;
-    border: none;
-    color: var(--p-red-400, #f87171);
-    cursor: pointer;
-    font-size: 12px;
-    padding: 0 2px;
-    line-height: 1;
-}
-.fbt-scb-rm-btn:hover { color: var(--p-red-300, #fca5a5); }
-.fbt-scb-preview-btn {
-    background: transparent;
-    border: none;
-    color: var(--p-surface-400, #888);
-    cursor: pointer;
-    font-size: 12px;
-    padding: 0 2px;
-    line-height: 1;
-}
-.fbt-scb-preview-btn:hover { color: var(--p-blue-400, #60a5fa); }
-.fbt-scb-preview-btn.active { color: var(--p-blue-400, #60a5fa); }
-.fbt-scb-preview-row td {
-    padding: 4px 6px 8px 22px;
-    background: var(--comfy-menu-bg, #111);
-}
-.fbt-scb-preview-strip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: flex-start;
-}
-.fbt-scb-thumb {
-    width: 72px;
-    height: 72px;
-    object-fit: cover;
-    border-radius: 3px;
-    border: 1px solid var(--border-color, #333);
-    background: #000;
-    cursor: zoom-in;
-}
-.fbt-scb-preview-video {
-    max-width: 100%;
-    max-height: 120px;
-    border-radius: 3px;
-    border: 1px solid var(--border-color, #333);
-    background: #000;
-    flex-basis: 100%;
-    margin-top: 4px;
-}
-.fbt-scb-preview-audio {
-    width: 100%;
-    height: 28px;
-    margin-top: 4px;
-    flex-basis: 100%;
-}
-.fbt-scb-preview-note {
-    color: var(--p-surface-400, #888);
-    font-size: 10px;
-    font-style: italic;
-}
-.fbt-scb-add-btn {
-    margin-top: 5px;
-    width: 100%;
-    padding: 3px 0;
-    background: transparent;
-    border: 1px dashed var(--border-color, #444);
-    border-radius: 3px;
-    color: var(--p-blue-400, #60a5fa);
-    font-size: 11px;
-    cursor: pointer;
-}
-.fbt-scb-add-btn:hover { border-color: var(--p-blue-400, #60a5fa); }
-
-/* Clip ID selectors */
-.fbt-scb-clips { margin-top: 6px; border-top: 1px solid var(--border-color, #333); padding-top: 5px; }
-.fbt-scb-clips-title { font-size: 10px; color: var(--p-surface-400, #888); font-weight: 600; margin-bottom: 4px; }
-.fbt-scb-clip-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
-.fbt-scb-clip-label { font-size: 10px; color: var(--p-surface-400, #888); white-space: nowrap; min-width: 28px; }
-.fbt-scb-clip-sel {
-    flex: 1;
-    background: var(--comfy-input-bg, #222);
-    border: 1px solid var(--border-color, #444);
-    border-radius: 3px;
-    color: inherit;
-    font-size: 11px;
-    padding: 2px 4px;
-    cursor: pointer;
-}
-.fbt-scb-clip-sel:focus { outline: none; border-color: var(--p-blue-400, #60a5fa); }
-.fbt-scb-clip-sel:disabled { opacity: 0.4; cursor: default; }
-`;
-    document.head.appendChild(s);
-}
 
 // ── Node setup ────────────────────────────────────────────────────────────────
 
 export function setupSceneCastBuild(nodeType, _nodeData, app) {
-    _injectCss();
-
     const _origCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
         _origCreated?.call(this);
@@ -367,11 +158,22 @@ function _buildCastBuildUI(node, app) {
         blank.textContent = "— (none) —";
         if (!currentProfileId || !currentSubjectId) blank.selected = true;
         sel.appendChild(blank);
+
+        // If a clip is selected and has tagged subjects, restrict to those only.
+        const selectedClipId = typeof clipSel !== "undefined" ? clipSel?.value : "";
+        const clip = selectedClipId ? _clipMap?.get(selectedClipId) : null;
+        const clipSubjectIds = (clip && Array.isArray(clip.subjects) && clip.subjects.length)
+            ? new Set(clip.subjects)
+            : null;  // null = no filter (no clip selected, or clip has no tagged subjects)
+
         _connectedSPSubjects.forEach((sp, i) => {
-            if (!sp.subjects.length) return;
+            const visibleSubjects = clipSubjectIds
+                ? sp.subjects.filter(s => clipSubjectIds.has(s.id))
+                : sp.subjects;
+            if (!visibleSubjects.length) return;
             const grp = document.createElement("optgroup");
             grp.label = sp.label || `SP${i + 1}`;
-            sp.subjects.forEach(s => {
+            visibleSubjects.forEach(s => {
                 const o = document.createElement("option");
                 o.value = `${sp.pid}::${s.id}`;
                 o.textContent = s.label || s.id;
@@ -789,6 +591,7 @@ function _buildCastBuildUI(node, app) {
     function _syncWidget() {
         if (jsonWidget) jsonWidget.value = JSON.stringify(_entries);
         app?.graph?.setDirtyCanvas?.(true, false);
+        _updateActionPreview();
     }
 
     // ── 9. Add DOM widget ─────────────────────────────────────────────────────
@@ -856,6 +659,7 @@ function _buildCastBuildUI(node, app) {
         });
 
         _updateSourceColVisibility();
+        _updateActionPreview();
     }
 
     node._refreshSourceSubjects = _refreshSourceSubjects;
@@ -887,12 +691,68 @@ function _buildCastBuildUI(node, app) {
             app?.graph?.setDirtyCanvas?.(true, false);
         }
         _updateDlgFromClip();
+        // Re-filter source subject dropdowns to match the newly selected clip.
+        [...tbody.querySelectorAll(".fbt-scb-src-sel")].forEach((sel, i) => {
+            const entry = _entries[i];
+            if (entry) _fillSourceSubjectSel(sel, entry.source_profile_id || "", entry.source_subject_id || "");
+        });
+        _updateActionPreview();
     });
 
     clipRow.appendChild(clipLabel);
     clipRow.appendChild(clipSel);
     clipsSection.appendChild(clipRow);
     wrap.appendChild(clipsSection);
+
+    // ── Action preview ────────────────────────────────────────────────────────
+    // Shows the clip's action text with {A}/{B}/… substituted by cast/source labels.
+    const actionPreviewEl = document.createElement("div");
+    actionPreviewEl.className = "fbt-scb-action-preview";
+    actionPreviewEl.style.display = "none";
+    wrap.appendChild(actionPreviewEl);
+
+    function _buildActionPreview() {
+        const clipId = clipSel?.value;
+        if (!clipId) return null;
+        const clip = _clipMap.get(clipId);
+        const action = clip?.action;
+        if (!action) return null;
+
+        // Ordered source subjects for this clip (same ordering as slot label fix).
+        const clipSubjectIds = new Set(clip.subjects ?? []);
+        const spData = _connectedSPSubjects[0];
+        const orderedSubjects = spData
+            ? spData.subjects.filter(s => clipSubjectIds.has(s.id))
+            : [];
+
+        const SLOTS = ["A","B","C","D","E","F","G","H","I","J"];
+        const slotLabel = {};
+        orderedSubjects.forEach((subj, idx) => {
+            if (idx >= SLOTS.length) return;
+            const castEntry = _entries.find(e => e.source_subject_id === subj.id);
+            if (castEntry?.bundle_id) {
+                const bun = _bundles.find(b => b.id === castEntry.bundle_id);
+                slotLabel[SLOTS[idx]] = bun?.name || castEntry.bundle_id;
+            } else {
+                slotLabel[SLOTS[idx]] = subj.label || subj.id;
+            }
+        });
+
+        return action.replace(/\{([A-J])\}/g, (match, letter) =>
+            slotLabel[letter] != null ? `[${slotLabel[letter]}]` : match
+        );
+    }
+
+    function _updateActionPreview() {
+        const text = _buildActionPreview();
+        if (text == null) {
+            actionPreviewEl.style.display = "none";
+            actionPreviewEl.textContent = "";
+        } else {
+            actionPreviewEl.style.display = "";
+            actionPreviewEl.textContent = text;
+        }
+    }
 
     // keyed by clip id — populated in _refreshClipSelects
     let _clipMap = new Map();

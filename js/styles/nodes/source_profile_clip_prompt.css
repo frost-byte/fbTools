@@ -1,0 +1,31 @@
+/* ── Source Profile Clip Prompt node widget ───────────────────────────────── */
+.fbt-spcp-wrap {
+    padding: 2px 6px 6px;
+    box-sizing: border-box;
+    width: 100%;
+}
+.fbt-spcp-label {
+    font-size: 10px;
+    color: var(--fbt-muted);
+    margin-bottom: 3px;
+    display: block;
+}
+.fbt-spcp-sel {
+    width: 100%;
+    background: var(--fbt-input-bg);
+    border: 1px solid var(--fbt-border);
+    border-radius: 3px;
+    color: inherit;
+    font-size: 11px;
+    padding: 3px 4px;
+    box-sizing: border-box;
+    cursor: pointer;
+}
+.fbt-spcp-sel:focus {
+    outline: none;
+    border-color: var(--fbt-blue);
+}
+.fbt-spcp-sel:disabled {
+    opacity: 0.45;
+    cursor: default;
+}

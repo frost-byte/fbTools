@@ -1,0 +1,147 @@
+/* ── LLM Panel (Local / Unsloth tabs inside the FBT panel) ──────────────── */
+.llmp-wrap { display:flex; flex-direction:column; height:100%; overflow:hidden; padding:8px; box-sizing:border-box; gap:8px; }
+
+/* Sub-tab strip */
+.llmp-tabs { display:flex; gap:4px; border-bottom:1px solid var(--fbt-border); padding-bottom:6px; flex-shrink:0; }
+.llmp-tab {
+    flex:1; padding:5px 4px; border:none; background:transparent;
+    color:var(--fbt-muted); font-size:11px; font-weight:600;
+    text-transform:uppercase; letter-spacing:.05em; cursor:pointer;
+    border-bottom:2px solid transparent; transition:color .12s, border-color .12s;
+}
+.llmp-tab:hover { color:var(--fbt-text); }
+.llmp-tab.active { color:var(--fbt-accent); border-bottom-color:var(--fbt-accent); }
+.llmp-tab .llmp-tab-dot {
+    display:inline-block; width:6px; height:6px; border-radius:50%;
+    background:#555; margin-right:5px; vertical-align:middle;
+}
+.llmp-tab .llmp-tab-dot.ok   { background:var(--fbt-ok); }
+.llmp-tab .llmp-tab-dot.blue { background:var(--fbt-blue); }
+
+/* Tab panes */
+.llmp-pane { display:none; flex-direction:column; gap:10px; overflow-y:auto; flex:1; }
+.llmp-pane.active { display:flex; }
+
+/* Rows */
+.llmp-row { display:flex; align-items:center; gap:8px; }
+.llmp-label { font-size:11px; color:var(--fbt-muted); flex-shrink:0; min-width:68px; }
+.llmp-value { font-size:12px; color:var(--fbt-text); font-weight:500; }
+
+/* Status badge */
+.llmp-status {
+    display:flex; align-items:center; gap:6px; padding:7px 10px;
+    border-radius:var(--fbt-radius-md); background:var(--fbt-bg);
+    border:1px solid var(--fbt-border);
+}
+.llmp-status-dot { width:8px; height:8px; border-radius:50%; background:#555; flex-shrink:0; }
+.llmp-status-dot.ok   { background:var(--fbt-ok); }
+.llmp-status-dot.blue { background:var(--fbt-blue); }
+.llmp-status-dot.warn { background:var(--fbt-warn); }
+.llmp-status-text { font-size:12px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* Buttons */
+.llmp-btn {
+    padding:5px 12px; border-radius:var(--fbt-radius); border:none; cursor:pointer; font-size:12px;
+    font-weight:500; transition:opacity .12s;
+}
+.llmp-btn:hover { opacity:.85; }
+.llmp-btn.primary { background:var(--fbt-accent); color:#000; }
+.llmp-btn.danger  { background:#ef4444; color:#fff; }
+.llmp-btn.ghost   { background:transparent; color:var(--fbt-text); border:1px solid var(--fbt-border); }
+.llmp-btn:disabled { opacity:.4; cursor:default; }
+
+/* Select / input */
+.llmp-select, .llmp-input {
+    flex:1; padding:4px 6px; border-radius:var(--fbt-radius); font-size:12px;
+    background:var(--fbt-ground); color:var(--fbt-text);
+    border:1px solid var(--fbt-border); min-width:0;
+}
+.llmp-input[type=number] { width:60px; flex:none; }
+
+/* Info block */
+.llmp-info {
+    font-size:11px; color:var(--fbt-muted); line-height:1.5;
+    padding:8px 10px; background:var(--fbt-bg);
+    border-radius:var(--fbt-radius-md); border-left:3px solid var(--fbt-accent);
+}
+.llmp-info code { font-family:monospace; background:rgba(255,255,255,.08); padding:1px 4px; border-radius:3px; }
+
+/* Idle indicator */
+.llmp-idle { font-size:11px; color:var(--fbt-muted); text-align:right; }
+.llmp-idle.warn { color:var(--fbt-warn); }
+
+/* Section separator */
+.llmp-section-sep {
+    font-size:10px; color:#555; text-transform:uppercase; letter-spacing:.08em;
+    border-top:1px solid var(--fbt-border); padding-top:8px; margin-top:2px;
+}
+
+/* Check-item row */
+.llmp-check-icon { width:14px; display:inline-block; font-family:monospace; flex-shrink:0; }
+
+/* Inline info icon */
+.llmp-iicon {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:15px; height:15px; border-radius:50%;
+    background:rgba(255,255,255,.07); color:#666;
+    font-size:10px; font-style:normal; cursor:help; flex-shrink:0;
+    line-height:1; user-select:none;
+}
+.llmp-iicon:hover { color:var(--fbt-accent); background:rgba(255,255,255,.14); }
+
+/* Custom model input row */
+.llmp-custom-row { display:flex; gap:6px; align-items:center; }
+.llmp-history-list { display:flex; flex-direction:column; gap:3px; }
+.llmp-history-item {
+    display:flex; align-items:center; gap:6px; padding:3px 6px;
+    border-radius:3px; cursor:pointer; font-size:11px;
+    color:var(--fbt-muted);
+}
+.llmp-history-item:hover { background:var(--fbt-bg); color:var(--fbt-text); }
+
+/* VRAM recommendation card */
+.llmp-vram-card {
+    display:flex; flex-direction:column; gap:3px;
+    padding:8px 10px; border-radius:var(--fbt-radius-md);
+    background:var(--fbt-bg); border:1px solid var(--fbt-border);
+    font-size:11px; color:var(--fbt-muted); min-height:0;
+}
+.llmp-vram-card:empty { display:none; }
+.llmp-vram-header { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+.llmp-vram-breakdown { font-size:10px; color:#666; font-variant-numeric:tabular-nums; }
+.llmp-vram-gpu-row {
+    display:flex; align-items:center; gap:4px; margin-top:4px; flex-wrap:wrap;
+}
+.llmp-gpu-label { font-size:10px; color:#888; margin-right:2px; }
+.llmp-gpu-btn {
+    font-size:11px; padding:2px 8px; border-radius:var(--fbt-radius); cursor:pointer; border:1px solid #555;
+    background:transparent; color:#aaa; transition:all 0.15s;
+}
+.llmp-gpu-btn:hover  { border-color:#888; color:#ddd; }
+.llmp-gpu-btn.selected { border-color:var(--fbt-accent); color:var(--fbt-accent); background:var(--fbt-accent-bg); }
+.llmp-gpu-btn.recommended { position:relative; }
+.llmp-gpu-rec-dot { font-size:7px; color:#4ade80; margin-right:3px; vertical-align:super; }
+.llmp-vram-gpu-detail { font-size:10px; color:#888; font-variant-numeric:tabular-nums; margin-left:4px; }
+.llmp-vram-warn { color:var(--fbt-error); font-size:10px; }
+.llmp-vram-alt  { color:#888; font-size:10px; font-variant-numeric:tabular-nums; }
+
+/* Local VRAM analysis card */
+.llmp-ctx-row { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--fbt-muted); }
+.llmp-ctx-lbl { white-space:nowrap; }
+.llmp-ctx-sel { font-size:11px; padding:2px 4px; border-radius:var(--fbt-radius); border:1px solid var(--fbt-border); background:var(--fbt-bg); color:var(--fbt-text); }
+.llmp-local-vram { display:flex; flex-direction:column; gap:4px; padding:8px 10px; border-radius:var(--fbt-radius-md); background:var(--fbt-bg); border:1px solid var(--fbt-border); font-size:11px; color:var(--fbt-muted); }
+.llmp-local-vram:empty { display:none; }
+.llmp-lv-title { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:#666; margin-bottom:2px; }
+.llmp-lv-row   { display:flex; flex-wrap:wrap; gap:3px; align-items:center; }
+.llmp-ctx-pill {
+    display:inline-flex; align-items:center; gap:2px;
+    padding:1px 6px; border-radius:10px; font-size:10px;
+    border:1px solid transparent; font-variant-numeric:tabular-nums;
+    cursor:default;
+}
+.llmp-ctx-pill.fits   { border-color:var(--fbt-ok);    color:#4ade80; }
+.llmp-ctx-pill.nofits { border-color:#ef4444;           color:var(--fbt-error); }
+.llmp-ctx-pill.unknown { border-color:#555;             color:#777; }
+.llmp-ctx-pill.active { background:rgba(96,165,250,0.15); border-color:var(--fbt-accent); color:var(--fbt-accent); font-weight:600; }
+.llmp-ctx-pill.rec::after { content:"★"; font-size:8px; vertical-align:super; color:#4ade80; margin-left:1px; }
+.llmp-lv-meta { font-size:10px; color:#666; font-variant-numeric:tabular-nums; }

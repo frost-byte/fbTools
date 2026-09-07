@@ -140,17 +140,17 @@ function applyStateToNode(node, state, level) {
 
     const lvl = String(level || "").toLowerCase();
     if (lvl === "error" || /error|failed/i.test(state.status)) {
-        container.style.borderColor = "#a64b4b";
-        container.style.color = "#f3b0b0";
+        container.style.borderColor = "var(--fbt-error-border)";
+        container.style.color = "var(--fbt-error-text)";
     } else if (lvl === "success" || /completed|complete|ready/i.test(state.status)) {
-        container.style.borderColor = "#3f7a4a";
-        container.style.color = "#b7e7c0";
+        container.style.borderColor = "var(--fbt-ok-border)";
+        container.style.color = "var(--fbt-ok-text)";
     } else if (lvl === "warn" || /warn/i.test(state.status)) {
-        container.style.borderColor = "#8e6d33";
-        container.style.color = "#f2d8a2";
+        container.style.borderColor = "var(--fbt-warn-border)";
+        container.style.color = "var(--fbt-warn-text)";
     } else {
-        container.style.borderColor = "#3c3c3c";
-        container.style.color = "#cfcfcf";
+        container.style.borderColor = "var(--fbt-idle-border)";
+        container.style.color = "var(--fbt-idle-text)";
     }
 }
 
@@ -173,7 +173,7 @@ function updateLlmBadge(node) {
 
     if (captType === "gemini_flash") {
         llmLine.textContent = "Model: Gemini Flash (API)";
-        llmLine.style.color = "#60a5fa";
+        llmLine.style.color = "var(--fbt-blue)";
         return;
     }
 
@@ -181,14 +181,14 @@ function updateLlmBadge(node) {
     if (loaded && vision) {
         const short = loaded.length > 36 ? loaded.slice(0, 34) + "…" : loaded;
         llmLine.textContent = `Model: ${short} ✓`;
-        llmLine.style.color = "#22c55e";
+        llmLine.style.color = "var(--fbt-ok)";
     } else if (loaded && !vision) {
         const short = loaded.length > 28 ? loaded.slice(0, 26) + "…" : loaded;
         llmLine.textContent = `Model: ${short} ⚠ no vision`;
-        llmLine.style.color = "#f59e0b";
+        llmLine.style.color = "var(--fbt-warn)";
     } else {
         llmLine.textContent = "Model: ⚠ none — load in fbTools Compose";
-        llmLine.style.color = "#f87171";
+        llmLine.style.color = "var(--fbt-error)";
     }
 }
 
