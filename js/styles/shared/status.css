@@ -1,0 +1,9 @@
+/* ── Semantic status classes ───────────────────────────────────────────────────
+   Apply to container elements to set color + border-color together.
+   JS code should toggle these classes instead of setting inline colors.
+   ──────────────────────────────────────────────────────────────────────────── */
+.fbt-st-ok    { color: var(--fbt-ok);    border-color: var(--fbt-ok-border);    }
+.fbt-st-warn  { color: var(--fbt-warn);  border-color: var(--fbt-warn-border);  }
+.fbt-st-error { color: var(--fbt-error); border-color: var(--fbt-error-border); }
+.fbt-st-info  { color: var(--fbt-info);  border-color: var(--fbt-info-border);  }
+.fbt-st-idle  { color: var(--fbt-idle);  border-color: var(--fbt-idle-border);  }

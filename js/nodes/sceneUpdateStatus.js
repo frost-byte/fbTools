@@ -83,17 +83,17 @@ api.addEventListener("fbtools.status", (event) => {
             
             // Update colors based on status
             if (status.includes("Error")) {
-                container.style.color = "#ff5555";
-                container.style.borderColor = "#ff5555";
+                container.style.color = "var(--fbt-error)";
+                container.style.borderColor = "var(--fbt-error-border)";
             } else if (status.includes("✓") || status.includes("Completed")) {
-                container.style.color = "#55ff55";
-                container.style.borderColor = "#55ff55";
+                container.style.color = "var(--fbt-ok)";
+                container.style.borderColor = "var(--fbt-ok-border)";
             } else if (status === "Ready") {
-                container.style.color = "#888";
-                container.style.borderColor = "#444";
+                container.style.color = "var(--fbt-idle)";
+                container.style.borderColor = "var(--fbt-idle-border)";
             } else {
-                container.style.color = "#5599ff";
-                container.style.borderColor = "#5599ff";
+                container.style.color = "var(--fbt-info)";
+                container.style.borderColor = "var(--fbt-info-border)";
             }
             
             app.graph.setDirtyCanvas(true, false);

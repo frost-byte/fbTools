@@ -1,3 +1,16 @@
+/* ── Shared tokens and component stylesheets ──────────────────────────────── */
+@import "./shared/vars.css";
+@import "./shared/status.css";
+@import "./nodes/lora.css";
+@import "./nodes/scene_cast_build.css";
+@import "./nodes/source_profile_clip_prompt.css";
+@import "./nodes/dataset_caption_viewer.css";
+@import "./ui/fbt_panel.css";
+@import "./ui/llm_panel.css";
+@import "./ui/node_inspector.css";
+@import "./ui/source_profile_editor.css";
+
+/* ── Legacy styles (pre-existing content) ─────────────────────────────────── */
 textarea.prompt-value-input {
     overflow: hidden;
     resize: vertical;

@@ -129,151 +129,10 @@ function _mk(tag, props = {}, children = []) {
 
 function _txt(el, text) { el.textContent = text; }
 
-// ── CSS ───────────────────────────────────────────────────────────────────────
-
-const _CSS = `
-.llmp-wrap { display:flex; flex-direction:column; height:100%; overflow:hidden; padding:8px; box-sizing:border-box; gap:8px; }
-
-/* Sub-tab strip */
-.llmp-tabs { display:flex; gap:4px; border-bottom:1px solid var(--p-surface-border,#444); padding-bottom:6px; flex-shrink:0; }
-.llmp-tab {
-    flex:1; padding:5px 4px; border:none; background:transparent;
-    color:var(--p-text-muted-color,#888); font-size:11px; font-weight:600;
-    text-transform:uppercase; letter-spacing:.05em; cursor:pointer;
-    border-bottom:2px solid transparent; transition:color .12s, border-color .12s;
-}
-.llmp-tab:hover { color:var(--p-text-color,#ccc); }
-.llmp-tab.active { color:var(--p-primary-color,#58a6ff); border-bottom-color:var(--p-primary-color,#58a6ff); }
-.llmp-tab .llmp-tab-dot {
-    display:inline-block; width:6px; height:6px; border-radius:50%;
-    background:#555; margin-right:5px; vertical-align:middle;
-}
-.llmp-tab .llmp-tab-dot.ok  { background:#22c55e; }
-.llmp-tab .llmp-tab-dot.blue { background:#60a5fa; }
-
-/* Tab panes */
-.llmp-pane { display:none; flex-direction:column; gap:10px; overflow-y:auto; flex:1; }
-.llmp-pane.active { display:flex; }
-
-/* Rows */
-.llmp-row { display:flex; align-items:center; gap:8px; }
-.llmp-label { font-size:11px; color:var(--p-text-muted-color,#888); flex-shrink:0; min-width:68px; }
-.llmp-value { font-size:12px; color:var(--p-text-color,#ccc); font-weight:500; }
-
-/* Status badge */
-.llmp-status {
-    display:flex; align-items:center; gap:6px; padding:7px 10px;
-    border-radius:6px; background:var(--p-surface-section,#252525);
-    border:1px solid var(--p-surface-border,#444);
-}
-.llmp-status-dot { width:8px; height:8px; border-radius:50%; background:#555; flex-shrink:0; }
-.llmp-status-dot.ok   { background:#22c55e; }
-.llmp-status-dot.blue { background:#60a5fa; }
-.llmp-status-dot.warn { background:#f59e0b; }
-.llmp-status-text { font-size:12px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-
-/* Buttons */
-.llmp-btn {
-    padding:5px 12px; border-radius:4px; border:none; cursor:pointer; font-size:12px;
-    font-weight:500; transition:opacity .12s;
-}
-.llmp-btn:hover { opacity:.85; }
-.llmp-btn.primary { background:var(--p-primary-color,#58a6ff); color:#000; }
-.llmp-btn.danger  { background:#ef4444; color:#fff; }
-.llmp-btn.ghost   { background:transparent; color:var(--p-text-color,#ccc);
-                    border:1px solid var(--p-surface-border,#444); }
-.llmp-btn:disabled { opacity:.4; cursor:default; }
-
-/* Select / input */
-.llmp-select, .llmp-input {
-    flex:1; padding:4px 6px; border-radius:4px; font-size:12px;
-    background:var(--p-surface-ground,#1a1a1a); color:var(--p-text-color,#eee);
-    border:1px solid var(--p-surface-border,#444); min-width:0;
-}
-.llmp-input[type=number] { width:60px; flex:none; }
-
-/* Info block */
-.llmp-info {
-    font-size:11px; color:var(--p-text-muted-color,#888); line-height:1.5;
-    padding:8px 10px; background:var(--p-surface-section,#252525);
-    border-radius:6px; border-left:3px solid var(--p-primary-color,#58a6ff);
-}
-.llmp-info code { font-family:monospace; background:rgba(255,255,255,.08); padding:1px 4px; border-radius:3px; }
-
-/* Idle indicator */
-.llmp-idle { font-size:11px; color:var(--p-text-muted-color,#888); text-align:right; }
-.llmp-idle.warn { color:#f59e0b; }
-
-/* Section separator (used in Unsloth tab) */
-.llmp-section-sep {
-    font-size:10px; color:#555; text-transform:uppercase; letter-spacing:.08em;
-    border-top:1px solid var(--p-surface-border,#444); padding-top:8px; margin-top:2px;
-}
-
-/* Check-item row */
-.llmp-check-icon { width:14px; display:inline-block; font-family:monospace; flex-shrink:0; }
-
-/* Inline info icon */
-.llmp-iicon {
-    display:inline-flex; align-items:center; justify-content:center;
-    width:15px; height:15px; border-radius:50%;
-    background:rgba(255,255,255,.07); color:#666;
-    font-size:10px; font-style:normal; cursor:help; flex-shrink:0;
-    line-height:1; user-select:none;
-}
-.llmp-iicon:hover { color:var(--p-primary-color,#58a6ff); background:rgba(255,255,255,.14); }
-
-/* Custom model input row */
-.llmp-custom-row { display:flex; gap:6px; align-items:center; }
-.llmp-history-list { display:flex; flex-direction:column; gap:3px; }
-.llmp-history-item {
-    display:flex; align-items:center; gap:6px; padding:3px 6px;
-    border-radius:3px; cursor:pointer; font-size:11px;
-    color:var(--p-text-muted-color,#888);
-}
-.llmp-history-item:hover { background:var(--p-surface-section,#252525); color:var(--p-text-color,#ccc); }
-
-/* VRAM recommendation card */
-.llmp-vram-card {
-    display:flex; flex-direction:column; gap:3px;
-    padding:8px 10px; border-radius:6px;
-    background:var(--p-surface-section,#252525);
-    border:1px solid var(--p-surface-border,#444);
-    font-size:11px; color:var(--p-text-muted-color,#999);
-    min-height:0;
-}
-.llmp-vram-card:empty { display:none; }
-.llmp-vram-header { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
-.llmp-vram-breakdown { font-size:10px; color:#666; font-variant-numeric:tabular-nums; }
-.llmp-vram-gpu-row {
-    display:flex; align-items:center; gap:4px; margin-top:4px; flex-wrap:wrap;
-}
-.llmp-gpu-label { font-size:10px; color:#888; margin-right:2px; }
-.llmp-gpu-btn {
-    font-size:11px; padding:2px 8px; border-radius:4px; cursor:pointer; border:1px solid #555;
-    background:transparent; color:#aaa; transition:all 0.15s;
-}
-.llmp-gpu-btn:hover  { border-color:#888; color:#ddd; }
-.llmp-gpu-btn.selected { border-color:var(--p-primary-color,#60a5fa); color:var(--p-primary-color,#60a5fa); background:rgba(96,165,250,0.1); }
-.llmp-gpu-btn.recommended { position:relative; }
-.llmp-gpu-rec-dot { font-size:7px; color:#4ade80; margin-right:3px; vertical-align:super; }
-.llmp-vram-gpu-detail { font-size:10px; color:#888; font-variant-numeric:tabular-nums; margin-left:4px; }
-.llmp-vram-warn { color:#f87171; font-size:10px; }
-.llmp-vram-alt  { color:#888; font-size:10px; font-variant-numeric:tabular-nums; }
-`;
-
-function _injectCSS() {
-    if (document.getElementById("llmp-styles")) return;
-    const s = document.createElement("style");
-    s.id = "llmp-styles";
-    s.textContent = _CSS;
-    document.head.appendChild(s);
-}
-
 // ── Local sub-tab ─────────────────────────────────────────────────────────────
 
 function _renderLocalTab(pane) {
-    const _ls = { models: [], busy: false };
+    const _ls = { models: [], busy: false, nCtx: 4096 };
 
     // ── Status badge ───────────────────────────────────────────────────────
     const dot    = _mk("div", { cls: "llmp-status-dot" });
@@ -286,9 +145,24 @@ function _renderLocalTab(pane) {
     const refreshBtn = _mk("button", { cls: "llmp-btn ghost", title: "Re-scan model directories" }, ["↻ Scan"]);
     const capNote    = _mk("div", { cls: "llmp-info", style: { display: "none", padding: "4px 8px", marginTop: "0" } });
 
+    // ── Context size selector ──────────────────────────────────────────────
+    const nCtxSel = _mk("select", { cls: "llmp-ctx-sel" });
+    [["4K", 4096], ["8K", 8192], ["16K", 16384], ["32K", 32768],
+     ["64K", 65536], ["128K", 131072]].forEach(([lbl, val]) => {
+        const opt = document.createElement("option");
+        opt.value = val;
+        opt.textContent = lbl;
+        nCtxSel.appendChild(opt);
+    });
+    nCtxSel.value = _ls.nCtx;
+    nCtxSel.onchange = () => { _ls.nCtx = parseInt(nCtxSel.value); };
+
     // ── Load / Unload ──────────────────────────────────────────────────────
     const loadBtn   = _mk("button", { cls: "llmp-btn primary" }, ["Load"]);
     const unloadBtn = _mk("button", { cls: "llmp-btn danger",   style: { display: "none" } }, ["Unload"]);
+
+    // ── Local VRAM analysis card ───────────────────────────────────────────
+    const localVramCard = _mk("div", { cls: "llmp-local-vram" });
 
     // ── Download prompt ────────────────────────────────────────────────────
     const downloadRow = _mk("div", {});
@@ -365,20 +239,73 @@ function _renderLocalTab(pane) {
         }
     };
 
+    function _renderVramCard(d) {
+        localVramCard.innerHTML = "";
+        if (!d || !d.success) {
+            if (d?.message) {
+                localVramCard.append(_mk("span", { cls: "llmp-vram-warn" }, [`⚠ ${d.message}`]));
+            }
+            return;
+        }
+
+        const { total_mb, used_mb, headroom_mb, arch, bytes_per_token,
+                current_n_ctx, native_max_ctx, context_table, recommendation } = d;
+
+        const title = _mk("div", { cls: "llmp-lv-title" }, ["VRAM  /  Context"]);
+
+        // VRAM bar: total / used / headroom
+        const vramPct = total_mb > 0 ? Math.round(used_mb / total_mb * 100) : 0;
+        const vramLine = _mk("div", { cls: "llmp-lv-meta" },
+            [`GPU ${Math.round(used_mb).toLocaleString()} / ${Math.round(total_mb).toLocaleString()} MB  (${vramPct}% used,  ${Math.round(headroom_mb).toLocaleString()} MB headroom)`]);
+
+        // Architecture note (show hybrid-attention info if applicable)
+        let archText = `${arch.n_layers} layers`;
+        if (arch.full_attn_interval > 1) {
+            archText += ` · ${arch.n_full_attn_layers} full-attn (1 : ${arch.full_attn_interval} hybrid)`;
+        }
+        const kbPerTok = Math.round(bytes_per_token.f16 / 1024);
+        archText += `  ·  ${kbPerTok} KB/token KV (f16)`;
+        const archLine = _mk("div", { cls: "llmp-lv-meta" }, [archText]);
+
+        // Context size pills
+        const pillRow = _mk("div", { cls: "llmp-lv-row" });
+        for (const row of context_table) {
+            const isActive  = row.ctx === current_n_ctx;
+            const isRec     = row.ctx === recommendation.f16;
+            let cls = "llmp-ctx-pill";
+            if (isActive)          cls += " active";
+            else if (row.fits_f16 === true)  cls += " fits";
+            else if (row.fits_f16 === false) cls += " nofits";
+            else                             cls += " unknown";
+            if (isRec && !isActive) cls += " rec";
+            const label = isActive ? `${row.label} ←` : row.label;
+            const pill = _mk("span", { cls }, [label]);
+            pill.title = `${row.label}: KV cache ≈ ${row.kv_f16_mb} MB (f16), ${row.kv_q8_mb} MB (q8)`;
+            pillRow.appendChild(pill);
+        }
+
+        localVramCard.append(title, vramLine, archLine, pillRow);
+    }
+
     loadBtn.onclick = async () => {
         if (_ls.busy) return;
         const modelInfo = _ls.models.find(m => m.id === modelSel.value);
         if (!modelInfo) return;
         _setBusy(true);
         _setStatus(`Loading ${modelInfo.name}…`);
+        localVramCard.innerHTML = "";
         try {
-            const r = await llmApi.loadModel(modelInfo);
+            const r = await llmApi.loadModel({ ...modelInfo, n_ctx: _ls.nCtx });
             if (r.success) {
                 window._fbtUpdateLlmStatus?.(
                     modelInfo.name,
                     modelInfo.supports_vision,
                     modelInfo.native_video ?? false,
                 );
+                try {
+                    const va = await llmApi.vramAnalysis();
+                    _renderVramCard(va);
+                } catch (_) {}
             } else {
                 _setStatus(`Load failed: ${r.message || "unknown error"}`);
             }
@@ -393,6 +320,7 @@ function _renderLocalTab(pane) {
         if (_ls.busy) return;
         _setBusy(true);
         _setStatus("Unloading…");
+        localVramCard.innerHTML = "";
         try {
             await llmApi.unloadModel();
             window._fbtUpdateLlmStatus?.(null, false, false);
@@ -432,8 +360,13 @@ function _renderLocalTab(pane) {
         badgeRow,
         _mk("div", { cls: "llmp-row" }, [modelSel, refreshBtn]),
         capNote,
+        _mk("div", { cls: "llmp-ctx-row" }, [
+            _mk("span", { cls: "llmp-ctx-lbl" }, ["Context:"]),
+            nCtxSel,
+        ]),
         _mk("div", { cls: "llmp-row" }, [loadBtn, unloadBtn]),
         downloadRow,
+        localVramCard,
     );
 }
 
@@ -1656,8 +1589,6 @@ function _renderGeminiTab(pane) {
 // ── Panel entry point ─────────────────────────────────────────────────────────
 
 export function renderLlmPanel(container) {
-    _injectCSS();
-
     const wrap = _mk("div", { cls: "llmp-wrap" });
     container.appendChild(wrap);
 

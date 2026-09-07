@@ -30,75 +30,7 @@ const _jsonViewLoader = {
 let _container = null;   // the .fbt-ni-content div, set on first render
 let _pending   = null;   // node data that arrived before the tab was mounted
 
-// ── CSS ───────────────────────────────────────────────────────────────────────
 
-const _CSS = `
-.fbt-ni-panel {
-    display:flex; flex-direction:column; height:100%; overflow:hidden;
-    font-size:13px; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
-}
-.fbt-ni-toolbar {
-    display:flex; align-items:center; gap:6px; padding:6px 10px;
-    background:var(--p-surface-card,#1e1e1e);
-    border-bottom:1px solid var(--p-surface-border,#444); flex-shrink:0;
-}
-.fbt-ni-title {
-    font-size:11px; font-weight:600; letter-spacing:.05em;
-    text-transform:uppercase; color:var(--p-text-muted-color,#888);
-    flex:1;
-}
-.fbt-ni-btn {
-    font-size:11px; padding:2px 8px; border-radius:4px; cursor:pointer;
-    border:1px solid var(--p-surface-border,#444);
-    background:var(--p-surface-section,#252525);
-    color:var(--p-text-color,#ccc);
-}
-.fbt-ni-btn:hover { background:var(--p-surface-hover,#333); }
-.fbt-ni-empty {
-    padding:16px; color:var(--p-text-muted-color,#888);
-    font-size:12px; font-style:italic;
-}
-.fbt-ni-content {
-    flex:1; min-height:0; overflow:auto; padding:8px 10px;
-    overscroll-behavior:contain;
-}
-/* jsnview dark-theme overrides — jsnview@3.0.0 ships Tailwind classes; we
-   remap every color + the white root background to ComfyUI palette tokens. */
-.fbt-ni-content .jsv {
-    background: transparent !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-    color: var(--p-text-color, #ccc) !important;
-}
-.fbt-ni-content .jsv-content {
-    border-color: var(--p-surface-border, #444) !important;
-}
-.fbt-ni-content .jsv-toggle {
-    color: var(--p-text-muted-color, #888) !important;
-}
-/* object keys */
-.fbt-ni-content .text-amber-800 { color: var(--p-amber-400,  #fbbf24) !important; }
-/* property names */
-.fbt-ni-content .text-gray-600  { color: var(--p-surface-200, #e5e5e5) !important; }
-/* type/length hints */
-.fbt-ni-content .text-gray-500  { color: var(--p-text-muted-color, #888) !important; }
-/* string values */
-.fbt-ni-content .text-green-700 { color: var(--p-green-400,  #4ade80) !important; }
-/* number values */
-.fbt-ni-content .text-blue-700  { color: var(--p-blue-400,   #60a5fa) !important; }
-/* boolean / null values (jsnview uses -700, not -400) */
-.fbt-ni-content .text-rose-700  { color: var(--p-red-400,    #f87171) !important; }
-/* type label (italic) */
-.fbt-ni-content .text-stone-700 { color: var(--p-stone-400,  #a8a29e) !important; }
-`;
-
-function _injectCSS() {
-    if (document.getElementById("fbt-ni-styles")) return;
-    const s = document.createElement("style");
-    s.id = "fbt-ni-styles";
-    s.textContent = _CSS;
-    document.head.appendChild(s);
-}
 
 // ── Tree helpers ──────────────────────────────────────────────────────────────
 
@@ -181,7 +113,6 @@ export function updateNodeInspector(nodeData) {
  * Called by fbt_panel.js when the Inspector tab is first activated.
  */
 export function renderNodeInspector(rootEl) {
-    _injectCSS();
     rootEl.innerHTML = "";
 
     const panel = document.createElement("div");

@@ -9,49 +9,7 @@
 
 import { setWidgetVisible } from "../utils/widgets.js";
 
-let _cssInjected = false;
-function _injectCss() {
-    if (_cssInjected) return;
-    _cssInjected = true;
-    const s = document.createElement("style");
-    s.textContent = `
-.fbt-spcp-wrap {
-    padding: 2px 6px 6px;
-    box-sizing: border-box;
-    width: 100%;
-}
-.fbt-spcp-label {
-    font-size: 10px;
-    color: var(--p-surface-400, #888);
-    margin-bottom: 3px;
-    display: block;
-}
-.fbt-spcp-sel {
-    width: 100%;
-    background: var(--comfy-input-bg, #222);
-    border: 1px solid var(--border-color, #444);
-    border-radius: 3px;
-    color: inherit;
-    font-size: 11px;
-    padding: 3px 4px;
-    box-sizing: border-box;
-    cursor: pointer;
-}
-.fbt-spcp-sel:focus {
-    outline: none;
-    border-color: var(--p-blue-400, #60a5fa);
-}
-.fbt-spcp-sel:disabled {
-    opacity: 0.45;
-    cursor: default;
-}
-`;
-    document.head.appendChild(s);
-}
-
 export function setupSourceProfileClipPrompt(nodeType, _nodeData, app) {
-    _injectCss();
-
     const _origCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
         _origCreated?.call(this);
