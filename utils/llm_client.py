@@ -399,6 +399,8 @@ def unload_model() -> dict:
         _state["supports_vision"] = False
         _state["native_video"] = False
         _state["quant_type"] = None
+        _state["has_thinking_template"] = False
+        _state["chat_template"] = ""
 
         gc.collect()
 
@@ -458,55 +460,11 @@ def generate(
         return {"success": False, "text": "", "message": f"Generation error: {e}"}
 
 
-def _render_gguf_prompt_no_think(model, messages: list[dict]) -> str | None:
-    """Render the model's Jinja chat template with enable_thinking=False.
-
-    Returns the rendered prompt string, or None on any failure (caller falls
-    back to create_chat_completion).
-    """
-    tmpl_str = _state.get("chat_template", "")
-    if not tmpl_str or "enable_thinking" not in tmpl_str:
-        return None
-    try:
-        from jinja2.sandbox import ImmutableSandboxedEnvironment
-        import jinja2
-
-        env = ImmutableSandboxedEnvironment(
-            undefined=jinja2.Undefined,
-            extensions=["jinja2.ext.loopcontrols"],
-        )
-
-        def _raise(msg: str):
-            raise ValueError(msg)
-
-        env.globals["raise_exception"] = _raise
-
-        eos_id = model.token_eos()
-        bos_id = model.token_bos() if hasattr(model, "token_bos") else -1
-        eos_token = model.detokenize([eos_id], special=True).decode("utf-8", errors="replace") if eos_id >= 0 else ""
-        bos_token = model.detokenize([bos_id], special=True).decode("utf-8", errors="replace") if bos_id >= 0 else ""
-
-        rendered = env.from_string(tmpl_str).render(
-            messages=messages,
-            enable_thinking=False,
-            add_generation_prompt=True,
-            add_vision_id=False,
-            eos_token=eos_token,
-            bos_token=bos_token,
-            raise_exception=_raise,
-        )
-        return rendered
-    except Exception as exc:
-        logger.warning("_render_gguf_prompt_no_think failed (%s); falling back to create_chat_completion", exc)
-        return None
-
-
 def _generate_gguf(prompt: str, *, images, video_frames, system_prompt, max_tokens, temperature) -> dict:
     model = _state["model"]
     supports_vision = _state["supports_vision"]
     has_thinking = _state.get("has_thinking_template", False)
 
-    # Build the message list (shared by both paths).
     if supports_vision and images:
         import base64
         from io import BytesIO
@@ -533,32 +491,19 @@ def _generate_gguf(prompt: str, *, images, video_frames, system_prompt, max_toke
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-    # For models with a thinking-mode template (e.g. Qwen3), render the
-    # template ourselves with enable_thinking=False so the model skips the
-    # reasoning preamble entirely.  Fall back to create_chat_completion if
-    # rendering fails (e.g. jinja2 not installed, unexpected template vars).
-    if has_thinking:
-        rendered = _render_gguf_prompt_no_think(model, messages)
-        if rendered is not None:
-            eos_id = model.token_eos()
-            eos_str = model.detokenize([eos_id], special=True).decode("utf-8", errors="replace") if eos_id >= 0 else "<|im_end|>"
-            raw = model.create_completion(
-                rendered,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                stop=[eos_str],
-            )
-            text = raw["choices"][0]["text"].strip()
-            return {"success": True, "text": text, "message": ""}
+    # Thinking-mode models (Qwen3 etc.) prepend a <think>…</think> reasoning
+    # block before the actual answer.  The block improves output quality but
+    # needs a larger token budget so the model can close it before hitting the
+    # cap.  We triple the requested budget for the inference call, then strip
+    # the thinking block from the returned text so callers only see the answer.
+    actual_max_tokens = max_tokens * 3 if has_thinking else max_tokens
 
     response = model.create_chat_completion(
         messages=messages,
-        max_tokens=max_tokens,
+        max_tokens=actual_max_tokens,
         temperature=temperature,
     )
     text = response["choices"][0]["message"]["content"].strip()
-    # Fallback strip in case thinking tokens leaked through (e.g. max_tokens
-    # was large enough for the thinking block but the template path above failed).
     if "</think>" in text:
         text = text.split("</think>", 1)[-1].strip()
     return {"success": True, "text": text, "message": ""}
