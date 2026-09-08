@@ -196,7 +196,9 @@ def _scan_gguf_dir(dirpath: str, name: str) -> dict | None:
         "quant_type":     None,   # GGUF quant is internal to the file
         "quant_requires": None,
         "size_mb":        size_mb,
-        "vision_handler": _gguf_vision_handler(main_file) if supports_vision else None,
+        "vision_handler": _gguf_vision_handler(
+            os.path.join(dirpath, mmproj_file), main_file
+        ) if supports_vision else None,
     }
 
 
@@ -205,13 +207,39 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in lower or "vision" in lower and "proj" in lower
 
 
-def _gguf_vision_handler(main_file: str) -> str:
+def _read_mmproj_projector_type(mmproj_path: str) -> str:
+    """Read clip.projector_type from a mmproj GGUF file. Returns '' on failure."""
+    try:
+        from gguf import GGUFReader
+        r = GGUFReader(mmproj_path)
+        field = r.fields.get("clip.projector_type")
+        if field and field.types and field.types[0].name == "STRING":
+            return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return ""
+
+
+# Map clip.projector_type → llama-cpp-python chat handler class name.
+# Read directly from the mmproj GGUF metadata — authoritative, model-agnostic.
+_PROJECTOR_HANDLER: dict[str, str] = {
+    "gemma3":           "Gemma4ChatHandler",   # Gemma3 MTMD subclass
+    "qwen3vl_merger":   "MTMDChatHandler",     # Qwen3-VL: generic MTMD backend
+    "qwen2.5vl_merger": "Qwen25VLChatHandler", # Qwen2.5-VL: legacy handler
+    "qwen2vl_merger":   "Qwen25VLChatHandler", # Qwen2-VL: legacy handler
+}
+
+
+def _gguf_vision_handler(mmproj_path: str, main_file: str = "") -> str:
     """Return the llama-cpp-python chat handler class name for a GGUF vision model.
 
-    Gemma-4 uses the new MTMD backend (Gemma4ChatHandler) instead of the
-    legacy LLaVA clip handler.  All other vision models use the old approach
-    (clip_model_path kwarg + Llava15ChatHandler-derived handlers).
+    Reads clip.projector_type from the mmproj GGUF metadata for a definitive answer.
+    Falls back to filename heuristics when the metadata is unreadable.
     """
+    pt = _read_mmproj_projector_type(mmproj_path)
+    if pt in _PROJECTOR_HANDLER:
+        return _PROJECTOR_HANDLER[pt]
+    # Metadata unavailable — heuristic fallback
     lower = main_file.lower()
     if "gemma" in lower:
         return "Gemma4ChatHandler"

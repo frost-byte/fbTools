@@ -188,6 +188,11 @@ export class LlmAPI extends BaseAPI {
         }
     }
 
+    /** VRAM budget and KV-cache context-size table for the loaded GGUF model. */
+    vramAnalysis() {
+        return this.get("/vram_analysis");
+    }
+
     /**
      * Download the default recommended model.
      * Long-running — takes minutes.

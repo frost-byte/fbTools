@@ -53,7 +53,7 @@ Return ONLY valid JSON matching this exact schema — no markdown, no prose, no 
   "subjects": [
     {
       "label":            "short identifying phrase (≤10 words)",
-      "role_description": "1-2 sentence description of how this subject appears in the scene",
+      "role_description": "1-2 sentence visual description of this subject",
       "entity_type":      "person|object|location|animal|soundscape",
       "notes":            "optional additional context or caveats (may be empty string)"
     }
@@ -64,12 +64,23 @@ If no subjects of the requested type are found, return: {"subjects": []}
 
 _PASS_PROMPTS: dict[str, str] = {
     "people": (
-        "Examine this image carefully. Identify every distinct person visible.\n\n"
+        "Examine this image carefully. Identify every distinct person — including those who are "
+        "fully visible, partially cropped at frame edges, partially occluded, or visible only "
+        "in the background.\n\n"
         "For each person:\n"
-        "- Disambiguate them by position, clothing colour, or prominent feature "
-        "(e.g. 'woman in blue top, stage left', 'man seated at table, background right').\n"
-        "- role_description: 1-2 sentences describing their appearance and position in the scene.\n"
-        "- entity_type must be 'person'.\n\n"
+        "- label: identify them by APPEARANCE FEATURES ONLY — clothing colour, hair, build, "
+        "or a prominent visual trait (e.g. 'woman in blue top', 'man with grey beard and glasses', "
+        "'person in red hoodie'). Do NOT include position or orientation in the label — "
+        "those belong in scene descriptions, not subject profiles.\n"
+        "- role_description: 1-2 sentences describing physical appearance and distinguishing "
+        "features: clothing, hair colour/style, build, notable accessories, skin tone. "
+        "Do NOT describe where they are standing, what they are doing, or their orientation — "
+        "that context belongs in the segment description.\n"
+        "- entity_type must be 'person'.\n"
+        "- notes: if the person is partially visible, occluded, or in the far background, "
+        "briefly note it (e.g. 'partially cropped left edge', 'silhouette in background'). "
+        "You may use position here ONLY as a disambiguation aid when two people look similar "
+        "(e.g. 'of the two men in dark jackets, this is the one on the left').\n\n"
         + _JSON_SCHEMA_INSTRUCTION
     ),
     "setting": (
@@ -121,8 +132,13 @@ _PASS_CATEGORY_LABELS: dict[str, str] = {
 
 _PASS_CATEGORY_INSTRUCTIONS: dict[str, str] = {
     "people": (
-        "Identify every distinct person. Disambiguate by position, clothing colour, "
-        "or prominent feature (e.g. 'woman in blue top, stage left'). "
+        "Identify every distinct person — including those partially visible, occluded, "
+        "or in the background. Use appearance features to identify them "
+        "(e.g. 'woman in blue top', 'man with grey beard') — NOT position or orientation, "
+        "which belong in scene descriptions. "
+        "role_description covers appearance only (clothing, hair, build, distinguishing features). "
+        "Note partial visibility in the notes field; use position there only to disambiguate "
+        "visually similar people. "
         "entity_type must be 'person'."
     ),
     "setting": (
@@ -593,7 +609,7 @@ Return ONLY valid JSON — no markdown, no prose, no code fences:
 _CLIP_DESCRIPTION_SCHEMA_WITH_SLOTS = """
 Return ONLY valid JSON — no markdown, no prose, no code fences:
 {
-  "action": "1-2 sentences using the placeholder labels (e.g. {A}, {B}) for identified subjects"
+  "action": "1-2 sentences using placeholder labels. On each subject's FIRST mention include position/orientation (e.g. '{A}, seated at the desk, reads aloud while {B}, standing behind, listens'). Subsequent mentions use the placeholder alone."
 }
 """.strip()
 
@@ -719,8 +735,13 @@ def build_clip_description_prompt(
             _SUBJECT_CONTEXT_HEADER
             + subject_lines
             + f"\n\nUse {placeholders} to refer to these subjects. "
-            + "Describe only the action, framing, and emotional register — "
-            + "not the subjects' appearance."
+            + "Do NOT describe their appearance — that is already known. "
+            + "On each subject's FIRST mention in the description, immediately follow "
+            + "the placeholder with their position and orientation in the scene "
+            + "(e.g. '{A}, seated stage left facing camera,' or '{B}, entering from the right,'). "
+            + "On any subsequent mention of the same subject, use the placeholder alone — "
+            + "no repeated positional re-establishment. "
+            + "Focus the description on action, movement, interaction, and emotional register."
         )
     else:
         subject_block = ""
