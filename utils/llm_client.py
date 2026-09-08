@@ -78,6 +78,7 @@ _state: dict[str, Any] = {
     "supports_vision": False,
     "native_video":   False,
     "quant_type":     None,    # "awq", "gptq", "bitsandbytes", or None
+    "n_ctx":          4096,
 }
 
 
@@ -122,7 +123,7 @@ def _load_gguf(info: dict) -> dict:
         logger.info("Loading GGUF model: %s", model_path)
         kwargs: dict = {
             "model_path":     model_path,
-            "n_ctx":          4096,
+            "n_ctx":          info.get("n_ctx", 4096),
             "n_gpu_layers":   -1,   # offload everything to GPU
             "verbose":        False,
         }
@@ -130,18 +131,27 @@ def _load_gguf(info: dict) -> dict:
         chat_handler = None
         if mmproj_path and os.path.exists(mmproj_path):
             logger.info("Vision projector: %s", mmproj_path)
-            # vision_handler is set by the scanner; fall back to filename detection
-            vision_handler = info.get("vision_handler") or (
-                "Gemma4ChatHandler" if "gemma" in info.get("main_file", "").lower() else "Llava15ChatHandler"
-            )
+            # Read clip.projector_type from the mmproj GGUF for a definitive handler.
+            # This takes priority over the scanner-stored value (which may be stale)
+            # and over filename heuristics.
+            from .llm_scanner import _gguf_vision_handler as _detect_handler
+            vision_handler = _detect_handler(mmproj_path, info.get("main_file", ""))
             if vision_handler == "Gemma4ChatHandler":
-                # Gemma-4 uses the MTMD backend — must be a chat_handler, not clip_model_path
                 from llama_cpp.llama_chat_format import Gemma4ChatHandler
                 chat_handler = Gemma4ChatHandler(clip_model_path=mmproj_path, verbose=False)
                 logger.info("Using Gemma4ChatHandler for vision")
+            elif vision_handler == "MTMDChatHandler":
+                from llama_cpp.llama_chat_format import MTMDChatHandler
+                chat_handler = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False)
+                logger.info("Using MTMDChatHandler (generic MTMD) for vision")
+            elif vision_handler == "Qwen25VLChatHandler":
+                from llama_cpp.llama_chat_format import Qwen25VLChatHandler
+                chat_handler = Qwen25VLChatHandler(clip_model_path=mmproj_path, verbose=False)
+                logger.info("Using Qwen25VLChatHandler for vision")
             else:
-                # LLaVA-style models: pass clip_model_path directly to Llama
+                # LLaVA-1.5 and other clip_model_path models
                 kwargs["clip_model_path"] = mmproj_path
+                logger.info("Using clip_model_path / Llava15 for vision")
         if chat_handler is not None:
             kwargs["chat_handler"] = chat_handler
 
@@ -160,6 +170,7 @@ def _load_gguf(info: dict) -> dict:
             "native_video":         False,
             "has_thinking_template": has_thinking_template,
             "chat_template":        tmpl_str,
+            "n_ctx":                kwargs["n_ctx"],
         })
         if has_thinking_template:
             logger.info("GGUF model has thinking-mode template; will render with enable_thinking=False")
@@ -401,6 +412,7 @@ def unload_model() -> dict:
         _state["quant_type"] = None
         _state["has_thinking_template"] = False
         _state["chat_template"] = ""
+        _state["n_ctx"] = 4096
 
         gc.collect()
 
@@ -418,6 +430,130 @@ def unload_model() -> dict:
 
     except Exception as e:
         return {"success": False, "message": f"Unload failed: {e}"}
+
+
+# ── VRAM analysis ─────────────────────────────────────────────────────────────
+
+def _query_vram_mb() -> tuple[float, float]:
+    """Return (total_mb, used_mb) via pynvml or nvidia-smi subprocess."""
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        h = pynvml.nvmlDeviceGetHandleByIndex(0)
+        info = pynvml.nvmlDeviceGetMemoryInfo(h)
+        return info.total / (1024 ** 2), info.used / (1024 ** 2)
+    except Exception:
+        pass
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total,memory.used",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            parts = r.stdout.strip().split(",")
+            return float(parts[0].strip()), float(parts[1].strip())
+    except Exception:
+        pass
+    return 0.0, 0.0
+
+
+def vram_analysis() -> dict:
+    """VRAM budget vs KV-cache analysis for the currently loaded GGUF model.
+
+    Reads architecture metadata from the loaded model to determine how many
+    layers actually contribute to the KV cache (hybrid models like Qwen3.8
+    use full attention only every N layers), then builds a table showing
+    KV cache cost at standard context sizes vs available VRAM headroom.
+    """
+    model = _state.get("model")
+    if model is None or _state.get("format") != "gguf":
+        return {"success": False, "message": "No GGUF model is loaded."}
+
+    meta = model.metadata or {}
+
+    # Detect architecture prefix (e.g. "qwen35", "llama", "gemma3")
+    arch_prefix = meta.get("general.architecture", "")
+    if not arch_prefix:
+        for k in meta:
+            if k.endswith(".block_count"):
+                arch_prefix = k.split(".")[0]
+                break
+
+    def _mi(key: str, default: int = 0) -> int:
+        val = meta.get(f"{arch_prefix}.{key}", default)
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return default
+
+    n_layers           = _mi("block_count")
+    n_kv_heads         = _mi("attention.head_count_kv")
+    key_length         = _mi("attention.key_length")
+    value_length       = _mi("attention.value_length") or key_length
+    full_attn_interval = _mi("full_attention_interval", 1)
+    native_max_ctx     = _mi("context_length", 131072)
+
+    # Hybrid attention: only 1-in-N layers grow a KV cache; the rest are recurrent
+    n_full_attn = max(1, n_layers // full_attn_interval) if full_attn_interval > 1 else n_layers
+
+    # Bytes per token for K+V tensors across all full-attention layers
+    kv_elems    = n_full_attn * n_kv_heads * (key_length + value_length)
+    bytes_f16   = kv_elems * 2   # float16
+    bytes_q8    = kv_elems * 1   # q8_0 ≈ 1 byte/element
+
+    total_mb, used_mb = _query_vram_mb()
+    available_mb      = total_mb - used_mb
+
+    # Headroom = available above the current model weight footprint
+    budget_mb   = total_mb * 0.95
+    headroom_mb = budget_mb - used_mb   # positive → room for KV cache
+
+    _CTX_LABELS = {4096: "4K", 8192: "8K", 16384: "16K", 32768: "32K",
+                   65536: "64K", 131072: "128K", 262144: "262K"}
+    candidates = [4096, 8192, 16384, 32768, 65536, 131072, 262144]
+    ctx_sizes  = sorted({c for c in candidates if c <= native_max_ctx} | {native_max_ctx})
+
+    def _mb(bpt: int, ctx: int) -> float:
+        return round(bpt * ctx / (1024 ** 2), 1)
+
+    table = []
+    for ctx in ctx_sizes:
+        kf = _mb(bytes_f16, ctx)
+        kq = _mb(bytes_q8,  ctx)
+        table.append({
+            "ctx":       ctx,
+            "label":     _CTX_LABELS.get(ctx, f"{ctx // 1024}K"),
+            "kv_f16_mb": kf,
+            "kv_q8_mb":  kq,
+            "fits_f16":  (kf <= headroom_mb) if headroom_mb > 0 else None,
+            "fits_q8":   (kq <= headroom_mb) if headroom_mb > 0 else None,
+        })
+
+    rec_f16 = max((r["ctx"] for r in table if r.get("fits_f16")), default=ctx_sizes[0])
+    rec_q8  = max((r["ctx"] for r in table if r.get("fits_q8")),  default=ctx_sizes[0])
+
+    return {
+        "success":    True,
+        "total_mb":   round(total_mb,     0),
+        "used_mb":    round(used_mb,      0),
+        "available_mb": round(available_mb, 0),
+        "headroom_mb":  round(headroom_mb,  0),
+        "arch": {
+            "n_layers":           n_layers,
+            "n_full_attn_layers": n_full_attn,
+            "full_attn_interval": full_attn_interval,
+            "n_kv_heads":         n_kv_heads,
+            "key_length":         key_length,
+            "value_length":       value_length,
+        },
+        "bytes_per_token": {"f16": bytes_f16, "q8": bytes_q8},
+        "current_n_ctx":  _state.get("n_ctx", 4096),
+        "native_max_ctx": native_max_ctx,
+        "context_table":  table,
+        "recommendation": {"f16": rec_f16, "q8": rec_q8},
+    }
 
 
 # ── Generate ──────────────────────────────────────────────────────────────────
@@ -466,6 +602,32 @@ def _generate_gguf(prompt: str, *, images, video_frames, system_prompt, max_toke
     has_thinking = _state.get("has_thinking_template", False)
 
     if supports_vision and images:
+        # Guard against C-level SIGSEGV/SIGABRT: the visual encoder forward pass
+        # needs ~2 GB working VRAM.  At 32k-64k n_ctx the KV cache leaves no room.
+        # Python cannot catch the crash, so we check VRAM before touching the model.
+        _VISION_MIN_MB = 2048
+        _total_mb, _used_mb = _query_vram_mb()
+        if _total_mb > 0:
+            _free_mb = _total_mb - _used_mb
+            if _free_mb < _VISION_MIN_MB:
+                _n_ctx = _state.get("n_ctx", 0)
+                return {
+                    "success": False,
+                    "text": "",
+                    "message": (
+                        f"Insufficient VRAM for vision inference: "
+                        f"{_free_mb:.0f} MB free, need ≥ {_VISION_MIN_MB} MB. "
+                        f"Current n_ctx={_n_ctx:,} allocates a large KV cache. "
+                        "Reload the model at a lower context (8K-16K) for vision tasks."
+                    ),
+                }
+            elif _free_mb < _VISION_MIN_MB * 2:
+                logger.warning(
+                    "Low VRAM for vision inference: %.0f MB free (n_ctx=%d). "
+                    "Crash risk if visual encoder peak exceeds available headroom.",
+                    _free_mb, _state.get("n_ctx", 0),
+                )
+
         import base64
         from io import BytesIO
 
@@ -491,12 +653,15 @@ def _generate_gguf(prompt: str, *, images, video_frames, system_prompt, max_toke
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-    # Thinking-mode models (Qwen3 etc.) prepend a <think>…</think> reasoning
-    # block before the actual answer.  The block improves output quality but
-    # needs a larger token budget so the model can close it before hitting the
-    # cap.  We triple the requested budget for the inference call, then strip
-    # the thinking block from the returned text so callers only see the answer.
-    actual_max_tokens = max_tokens * 3 if has_thinking else max_tokens
+    # Thinking-mode models (Qwen3 etc.) prepend <think>…</think> reasoning
+    # before the actual answer.  Vision tasks with a refine-existing-description
+    # step can generate 800-1500 token think blocks, so we use 4× the requested
+    # budget with a 2048-token floor to ensure the model can always close
+    # </think> and emit a complete response.
+    if has_thinking:
+        actual_max_tokens = max(max_tokens * 4, 2048)
+    else:
+        actual_max_tokens = max_tokens
 
     response = model.create_chat_completion(
         messages=messages,
@@ -504,8 +669,15 @@ def _generate_gguf(prompt: str, *, images, video_frames, system_prompt, max_toke
         temperature=temperature,
     )
     text = response["choices"][0]["message"]["content"].strip()
-    if "</think>" in text:
-        text = text.split("</think>", 1)[-1].strip()
+    if has_thinking:
+        import re as _re
+        # Strip all complete <think>…</think> blocks (model may emit multiple rounds).
+        text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+        # If an unclosed <think> remains, max_tokens was exhausted mid-reasoning.
+        # Keep only text before the opening tag (usually nothing useful after).
+        if "<think>" in text:
+            logger.warning("Think block not closed — token budget exhausted mid-reasoning")
+            text = text.split("<think>", 1)[0].strip()
     return {"success": True, "text": text, "message": ""}
 
 

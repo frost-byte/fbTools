@@ -13129,16 +13129,16 @@ def _run_vision_inference(
 ) -> str:
     """Run a single-image VLM call through the active backend.
 
-    Three explicit paths — no silent fallback:
-
-    1. gemini_flash  — captioner.py Gemini API path. Reads GEMINI_API_KEY env var.
-    2. modal         — Modal cloud VisionLLM. Must be activated via the LLM panel.
-    3. llm_client    — local model loaded in the Compose → LLM panel (all other values).
+    captioner_type:
+      'gemini_flash' — Gemini API (GEMINI_API_KEY env var required).
+      'unsloth'      — Unsloth Studio on Modal (must be active).
+      'modal'        — Modal cloud VisionLLM (must be active).
+      'local'        — local llm_client only.
+      'auto'         — whatever _active_backend() returns.
 
     device / use_8bit are accepted for signature compatibility but ignored on
-    the llm_client and modal paths.
-
-    clean=True strips common VLM boilerplate from the returned text.
+    remote and local llm_client paths.
+    clean=True strips common VLM boilerplate from the response.
     Every call is recorded in the VLM activity log.
     """
     from pathlib import Path as _Path
@@ -13150,50 +13150,34 @@ def _run_vision_inference(
         _vlm_log.record(user_data_dir(), "gemini", "gemini-flash", operation, profile_id)
         return text
 
-    if captioner_type == "unsloth":
+    backend = captioner_type if captioner_type in ("unsloth", "modal", "local") else _active_backend()
+
+    from PIL import Image as _PIL_Image
+    pil_image = _PIL_Image.open(image_path).convert("RGB")
+
+    def _status_cb(msg: str) -> None:
+        send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
+
+    if backend == "unsloth":
         if not _unsloth_client.is_active():
-            raise RuntimeError(
-                "Unsloth backend is not active. Activate it in the LLM panel first."
-            )
+            raise RuntimeError("Unsloth backend is not active. Activate it in the LLM panel first.")
         if not _unsloth_client.active_endpoint_supports_vision():
             raise RuntimeError(
                 f"The active Unsloth endpoint ({_unsloth_client.backend_status()['endpoint_label']}) "
                 "is text-only. Switch to the 27B or Flash-Next endpoint for vision tasks."
             )
-        from PIL import Image as _PIL_Image
-
-        def _status_cb_unsloth(msg: str) -> None:
-            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
-
-        result = _unsloth_client.generate(
-            prompt,
-            images=[_PIL_Image.open(image_path).convert("RGB")],
-            status_callback=_status_cb_unsloth,
-            max_tokens=max_tokens,
-        )
+        result = _unsloth_client.generate(prompt, images=[pil_image], status_callback=_status_cb, max_tokens=max_tokens)
         if not result.get("success"):
             raise RuntimeError(result.get("message") or "Unsloth generate returned no text")
         text = result.get("text", "")
         _vlm_log.record(user_data_dir(), "unsloth", _unsloth_client.backend_status()["model"], operation, profile_id)
-        from .captioner import clean_caption_text as _cc_u
-        return _cc_u(text) if clean else text
+        from .captioner import clean_caption_text as _cc
+        return _cc(text) if clean else text
 
-    if captioner_type == "modal":
+    if backend == "modal":
         if not _modal_client.is_active():
-            raise RuntimeError(
-                "Modal backend is not active. Activate it in the LLM panel first."
-            )
-        from PIL import Image as _PIL_Image
-
-        def _status_cb(msg: str) -> None:
-            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
-
-        result = _modal_client.generate(
-            prompt,
-            images=[_PIL_Image.open(image_path).convert("RGB")],
-            status_callback=_status_cb,
-            max_tokens=max_tokens,
-        )
+            raise RuntimeError("Modal backend is not active. Activate it in the LLM panel first.")
+        result = _modal_client.generate(prompt, images=[pil_image], status_callback=_status_cb, max_tokens=max_tokens)
         if not result.get("success"):
             raise RuntimeError(result.get("message") or "Modal generate returned no text")
         text = result.get("text", "")
@@ -13201,23 +13185,18 @@ def _run_vision_inference(
         from .captioner import clean_caption_text as _cc
         return _cc(text) if clean else text
 
+    # local
     st = _llm_client.backend_status()
     if not st.get("loaded_model"):
-        raise RuntimeError(
-            "No model loaded. Load a vision-capable model in the Compose -> LLM panel first."
-        )
+        raise RuntimeError("No model loaded. Load a vision-capable model in the Compose → LLM panel first.")
     if not st.get("supports_vision"):
         raise RuntimeError(
             f"The loaded model ({st['loaded_model']}) does not support vision inputs. "
-            "Load a vision-capable model in the Compose -> LLM panel."
+            "Load a vision-capable model in the Compose → LLM panel."
         )
-
-    from PIL import Image as _PIL_Image
-    result = _llm_client.generate(
-        prompt, images=[_PIL_Image.open(image_path).convert("RGB")]
-    )
+    result = _llm_client.generate(prompt, images=[pil_image], max_tokens=max_tokens)
     if not result.get("success"):
-        raise RuntimeError(result.get("error") or "llm_client.generate returned no text")
+        raise RuntimeError(result.get("error") or result.get("message") or "llm_client.generate returned no text")
     text = result.get("text", "")
     _vlm_log.record(user_data_dir(), "local", st.get("loaded_model", ""), operation, profile_id)
     return _cap_clean(text) if clean else text
@@ -13232,68 +13211,55 @@ def _run_text_inference(
 ) -> str:
     """Run a text-only LLM call (no image) through the active backend.
 
-    modal, unsloth, and llm_client paths are supported.  gemini_flash requires
-    an image and returns "" if selected.  Also returns "" if no backend is
-    active.  Every successful call is recorded in the VLM activity log.
+    captioner_type:
+      'gemini_flash' — not supported for text-only; returns "".
+      'unsloth'      — Unsloth Studio on Modal.
+      'modal'        — Modal cloud VisionLLM.
+      'local'        — local llm_client only.
+      'auto'         — whatever _active_backend() returns.
+
+    Returns "" if the chosen backend is unavailable.
+    Every successful call is recorded in the VLM activity log.
     """
     if captioner_type == "gemini_flash":
         logger.debug("_run_text_inference: gemini_flash does not support text-only; skipping")
         return ""
 
-    if captioner_type == "unsloth":
+    backend = captioner_type if captioner_type in ("unsloth", "modal", "local") else _active_backend()
+
+    def _status_cb(msg: str) -> None:
+        send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
+
+    if backend == "unsloth":
         if not _unsloth_client.is_active():
             return ""
-
-        def _unsloth_status_cb(msg: str) -> None:
-            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
-
-        result = _unsloth_client.generate(
-            prompt,
-            max_tokens=max_tokens,
-            status_callback=_unsloth_status_cb,
-        )
+        result = _unsloth_client.generate(prompt, max_tokens=max_tokens, status_callback=_status_cb)
         if not result.get("success"):
             logger.warning("Unsloth text inference failed: %s", result.get("message"))
             return ""
-        text = result.get("text", "")
-        st = _unsloth_client.backend_status()
-        _vlm_log.record(user_data_dir(), "unsloth", st.get("model", ""), operation, profile_id)
-        return text
+        _vlm_log.record(user_data_dir(), "unsloth", _unsloth_client.backend_status().get("model", ""), operation, profile_id)
+        return result.get("text", "")
 
-    if captioner_type == "modal":
+    if backend == "modal":
         if not _modal_client.is_active():
             return ""
-
-        def _status_cb(msg: str) -> None:
-            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
-
-        result = _modal_client.generate(
-            prompt,
-            images=None,
-            status_callback=_status_cb,
-            max_tokens=max_tokens,
-        )
+        result = _modal_client.generate(prompt, images=None, status_callback=_status_cb, max_tokens=max_tokens)
         if not result.get("success"):
-            logger.warning("Text inference failed: %s", result.get("message"))
+            logger.warning("Modal text inference failed: %s", result.get("message"))
             return ""
-        text = result.get("text", "")
         _vlm_log.record(user_data_dir(), "modal", _modal_client.backend_status()["model_key"], operation, profile_id)
-        return text
+        return result.get("text", "")
 
-    # llm_client path (covers "auto" and all other captioner_type values)
+    # local
     st = _llm_client.backend_status()
     if not st.get("loaded_model"):
         return ""
-    try:
-        result = _llm_client.generate(prompt, images=None)
-    except TypeError:
-        result = _llm_client.generate(prompt)
+    result = _llm_client.generate(prompt, max_tokens=max_tokens)
     if not result.get("success"):
-        logger.warning("Text inference failed: %s", result.get("error") or result.get("message"))
+        logger.warning("Local text inference failed: %s", result.get("error") or result.get("message"))
         return ""
-    text = result.get("text", "")
     _vlm_log.record(user_data_dir(), "local", st.get("loaded_model", ""), operation, profile_id)
-    return text
+    return result.get("text", "")
 
 
 def _run_vision_inference_clip(
@@ -13308,62 +13274,45 @@ def _run_vision_inference_clip(
 ) -> str:
     """Run a multi-frame VLM call, routing by captioner_type and model capabilities.
 
-    Four explicit paths — no silent fallback:
-
-    1. unsloth    — Unsloth Studio on Modal; uses native_video for vision-capable
-                    endpoints (27B, flash_next), contact-sheet fallback otherwise.
-    2. modal      — Modal cloud VisionLLM; uses native_video if the active model
-                    supports it, otherwise contact-sheet fallback.
-    3. llm_client — local model; routes by native_video capability.
+    captioner_type:
+      'unsloth' — Unsloth Studio on Modal; native video for 27B/flash_next,
+                  contact-sheet fallback for text-only endpoints.
+      'modal'   — Modal cloud VisionLLM; native video if supported, else contact-sheet.
+      'local'   — local llm_client; native video if supported, else contact-sheet.
+      'auto'    — whatever _active_backend() returns.
 
     (gemini_flash is handled at the call site with a contact sheet + image path.)
 
     Raises RuntimeError if the required backend is unavailable.
     Every call is recorded in the VLM activity log.
     """
-    if captioner_type == "unsloth":
+    backend = captioner_type if captioner_type in ("unsloth", "modal", "local") else _active_backend()
+
+    def _status_cb(msg: str) -> None:
+        send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
+
+    if backend == "unsloth":
         if not _unsloth_client.is_active():
-            raise RuntimeError(
-                "Unsloth backend is not active. Activate it in the LLM panel first."
-            )
+            raise RuntimeError("Unsloth backend is not active. Activate it in the LLM panel first.")
         if not _unsloth_client.active_endpoint_supports_vision():
             raise RuntimeError(
                 f"The active Unsloth endpoint ({_unsloth_client.backend_status()['endpoint_label']}) "
                 "is text-only. Switch to the 27B or Flash-Next endpoint for vision tasks."
             )
-
-        def _status_cb_clip(msg: str) -> None:
-            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
-
         if _unsloth_client.active_endpoint_supports_native_video():
-            result = _unsloth_client.generate(
-                prompt,
-                video_frames=frames,
-                status_callback=_status_cb_clip,
-            )
+            result = _unsloth_client.generate(prompt, video_frames=frames, status_callback=_status_cb)
         else:
             sheet = _spa_build_contact_sheet(frames, timestamps)
-            result = _unsloth_client.generate(
-                prompt,
-                images=[sheet],
-                status_callback=_status_cb_clip,
-            )
+            result = _unsloth_client.generate(prompt, images=[sheet], status_callback=_status_cb)
         if not result.get("success"):
             raise RuntimeError(result.get("message") or "Unsloth generate returned no text")
-        st = _unsloth_client.backend_status()
-        _vlm_log.record(user_data_dir(), "unsloth", st["model"], operation, profile_id)
+        _vlm_log.record(user_data_dir(), "unsloth", _unsloth_client.backend_status()["model"], operation, profile_id)
         return result.get("text", "")
 
-    if captioner_type == "modal":
+    if backend == "modal":
         if not _modal_client.is_active():
-            raise RuntimeError(
-                "Modal backend is not active. Activate it in the LLM panel first."
-            )
+            raise RuntimeError("Modal backend is not active. Activate it in the LLM panel first.")
         st = _modal_client.backend_status()
-
-        def _status_cb(msg: str) -> None:
-            send_status_update(_SPA_STATUS_ID, msg, source="source_profile_analysis")
-
         if st.get("native_video"):
             result = _modal_client.generate(
                 prompt,
@@ -13373,26 +13322,18 @@ def _run_vision_inference_clip(
             )
         else:
             sheet = _spa_build_contact_sheet(frames, timestamps)
-            result = _modal_client.generate(
-                prompt,
-                images=[sheet],
-                status_callback=_status_cb,
-            )
+            result = _modal_client.generate(prompt, images=[sheet], status_callback=_status_cb)
         if not result.get("success"):
             raise RuntimeError(result.get("message") or "Modal generate returned no text")
         _vlm_log.record(user_data_dir(), "modal", st["model_key"], operation, profile_id)
         return result.get("text", "")
 
+    # local
     st = _llm_client.backend_status()
     if not st.get("loaded_model"):
-        raise RuntimeError(
-            "No model loaded. Load a vision-capable model in the Compose → LLM panel first."
-        )
+        raise RuntimeError("No model loaded. Load a vision-capable model in the Compose → LLM panel first.")
     if not st.get("supports_vision"):
-        raise RuntimeError(
-            f"The loaded model ({st['loaded_model']}) does not support vision inputs."
-        )
-
+        raise RuntimeError(f"The loaded model ({st['loaded_model']}) does not support vision inputs.")
     if st.get("native_video"):
         result = _llm_client.generate(
             prompt,
@@ -13400,10 +13341,8 @@ def _run_vision_inference_clip(
             video_meta={"sample_fps": sample_fps, "raw_fps": raw_fps},
         )
     else:
-        # Contact-sheet fallback for image-only vision models and GGUF
         sheet = _spa_build_contact_sheet(frames, timestamps)
         result = _llm_client.generate(prompt, images=[sheet])
-
     if not result.get("success"):
         raise RuntimeError(result.get("error") or result.get("message") or "llm_client returned no text")
     _vlm_log.record(user_data_dir(), "local", st.get("loaded_model", ""), operation, profile_id)
@@ -15477,18 +15416,10 @@ async def _outfits_analyze_media(request):
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, _prepare)
 
-        def _generate():
-            return _llm_client.generate(
-                query,
-                images=[pil_image],
-                max_tokens=max_tokens,
-                temperature=0.5,
-            )
-
-        result = await loop.run_in_executor(None, _generate)
+        result = await _route_llm(query, images=[pil_image], max_tokens=max_tokens, temperature=0.5)
         if not result.get("success"):
             return web.json_response(
-                {"error": result.get("error", "LLM generate failed")}, status=503
+                {"error": result.get("message", "LLM generate failed")}, status=503
             )
         return web.json_response({
             "description": result.get("text", "").strip(),
@@ -17123,43 +17054,34 @@ async def _llm_unload(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
-# ── Active-backend routing helpers (llm_client ↔ unsloth_client) ─────────────
-# These are called by the /fbtools/llm/generate* and describe_video routes to
-# transparently swap the active inference backend without duplicating logic.
+@routes.get("/fbtools/llm/vram_analysis")
+async def _llm_vram_analysis(request):
+    """VRAM budget and KV-cache context-size table for the loaded GGUF model."""
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _llm_client.vram_analysis)
+        status = 200 if result.get("success") else 503
+        return web.json_response(result, status=status)
+    except Exception as exc:
+        logger.error("LLM vram_analysis error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
 
-async def _route_text(
-    prompt: str,
-    *,
-    system_prompt: str = "",
-    max_tokens: int = 512,
-    temperature: float = 0.7,
-) -> dict:
-    """Route text-only inference: Unsloth when active, llm_client otherwise."""
+
+# ── Active-backend routing ─────────────────────────────────────────────────────
+# All inference calls go through _route_llm(). The active backend is whichever
+# one the user last activated in the LLM panel — exactly one at a time.
+# Activate endpoints enforce mutual exclusion (Unsloth ↔ Modal).
+
+def _active_backend() -> str:
+    """Return the currently active inference backend: 'unsloth', 'modal', or 'local'."""
     if _unsloth_client.is_active():
-        try:
-            return await asyncio.to_thread(
-                _unsloth_client.generate,
-                prompt,
-                system_prompt=system_prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-        except Exception:
-            _unsloth_client.mark_container_gone()
-            raise
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: _llm_client.generate(
-            prompt,
-            system_prompt=system_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        ),
-    )
+        return "unsloth"
+    if _modal_client.is_active():
+        return "modal"
+    return "local"
 
 
-async def _route_vision(
+async def _route_llm(
     prompt: str,
     *,
     images: list | None = None,
@@ -17169,13 +17091,15 @@ async def _route_vision(
     temperature: float = 0.7,
     video_meta: dict | None = None,
 ) -> dict:
-    """Route vision/video inference: Unsloth when active, llm_client otherwise.
+    """Route an inference call to the currently active backend.
 
-    When Unsloth is active but the selected endpoint is text-only (8B), returns
-    a descriptive error rather than silently stripping the images.
+    Pass images or video_frames for vision tasks; omit both for text-only.
+    Returns {success, text, message}.
     """
-    if _unsloth_client.is_active():
-        if not _unsloth_client.active_endpoint_supports_vision():
+    backend = _active_backend()
+
+    if backend == "unsloth":
+        if (images or video_frames) and not _unsloth_client.active_endpoint_supports_vision():
             ep_label = _unsloth_client.backend_status().get("endpoint_label", "")
             return {
                 "success": False,
@@ -17198,6 +17122,20 @@ async def _route_vision(
         except Exception:
             _unsloth_client.mark_container_gone()
             raise
+
+    if backend == "modal":
+        return await asyncio.to_thread(
+            _modal_client.generate,
+            prompt,
+            images=images,
+            video_frames=video_frames,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            video_meta=video_meta,
+        )
+
+    # local
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
@@ -17255,7 +17193,7 @@ async def _llm_generate(request):
                 logger.warning("LLM generate: image load error: %s", img_err)
 
         if pil_images:
-            result = await _route_vision(
+            result = await _route_llm(
                 prompt,
                 images=pil_images,
                 system_prompt=system_prompt,
@@ -17263,7 +17201,7 @@ async def _llm_generate(request):
                 temperature=temperature,
             )
         else:
-            result = await _route_text(
+            result = await _route_llm(
                 prompt,
                 system_prompt=system_prompt,
                 max_tokens=max_tokens,
@@ -17289,7 +17227,7 @@ async def _llm_gen_shot_action(request):
         system, user = _llm_client.prompt_for_shot_action(
             shot_number, subjects, environment, style, existing
         )
-        result = await _route_text(user, system_prompt=system, max_tokens=256)
+        result = await _route_llm(user, system_prompt=system, max_tokens=256)
         return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -17305,7 +17243,7 @@ async def _llm_gen_dialogue(request):
         tone     = body.get("tone", "")
         language = body.get("language", "en-us")
         system, user = _llm_client.prompt_for_shot_dialogue(speaker, context, tone, language)
-        result = await _route_text(user, system_prompt=system, max_tokens=128)
+        result = await _route_llm(user, system_prompt=system, max_tokens=128)
         return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -17319,7 +17257,7 @@ async def _llm_gen_polish(request):
         text    = body.get("text", "")
         context = body.get("context", "")
         system, user = _llm_client.prompt_for_polish(text, context)
-        result = await _route_text(user, system_prompt=system, max_tokens=512)
+        result = await _route_llm(user, system_prompt=system, max_tokens=512)
         return web.json_response(result, status=200 if result["success"] else 503)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -17411,7 +17349,7 @@ async def _llm_describe_video(request):
             "describe_video: %d frames, sample_fps=%.2f, raw_fps=%.2f, duration=%.1fs",
             len(frames), video_meta["sample_fps"], video_meta["raw_fps"], video_meta["duration"],
         )
-        result = await _route_vision(
+        result = await _route_llm(
             user,
             video_frames=frames,
             system_prompt=system,
@@ -17588,6 +17526,8 @@ async def _modal_activate(request):
         model_key = str(body.get("model_key", "qwen2.5-vl-7b")).strip()
         quantize  = bool(body.get("quantize", True))
         gpu       = str(body.get("gpu", "L40S")).strip().upper()
+        if _unsloth_client.is_active():
+            _unsloth_client.deactivate()
         result    = _modal_client.activate(model_key, quantize, gpu=gpu)
         if result["success"]:
             _vlm_log.record(user_data_dir(), "modal", model_key, "activate")
@@ -17710,6 +17650,8 @@ async def _unsloth_activate(request):
     try:
         body         = await request.json()
         endpoint_key = str(body.get("endpoint_key", _unsloth_client.DEFAULT_ENDPOINT)).strip()
+        if _modal_client.is_active():
+            _modal_client.deactivate()
         result       = _unsloth_client.activate(endpoint_key)
         if result["success"]:
             st = _unsloth_client.backend_status()
@@ -18195,18 +18137,10 @@ async def _backgrounds_analyze_media(request):
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, _prepare)
 
-        def _generate():
-            return _llm_client.generate(
-                _DEFAULT_QUERY,
-                images=[pil_image],
-                max_tokens=max_tokens,
-                temperature=0.4,
-            )
-
-        result = await loop.run_in_executor(None, _generate)
+        result = await _route_llm(_DEFAULT_QUERY, images=[pil_image], max_tokens=max_tokens, temperature=0.4)
         if not result.get("success"):
             return web.json_response(
-                {"error": result.get("error", "LLM generate failed")}, status=503
+                {"error": result.get("message", "LLM generate failed")}, status=503
             )
 
         raw = result.get("text", "").strip()

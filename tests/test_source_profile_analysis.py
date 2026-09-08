@@ -387,7 +387,7 @@ def test_build_clip_prompt_with_subjects_includes_placeholder_instructions():
     assert "{A} — Elena: woman with auburn hair" in prompt
     assert "{B} — Marcus: tall man in dark jacket" in prompt
     assert "Use {A} / {B} to refer to these subjects" in prompt
-    assert "not the subjects' appearance" in prompt
+    assert "Do NOT describe their appearance" in prompt
 
 
 def test_build_clip_prompt_with_subjects_uses_slot_schema():
