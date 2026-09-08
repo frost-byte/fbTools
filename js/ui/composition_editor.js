@@ -2671,7 +2671,6 @@ function _buildSidebar(parent) {
     _buildPresetSection(sidebar, "sound");
     _buildOutfitsSection(sidebar);
     _buildLlmSection(sidebar);
-    _buildSettingsSection(sidebar);
 
     parent.appendChild(sidebar);
 }
@@ -4123,4 +4122,9 @@ export async function renderCompositionEditor(el) {
     _refreshSidebar();
     _populateEditor();
     _markClean();
+
+    // Keep _S.settings fresh when the global Settings tab changes a value.
+    document.addEventListener("fbt:settings-changed", (e) => {
+        _S.settings = { ...(_S.settings ?? {}), ...e.detail };
+    });
 }

@@ -8,12 +8,22 @@
  */
 
 import { setWidgetVisible } from "../utils/widgets.js";
+import { LS_H3_MAX } from "../ui/settings_panel.js";
 
 export function setupSourceProfileClipPrompt(nodeType, _nodeData, app) {
     const _origCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
         _origCreated?.call(this);
         _buildClipIdWidget(this, app);
+        // Pre-fill max_clip_frames from the global Settings value (stored in localStorage).
+        // This only runs on fresh node creation, not on workflow restore (onConfigure).
+        const maxWidget = this.widgets?.find(w => w.name === "max_clip_frames");
+        if (maxWidget) {
+            try {
+                const stored = localStorage.getItem(LS_H3_MAX);
+                if (stored !== null) maxWidget.value = parseInt(stored, 10) || 360;
+            } catch {}
+        }
     };
 
     // After workflow load, widget values are restored before onConfigure fires —

@@ -12320,6 +12320,19 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     ),
                     optional=True,
                 ),
+                io.Int.Input(
+                    "max_clip_frames",
+                    display_name="Max Clip Frames",
+                    default=360,
+                    min=0,
+                    max=9999,
+                    tooltip=(
+                        "Hard ceiling on clip_duration_frames (after the duration multiplier is applied). "
+                        "0 = unclamped. Default 360 = 15 s × 24 fps — the practical H3 output limit. "
+                        "Lower this on memory-constrained systems or at high output resolution."
+                    ),
+                    optional=True,
+                ),
             ],
             outputs=[
                 io.String.Output(
@@ -12387,6 +12400,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         scene_cast=None,
         include_original_subject_tags: bool = False,
         clip_duration_multiplier: int = 1,
+        max_clip_frames: int = 360,
     ) -> io.NodeOutput:
         if source_profile is None:
             return io.NodeOutput("", None, [], "", 0, 0, 0, "No source profile connected.", "")
@@ -12922,6 +12936,9 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # constraints and must NOT affect the output frame count.
         duration_s  = max(0.0, clip.get("end_time", 0.0) - clip.get("start_time", 0.0))
         clip_frames = math.ceil(duration_s * max(1, int(clip_duration_multiplier or 1)) * 24)
+        _max = int(max_clip_frames or 0)
+        if _max > 0:
+            clip_frames = min(clip_frames, _max)
         vid_w, vid_h = _spa_probe_resolution(video_abs) if video_abs else (0, 0)
 
         # ── Summary ────────────────────────────────────────────────────────────
@@ -16948,6 +16965,8 @@ _COMPOSITION_SETTINGS_DEFAULTS: dict = {
     "default_audio_normalize_lufs": True,
     "default_audio_target_lufs":   -14.0,
     "melband_model_path":          "",  # Kijai/MelBandRoFormer_comfy — fp16 or fp32 .safetensors
+    # H3 model output limits
+    "h3_max_frames":               360,  # 15 s × 24 fps — 0 = unclamped
 }
 
 
@@ -17005,6 +17024,10 @@ async def _compositions_settings_post(request):
 
         if "melband_model_path" in body:
             settings["melband_model_path"] = str(body["melband_model_path"]).strip()
+
+        if "h3_max_frames" in body:
+            v = int(body["h3_max_frames"])
+            settings["h3_max_frames"] = max(0, min(9999, v))
 
         _write_composition_settings(settings)
         return web.json_response(settings)
