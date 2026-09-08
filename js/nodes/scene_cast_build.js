@@ -66,6 +66,8 @@ function _buildCastBuildUI(node, app) {
     let _connectedSPSubjects = [];
     // true unless the selected clip explicitly disallows dialogue
     let _clipAllowsDialogue = true;
+    // ID of the currently selected clip (mirrors clipWidget.value)
+    let _activeClipId = "";
 
     // Parse initial entries from the widget value (populated from saved workflow)
     let _entries = [];
@@ -160,7 +162,7 @@ function _buildCastBuildUI(node, app) {
         sel.appendChild(blank);
 
         // If a clip is selected and has tagged subjects, restrict to those only.
-        const selectedClipId = typeof clipSel !== "undefined" ? clipSel?.value : "";
+        const selectedClipId = _activeClipId;
         const clip = selectedClipId ? _clipMap?.get(selectedClipId) : null;
         const clipSubjectIds = (clip && Array.isArray(clip.subjects) && clip.subjects.length)
             ? new Set(clip.subjects)
@@ -665,44 +667,177 @@ function _buildCastBuildUI(node, app) {
     node._refreshSourceSubjects = _refreshSourceSubjects;
     requestAnimationFrame(() => _refreshSourceSubjects());
 
-    // ── 12. Clip ID selector (single source_profile input) ───────────────────
-    // Hide the backing STRING widget; replace with a <select> that fetches the
-    // connected profile's clip list on demand.
+    // ── 12. Clip timeline (single source_profile input) ──────────────────────
+    // Hide the backing STRING widget; replace with a canvas timeline that lets
+    // the user click a segment or use ← / → arrows (with wrap-around) to pick
+    // the active clip. Purely navigational — no boundary dragging.
 
     const clipWidget = node.widgets?.find(w => w.name === "clip_id");
     if (clipWidget) setWidgetVisible(clipWidget, false, node);
+
+    const TIMELINE_COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#ec4899"];
 
     const clipsSection = document.createElement("div");
     clipsSection.className = "fbt-scb-clips";
     clipsSection.style.display = "none"; // hidden until a profile is connected
 
-    const clipRow = document.createElement("div");
-    clipRow.className = "fbt-scb-clip-row";
+    const canvas = document.createElement("canvas");
+    canvas.className = "fbt-scb-timeline";
+    canvas.height = 52;
+    clipsSection.appendChild(canvas);
 
-    const clipLabel = document.createElement("span");
-    clipLabel.className = "fbt-scb-clip-label";
-    clipLabel.textContent = "Clip";
+    const navRow = document.createElement("div");
+    navRow.className = "fbt-scb-clip-nav";
+    const prevBtn = document.createElement("button");
+    prevBtn.className = "fbt-scb-clip-nav-btn";
+    prevBtn.textContent = "←";
+    const navLabel = document.createElement("span");
+    navLabel.className = "fbt-scb-clip-nav-label";
+    const nextBtn = document.createElement("button");
+    nextBtn.className = "fbt-scb-clip-nav-btn";
+    nextBtn.textContent = "→";
+    navRow.append(prevBtn, navLabel, nextBtn);
+    clipsSection.appendChild(navRow);
 
-    const clipSel = document.createElement("select");
-    clipSel.className = "fbt-scb-clip-sel";
-    clipSel.addEventListener("change", () => {
+    wrap.appendChild(clipsSection);
+
+    // Timeline state
+    let _clips    = [];   // ordered clip objects from the connected profile
+    let _activeIdx = -1;  // index into _clips; -1 = none
+    let _hoverIdx  = -1;
+
+    // When clip time data is absent or flat, synthesise equal-width slots.
+    function _displayClips() {
+        const hasTimes = _clips.some(c => c.end_time > c.start_time);
+        if (hasTimes) return _clips;
+        return _clips.map((c, i) => ({ ...c, start_time: i, end_time: i + 1 }));
+    }
+
+    function _drawTimeline() {
+        const dc = _displayClips();
+        const totalDur = dc.length ? Math.max(...dc.map(c => c.end_time)) : 1;
+        const W = canvas.width = canvas.offsetWidth || 300;
+        const H = canvas.height;
+        const ctx = canvas.getContext("2d");
+        const toX = t => (t / totalDur) * W;
+        const BAND_TOP = 8, BAND_BOT = H - 4;
+
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = "#111";
+        ctx.fillRect(0, 0, W, H);
+
+        if (!dc.length) {
+            ctx.fillStyle = "#555";
+            ctx.font = "10px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("No clips", W / 2, H / 2 + 4);
+            return;
+        }
+
+        dc.forEach((clip, i) => {
+            const x1 = toX(clip.start_time);
+            const x2 = toX(clip.end_time);
+            const clipW = Math.max(x2 - x1, 1);
+            const col   = TIMELINE_COLORS[i % TIMELINE_COLORS.length];
+            const isActive  = i === _activeIdx;
+            const isHovered = i === _hoverIdx && !isActive;
+
+            ctx.fillStyle   = isActive ? col + "55" : isHovered ? col + "44" : col + "22";
+            ctx.fillRect(x1, BAND_TOP, clipW, BAND_BOT - BAND_TOP);
+            ctx.strokeStyle = col;
+            ctx.lineWidth   = isActive ? 2.5 : isHovered ? 1.5 : 1;
+            ctx.strokeRect(x1 + 0.5, BAND_TOP + 0.5, clipW - 1, BAND_BOT - BAND_TOP - 1);
+
+            if (isActive) {
+                const mid = (x1 + x2) / 2;
+                ctx.fillStyle = col;
+                ctx.beginPath();
+                ctx.moveTo(mid - 5, BAND_TOP - 1);
+                ctx.lineTo(mid + 5, BAND_TOP - 1);
+                ctx.lineTo(mid, BAND_TOP + 6);
+                ctx.closePath();
+                ctx.fill();
+            }
+
+            const label = clip.label || `Clip ${i + 1}`;
+            const mid   = (x1 + x2) / 2;
+            ctx.fillStyle = isActive ? "#fff" : isHovered ? "#eee" : "#aaa";
+            ctx.font      = isActive ? "bold 10px sans-serif" : "10px sans-serif";
+            ctx.textAlign = "center";
+            if (ctx.measureText(label).width <= clipW - 6) {
+                ctx.fillText(label, mid, (BAND_TOP + BAND_BOT) / 2 + 4);
+            }
+        });
+    }
+
+    function _updateNavRow() {
+        const n = _clips.length;
+        if (!n || _activeIdx < 0) {
+            navLabel.textContent = n ? "—" : "No clips";
+            prevBtn.disabled = nextBtn.disabled = true;
+            return;
+        }
+        const clip = _clips[_activeIdx];
+        navLabel.textContent = clip.label
+            ? `${_activeIdx + 1}/${n}  ·  ${clip.label}`
+            : `${_activeIdx + 1} of ${n}`;
+        prevBtn.disabled = nextBtn.disabled = false;
+    }
+
+    function _selectClipIdx(idx) {
+        if (!_clips.length) return;
+        _activeIdx    = ((idx % _clips.length) + _clips.length) % _clips.length;
+        _activeClipId = _clips[_activeIdx]?.id ?? "";
         if (clipWidget) {
-            clipWidget.value = clipSel.value;
+            clipWidget.value = _activeClipId;
             app?.graph?.setDirtyCanvas?.(true, false);
         }
+        _drawTimeline();
+        _updateNavRow();
         _updateDlgFromClip();
-        // Re-filter source subject dropdowns to match the newly selected clip.
         [...tbody.querySelectorAll(".fbt-scb-src-sel")].forEach((sel, i) => {
             const entry = _entries[i];
             if (entry) _fillSourceSubjectSel(sel, entry.source_profile_id || "", entry.source_subject_id || "");
         });
         _updateActionPreview();
+    }
+
+    prevBtn.onclick = () => _selectClipIdx(_activeIdx - 1);
+    nextBtn.onclick = () => _selectClipIdx(_activeIdx + 1);
+
+    canvas.addEventListener("mousemove", e => {
+        const rect = canvas.getBoundingClientRect();
+        const x    = e.clientX - rect.left;
+        const dc   = _displayClips();
+        const totalDur = dc.length ? Math.max(...dc.map(c => c.end_time)) : 1;
+        let newHover = -1;
+        for (let i = 0; i < dc.length; i++) {
+            const x1 = (dc[i].start_time / totalDur) * canvas.offsetWidth;
+            const x2 = (dc[i].end_time   / totalDur) * canvas.offsetWidth;
+            if (x >= x1 && x <= x2) { newHover = i; break; }
+        }
+        if (newHover !== _hoverIdx) { _hoverIdx = newHover; _drawTimeline(); }
+        canvas.style.cursor = newHover >= 0 ? "pointer" : "default";
     });
 
-    clipRow.appendChild(clipLabel);
-    clipRow.appendChild(clipSel);
-    clipsSection.appendChild(clipRow);
-    wrap.appendChild(clipsSection);
+    canvas.addEventListener("mouseleave", () => {
+        if (_hoverIdx !== -1) { _hoverIdx = -1; _drawTimeline(); }
+        canvas.style.cursor = "default";
+    });
+
+    canvas.addEventListener("click", e => {
+        const rect = canvas.getBoundingClientRect();
+        const x    = e.clientX - rect.left;
+        const dc   = _displayClips();
+        const totalDur = dc.length ? Math.max(...dc.map(c => c.end_time)) : 1;
+        for (let i = 0; i < dc.length; i++) {
+            const x1 = (dc[i].start_time / totalDur) * canvas.offsetWidth;
+            const x2 = (dc[i].end_time   / totalDur) * canvas.offsetWidth;
+            if (x >= x1 && x <= x2) { _selectClipIdx(i); break; }
+        }
+    });
+
+    new ResizeObserver(() => _drawTimeline()).observe(canvas);
 
     // ── Action preview ────────────────────────────────────────────────────────
     // Shows the clip's action text with {A}/{B}/… substituted by cast/source labels.
@@ -712,7 +847,7 @@ function _buildCastBuildUI(node, app) {
     wrap.appendChild(actionPreviewEl);
 
     function _buildActionPreview() {
-        const clipId = clipSel?.value;
+        const clipId = _activeClipId;
         if (!clipId) return null;
         const clip = _clipMap.get(clipId);
         const action = clip?.action;
@@ -758,8 +893,7 @@ function _buildCastBuildUI(node, app) {
     let _clipMap = new Map();
 
     function _updateDlgFromClip() {
-        const selId = clipSel.value;
-        const clip = _clipMap.get(selId);
+        const clip = _clipMap.get(_activeClipId);
         _clipAllowsDialogue = !clip || clip.allows_dialogue !== false;
         _applyDlgState();
     }
@@ -771,7 +905,10 @@ function _buildCastBuildUI(node, app) {
 
         if (!linkId) {
             clipsSection.style.display = "none";
+            _clips = [];
             _clipMap.clear();
+            _activeIdx = -1;
+            _activeClipId = "";
             _clipAllowsDialogue = true;
             _applyDlgState();
             return;
@@ -786,7 +923,10 @@ function _buildCastBuildUI(node, app) {
 
         if (!profileVal || profileVal === "(none)") {
             clipsSection.style.display = "none";
+            _clips = [];
             _clipMap.clear();
+            _activeIdx = -1;
+            _activeClipId = "";
             _clipAllowsDialogue = true;
             _applyDlgState();
             return;
@@ -803,34 +943,23 @@ function _buildCastBuildUI(node, app) {
             if (resp.ok) clips = (await resp.json()).clips ?? [];
         } catch { /* leave empty */ }
 
+        _clips  = clips;
         _clipMap = new Map(clips.map(c => [c.id, c]));
 
-        clipSel.innerHTML = "";
-        const placeholder = document.createElement("option");
-        placeholder.value = "";
-        placeholder.textContent = clips.length ? "— select clip —" : "— (no clips) —";
-        if (!savedVal) placeholder.selected = true;
-        clipSel.appendChild(placeholder);
-
-        let matched = !savedVal;
-        clips.forEach(c => {
-            const o = document.createElement("option");
-            o.value = c.id;
-            o.textContent = c.label ? `${c.id}  (${c.label})` : c.id;
-            if (c.id === savedVal) { o.selected = true; matched = true; }
-            clipSel.appendChild(o);
-        });
-
-        if (!matched && savedVal) {
-            const o = document.createElement("option");
-            o.value = savedVal;
-            o.textContent = `${savedVal}  (?)`;
-            o.selected = true;
-            clipSel.appendChild(o);
+        // Restore saved selection; fall back to first clip.
+        const savedIdx = savedVal ? clips.findIndex(c => c.id === savedVal) : -1;
+        if (savedIdx >= 0) {
+            _selectClipIdx(savedIdx);
+        } else if (clips.length) {
+            _selectClipIdx(0);
+        } else {
+            _activeIdx = -1;
+            _activeClipId = "";
+            if (clipWidget) clipWidget.value = "";
+            _drawTimeline();
+            _updateNavRow();
+            _updateDlgFromClip();
         }
-
-        clipSel.disabled = clips.length === 0;
-        _updateDlgFromClip();
 
         if (displayWidget) {
             displayWidget.computeSize = () => [0, _tableHeight() + 28];
