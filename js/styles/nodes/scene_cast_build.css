@@ -190,6 +190,7 @@
 .fbt-scb-clip-nav {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
     margin-top: 4px;
 }
@@ -210,13 +211,12 @@
 .fbt-scb-clip-nav-btn:hover:not(:disabled) { border-color: var(--fbt-blue); color: var(--fbt-blue); }
 .fbt-scb-clip-nav-btn:disabled { opacity: 0.3; cursor: default; }
 .fbt-scb-clip-nav-label {
-    flex: 1;
     font-size: 10px;
     color: var(--fbt-muted);
-    text-align: center;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    max-width: 220px;
 }
 .fbt-scb-action-preview {
     font-size: 10px;
