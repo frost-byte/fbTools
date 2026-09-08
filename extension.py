@@ -12307,6 +12307,19 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     ),
                     optional=True,
                 ),
+                io.Int.Input(
+                    "clip_duration_multiplier",
+                    display_name="Duration Multiplier",
+                    default=1,
+                    min=1,
+                    max=4,
+                    tooltip=(
+                        "Scale factor applied to native clip duration for the clip_duration_frames output. "
+                        "1 = native duration, 2 = double, up to 4×. "
+                        "Wire from SceneCastBuild.clip_duration_multiplier."
+                    ),
+                    optional=True,
+                ),
             ],
             outputs=[
                 io.String.Output(
@@ -12373,6 +12386,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         filename_prefix: str = "",
         scene_cast=None,
         include_original_subject_tags: bool = False,
+        clip_duration_multiplier: int = 1,
     ) -> io.NodeOutput:
         if source_profile is None:
             return io.NodeOutput("", None, [], "", 0, 0, 0, "No source profile connected.", "")
@@ -12907,7 +12921,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # generate.  frame_load_cap and select_every_nth are VHS reference-loading
         # constraints and must NOT affect the output frame count.
         duration_s  = max(0.0, clip.get("end_time", 0.0) - clip.get("start_time", 0.0))
-        clip_frames = math.ceil(duration_s * 24)
+        clip_frames = math.ceil(duration_s * max(1, int(clip_duration_multiplier or 1)) * 24)
         vid_w, vid_h = _spa_probe_resolution(video_abs) if video_abs else (0, 0)
 
         # ── Summary ────────────────────────────────────────────────────────────
@@ -16543,6 +16557,17 @@ class SceneCastBuild(io.ComfyNode):
                         "When set, only frames within that clip's time window are loaded."
                     ),
                 ),
+                io.Int.Input(
+                    "clip_duration_multiplier",
+                    display_name="Clip Duration Multiplier",
+                    default=1,
+                    min=1,
+                    max=4,
+                    tooltip=(
+                        "Duration multiplier (1x–4x) managed by the timeline UI. "
+                        "Wire to SourceProfileClipPrompt to scale the output frame count."
+                    ),
+                ),
             ],
             outputs=[
                 CastIOType.Output(
@@ -16565,6 +16590,14 @@ class SceneCastBuild(io.ComfyNode):
                     display_name="Clip ID",
                     tooltip="Pass-through of the selected Clip ID (for SourceProfileClipPrompt).",
                 ),
+                io.Int.Output(
+                    "clip_duration_multiplier",
+                    display_name="Duration Multiplier",
+                    tooltip=(
+                        "Pass-through of the duration multiplier set in the timeline UI (1–4). "
+                        "Wire to SourceProfileClipPrompt clip_duration_multiplier input."
+                    ),
+                ),
             ],
         )
 
@@ -16574,6 +16607,7 @@ class SceneCastBuild(io.ComfyNode):
         cast_entries_json: str = "[]",
         source_profile=None,
         clip_id: str = "",
+        clip_duration_multiplier: int = 1,
         **_,
     ):
         bundle_mtime = subject_mtime = source_mtime = 0
@@ -16592,7 +16626,7 @@ class SceneCastBuild(io.ComfyNode):
         except OSError:
             pass
         sp_id = source_profile.get("id", "") if isinstance(source_profile, dict) else ""
-        return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json, clip_id, sp_id)
+        return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json, clip_id, sp_id, clip_duration_multiplier)
 
     @classmethod
     def execute(
@@ -16600,6 +16634,7 @@ class SceneCastBuild(io.ComfyNode):
         cast_entries_json: str = "[]",
         source_profile=None,
         clip_id: str = "",
+        clip_duration_multiplier: int = 1,
         **_,
     ) -> io.NodeOutput:
         try:
@@ -16743,7 +16778,8 @@ class SceneCastBuild(io.ComfyNode):
             f"Inline cast: {n} {'entry' if n == 1 else 'entries'}"
             + (" | source profile" if has_sp else ""),
         )
-        return io.NodeOutput(cast, summary, source_profile or {}, clip_id or "")
+        mult = max(1, int(clip_duration_multiplier or 1))
+        return io.NodeOutput(cast, summary, source_profile or {}, clip_id or "", mult)
 
 
 # ── Scene Cast reload endpoint ────────────────────────────────────────────────

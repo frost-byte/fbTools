@@ -218,6 +218,24 @@
     text-overflow: ellipsis;
     max-width: 220px;
 }
+.fbt-scb-dur-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 4px;
+}
+.fbt-scb-mult-btn {
+    min-width: 22px;
+    padding: 2px 4px;
+    font-size: 10px;
+}
+.fbt-scb-dur-label {
+    font-size: 10px;
+    color: var(--fbt-muted);
+    white-space: nowrap;
+    min-width: 80px;
+}
 .fbt-scb-action-preview {
     font-size: 10px;
     line-height: 1.4;

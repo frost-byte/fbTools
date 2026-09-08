@@ -68,6 +68,8 @@ function _buildCastBuildUI(node, app) {
     let _clipAllowsDialogue = true;
     // ID of the currently selected clip (mirrors clipWidget.value)
     let _activeClipId = "";
+    // Duration multiplier 1–4 (mirrors multWidget.value)
+    let _multiplier = 1;
 
     // Parse initial entries from the widget value (populated from saved workflow)
     let _entries = [];
@@ -675,6 +677,12 @@ function _buildCastBuildUI(node, app) {
     const clipWidget = node.widgets?.find(w => w.name === "clip_id");
     if (clipWidget) setWidgetVisible(clipWidget, false, node);
 
+    const multWidget = node.widgets?.find(w => w.name === "clip_duration_multiplier");
+    if (multWidget) {
+        setWidgetVisible(multWidget, false, node);
+        _multiplier = Math.max(1, Math.min(4, parseInt(multWidget.value, 10) || 1));
+    }
+
     const TIMELINE_COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#ec4899"];
 
     const clipsSection = document.createElement("div");
@@ -698,6 +706,25 @@ function _buildCastBuildUI(node, app) {
     nextBtn.textContent = "→";
     navRow.append(prevBtn, navLabel, nextBtn);
     clipsSection.appendChild(navRow);
+
+    // Duration / multiplier row
+    const durRow = document.createElement("div");
+    durRow.className = "fbt-scb-dur-row";
+    const multGroup = document.createElement("div");
+    multGroup.className = "fbt-scb-mode";
+    const multBtns = [1, 2, 3, 4].map(m => {
+        const btn = document.createElement("button");
+        btn.className = "fbt-scb-mode-btn fbt-scb-mult-btn";
+        btn.textContent = `${m}×`;
+        btn.dataset.mult = m;
+        btn.addEventListener("click", () => _setMultiplier(m));
+        return btn;
+    });
+    multBtns.forEach(b => multGroup.appendChild(b));
+    const durLabel = document.createElement("span");
+    durLabel.className = "fbt-scb-dur-label";
+    durRow.append(multGroup, durLabel);
+    clipsSection.appendChild(durRow);
 
     wrap.appendChild(clipsSection);
 
@@ -784,6 +811,40 @@ function _buildCastBuildUI(node, app) {
         prevBtn.disabled = nextBtn.disabled = false;
     }
 
+    function _fmtDur(s) {
+        if (!isFinite(s) || s <= 0) return "—";
+        const secs = Math.floor(s);
+        const hund = Math.round((s - secs) * 100);
+        return `${secs}.${String(hund).padStart(2, "0")}s`;
+    }
+
+    function _updateDurRow() {
+        const clip = _clips[_activeIdx];
+        const hasClip = clip && clip.end_time > clip.start_time;
+        const native  = hasClip ? clip.end_time - clip.start_time : 0;
+        const scaled  = native * _multiplier;
+        if (hasClip && _multiplier > 1) {
+            durLabel.textContent = `${_fmtDur(native)} → ${_fmtDur(scaled)}`;
+        } else if (hasClip) {
+            durLabel.textContent = _fmtDur(native);
+        } else {
+            durLabel.textContent = "";
+        }
+        multBtns.forEach(btn => {
+            const m = parseInt(btn.dataset.mult, 10);
+            btn.classList.toggle("active", m === _multiplier);
+        });
+    }
+
+    function _setMultiplier(m) {
+        _multiplier = m;
+        if (multWidget) {
+            multWidget.value = m;
+            app?.graph?.setDirtyCanvas?.(true, false);
+        }
+        _updateDurRow();
+    }
+
     function _selectClipIdx(idx) {
         if (!_clips.length) return;
         _activeIdx    = ((idx % _clips.length) + _clips.length) % _clips.length;
@@ -794,6 +855,7 @@ function _buildCastBuildUI(node, app) {
         }
         _drawTimeline();
         _updateNavRow();
+        _updateDurRow();
         _updateDlgFromClip();
         [...tbody.querySelectorAll(".fbt-scb-src-sel")].forEach((sel, i) => {
             const entry = _entries[i];
@@ -958,6 +1020,7 @@ function _buildCastBuildUI(node, app) {
             if (clipWidget) clipWidget.value = "";
             _drawTimeline();
             _updateNavRow();
+            _updateDurRow();
             _updateDlgFromClip();
         }
 
