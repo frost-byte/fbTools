@@ -871,12 +871,13 @@ function _buildCastBuildUI(node, app) {
     canvas.addEventListener("mousemove", e => {
         const rect = canvas.getBoundingClientRect();
         const x    = e.clientX - rect.left;
+        const W    = rect.width;
         const dc   = _displayClips();
         const totalDur = dc.length ? Math.max(...dc.map(c => c.end_time)) : 1;
         let newHover = -1;
         for (let i = 0; i < dc.length; i++) {
-            const x1 = (dc[i].start_time / totalDur) * canvas.offsetWidth;
-            const x2 = (dc[i].end_time   / totalDur) * canvas.offsetWidth;
+            const x1 = (dc[i].start_time / totalDur) * W;
+            const x2 = (dc[i].end_time   / totalDur) * W;
             if (x >= x1 && x <= x2) { newHover = i; break; }
         }
         if (newHover !== _hoverIdx) { _hoverIdx = newHover; _drawTimeline(); }
@@ -891,11 +892,12 @@ function _buildCastBuildUI(node, app) {
     canvas.addEventListener("click", e => {
         const rect = canvas.getBoundingClientRect();
         const x    = e.clientX - rect.left;
+        const W    = rect.width;
         const dc   = _displayClips();
         const totalDur = dc.length ? Math.max(...dc.map(c => c.end_time)) : 1;
         for (let i = 0; i < dc.length; i++) {
-            const x1 = (dc[i].start_time / totalDur) * canvas.offsetWidth;
-            const x2 = (dc[i].end_time   / totalDur) * canvas.offsetWidth;
+            const x1 = (dc[i].start_time / totalDur) * W;
+            const x2 = (dc[i].end_time   / totalDur) * W;
             if (x >= x1 && x <= x2) { _selectClipIdx(i); break; }
         }
     });
