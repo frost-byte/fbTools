@@ -603,6 +603,7 @@ function _buildCastBuildUI(node, app) {
     displayWidget = node.addDOMWidget("cast_build_table", "preview", wrap, {
         serialize: false,
         hideOnZoom: false,
+        margin: 0,
         getValue() { return null; },
         setValue() {},
     });
