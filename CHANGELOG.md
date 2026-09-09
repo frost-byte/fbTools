@@ -1,6 +1,226 @@
 # CHANGELOG
 
 
+## v1.27.0 (2026-09-09)
+
+### Bug Fixes
+
+- **llm-client**: Restore thinking mode for Qwen3 GGUF, strip <think> block post-generation
+  ([`f0b8b9b`](https://github.com/frost-byte/fbTools/commit/f0b8b9b7fc9e6049a56b6f9d23fc5c6e8ffdd4d9))
+
+Disabling thinking degraded output quality significantly. Revert to create_chat_completion() with
+  thinking enabled, but triple the token budget when a thinking-mode template is detected so the
+  model has room to close </think> before hitting the cap. The </think> strip then removes the
+  reasoning preamble and returns only the final answer to callers.
+
+Also clears has_thinking_template / chat_template keys in unload_model().
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast**: Remove 10px default DOM widget margin causing right-side gap
+  ([`aa56ffc`](https://github.com/frost-byte/fbTools/commit/aa56ffc2bbceaada61e344cae7fec029a41a28f0))
+
+ComfyUI's BaseDOMWidgetImpl applies DEFAULT_MARGIN=10 on each side of every DOM widget, leaving 20px
+  of unused space. Passing margin:0 in addDOMWidget options gives the wrap div full node width; the
+  existing padding on .fbt-scb-wrap (4px 6px 6px, box-sizing: border-box) provides the visual inset
+  instead. Same fix applied to SourceProfileClipPrompt's clip selector widget.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast-build**: Center clip nav arrows around label
+  ([`35ed6a7`](https://github.com/frost-byte/fbTools/commit/35ed6a799a44c719a8670cfc19a2938dbd6ef19a))
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast-build**: Correct timeline hit-test coordinates at non-100% canvas zoom
+  ([`6a8df1b`](https://github.com/frost-byte/fbTools/commit/6a8df1b7f15e7c0554379544039d3dfa891e372b))
+
+Mouse coords from getBoundingClientRect() are in screen pixels (scaled by canvas zoom), but hit
+  zones were computed using canvas.offsetWidth (layout pixels, unscaled). At 85% zoom this caused
+  every segment to register ~15% too far left, highlighting the segment to the left of the one
+  moused over.
+
+Fix: use rect.width (from the same getBoundingClientRect call already made in each handler) for hit
+  zone boundaries — rect.width is in screen pixels and matches the mouse x coordinate space exactly.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Features
+
+- **llm**: Read mmproj metadata for vision handler, add vramAnalysis API
+  ([`260528c`](https://github.com/frost-byte/fbTools/commit/260528cc1b98915380dd11ba2167fc5454ca8492))
+
+- llm_scanner: read clip.projector_type from mmproj GGUF metadata instead of filename heuristics;
+  maps qwen3vl_merger → MTMDChatHandler, qwen2.5vl_merger/qwen2vl_merger → Qwen25VLChatHandler,
+  gemma3 → Gemma4ChatHandler; falls back to filename heuristics when unreadable - js/api/llm.js: add
+  vramAnalysis() client method for /llm/vram_analysis - source_profile_analysis: update clip prompt
+  wording for placeholder instructions; fix test assertion to match
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast**: Add clip duration multiplier (1×–4×) to SceneCastBuild timeline
+  ([`70bedf5`](https://github.com/frost-byte/fbTools/commit/70bedf5637d0bc8cdc8bea931590a58523ca706c))
+
+- SceneCastBuild: add `clip_duration_multiplier` Int input (1–4, hidden, JS-managed) and matching
+  Int output (pass-through) so it can be wired to SourceProfileClipPrompt - SourceProfileClipPrompt:
+  accept optional `clip_duration_multiplier` input; apply it to clip_duration_frames:
+  ceil(duration_s × multiplier × 24)
+
+- Timeline UI: add [1×|2×|3×|4×] button group below nav row with duration display; native duration
+  shown as ss.mm format (e.g. 3.42s); when multiplier > 1 shows "3.42s → 6.84s" to indicate scaled
+  output length - CSS: add .fbt-scb-dur-row, .fbt-scb-mult-btn, .fbt-scb-dur-label styles
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast-build**: Replace clip dropdown with canvas timeline navigator
+  ([`ebd6951`](https://github.com/frost-byte/fbTools/commit/ebd6951e7995df8e7bb2292ccdd0e6ce7a9beb30))
+
+Swap the <select> widget for a canvas-based timeline that mirrors the Source Profile editor's visual
+  style:
+
+- Clips drawn as proportional colored bands (by start/end time; equal widths when time data is
+  absent) - Click any segment to select it - ← / → nav buttons below the canvas cycle through clips
+  with wrap-around - Active segment: brighter fill + triangle indicator above the band - Hover:
+  lighter highlight, pointer cursor - Nav label shows "N/total · clip label" for quick orientation -
+  ResizeObserver redraws the canvas when the node is resized - _activeClipId replaces the
+  clipSel.value reference pattern throughout
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **settings**: Add Settings tab; add H3 max output frames clamp
+  ([`d6d1d6a`](https://github.com/frost-byte/fbTools/commit/d6d1d6a963671a61a89e34fb98c2c3aa97cca963))
+
+- New Settings tab in sidebar (after Inspect): consolidates all extension preferences in one place.
+  Compose-tab settings section removed from composition_editor.js; composer listens for
+  `fbt:settings-changed` to keep its in-memory settings object fresh. - Settings: libber delimiter,
+  default speech pace, audio processing, vocal isolation (moved from Compose tab) + new H3 model
+  section. - H3 max frames (default 360 = 15s × 24fps, 0 = unclamped): persisted server-side via
+  /fbtools/compositions/settings and mirrored to localStorage so nodeCreated hooks can read it
+  synchronously. - SourceProfileClipPrompt: add optional `max_clip_frames` Int input (default 360);
+  clamp applied after duration × multiplier calculation. nodeCreated hook pre-fills the widget from
+  the global setting.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Combined multi-pass analysis, describe history, tabbed history UI
+  ([`2e7ed01`](https://github.com/frost-byte/fbTools/commit/2e7ed01e40dc09f5d80aade5e1710c76171cd56a))
+
+Focus Pass: - build_multi_prompt() in source_profile_analysis.py generates a single combined VLM
+  prompt covering all selected pass types, asking the model to return subjects across all categories
+  in one flat JSON array - /analyze endpoint accepts pass_types list (backward-compat with single
+  pass_type string); selects multi_prompt vs single-pass prompt accordingly - history entry stores
+  pass_types list alongside the joined pass_type label - _runAnalysis in source_profile_editor.js
+  sends one request with pass_types instead of looping per type
+
+Describe history: - /describe_clip now calls append_history_entry with pass_type="describe_clip"
+  plus clip_start, clip_end, and action extra fields - append_history_entry accepts **extra_fields
+  merged into the entry dict
+
+Tabbed history UI: - "Previous runs" section now has Analyze / Describe tabs - Analyze tab: shows
+  focus-pass runs (existing behavior), pass_types list rendered as "People + Objects" labels -
+  Describe tab: shows describe_clip runs with clip time range, result text, and collapsible
+  prompt-used section
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Multi-frame describe_clip + Qwen3 thinking suppression
+  ([`ed123c7`](https://github.com/frost-byte/fbTools/commit/ed123c7d2fa4a62480b261c3c08b5b1f802b0de6))
+
+describe_clip now samples up to max_frames (default 5) spread across the clip range via
+  _spa_extract_clip_frames / _run_vision_inference_clip, matching the analyze endpoint's
+  frame-extraction behaviour. Gemini Flash falls back to a contact sheet; non-video media falls back
+  to single midpoint frame.
+
+UI adds Max frames and Every Nth controls to the Describe settings block (stored on the profile as
+  describe_max_frames / describe_select_every_nth).
+
+llm_client: detect GGUF models with Qwen3-style thinking templates at load time; render the template
+  manually with enable_thinking=False via Jinja2 and call create_completion() directly, bypassing
+  the create_chat_completion() path that has no way to pass chat_template_kwargs. The </think> strip
+  remains as a fallback for the create_chat_completion() path.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Split clip at cursor, multi-pass Focus analysis
+  ([`7ba08d6`](https://github.com/frost-byte/fbTools/commit/7ba08d657794125521046fdfa1f1ecfbd9ad71f6))
+
+- Add ✂ split button to clip nav bar: splits the current clip at the video player's current time;
+  validates the cursor is within the clip's start–end range before splitting (reuses original id for
+  the first half, generates a new id for the second half) - Convert Focus Pass single-pill selection
+  to multi-select checkboxes so multiple pass types can be chosen and submitted in one batch run -
+  _runAnalysis loops over all checked pass types sequentially, merges all candidates with a
+  _pass_type tag for display - _renderCandidates shows a faint pass-type badge next to each
+  candidate's entity-type badge when results span multiple passes - _updateDefaultPreview renders
+  each selected pass type's default prompt separated by dividers when more than one is checked
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Refactoring
+
+- **llm**: Unified active-backend routing for all inference calls
+  ([`5b809ac`](https://github.com/frost-byte/fbTools/commit/5b809aca8a8253a9d84ece10b4927da1ae56b04a))
+
+Replace the fragmented _route_vision/_route_text/direct-client pattern with a single
+  _active_backend() + _route_llm() system:
+
+- _active_backend(): single source of truth returning 'unsloth', 'modal', or 'local' — eliminates
+  the implicit priority chain - _route_llm(): one async function covering text + vision + video for
+  all backends; replaces _route_vision and _route_text - _run_vision_inference / _run_text_inference
+  / _run_vision_inference_clip: all use _active_backend() for 'auto' captioner_type so
+  source-profile calls and bundle-editor calls resolve to the same backend -
+  /fbtools/outfits/analyze_media and the background-describe endpoint migrated from direct
+  _llm_client.generate() to _route_llm() - Mutual exclusion: activating Unsloth deactivates Modal
+  and vice versa, ensuring exactly one backend is active at a time - VRAM guard in _generate_gguf()
+  returns a clean error before the C-level SIGSEGV/SIGABRT when vision inference would OOM
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **styles**: Migrate JS-injected CSS to external stylesheets
+  ([`cec5c1d`](https://github.com/frost-byte/fbTools/commit/cec5c1d91a7519985f6e678f7aa2e84c6f657d56))
+
+Extract all <style> tag injections from 8 JS files into dedicated CSS files under js/styles/. Add a
+  CSS token system (vars.css) that provides a single authoritative set of design tokens mapped onto
+  ComfyUI's own --p-* / --comfy-* variables with dark-mode fallbacks.
+
+New structure: js/styles/shared/vars.css — CSS custom properties (colors, radii, z-index)
+  js/styles/shared/status.css — semantic .fbt-st-* classes js/styles/nodes/*.css — per-node widget
+  styles js/styles/ui/*.css — per-panel editor styles
+
+All component CSS is loaded via @import in the existing style.css, which fb_tools.js already links
+  as a <link> element — no loader changes needed.
+
+Hardcoded hex status colors in sceneUpdateStatus.js and dataset_caption_status.js replaced with
+  var(--fbt-*) references.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.26.0 (2026-09-06)
 
 ### Bug Fixes
