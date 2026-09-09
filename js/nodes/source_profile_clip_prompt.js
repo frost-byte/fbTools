@@ -162,6 +162,7 @@ function _buildClipIdWidget(node, app) {
     const domWidget = node.addDOMWidget("_clip_id_select", "preview", wrap, {
         serialize: false,
         hideOnZoom: false,
+        margin: 0,
         getValue() { return null; },
         setValue() {},
     });
