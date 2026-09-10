@@ -693,7 +693,6 @@ function _buildCastBuildUI(node, app) {
     const canvas = document.createElement("canvas");
     canvas.className = "fbt-scb-timeline";
     canvas.height = 52;
-    clipsSection.appendChild(canvas);
 
     const navRow = document.createElement("div");
     navRow.className = "fbt-scb-clip-nav";
@@ -706,7 +705,6 @@ function _buildCastBuildUI(node, app) {
     nextBtn.className = "fbt-scb-clip-nav-btn";
     nextBtn.textContent = "→";
     navRow.append(prevBtn, navLabel, nextBtn);
-    clipsSection.appendChild(navRow);
 
     // Duration / multiplier row
     const durRow = document.createElement("div");
@@ -725,7 +723,11 @@ function _buildCastBuildUI(node, app) {
     const durLabel = document.createElement("span");
     durLabel.className = "fbt-scb-dur-label";
     durRow.append(multGroup, durLabel);
+
+    // Order: duration controls → timeline canvas → nav row
     clipsSection.appendChild(durRow);
+    clipsSection.appendChild(canvas);
+    clipsSection.appendChild(navRow);
 
     wrap.appendChild(clipsSection);
 

@@ -179,13 +179,14 @@
 .fbt-scb-add-btn:hover { border-color: var(--fbt-blue); }
 
 /* Clip timeline */
-.fbt-scb-clips { margin-top: 6px; border-top: 1px solid var(--fbt-border-sub); padding-top: 5px; }
+.fbt-scb-clips { margin-top: 8px; border-top: 1px solid var(--fbt-border-sub); padding-top: 8px; }
 .fbt-scb-timeline {
     display: block;
     width: 100%;
     height: 52px;
     border-radius: var(--fbt-radius);
     cursor: default;
+    margin-top: 0;
 }
 .fbt-scb-clip-nav {
     display: flex;
@@ -223,7 +224,7 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    margin-top: 4px;
+    margin-bottom: 6px;
 }
 .fbt-scb-mult-btn {
     min-width: 22px;
