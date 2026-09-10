@@ -27,7 +27,10 @@ const _S = {
     saveTimer:        null,
 };
 
-const _dom = {};
+const _dom = {
+    saveStatus:  null,  // span showing pending/saving/saved state in form header
+    savedFadeTimer: null,
+};
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -77,21 +80,49 @@ async function _loadAll() {
     _S.defaultMaxDepth  = settingsRes.value?.libber_max_depth ?? 10;
 }
 
+// ── Save-state indicator ───────────────────────────────────────────────────────
+
+function _setSaveState(state) {
+    const el = _dom.saveStatus;
+    if (!el) return;
+    if (_dom.savedFadeTimer) { clearTimeout(_dom.savedFadeTimer); _dom.savedFadeTimer = null; }
+    el.className = "fbt-lbe-save-ind";
+    el.innerHTML = "";
+    if (state === "pending") {
+        el.classList.add("fbt-lbe-save-pending");
+        el.appendChild(_mk("span", { cls: "fbt-lbe-save-dots", textContent: "···" }));
+    } else if (state === "saving") {
+        el.classList.add("fbt-lbe-save-saving");
+        el.appendChild(_mk("span", { cls: "fbt-lbe-save-spin", textContent: "↻" }));
+        el.appendChild(document.createTextNode(" saving"));
+    } else if (state === "saved") {
+        el.classList.add("fbt-lbe-save-ok");
+        el.textContent = "✓ saved";
+        _dom.savedFadeTimer = setTimeout(() => {
+            el.classList.add("fbt-lbe-save-fade");
+            _dom.savedFadeTimer = setTimeout(() => { el.innerHTML = ""; }, 500);
+        }, 1200);
+    }
+}
+
 // ── Auto-save (debounced) ──────────────────────────────────────────────────────
 
 function _scheduleSave() {
     if (_S.saveTimer) clearTimeout(_S.saveTimer);
+    _setSaveState("pending");
     _S.saveTimer = setTimeout(_doSave, 600);
 }
 
 async function _doSave() {
     const e = _S.editing;
     if (!e || !e.name) return;
+    _setSaveState("saving");
     try {
         await libberAPI.saveFull(e.name, e.lib_dict, e.delimiter, e.max_depth);
-        // Refresh list metadata silently
+        _setSaveState("saved");
         libberAPI.scan().then(r => { if (r?.libbers) _S.libbers = r.libbers; }).catch(() => {});
     } catch (err) {
+        _setSaveState("");
         _toast("Save failed: " + _errMsg(err), "error");
     }
 }
@@ -221,6 +252,8 @@ function _startNew() {
 
 function _cancelEdit() {
     if (_S.saveTimer) { clearTimeout(_S.saveTimer); _S.saveTimer = null; }
+    if (_dom.savedFadeTimer) { clearTimeout(_dom.savedFadeTimer); _dom.savedFadeTimer = null; }
+    _dom.saveStatus = null;
     _S.editing = null;
     _S.isNew   = false;
     _renderList();
@@ -236,6 +269,7 @@ function _renderForm() {
 
     // ── Header row ─────────────────────────────────────────────────────────────
     const hdr = _mk("div", { cls: "fbt-lbe-form-hdr" });
+    _dom.saveStatus = _mk("span", { cls: "fbt-lbe-save-ind" });
 
     hdr.appendChild(_mk("button", {
         cls: "fbt-ce-icon-btn fbt-lbe-back-btn",
@@ -264,6 +298,7 @@ function _renderForm() {
         value: e.name,
     });
     hdr.appendChild(nameInp);
+    hdr.appendChild(_dom.saveStatus);
     c.appendChild(hdr);
 
     // ── Meta row (delimiter + max_depth) ───────────────────────────────────────
