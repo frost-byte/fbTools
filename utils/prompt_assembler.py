@@ -688,6 +688,7 @@ _SHEET_ROLE_H3: dict[str, str] = {
     "full body":        "a full-body reference (costume and proportion reference; do not use as scene composition)",
     "costume detail":   "a costume detail reference (texture and accessory reference; do not use as scene composition)",
     "reference":        "an appearance reference image (do not use as scene composition)",
+    "head turnaround":  "a three-angle head turnaround (slight-left, frontal, and slight-right three-quarter headshots; facial structure and feature reference only; do not use as scene composition)",
 }
 
 # Natural-language inline descriptions for character sheet roles, used inside
@@ -700,6 +701,7 @@ _SHEET_ROLE_INLINE: dict[str, str] = {
     "full body":        "a full-body reference (costume and proportion reference)",
     "costume detail":   "a costume detail reference",
     "reference":        "an appearance reference image",
+    "head turnaround":  "three adjacent headshots showing slight-left, frontal, and slight-right three-quarter views (facial structure and feature consistency reference)",
 }
 
 
