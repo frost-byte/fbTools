@@ -8921,6 +8921,208 @@ async def libber_apply(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+@routes.get("/fbtools/libber/scan")
+async def libber_scan(request):
+    """
+    Scan the default libber directory and return metadata for all libbers.
+    Returns: {"libbers": [{name, entry_count, delimiter, max_depth, filepath}], "libber_dir": str}
+    """
+    try:
+        manager = LibberStateManager.instance()
+        libber_dir = default_libber_dir()
+        result = []
+        seen = set()
+
+        # Disk files first
+        if os.path.exists(libber_dir):
+            for fname in sorted(os.listdir(libber_dir)):
+                if not fname.endswith(".json"):
+                    continue
+                name = fname[:-5]
+                seen.add(name)
+                filepath = os.path.join(libber_dir, fname)
+                try:
+                    with open(filepath, encoding="utf-8") as fh:
+                        data = json.load(fh)
+                    result.append({
+                        "name": name,
+                        "entry_count": len(data.get("libs", {})),
+                        "delimiter": data.get("delimiter", "%"),
+                        "max_depth": data.get("max_depth", 10),
+                        "filepath": filepath,
+                    })
+                except Exception:
+                    result.append({
+                        "name": name, "entry_count": 0,
+                        "delimiter": "%", "max_depth": 10,
+                        "filepath": filepath,
+                    })
+
+        # In-memory libbers not yet saved to disk
+        for name, libber in manager.libbers.items():
+            if name not in seen:
+                result.append({
+                    "name": name,
+                    "entry_count": len(libber.libs),
+                    "delimiter": libber.delimiter,
+                    "max_depth": libber.max_depth,
+                    "filepath": None,
+                    "unsaved": True,
+                })
+
+        return web.json_response({"libbers": result, "libber_dir": libber_dir})
+    except Exception as e:
+        logger.exception("Error scanning libbers")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@routes.post("/fbtools/libber/open")
+async def libber_open(request):
+    """
+    Open a libber for editing — loads from disk if not already in memory.
+    Body: {"name": str}
+    Returns: {"name": str, "lib_dict": {}, "delimiter": str, "max_depth": int}
+    """
+    try:
+        data = await request.json()
+        name = data.get("name")
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+
+        manager = LibberStateManager.instance()
+        libber = manager.ensure_libber(name)
+        if not libber:
+            return web.json_response({"error": f"Libber '{name}' not found"}, status=404)
+
+        return web.json_response({
+            "name": name,
+            "lib_dict": libber.libs.copy(),
+            "delimiter": libber.delimiter,
+            "max_depth": libber.max_depth,
+        })
+    except Exception as e:
+        logger.exception("Error opening libber")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@routes.post("/fbtools/libber/save_full")
+async def libber_save_full(request):
+    """
+    Overwrite a libber's complete data in memory and persist to disk.
+    Body: {"name": str, "lib_dict": {}, "delimiter": str, "max_depth": int}
+    Returns: {"name": str, "entry_count": int, "filepath": str, "status": "saved"}
+    """
+    try:
+        data = await request.json()
+        name = data.get("name", "").strip()
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        # Validate filename safety
+        if any(c in name for c in r'/\:*?"<>|'):
+            return web.json_response({"error": "name contains invalid characters"}, status=400)
+
+        lib_dict  = data.get("lib_dict", {})
+        delimiter = str(data.get("delimiter", "%"))[:1] or "%"
+        max_depth = max(1, min(50, int(data.get("max_depth", 10))))
+
+        manager = LibberStateManager.instance()
+        libber = Libber(lib_dict=dict(lib_dict), delimiter=delimiter, max_depth=max_depth)
+        manager.libbers[name] = libber
+
+        libber_dir = default_libber_dir()
+        os.makedirs(libber_dir, exist_ok=True)
+        filepath = os.path.join(libber_dir, f"{name}.json")
+        libber.save(filepath)
+
+        return web.json_response({
+            "name": name,
+            "entry_count": len(libber.libs),
+            "filepath": filepath,
+            "status": "saved",
+        })
+    except Exception as e:
+        logger.exception("Error saving full libber")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@routes.post("/fbtools/libber/delete")
+async def libber_delete(request):
+    """
+    Delete a libber from memory and from disk.
+    Body: {"name": str}
+    Returns: {"name": str, "status": "deleted"}
+    """
+    try:
+        data = await request.json()
+        name = data.get("name", "").strip()
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+
+        manager = LibberStateManager.instance()
+        manager.delete_libber(name)
+
+        libber_dir = default_libber_dir()
+        filepath = os.path.join(libber_dir, f"{name}.json")
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            logger.info("Deleted libber file: %s", filepath)
+
+        return web.json_response({"name": name, "status": "deleted"})
+    except Exception as e:
+        logger.exception("Error deleting libber")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@routes.post("/fbtools/libber/rename")
+async def libber_rename(request):
+    """
+    Rename a libber on disk and in memory.
+    Body: {"old_name": str, "new_name": str}
+    Returns: {"old_name": str, "new_name": str, "status": "renamed"}
+    """
+    try:
+        data = await request.json()
+        old_name = data.get("old_name", "").strip()
+        new_name = data.get("new_name", "").strip()
+        if not old_name or not new_name:
+            return web.json_response({"error": "old_name and new_name required"}, status=400)
+        if any(c in new_name for c in r'/\:*?"<>|'):
+            return web.json_response({"error": "new_name contains invalid characters"}, status=400)
+
+        manager = LibberStateManager.instance()
+        libber_dir = default_libber_dir()
+        old_path = os.path.join(libber_dir, f"{old_name}.json")
+        new_path = os.path.join(libber_dir, f"{new_name}.json")
+
+        if os.path.exists(new_path) and old_name != new_name:
+            return web.json_response(
+                {"error": f"A libber named '{new_name}' already exists"}, status=409
+            )
+
+        # Load into memory if needed
+        libber = manager.ensure_libber(old_name)
+
+        # Save under new name
+        if libber:
+            os.makedirs(libber_dir, exist_ok=True)
+            libber.save(new_path)
+            manager.libbers[new_name] = libber
+        elif os.path.exists(old_path):
+            import shutil
+            shutil.copy2(old_path, new_path)
+
+        # Remove old
+        if old_name != new_name:
+            if os.path.exists(old_path):
+                os.remove(old_path)
+            manager.delete_libber(old_name)
+
+        return web.json_response({"old_name": old_name, "new_name": new_name, "status": "renamed"})
+    except Exception as e:
+        logger.exception("Error renaming libber")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 @routes.post("/fbtools/scene/process_compositions")
 async def scene_process_compositions(request):
     """
@@ -16960,6 +17162,7 @@ def _composition_settings_path() -> str:
 
 _COMPOSITION_SETTINGS_DEFAULTS: dict = {
     "libber_delimiter":           "%",
+    "libber_max_depth":           10,
     "default_speech_pace":        "normal",
     "default_audio_noise_removal":  False,
     "default_audio_normalize_lufs": True,
@@ -17006,6 +17209,10 @@ async def _compositions_settings_post(request):
             d = str(body["libber_delimiter"])
             if len(d) == 1:
                 settings["libber_delimiter"] = d
+
+        if "libber_max_depth" in body:
+            v = int(body["libber_max_depth"])
+            settings["libber_max_depth"] = max(1, min(50, v))
 
         if "default_speech_pace" in body:
             pace = str(body["default_speech_pace"])

@@ -105,6 +105,24 @@ export async function renderSettingsPanel(parent) {
     composeSec.appendChild(_row("Libber delimiter", delimInp,
         "Single character used to wrap libber keys, e.g. %key%"));
 
+    // Libber max depth
+    const depthInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "1", max: "50", step: "1",
+        value: settings.libber_max_depth ?? 10,
+        title: "Maximum substitution depth for nested libber keys (default 10)",
+    });
+    depthInp.addEventListener("change", () => {
+        const v = parseInt(depthInp.value, 10);
+        if (!isNaN(v)) {
+            const clamped = Math.max(1, Math.min(50, v));
+            depthInp.value = clamped;
+            _save({ libber_max_depth: clamped });
+        }
+    });
+    composeSec.appendChild(_row("Libber max depth", depthInp,
+        "How many levels deep recursive %key% substitutions are resolved (1–50)"));
+
     // Default speech pace
     const paceSel = _mk("select", { cls: "fbt-ce-select fbt-ce-settings-sel" });
     [

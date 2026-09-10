@@ -17,6 +17,7 @@ import { renderCompositionEditor }   from "./composition_editor.js";
 import { renderBundleEditor }        from "./bundle_editor.js";
 import { renderCastEditor }          from "./cast_editor.js";
 import { renderSourceProfileEditor } from "./source_profile_editor.js";
+import { renderLibberEditor }        from "./libber_editor.js";
 import { renderRunHistory }          from "./run_history.js";
 import { renderNodeInspector }       from "./node_inspector.js";
 import { renderLlmPanel, getActiveBackendLabel, onBackendChange } from "./llm_panel.js";
@@ -88,14 +89,15 @@ async function _fetchLlmStatus() {
 // ── Tab definitions ────────────────────────────────────────────────────────────
 
 const TABS = [
-    { id: "compositions", label: "Compose",  icon: "pi pi-file-edit", render: renderCompositionEditor },
-    { id: "bundles",      label: "Bundles",  icon: "pi pi-images",    render: renderBundleEditor },
-    { id: "casts",        label: "Casts",    icon: "pi pi-users",     render: renderCastEditor },
-    { id: "sources",      label: "Sources",  icon: "pi pi-video",     render: renderSourceProfileEditor },
-    { id: "llm",          label: "LLM",      icon: "pi pi-microchip", render: renderLlmPanel },
-    { id: "history",      label: "History",  icon: "pi pi-history",   render: renderRunHistory },
-    { id: "inspector",    label: "Inspect",  icon: "pi pi-code",      render: renderNodeInspector },
-    { id: "settings",    label: "Settings", icon: "pi pi-sliders-h", render: renderSettingsPanel },
+    { id: "compositions", label: "Compose",  icon: "pi pi-file-edit",   render: renderCompositionEditor },
+    { id: "bundles",      label: "Bundles",  icon: "pi pi-images",      render: renderBundleEditor },
+    { id: "casts",        label: "Casts",    icon: "pi pi-users",       render: renderCastEditor },
+    { id: "sources",      label: "Sources",  icon: "pi pi-video",       render: renderSourceProfileEditor },
+    { id: "libbers",      label: "Libbers",  icon: "pi pi-book",        render: renderLibberEditor },
+    { id: "llm",          label: "LLM",      icon: "pi pi-microchip",   render: renderLlmPanel },
+    { id: "history",      label: "History",  icon: "pi pi-history",     render: renderRunHistory },
+    { id: "inspector",    label: "Inspect",  icon: "pi pi-code",        render: renderNodeInspector },
+    { id: "settings",     label: "Settings", icon: "pi pi-sliders-h",   render: renderSettingsPanel },
 ];
 
 // ── Panel ──────────────────────────────────────────────────────────────────────

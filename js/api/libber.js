@@ -103,10 +103,60 @@ export class LibberAPI extends BaseAPI {
      * @returns {Promise<{result: string, original: string, name: string}>}
      */
     async applySubstitutions(name, text) {
-        return await this.post("/apply", {
+        return await this.post("/apply", { name, text });
+    }
+
+    /**
+     * Scan the default libber directory and return metadata for all libbers.
+     * @returns {Promise<{libbers: Array, libber_dir: string}>}
+     */
+    async scan() {
+        return await this.get("/scan");
+    }
+
+    /**
+     * Open a libber for editing (loads from disk if not in memory).
+     * @param {string} name
+     * @returns {Promise<{name: string, lib_dict: object, delimiter: string, max_depth: number}>}
+     */
+    async open(name) {
+        return await this.post("/open", { name });
+    }
+
+    /**
+     * Overwrite a libber's full data and persist to disk.
+     * @param {string} name
+     * @param {object} libDict  key→value mapping
+     * @param {string} delimiter
+     * @param {number} maxDepth
+     * @returns {Promise<{name: string, entry_count: number, filepath: string, status: string}>}
+     */
+    async saveFull(name, libDict, delimiter, maxDepth) {
+        return await this.post("/save_full", {
             name,
-            text,
+            lib_dict:  libDict,
+            delimiter,
+            max_depth: maxDepth,
         });
+    }
+
+    /**
+     * Delete a libber from memory and disk.
+     * @param {string} name
+     * @returns {Promise<{name: string, status: string}>}
+     */
+    async deleteFull(name) {
+        return await this.post("/delete", { name });
+    }
+
+    /**
+     * Rename a libber on disk and in memory.
+     * @param {string} oldName
+     * @param {string} newName
+     * @returns {Promise<{old_name: string, new_name: string, status: string}>}
+     */
+    async rename(oldName, newName) {
+        return await this.post("/rename", { old_name: oldName, new_name: newName });
     }
 }
 

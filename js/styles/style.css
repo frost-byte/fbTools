@@ -3383,3 +3383,125 @@ body.fbt-llm-loaded
 .fbt-settings-h3-max {
     width: 70px;
 }
+
+/* ── Libber Editor ───────────────────────────────────────────────────────────── */
+
+.fbt-lbe-card {
+    cursor: pointer;
+}
+.fbt-lbe-search {
+    flex: 1;
+    min-width: 0;
+}
+.fbt-lbe-form-hdr {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.fbt-lbe-back-btn {
+    flex-shrink: 0;
+    font-size: 12px;
+    padding: 4px 8px;
+}
+.fbt-lbe-name-inp {
+    flex: 1;
+    min-width: 0;
+    font-weight: 600;
+    font-size: 13px;
+}
+.fbt-lbe-meta-row {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    margin-bottom: 10px;
+}
+.fbt-lbe-meta-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--fbt-muted);
+}
+.fbt-lbe-delim-inp {
+    width: 40px;
+    text-align: center;
+}
+.fbt-lbe-depth-inp {
+    width: 56px;
+}
+.fbt-lbe-table-wrap {
+    flex: 1;
+    overflow-y: auto;
+    margin-bottom: 8px;
+}
+.fbt-lbe-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.fbt-lbe-table thead th {
+    text-align: left;
+    font-size: 10px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--fbt-muted);
+    padding: 2px 4px 6px;
+    border-bottom: 1px solid var(--fbt-border);
+}
+.fbt-lbe-table th:last-child,
+.fbt-lbe-table td:last-child {
+    width: 32px;
+    text-align: center;
+}
+.fbt-lbe-entry-row td {
+    padding: 3px 4px;
+    border-bottom: 1px solid var(--fbt-border);
+    vertical-align: top;
+}
+.fbt-lbe-key-inp {
+    width: 100%;
+    font-family: monospace;
+    font-size: 11px;
+    min-width: 80px;
+}
+.fbt-lbe-val-ta {
+    width: 100%;
+    resize: vertical;
+    font-size: 11px;
+    min-height: 38px;
+    line-height: 1.4;
+}
+.fbt-lbe-del-btn {
+    font-size: 10px;
+    padding: 2px 5px;
+}
+.fbt-lbe-no-entries {
+    font-size: 11px;
+    padding: 12px 0 8px;
+}
+.fbt-lbe-add-row {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    padding: 8px 0 4px;
+    border-top: 1px solid var(--fbt-border);
+    margin-top: 4px;
+}
+.fbt-lbe-new-key {
+    width: 120px;
+    flex-shrink: 0;
+    font-family: monospace;
+    font-size: 11px;
+}
+.fbt-lbe-new-val {
+    flex: 1;
+    resize: vertical;
+    font-size: 11px;
+    min-height: 38px;
+    line-height: 1.4;
+}
+.fbt-lbe-save-btn {
+    margin-top: 6px;
+    width: 100%;
+}
