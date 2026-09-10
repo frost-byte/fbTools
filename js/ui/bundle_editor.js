@@ -15,7 +15,15 @@ import { buildFileTree, trapKeys } from "./file_tree.js";
 
 const BUNDLE_PAGE_SIZE = 10;
 
-const SHEET_ROLES = ["character sheet", "portrait", "side profile", "full body", "costume detail", "reference"];
+const SHEET_ROLES = ["character sheet", "portrait", "side profile", "full body", "costume detail", "reference", "head turnaround"];
+
+const VIDEO_ROLES = [
+    "full body turnaround",
+    "performance reference",
+    "action reference",
+    "dialogue reference",
+    "expression reference",
+];
 
 // ── Module state ───────────────────────────────────────────────────────────────
 
@@ -266,7 +274,7 @@ function _startNew(subjectId = "") {
         id:                  "",
         name:                "",
         subject_id:          subjectId || _S.filterSubject || "",
-        visual:              { type: "images", file: "", video_dir: "input", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1 },
+        visual:              { type: "images", file: "", video_dir: "input", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, role: "" },
         audio:               { source: "none", file: "", audio_dir: "input", video_file: "", video_dir: "input", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "", audio_processing: { noise_removal: !!(_S.settings.default_audio_noise_removal), normalize_lufs: _S.settings.default_audio_normalize_lufs !== false, target_lufs: _S.settings.default_audio_target_lufs ?? -14.0 }, audio_cache: "" },
         appearance_override: "",
         tags:                [],
@@ -988,6 +996,59 @@ function _buildVideoPicker(wrap, b) {
             }
         },
     }));
+
+    _buildVideoRoleSection(wrap, b.visual);
+}
+
+function _buildVideoRoleSection(wrap, visual) {
+    wrap.appendChild(_mk("div", { cls: "fbt-be-param-section-label", textContent: "Source role" }));
+
+    const currentRole = visual.role ?? "";
+    const isCustom    = currentRole !== "" && !VIDEO_ROLES.includes(currentRole);
+
+    const sel = document.createElement("select");
+    sel.className = "fbt-ce-select";
+
+    const blankOpt = document.createElement("option");
+    blankOpt.value = "";
+    blankOpt.textContent = "— none —";
+    if (!currentRole && !isCustom) blankOpt.selected = true;
+    sel.appendChild(blankOpt);
+
+    VIDEO_ROLES.forEach(r => {
+        const o = document.createElement("option");
+        o.value = r;
+        o.textContent = r;
+        if (r === currentRole) o.selected = true;
+        sel.appendChild(o);
+    });
+
+    const customOpt = document.createElement("option");
+    customOpt.value = "__custom__";
+    customOpt.textContent = "custom…";
+    if (isCustom) customOpt.selected = true;
+    sel.appendChild(customOpt);
+
+    const customInput = _mk("input", {
+        cls: "fbt-ce-input", type: "text",
+        placeholder: "Custom role description",
+        value: isCustom ? currentRole : "",
+        style: { display: isCustom ? "" : "none", marginTop: "4px" },
+    });
+
+    sel.addEventListener("change", () => {
+        if (sel.value === "__custom__") {
+            customInput.style.display = "";
+            visual.role = customInput.value;
+        } else {
+            customInput.style.display = "none";
+            visual.role = sel.value;
+        }
+    });
+    customInput.addEventListener("input", () => { visual.role = customInput.value; });
+
+    wrap.appendChild(sel);
+    wrap.appendChild(customInput);
 }
 
 function _viewUrl(relPath, folder = "input") {
