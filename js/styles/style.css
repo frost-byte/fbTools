@@ -3410,6 +3410,35 @@ body.fbt-llm-loaded
     font-weight: 600;
     font-size: 13px;
 }
+.fbt-lbe-save-ind {
+    flex-shrink: 0;
+    font-size: 10px;
+    min-width: 54px;
+    text-align: right;
+    transition: opacity 0.4s ease;
+    white-space: nowrap;
+}
+.fbt-lbe-save-pending { color: var(--fbt-muted); }
+.fbt-lbe-save-saving  { color: var(--fbt-accent, #4a9eff); }
+.fbt-lbe-save-ok      { color: #4caf50; }
+.fbt-lbe-save-fade    { opacity: 0; }
+.fbt-lbe-save-dots {
+    display: inline-block;
+    animation: fbt-lbe-pulse 1s ease-in-out infinite;
+    letter-spacing: 2px;
+}
+@keyframes fbt-lbe-pulse {
+    0%, 100% { opacity: 0.3; }
+    50%       { opacity: 1;   }
+}
+.fbt-lbe-save-spin {
+    display: inline-block;
+    animation: fbt-lbe-spin 0.7s linear infinite;
+}
+@keyframes fbt-lbe-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
 .fbt-lbe-meta-row {
     display: flex;
     gap: 16px;
