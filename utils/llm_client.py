@@ -556,6 +556,65 @@ def vram_analysis() -> dict:
     }
 
 
+# ── Vision image pre-processing ───────────────────────────────────────────────
+
+_VISION_MAX_SIDE = 1280  # longest dimension before downscaling to avoid VRAM exhaustion
+
+
+def _resize_for_vision(images: list, max_side: int = _VISION_MAX_SIDE) -> tuple[list, bool]:
+    """Downscale any images whose longest side exceeds max_side.
+
+    Large character sheets / screenshots can easily be 2000-4000 px and will
+    either crash the visual encoder (OOM) or exhaust the KV cache budget with
+    image tokens.  Resizing to ≤1280 px matches the training resolution of most
+    VLMs (Qwen2.5-VL, LLaVA, etc.) so quality loss is negligible.
+
+    Returns (images, was_resized).
+    """
+    from PIL import Image as _Image
+    result = []
+    was_resized = False
+    for img in images:
+        w, h = img.size
+        longest = max(w, h)
+        if longest > max_side:
+            scale = max_side / longest
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+            img = img.resize((new_w, new_h), _Image.LANCZOS)
+            logger.warning(
+                "Vision image downscaled %dx%d → %dx%d (max_side=%d) to prevent VRAM exhaustion",
+                w, h, new_w, new_h, max_side,
+            )
+            was_resized = True
+        result.append(img)
+    return result, was_resized
+
+
+# ── Thinking-tag stripping ────────────────────────────────────────────────────
+
+def _strip_thinking_tags(text: str) -> str:
+    """Remove thinking-block content from model output.
+
+    Handles three formats emitted by Qwen3 and similar reasoning models:
+      1. Complete  <think>…</think>  pairs (normal thinking mode)
+      2. Unclosed  <think>…         (token budget exhausted mid-reasoning)
+      3. Orphaned  …</think>        (model emits thinking as plain text with
+                                     no opening tag — seen with some GGUF quants)
+    """
+    import re as _re
+    # 1. Strip all complete <think>…</think> blocks (model may emit multiple).
+    text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+    # 2. Unclosed <think> — keep only text before the opening tag.
+    if "<think>" in text:
+        logger.warning("Think block not closed — token budget exhausted mid-reasoning")
+        text = text.split("<think>", 1)[0].strip()
+    # 3. Orphaned </think> — everything before it is thinking content (no opening tag).
+    if "</think>" in text:
+        text = text.split("</think>", 1)[-1].strip()
+    return text
+
+
 # ── Generate ──────────────────────────────────────────────────────────────────
 
 def generate(
@@ -576,24 +635,31 @@ def generate(
         raw_fps     — original video FPS; used to derive total_num_frames metadata.
     """
     if _state["model"] is None:
-        return {"success": False, "text": "", "message": "No model loaded."}
+        return {"success": False, "text": "", "message": "No model loaded.", "resized": False}
+
+    # Downscale oversized images before they reach the visual encoder.
+    resized = False
+    if images:
+        images, resized = _resize_for_vision(images)
 
     fmt = _state["format"]
     try:
         if fmt == "gguf":
-            return _generate_gguf(prompt, images=images, video_frames=video_frames,
-                                  system_prompt=system_prompt,
-                                  max_tokens=max_tokens, temperature=temperature)
+            result = _generate_gguf(prompt, images=images, video_frames=video_frames,
+                                    system_prompt=system_prompt,
+                                    max_tokens=max_tokens, temperature=temperature)
         elif fmt == "hf":
-            return _generate_hf(prompt, images=images, video_frames=video_frames,
-                                system_prompt=system_prompt,
-                                max_tokens=max_tokens, temperature=temperature,
-                                video_meta=video_meta)
+            result = _generate_hf(prompt, images=images, video_frames=video_frames,
+                                  system_prompt=system_prompt,
+                                  max_tokens=max_tokens, temperature=temperature,
+                                  video_meta=video_meta)
         else:
-            return {"success": False, "text": "", "message": f"Unknown format: {fmt}"}
+            return {"success": False, "text": "", "message": f"Unknown format: {fmt}", "resized": False}
+        result["resized"] = resized
+        return result
     except Exception as e:
         logger.error("Generate failed: %s\n%s", e, traceback.format_exc())
-        return {"success": False, "text": "", "message": f"Generation error: {e}"}
+        return {"success": False, "text": "", "message": f"Generation error: {e}", "resized": resized}
 
 
 def _generate_gguf(prompt: str, *, images, video_frames, system_prompt, max_tokens, temperature) -> dict:
@@ -669,15 +735,10 @@ def _generate_gguf(prompt: str, *, images, video_frames, system_prompt, max_toke
         temperature=temperature,
     )
     text = response["choices"][0]["message"]["content"].strip()
-    if has_thinking:
-        import re as _re
-        # Strip all complete <think>…</think> blocks (model may emit multiple rounds).
-        text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
-        # If an unclosed <think> remains, max_tokens was exhausted mid-reasoning.
-        # Keep only text before the opening tag (usually nothing useful after).
-        if "<think>" in text:
-            logger.warning("Think block not closed — token budget exhausted mid-reasoning")
-            text = text.split("<think>", 1)[0].strip()
+    # Strip thinking blocks unconditionally — handles complete <think>…</think> pairs,
+    # unclosed tags (budget exhausted), and orphaned </think> (no opening tag emitted).
+    if has_thinking or "<think>" in text or "</think>" in text:
+        text = _strip_thinking_tags(text)
     return {"success": True, "text": text, "message": ""}
 
 
@@ -823,6 +884,10 @@ def _generate_hf(prompt: str, *, images, video_frames, system_prompt, max_tokens
         text = processor.decode(generated, skip_special_tokens=True).strip()
     else:
         text = processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+    # Strip thinking blocks — Qwen3 and similar models may emit thinking content even in HF mode.
+    if "<think>" in text or "</think>" in text:
+        text = _strip_thinking_tags(text)
 
     logger.debug("_generate_hf: decoded %d tokens → %r", len(generated), text[:120])
     return {"success": True, "text": text, "message": ""}

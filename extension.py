@@ -12664,6 +12664,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # additional slot from BUNDLE_SLOTS.
         cast_lookup: dict[str, dict] = {}   # source_subject_id → cast entry
         bundle_reg = None
+        subject_reg = None
         if isinstance(scene_cast, dict):
             for entry in scene_cast.get("entries", []):
                 if (entry.get("source_profile_id") == profile_id
@@ -12675,6 +12676,10 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     bundle_reg = _load_bundle_registry(default_bundle_registry_path())
                 except Exception:
                     bundle_reg = None
+                try:
+                    subject_reg = _load_subject_registry(default_subject_profiles_path())
+                except Exception:
+                    subject_reg = None
 
         # ── Build slot_assignments ─────────────────────────────────────────────
         slot_assignments: dict = {}
@@ -12738,14 +12743,28 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     slot_assignments[src_slot]["_transfer_to_slot"] = bun_slot
 
                     bun_name   = bundle.get("name") or label
-                    bun_appear = (bundle.get("appearance_override")
-                                  or bundle.get("appearance")
-                                  or "")  # empty → assembler falls back to bun_name
+                    # Look up the Subject linked to this bundle for pronoun/short_name/appearance.
+                    bun_subject_id = bundle.get("subject_id", "")
+                    bun_subj = (subject_reg.get_subject(bun_subject_id)
+                                if subject_reg and bun_subject_id else None) or {}
+                    # Merge bundle appearance over subject appearance (bundle wins if set).
+                    bun_app_dict = bundle.get("appearance") or {}
+                    if isinstance(bun_app_dict, str):   # legacy appearance_override string
+                        bun_app_dict = {"summary": bun_app_dict}
+                    subj_app_dict = bun_subj.get("appearance", {}) if bun_subj else {}
+                    def _merge(key):
+                        return bun_app_dict.get(key) or subj_app_dict.get(key, "")
+                    bun_appear = (
+                        bun_app_dict.get("summary")
+                        or bundle.get("appearance_override", "")  # legacy fallback
+                        or subj_app_dict.get("summary", "")
+                    )
                     visual = bundle.get("visual", {})
                     # Resolve mode: cast entry overrides the bundle's default mode.
+                    # "both" = use images AND video simultaneously.
                     bun_visual_mode = cast_entry.get("visual_mode") or visual.get("type", "images")
 
-                    # Images path — character sheet images
+                    # Images path — character sheet images (images mode OR both mode)
                     bun_images: list = []
                     if bun_visual_mode != "video":
                         raw_files = visual.get("files", [])
@@ -12756,21 +12775,25 @@ class SourceProfileClipPrompt(io.ComfyNode):
                             for f in raw_files
                             if (f.get("file", "") if isinstance(f, dict) else f)
                         ]
-                        # image_selection: None = all, int = single image by 0-based index
+                        # image_selection: None=all, list[int]=specific indices, int=legacy single
                         img_sel = cast_entry.get("image_selection")
                         if img_sel is not None:
-                            try:
-                                idx = int(img_sel)
-                                bun_images = [bun_images[idx]] if 0 <= idx < len(bun_images) else []
-                            except (TypeError, ValueError):
-                                pass
+                            if isinstance(img_sel, list):
+                                bun_images = [bun_images[i] for i in img_sel if isinstance(i, int) and 0 <= i < len(bun_images)]
+                            else:
+                                try:
+                                    idx = int(img_sel)
+                                    bun_images = [bun_images[idx]] if 0 <= idx < len(bun_images) else []
+                                except (TypeError, ValueError):
+                                    pass
 
                     audio        = bundle.get("audio", {})
                     audio_source = audio.get("source", "none")
 
                     # Video path — add a video_entry for the bundle slot so the
                     # assembler emits a <Video N> reference for this subject.
-                    if bun_visual_mode == "video":
+                    # Runs when mode is "video" OR "both".
+                    if bun_visual_mode in ("video", "both"):
                         vfile = visual.get("file", "")
                         if vfile:
                             vdir = visual.get("video_dir", "input")
@@ -12831,17 +12854,18 @@ class SourceProfileClipPrompt(io.ComfyNode):
                             # bundle_id so the assembler can resolve soundtrack_num.
                             # audio_only=True tells the assembler to assign <Audio N>
                             # only (no <Video N> added to the slot's visual refs).
-                            # When visual mode is video the visual entry already holds
-                            # bundle_id; use a distinct id to avoid collisions.
-                            aud_sid = (cast_entry["bundle_id"] if bun_visual_mode != "video"
-                                       else cast_entry["bundle_id"] + "_audvid")
+                            # When visual mode is video or both the visual entry already
+                            # holds bundle_id; use a distinct id to avoid collisions.
+                            has_vid_entry = bun_visual_mode in ("video", "both")
+                            aud_sid = (cast_entry["bundle_id"] + "_audvid" if has_vid_entry
+                                       else cast_entry["bundle_id"])
                             bundle_video_entries.append({
                                 "subject_id":       aud_sid,
                                 "subject_ids":      [aud_sid],
                                 "video_file":       os.path.join(aud_base, aud_vfile),
                                 "load_params":      aud_load,
                                 "audio_source":     "extract_from_visual",
-                                "audio_only":       bun_visual_mode != "video",
+                                "audio_only":       not has_vid_entry,
                                 "audio_path":       "",
                                 "audio_start_time": 0.0,
                                 "audio_duration":   0.0,
@@ -12869,6 +12893,10 @@ class SourceProfileClipPrompt(io.ComfyNode):
                             "language":         audio.get("language", "en-us"),
                         }
 
+                    bun_pronoun = (bun_subj.get("pronoun_style")
+                                   or _ENTITY_PRONOUN_DEFAULTS.get(
+                                       bundle.get("entity_type", "person"), "neutral"))
+                    bun_short_name = bun_subj.get("short_name", "")
                     slot_assignments[bun_slot] = {
                         "subject_id":             cast_entry["bundle_id"],
                         "name":                   bun_name,
@@ -12876,14 +12904,16 @@ class SourceProfileClipPrompt(io.ComfyNode):
                         "character_sheet_images": bun_images,
                         "appearance": {
                             "summary":        bun_appear,
-                            "hair":           "",
-                            "face":           "",
-                            "body":           "",
-                            "default_outfit": "",
+                            "hair":           _merge("hair"),
+                            "face":           _merge("face"),
+                            "body":           _merge("body"),
+                            "default_outfit": _merge("default_outfit"),
                         },
-                        "voice":            bun_voice,
-                        "_cast_retention":  "attribute_transfer",
+                        "voice":             bun_voice,
+                        "_cast_retention":   "attribute_transfer",
                         "_transfer_to_slot": src_slot,
+                        "_pronoun_style":    bun_pronoun,
+                        "_short_name":       bun_short_name,
                     }
 
         # ── Task flags and scene synopsis ──────────────────────────────────────
@@ -12985,7 +13015,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
             _all_raw = " ".join(slot_dialogue.values())
             _lib_registry: dict = {}
             for _lname in extract_libber_names(_all_raw):
-                _lb = _libber_mgr.get_libber(_lname)
+                _lb = _libber_mgr.ensure_libber(_lname)
                 if _lb:
                     _lib_registry[_lname] = _lb.libs
 
@@ -13074,8 +13104,8 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     continue
                 _bid  = _ce.get("bundle_id", "")
                 _ssid = _ce.get("source_subject_id", "")
-                # VIDEO mode bundle: handled by bundle video entry — skip.
-                if _bid and _ce.get("visual_mode") == "video":
+                # VIDEO/BOTH mode bundle: audio handled by bundle video entry — skip.
+                if _bid and _ce.get("visual_mode") in ("video", "both"):
                     continue
                 _audio_sid = _bid if _bid else _ssid
                 if not _audio_sid:
@@ -13175,8 +13205,12 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     audio_str = f"audio=file:{aud.get('file', '') or 'NO FILE'}"
                 else:
                     audio_str = "audio=none"
-                media_str = (f"video={'yes' if has_vid else 'NO'}" if vm == "video"
-                             else f"images={nimgs}")
+                if vm == "video":
+                    media_str = f"video={'yes' if has_vid else 'NO'}"
+                elif vm == "both":
+                    media_str = f"images={nimgs}+video={'yes' if has_vid else 'NO'}"
+                else:
+                    media_str = f"images={nimgs}"
                 bundle_lines.append(
                     f"  {src_label} → '{bun.get('name', bun_id)}' "
                     f"[mode={vm}, {media_str}, {audio_str}]"
@@ -16919,7 +16953,7 @@ class SceneCastBuild(io.ComfyNode):
                     entries.append({
                         "subject_id":      subject_id or source_subject_id,
                         "bundle_id":       bundle_id,
-                        "visual_mode":     visual_mode if visual_mode in ("images", "video") else "images",
+                        "visual_mode":     visual_mode if visual_mode in ("images", "video", "both") else "images",
                         "use_audio":       use_audio,
                         "image_selection": image_selection,
                         "retention":       retention or _RETENTION_SOURCE,
@@ -16943,7 +16977,7 @@ class SceneCastBuild(io.ComfyNode):
                 entries.append({
                     "subject_id":      subject_id,
                     "bundle_id":       bundle_id,
-                    "visual_mode":     visual_mode if visual_mode in ("images", "video") else "images",
+                    "visual_mode":     visual_mode if visual_mode in ("images", "video", "both") else "images",
                     "use_audio":       use_audio,
                     "image_selection": image_selection,
                     "retention":       retention or _RETENTION_BUNDLE,
@@ -18585,7 +18619,10 @@ def _resolve_cast_media(
         visual = bundle.get("visual", {})
         audio = bundle.get("audio", {})
 
-        if visual_mode == "video":
+        want_video  = visual_mode in ("video", "both")
+        want_images = visual_mode != "video"
+
+        if want_video:
             vfile = visual.get("file", "")
             if vfile:
                 vdir = visual.get("video_dir", "input")
@@ -18657,21 +18694,26 @@ def _resolve_cast_media(
                     "audio_role":       audio.get("role", ""),
                     "audio_cache":      audio.get("audio_cache", ""),
                 })
-        else:
+
+        if want_images:
             raw_files = visual.get("files", [])
+            # image_selection: None=all, list[int]=specific indices, int=legacy single
             img_sel = entry.get("image_selection")
             if img_sel is not None:
-                try:
-                    idx = int(img_sel)
-                    raw_files = [raw_files[idx]] if 0 <= idx < len(raw_files) else []
-                except (TypeError, ValueError):
-                    pass
+                if isinstance(img_sel, list):
+                    raw_files = [raw_files[i] for i in img_sel if isinstance(i, int) and 0 <= i < len(raw_files)]
+                else:
+                    try:
+                        idx = int(img_sel)
+                        raw_files = [raw_files[idx]] if 0 <= idx < len(raw_files) else []
+                    except (TypeError, ValueError):
+                        pass
             image_files.extend(raw_files)
 
         # Legacy flat audio: first non-"none" source across all entries
         if audio_source == "none":
             a_src = audio.get("source", "none")
-            if a_src == "extract_from_visual" and visual_mode == "video" and visual.get("file"):
+            if a_src == "extract_from_visual" and want_video and visual.get("file"):
                 audio_source = a_src
                 audio_params = {
                     "force_rate":        audio.get("force_rate", 0),
@@ -19700,8 +19742,10 @@ class CompositionToH3Conditioning(io.ComfyNode):
         )
 
         return MiniMaxH3ReferenceToVideo.execute(
-            clip, vae, audio_vae, prompt, width, height, length,
+            clip, prompt, width, height, length,
             ref_image_size=ref_image_size,
+            vae=vae,
+            audio_vae=audio_vae,
             ref_images=ref_images or None,
             ref_videos=ref_videos or None,
             ref_video_audios=ref_video_audios or None,
