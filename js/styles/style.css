@@ -1443,6 +1443,25 @@ textarea.prompt-value-input {
     display: flex;
     gap: 6px;
 }
+.fbt-hist-pgrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 6px 0 2px;
+    border-top: 1px solid var(--border-color, #3a3a3a);
+    margin-top: 2px;
+}
+.fbt-hist-pgbtn {
+    font-size: 11px;
+    padding: 2px 8px;
+}
+.fbt-hist-pginfo {
+    font-size: 11px;
+    color: var(--fg-muted, #888);
+    min-width: 40px;
+    text-align: center;
+}
 
 .fbt-vd-extracting {
     font-size: 12px;
@@ -2764,6 +2783,28 @@ body.fbt-llm-loaded
 
 .fbt-be-details-summary:hover {
     color: var(--fg-color, #ddd);
+}
+
+/* Section-level collapsible (Visual, Audio) */
+.fbt-be-section-details {
+    border-top: 1px solid var(--border-color, #3a3a3a);
+    margin: 6px 0 0;
+    padding-top: 4px;
+}
+.fbt-be-section-summary {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--fg, #ccc);
+    padding: 4px 0;
+}
+.fbt-be-section-summary:hover {
+    color: var(--fg-color, #fff);
+}
+/* Sub-section collapsible (Images, Video inside Visual) */
+.fbt-be-sub-details {
+    margin: 4px 0 0 8px;
+    border-left: 2px solid var(--border-color, #3a3a3a);
+    padding-left: 8px;
 }
 
 .fbt-be-subfield-grid {

@@ -271,13 +271,15 @@ function _startEdit(bundle) {
 
 function _startNew(subjectId = "") {
     _S.editing = {
-        id:                  "",
-        name:                "",
-        subject_id:          subjectId || _S.filterSubject || "",
-        visual:              { type: "images", file: "", video_dir: "input", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, role: "" },
-        audio:               { source: "none", file: "", audio_dir: "input", video_file: "", video_dir: "input", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "", audio_processing: { noise_removal: !!(_S.settings.default_audio_noise_removal), normalize_lufs: _S.settings.default_audio_normalize_lufs !== false, target_lufs: _S.settings.default_audio_target_lufs ?? -14.0 }, audio_cache: "" },
-        appearance_override: "",
-        tags:                [],
+        id:            "",
+        name:          "",
+        subject_id:    subjectId || _S.filterSubject || "",
+        pronoun_style: "",
+        short_name:    "",
+        appearance:    { summary: "", hair: "", face: "", body: "", default_outfit: "" },
+        visual:        { type: "images", file: "", video_dir: "input", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, role: "" },
+        audio:         { source: "none", file: "", audio_dir: "input", video_file: "", video_dir: "input", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "", audio_processing: { noise_removal: !!(_S.settings.default_audio_noise_removal), normalize_lufs: _S.settings.default_audio_normalize_lufs !== false, target_lufs: _S.settings.default_audio_target_lufs ?? -14.0 }, audio_cache: "" },
+        tags:          [],
     };
     _S.isNew = true;
     _renderForm();
@@ -344,50 +346,119 @@ function _renderForm() {
         }
     });
 
-    // Appearance override
+    // Appearance — structured fields override the linked Subject's values.
+    // Empty = inherit from Subject.
+    if (!b.appearance) b.appearance = {};
     const appearEl = _mk("textarea", {
         cls: "fbt-ce-textarea", rows: 2,
-        placeholder: "Leave empty to use subject profile appearance",
-        value: b.appearance_override || "",
+        placeholder: "Appearance summary (leave empty to inherit from subject)",
+        value: b.appearance.summary || b.appearance_override || "",
     });
-    appearEl.addEventListener("input", () => { b.appearance_override = appearEl.value; });
+    appearEl.addEventListener("input", () => { b.appearance.summary = appearEl.value; });
+
+    const PRONOUN_STYLES_BUN = [
+        ["",          "— inherit from subject —"],
+        ["neutral",   "they/their"],
+        ["feminine",  "she/her"],
+        ["masculine", "he/his"],
+        ["object",    "it/its"],
+        ["location",  "the [name]'s"],
+    ];
+    const bunPronounEl = document.createElement("select");
+    bunPronounEl.className = "fbt-ce-select";
+    PRONOUN_STYLES_BUN.forEach(([val, lbl]) => {
+        const o = document.createElement("option");
+        o.value = val; o.textContent = lbl;
+        if (val === (b.pronoun_style || "")) o.selected = true;
+        bunPronounEl.appendChild(o);
+    });
+    bunPronounEl.addEventListener("change", () => { b.pronoun_style = bunPronounEl.value; });
+
+    const bunShortNameEl = _mk("input", {
+        cls: "fbt-ce-input", type: "text",
+        placeholder: "Short descriptor (leave empty to inherit from subject)",
+        value: b.short_name || "",
+    });
+    bunShortNameEl.addEventListener("input", () => { b.short_name = bunShortNameEl.value.trim(); });
+
+    const bunAppearGrid = _mk("div", { cls: "fbt-be-subfield-grid" });
+    const _traitInputs = {};
+    [["hair", "Hair", "Hair color, style, length for this bundle…"],
+     ["face", "Face", "Facial features, eyes for this bundle…"],
+     ["body", "Body", "Body type, build for this bundle…"],
+     ["default_outfit", "Outfit", "Default outfit for this bundle…"]].forEach(([key, label, ph]) => {
+        const inp = _mk("input", { cls: "fbt-ce-input", type: "text",
+            placeholder: ph, value: b.appearance[key] || "" });
+        inp.addEventListener("input", () => { b.appearance[key] = inp.value; });
+        _traitInputs[key] = inp;
+        bunAppearGrid.appendChild(_mk("div", { cls: "fbt-be-subfield-cell" }, [
+            _mk("span", { cls: "fbt-be-subfield-label", textContent: label }),
+            inp,
+        ]));
+    });
+    const bunDetailsSec = document.createElement("details");
+    bunDetailsSec.className = "fbt-be-details";
+    const bunDetailsSummaryEl = document.createElement("summary");
+    bunDetailsSummaryEl.className = "fbt-be-details-summary";
+    bunDetailsSummaryEl.textContent = "Trait details (face, hair, body, outfit)";
+    bunDetailsSec.appendChild(bunDetailsSummaryEl);
+    bunDetailsSec.appendChild(bunAppearGrid);
 
     // ── Visual ─────────────────────────────────────────────────────────────────
 
     // Both image and video sections are always visible — a single bundle can
     // carry both.  visual.type is the "default mode" preference used to
     // pre-fill the Mode picker in Scene Cast Build; the cast entry can override it.
-    let _llmEl = null;
+    let _llmEl  = null;
+    let _histEl = null;
 
     const imgPickerWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
     const vidPickerWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
 
-    // Default-mode toggle (images | video) — sets visual.type only.
+    // Default-mode toggle (images | video | both) — sets visual.type only.
     const defaultModeToggle = _buildToggle(
-        ["images", "video"],
-        ["Images", "Video"],
+        ["images", "video", "both"],
+        ["Images", "Video", "Both"],
         b.visual.type,
         val => { b.visual.type = val; }
     );
 
-    const visualSec = _mk("div", { cls: "fbt-be-section" });
-    visualSec.appendChild(_mk("div", { cls: "fbt-be-sec-label", textContent: "Visual" }));
+    // Images sub-details (open when the bundle already has images)
+    const imgDetails = document.createElement("details");
+    imgDetails.className = "fbt-be-details fbt-be-sub-details";
+    if ((b.visual.files || []).length > 0) imgDetails.open = true;
+    const imgSummaryEl = document.createElement("summary");
+    imgSummaryEl.className = "fbt-be-details-summary";
+    imgSummaryEl.textContent = "Images";
+    imgDetails.appendChild(imgSummaryEl);
+    imgDetails.appendChild(imgPickerWrap);
 
-    // Images subsection
-    const imgSubLabel = _mk("div", { cls: "fbt-be-sec-sublabel", textContent: "Images" });
-    visualSec.appendChild(imgSubLabel);
-    visualSec.appendChild(imgPickerWrap);
+    // Video sub-details (open when the bundle already has a video)
+    const vidDetails = document.createElement("details");
+    vidDetails.className = "fbt-be-details fbt-be-sub-details";
+    if (b.visual.file) vidDetails.open = true;
+    const vidSummaryEl = document.createElement("summary");
+    vidSummaryEl.className = "fbt-be-details-summary";
+    vidSummaryEl.textContent = "Video";
+    vidDetails.appendChild(vidSummaryEl);
+    vidDetails.appendChild(vidPickerWrap);
 
-    // Video subsection
-    const vidSubLabel = _mk("div", { cls: "fbt-be-sec-sublabel", textContent: "Video" });
-    visualSec.appendChild(vidSubLabel);
-    visualSec.appendChild(vidPickerWrap);
-
-    // Default mode row — shown below both sections
+    // Default mode row — shown below both sub-sections
     const defaultModeRow = _mk("div", { cls: "fbt-be-default-mode-row" }, [
         _mk("span", { cls: "fbt-be-default-mode-label", textContent: "Default mode:" }),
         defaultModeToggle,
     ]);
+
+    // Outer Visual collapsible (always open by default)
+    const visualSec = document.createElement("details");
+    visualSec.className = "fbt-be-details fbt-be-section-details";
+    visualSec.open = true;
+    const visualSummaryEl = document.createElement("summary");
+    visualSummaryEl.className = "fbt-be-details-summary fbt-be-section-summary";
+    visualSummaryEl.textContent = "Visual";
+    visualSec.appendChild(visualSummaryEl);
+    visualSec.appendChild(imgDetails);
+    visualSec.appendChild(vidDetails);
     visualSec.appendChild(defaultModeRow);
 
     // ── Audio ──────────────────────────────────────────────────────────────────
@@ -446,11 +517,15 @@ function _renderForm() {
     });
     _rebuildAudioPicker();
 
-    const audioSec = _mk("div", { cls: "fbt-be-section" }, [
-        _mk("div", { cls: "fbt-be-sec-label", textContent: "Audio" }),
-        audioSourceEl,
-        audioPickerWrap,
-    ]);
+    const audioSec = document.createElement("details");
+    audioSec.className = "fbt-be-details fbt-be-section-details";
+    if (b.audio.source !== "none") audioSec.open = true;
+    const audioSummaryEl = document.createElement("summary");
+    audioSummaryEl.className = "fbt-be-details-summary fbt-be-section-summary";
+    audioSummaryEl.textContent = "Audio";
+    audioSec.appendChild(audioSummaryEl);
+    audioSec.appendChild(audioSourceEl);
+    audioSec.appendChild(audioPickerWrap);
 
     // Tags
     const tagsEl = _mk("input", {
@@ -477,18 +552,24 @@ function _renderForm() {
     }));
 
     const form = _mk("div", { cls: "fbt-be-form" });
-    form.appendChild(_formRow("Name",   nameEl));
-    form.appendChild(_formRow("ID",     idEl));
+    form.appendChild(_formRow("Name",    nameEl));
+    form.appendChild(_formRow("ID",      idEl));
     form.appendChild(_formRow("Subject", subjectEl));
+    form.appendChild(_formRow("Pronoun", bunPronounEl));
+    form.appendChild(_formRow("Short name", bunShortNameEl));
     form.appendChild(_formRow("Appear.", appearEl));
     const _hasVision = window._fbtGetLlmStatus?.()?.vision ?? _S.llmVision;
     if (_hasVision) {
-        _llmEl = _buildAppearanceAnalyzer(b, appearEl);
+        const _llmResult = _buildAppearanceAnalyzer(b, appearEl, _traitInputs, bunDetailsSec);
+        _llmEl  = _llmResult.el;
+        _histEl = _llmResult.histEl;
         form.appendChild(_llmEl);
     }
+    form.appendChild(bunDetailsSec);    // Trait details (before history)
+    if (_histEl) form.appendChild(_histEl);  // Analyze history
     form.appendChild(visualSec);
     form.appendChild(audioSec);
-    form.appendChild(_formRow("Tags",   tagsEl));
+    form.appendChild(_formRow("Tags",    tagsEl));
     form.appendChild(warnEl);
     form.appendChild(btnRow);
 
@@ -1597,12 +1678,17 @@ function _buildAudioPicker(wrap, b) {
 
 const _DEFAULT_APPEARANCE_QUERY =
     "Describe this person's physical appearance for a video generation prompt. " +
-    "Include hair color and style, eye color (if visible), skin tone, facial structure, " +
-    "build and approximate height, age range, and any distinctive features. " +
-    "Write two to four plain English sentences. Do not use markdown, bullet points, or headings.";
+    "Respond ONLY with a valid JSON object — no markdown, no code fences, no other text before or after. " +
+    "Keys:\n" +
+    "  \"summary\": 2-4 plain English sentences covering overall appearance\n" +
+    "  \"hair\": color, length, and style (e.g. \"long straight platinum blonde hair\")\n" +
+    "  \"face\": eye color if visible, skin tone, and notable facial features\n" +
+    "  \"body\": build and approximate frame (e.g. \"tall slender frame\")\n" +
+    "  \"outfit\": clothing currently visible, or empty string if not relevant\n" +
+    "Example: {\"summary\":\"...\",\"hair\":\"...\",\"face\":\"...\",\"body\":\"...\",\"outfit\":\"\"}";
 
-function _buildAppearanceAnalyzer(b, appearEl) {
-    const isVideoMode = b.visual.type === "video" && !!b.visual.file;
+function _buildAppearanceAnalyzer(b, appearEl, traitInputs, detailsSec) {
+    const isVideoMode = (b.visual.type === "video" || b.visual.type === "both") && !!b.visual.file;
     let _currentTmpFrame = null;  // temp filename on server; replaced on each extraction
 
     const sec = _mk("div", { cls: "fbt-be-llm-section" });
@@ -1733,11 +1819,38 @@ function _buildAppearanceAnalyzer(b, appearEl) {
     applyRow.appendChild(_mk("button", {
         cls: "fbt-ce-btn",
         textContent: "→ Bundle",
-        title: "Copy to appearance override for this bundle",
+        title: "Copy appearance to this bundle (parses JSON traits if present)",
         onclick: () => {
-            appearEl.value = resultEl.value;
-            b.appearance_override = resultEl.value;
-            _toast("Applied to bundle appearance override", "success");
+            if (!b.appearance) b.appearance = {};
+            const raw = resultEl.value.trim();
+            // Try to parse as JSON — strip code fences if the model added them.
+            let parsed = null;
+            try {
+                const jsonStr = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+                parsed = JSON.parse(jsonStr);
+            } catch (_) {}
+
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                // Populate summary textarea
+                const summary = (parsed.summary || "").trim();
+                if (summary) { b.appearance.summary = summary; appearEl.value = summary; }
+                // Populate structured trait fields
+                const keyMap = { hair: "hair", face: "face", body: "body", outfit: "default_outfit" };
+                let populated = 0;
+                for (const [jsonKey, appKey] of Object.entries(keyMap)) {
+                    const val = (parsed[jsonKey] || "").trim();
+                    b.appearance[appKey] = val;
+                    if (traitInputs?.[appKey]) traitInputs[appKey].value = val;
+                    if (val) populated++;
+                }
+                if (populated > 0 && detailsSec) detailsSec.open = true;
+                _toast(`Applied to bundle (${populated} trait${populated !== 1 ? "s" : ""} populated)`, "success");
+            } else {
+                // Fallback: treat as prose summary
+                b.appearance.summary = raw;
+                appearEl.value = raw;
+                _toast("Applied as appearance summary (no JSON found)", "info");
+            }
         },
     }));
     applyRow.appendChild(_mk("button", {
@@ -1747,8 +1860,15 @@ function _buildAppearanceAnalyzer(b, appearEl) {
         onclick: async () => {
             const sid = b.subject_id;
             if (!sid) { _toast("No subject selected on this bundle", "warn"); return; }
+            // Extract prose summary from JSON result if available, else use raw text.
+            let summaryText = resultEl.value.trim();
             try {
-                await bundlesApi.saveSubjectAppearance(sid, resultEl.value);
+                const jsonStr = summaryText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+                const parsed = JSON.parse(jsonStr);
+                if (parsed?.summary) summaryText = parsed.summary.trim();
+            } catch (_) {}
+            try {
+                await bundlesApi.saveSubjectAppearance(sid, summaryText);
                 _toast("Saved to subject profile", "success");
                 const res = await bundlesApi.listSubjects();
                 _S.subjects = res.subjects ?? [];
@@ -1779,6 +1899,9 @@ function _buildAppearanceAnalyzer(b, appearEl) {
                     ? (parseInt(sec.querySelector(".fbt-be-llm-frame-input")?.value, 10) || 0)
                     : null;
                 const r = await llmApi.generate(query, { images: [img], max_tokens: 400 });
+                if (r?.resized) {
+                    _toast("Image was too large and was downscaled to 1280px for analysis — original file unchanged", "info");
+                }
                 if (r?.text) {
                     resultEl.value = r.text.trim();
                     resultEl.style.display = "";
@@ -1811,6 +1934,7 @@ function _buildAppearanceAnalyzer(b, appearEl) {
     // ── History ───────────────────────────────────────────────────────────────
     const { el: histEl, refresh: histRefresh } = buildHistorySection({
         kind: "appearance_analyze",
+        pageSize: 8,
         onRestore: entry => {
             const p = entry.params || {};
             // Restore query
@@ -1836,9 +1960,8 @@ function _buildAppearanceAnalyzer(b, appearEl) {
         },
     });
     _appHistRefresh = histRefresh;
-    sec.appendChild(histEl);
-
-    return sec;
+    // History is returned separately so the caller can place it after Trait details.
+    return { el: sec, histEl };
 }
 
 async function _onSave(b, warnEl) {
@@ -2032,14 +2155,12 @@ function _renderSubjectForm() {
     });
     pronounEl.addEventListener("change", () => {
         s.pronoun_style = pronounEl.value;
-        shortNameRow.style.display = pronounEl.value === "location" ? "" : "none";
     });
     const shortNameEl = _mk("input", { cls: "fbt-ce-input", type: "text",
-        placeholder: "e.g. room, hallway, courtyard",
+        placeholder: "e.g. young woman, demonic warrior, stone hallway",
         value: s.short_name || "" });
     shortNameEl.addEventListener("input", () => { s.short_name = shortNameEl.value.trim(); });
     const shortNameRow = _formRow("Short name", shortNameEl);
-    shortNameRow.style.display = (s.pronoun_style === "location") ? "" : "none";
 
     form.appendChild(_formRow("Name",    nameEl));
     form.appendChild(_formRow("ID",      idEl));
