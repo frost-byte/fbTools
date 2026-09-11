@@ -453,8 +453,8 @@ def _build_ref_map(
                 or subject.get("_cast_retention", "fully_preserved")
             ),
             "transfer_to_slot": subject.get("_transfer_to_slot", ""),
-            "pronoun_style":    subject.get("_pronoun_style", "neutral"),
-            "short_name":       subject.get("_short_name", ""),
+            "pronoun_style":    (subject.get("_pronoun_style") or subject.get("pronoun_style", "neutral") or "neutral"),
+            "short_name":       (subject.get("_short_name") or subject.get("short_name", "")),
         }
 
     return ref_map
@@ -1114,57 +1114,48 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         subj_retention = info.get("retention_marker", "fully_preserved")
 
         if subj_retention == "attribute_transfer":
-            # Bundle subject replacing a source profile subject.
-            src_slot_id = info.get("transfer_to_slot", "")
-            src_info = ref_map.get(src_slot_id)
-            bun_desc = info.get("appearance_summary") or info["name"]
-            src_desc = (
-                (src_info.get("appearance_summary") or src_info.get("name", "the replaced subject"))
-                if src_info else "the replaced subject"
-            )
-            src_vnum = src_info.get("video_num") if src_info else None
-            if src_vnum is not None:
-                preserve_desc = (
-                    f"The appearance of {bun_desc} overrides that of {src_desc} in the source video. "
-                    f"Their pose, movement, and screen position match those of {src_desc} in <Video {src_vnum}>"
-                )
-            else:
-                preserve_desc = (
-                    f"The appearance of {bun_desc} overrides that of {src_desc} in the source video"
-                )
-            ra_retention = "fully_preserved"
-        elif subj_retention == "replaced":
-            # Original source subject being replaced — scoped attribute_transfer.
-            # Motion/pose/timing transfer to the bundle; appearance does NOT carry over.
-            bun_slot_id = info.get("transfer_to_slot", "")
-            bun_info = ref_map.get(bun_slot_id)
-            bun_label = bun_info["subject_label"] if bun_info else "<Subject ?>"
-            if bun_info and bun_info.get("picture_nums"):
-                bun_ref = f"<Picture {bun_info['picture_nums'][0]}>"
-            elif bun_info and bun_info.get("video_num") is not None:
-                bun_ref = f"<Video {bun_info['video_num']}>"
-            else:
-                bun_ref = ""
-            preserve_desc = (
-                f"pose, movement, gestures, timing and screen position transfer to {bun_label}; "
-                f"the original's appearance, including face, hair, and clothing, is fully replaced "
-                f"by {bun_label}'s appearance"
-            )
-            if bun_ref:
-                preserve_desc += f" from {bun_ref}"
-            ra_retention = "attribute_transfer"
-        else:
-            # Build the same appearance phrase used in subject_definitions (minus the ref anchor).
-            summary = info["appearance_summary"]
-            summary_body = (summary[0].lower() + summary[1:]).rstrip(". ") if summary else ""
-            has_ref = info["video_num"] is not None or bool(info["picture_nums"])
-            if has_ref and summary_body:
-                summary_body = re.sub(r"^an? ", "the ", summary_body, count=1)
+            # Bundle/replacement subject inserted into the edited video.
+            # Describe only what to preserve about this subject's own appearance.
+            poss = _possessive(info)
             detail_parts = [f for f in (info.get("hair", ""), info.get("face", ""), info.get("body", "")) if f]
             if info["outfit"]:
                 detail_parts.append(f"wearing {info['outfit']}")
-            detail_phrase = f", with {_join_details(detail_parts)}" if detail_parts else ""
-            preserve_desc = f"{summary_body}{detail_phrase}" if summary_body else "appearance retained"
+            if detail_parts:
+                preserve_desc = f"retain {poss} {_join_details(detail_parts)}"
+            else:
+                short = info.get("short_name", "").strip()
+                preserve_desc = f"retain {short}'s appearance" if short else f"retain {poss} appearance"
+            # In a video editing context there is a single effective shot.
+            if "video editing" in active_flags and not appears_list:
+                appears_clause = "appears in [Shot 1]"
+            ra_retention = "fully_preserved"
+        elif subj_retention == "replaced":
+            # Original source subject being replaced — scoped attribute_transfer.
+            # Motion/pose/timing transfer to the bundle; visual identity is discarded.
+            bun_slot_id = info.get("transfer_to_slot", "")
+            bun_info = ref_map.get(bun_slot_id)
+            bun_label = bun_info["subject_label"] if bun_info else "<Subject ?>"
+            poss = _possessive(info)
+            # Clause overrides shot-appearance: replaced subjects are identified by source media.
+            vnum = info.get("video_num")
+            appears_clause = f"original, in <Video {vnum}>" if vnum is not None else "original"
+            preserve_desc = (
+                f"transfer {poss} postures, gestures, position and body movements to {bun_label}; "
+                f"discard {poss} visual identity, hair and wardrobe"
+            )
+            ra_retention = "attribute_transfer"
+        else:
+            # "retain [possessive] [specific traits]" — reference traits directly
+            # without restating the full appearance summary phrase.
+            poss = _possessive(info)
+            detail_parts = [f for f in (info.get("hair", ""), info.get("face", ""), info.get("body", "")) if f]
+            if info["outfit"]:
+                detail_parts.append(f"wearing {info['outfit']}")
+            if detail_parts:
+                preserve_desc = f"retain {poss} {_join_details(detail_parts)}"
+            else:
+                short = info.get("short_name", "").strip()
+                preserve_desc = f"retain {short}'s appearance" if short else f"retain {poss} appearance"
             # For non-person subjects (objects, locations, animals) sourced from a video,
             # anchor the preserve description to the source video so H3 knows where to
             # sample the visual reference from.
@@ -1172,6 +1163,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                     and not info.get("picture_nums")
                     and info.get("entity_type", "person") != "person"):
                 preserve_desc = preserve_desc.rstrip(". ") + f", as seen in <Video {info['video_num']}>"
+            if "video editing" in active_flags and not appears_list:
+                appears_clause = "appears in [Shot 1]"
             ra_retention = subj_retention
 
         ra.append(f"{label} ({appears_clause}): {ra_retention} - {preserve_desc}.")
@@ -1196,8 +1189,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                     f"begins where <Video {vnum}> ends, maintaining consistent motion and scene state"
                 )
             elif "video editing" in active_flags and vnum in _vnum_is_source:
-                # Only motion is carried over; the original subject's appearance is replaced.
-                role_clause  = "motion and gestures"
+                # Only motion/scene elements are carried over; replaced subjects' appearances are discarded.
+                role_clause  = "source video editing"
                 video_status = "partially_preserved"
                 # Bundle slots (attribute_transfer) with transfer_to_slot pointing to a slot
                 # that has this video_num are the replacement subjects.
@@ -1212,26 +1205,16 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                             replacement_pairs.append((_src_inf["name"], _inf["subject_label"]))
                     elif _inf.get("video_num") == vnum and _inf.get("retention_marker") != "replaced":
                         retained_originals.append(_inf["subject_label"])
+                preserve_desc = (
+                    f"preserve setting details, scene composition, lighting, "
+                    f"camera motion, timing and framing"
+                )
                 if replacement_pairs:
-                    replacements_str = _join_labels([r for _, r in replacement_pairs])
-                    originals_str    = _join_labels([o for o, _ in replacement_pairs])
-                    preserve_desc = (
-                        f"the actions, gestures, head movements, hand timing, and camera framing "
-                        f"from <Video {vnum}> are reproduced exactly by {replacements_str}, "
-                        f"without copying the visual appearance of {originals_str}"
-                    )
-                    if retained_originals:
-                        retained_str = _join_labels(retained_originals)
-                        n = len(retained_originals)
-                        preserve_desc += (
-                            f"; {retained_str} appear{'s' if n == 1 else ''} "
-                            f"as {'themselves' if n > 1 else 'themselves'} from <Video {vnum}>"
-                        )
+                    originals_str = _join_labels([o for o, _ in replacement_pairs])
+                    preserve_desc += f"; discard the original appearance of {originals_str}"
                 else:
-                    preserve_desc = (
-                        f"the actions, gestures, head movements, hand timing, and camera framing "
-                        f"from <Video {vnum}> are reproduced exactly by {targets}, without copying "
-                        f"the visual appearance of the original subjects in <Video {vnum}>"
+                    preserve_desc += (
+                        f"; discard the original appearance of the subjects in <Video {vnum}>"
                     )
             else:
                 role_clause  = f"visual identity of {targets}"

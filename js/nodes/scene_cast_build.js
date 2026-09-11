@@ -1,9 +1,9 @@
 /**
- * SceneCastBuild node — JSON-backed interactive entry table.
+ * SceneCastBuild node — JSON-backed interactive tab UI.
  *
  * One hidden STRING widget (cast_entries_json) serialises all entries as a
- * JSON array.  The DOM widget renders a table with +/− row controls so the
- * user can add or remove entries freely (no fixed-slot limit).
+ * JSON array.  The DOM widget renders a tab strip (one tab per entry, plus a
+ * "+" add button) so each entry's controls have room to breathe.
  *
  * node._refreshCastTable(entries?) is exposed for the cast editor's
  * "Send to Workflow" button to call after pushing new entries.
@@ -25,7 +25,6 @@ export function setupSceneCastBuild(nodeType, _nodeData, app) {
         _buildCastBuildUI(this, app);
     };
 
-    // onConfigure fires after widget values are restored from the saved workflow.
     const _origConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (config) {
         _origConfigure?.call(this, config);
@@ -36,7 +35,6 @@ export function setupSceneCastBuild(nodeType, _nodeData, app) {
         });
     };
 
-    // Refresh clip dropdowns and source subject column whenever a source_profile input changes.
     const _origConnChange = nodeType.prototype.onConnectionsChange;
     nodeType.prototype.onConnectionsChange = function (type, index, connected, linkInfo) {
         _origConnChange?.call(this, type, index, connected, linkInfo);
@@ -54,69 +52,63 @@ export function setupSceneCastBuild(nodeType, _nodeData, app) {
 
 function _buildCastBuildUI(node, app) {
     // ── 1. Find and hide the single JSON backing widget ───────────────────────
-    // We use a regular STRING widget (not boolean) so setWidgetVisible works
-    // reliably regardless of ComfyUI version quirks.
     const jsonWidget = node.widgets?.find(w => w.name === JSON_WIDGET);
     if (jsonWidget) setWidgetVisible(jsonWidget, false, node);
 
     // ── 2. Internal state ─────────────────────────────────────────────────────
-    let _subjects = [];
-    let _bundles  = [];
-    // [{pid, label, subjects:[{id,label}]}] — populated by _refreshSourceSubjects
+    let _subjects  = [];
+    let _bundles   = [];
     let _connectedSPSubjects = [];
-    // true unless the selected clip explicitly disallows dialogue
-    let _clipAllowsDialogue = true;
-    // ID of the currently selected clip (mirrors clipWidget.value)
-    let _activeClipId = "";
-    // Duration multiplier 1–4 (mirrors multWidget.value)
-    let _multiplier = 1;
+    let _clipAllowsDialogue  = true;
+    let _activeClipId        = "";
+    let _multiplier          = 1;
+    let _activeTabIdx        = 0;
+    let _previewOpen         = false;
+    let _clipMap             = new Map();
 
-    // Parse initial entries from the widget value (populated from saved workflow)
     let _entries = [];
     try {
         const parsed = JSON.parse(jsonWidget?.value || "[]");
         if (Array.isArray(parsed)) _entries = parsed;
     } catch { /* leave empty */ }
-
-    // tmp frame filenames keyed by bundle_id — cleaned up on collapse/rebuild
+    if (!_entries.length) {
+        _entries.push({ subject_id: "", bundle_id: "", visual_mode: "images", use_audio: false, dialogue: "" });
+    }
     const _tmpFrames = new Map();
 
     // ── 3. Build DOM structure ────────────────────────────────────────────────
     const wrap = document.createElement("div");
     wrap.className = "fbt-scb-wrap";
 
-    const table = document.createElement("table");
-    table.className = "fbt-scb-table";
+    const tabStrip = document.createElement("div");
+    tabStrip.className = "fbt-scb-tab-strip";
 
-    const thead = document.createElement("thead");
-    thead.innerHTML = `<tr>
-        <th class="fbt-scb-row-num"></th>
-        <th style="width:18%">Subject</th>
-        <th style="width:20%">Bundle</th>
-        <th class="fbt-scb-src-th" style="width:18%;display:none">Source</th>
-        <th class="fbt-scb-c" style="width:80px">Mode</th>
-        <th class="fbt-scb-c" style="width:26px">Aud</th>
-        <th style="width:22%" title="Dialogue text. Prefixes: [silent] = no audio; [sounds] desc = sound event. Use %libber:key% for libber lookup.">Dlg</th>
-        <th style="width:34px"></th>
-    </tr>`;
-    table.appendChild(thead);
-    const srcTh = thead.querySelector(".fbt-scb-src-th");
+    // Inner scroller holds just the tabs — scrolls when node is narrow
+    const tabScroller = document.createElement("div");
+    tabScroller.className = "fbt-scb-tab-scroller";
 
-    const tbody = document.createElement("tbody");
-    table.appendChild(tbody);
-
-    const addBtn = document.createElement("button");
-    addBtn.className = "fbt-scb-add-btn";
-    addBtn.textContent = "+ Add entry";
-    addBtn.addEventListener("click", () => {
+    // "+" button lives outside the scroller so it's always visible
+    const addTabBtn = document.createElement("button");
+    addTabBtn.className = "fbt-scb-tab-add";
+    addTabBtn.textContent = "+";
+    addTabBtn.title = `Add entry (max ${MAX_ENTRIES})`;
+    addTabBtn.addEventListener("click", () => {
         if (_entries.length >= MAX_ENTRIES) return;
         _entries.push({ subject_id: "", bundle_id: "", visual_mode: "images", use_audio: false, dialogue: "" });
-        _rebuildTable();
+        _activeTabIdx = _entries.length - 1;
+        _previewOpen  = false;
+        _rebuildTabs();
         _syncWidget();
     });
 
-    wrap.appendChild(table);
-    wrap.appendChild(addBtn);
+    tabStrip.appendChild(tabScroller);
+    tabStrip.appendChild(addTabBtn);
+
+    const tabContent = document.createElement("div");
+    tabContent.className = "fbt-scb-tab-content";
+
+    wrap.appendChild(tabStrip);
+    wrap.appendChild(tabContent);
 
     // ── 4. Select helpers ─────────────────────────────────────────────────────
 
@@ -159,16 +151,14 @@ function _buildCastBuildUI(node, app) {
         sel.innerHTML = "";
         const blank = document.createElement("option");
         blank.value = "";
-        blank.textContent = "— (none) —";
+        blank.textContent = "— source —";
         if (!currentProfileId || !currentSubjectId) blank.selected = true;
         sel.appendChild(blank);
 
-        // If a clip is selected and has tagged subjects, restrict to those only.
         const selectedClipId = _activeClipId;
         const clip = selectedClipId ? _clipMap?.get(selectedClipId) : null;
         const clipSubjectIds = (clip && Array.isArray(clip.subjects) && clip.subjects.length)
-            ? new Set(clip.subjects)
-            : null;  // null = no filter (no clip selected, or clip has no tagged subjects)
+            ? new Set(clip.subjects) : null;
 
         _connectedSPSubjects.forEach((sp, i) => {
             const visibleSubjects = clipSubjectIds
@@ -188,174 +178,268 @@ function _buildCastBuildUI(node, app) {
         });
     }
 
-    // ── 5. Preview helpers ────────────────────────────────────────────────────
+    // ── 5. Tab label ──────────────────────────────────────────────────────────
 
-    function _buildPreviewRowEl() {
-        const tr = document.createElement("tr");
-        tr.className = "fbt-scb-preview-row";
-        tr.style.display = "none";
-        const td = document.createElement("td");
-        td.colSpan = 99;
-        tr.appendChild(td);
-        return tr;
+    function _tabLabel(idx) {
+        const e = _entries[idx];
+        if (e?.bundle_id) {
+            const bun = _bundles.find(b => b.id === e.bundle_id);
+            if (bun?.name) {
+                const n = bun.name;
+                return n.length > 12 ? n.slice(0, 11) + "…" : n;
+            }
+        }
+        if (e?.subject_id) {
+            const s = _subjects.find(s => s.id === e.subject_id);
+            if (s?.name) {
+                const n = s.name;
+                return n.length > 12 ? n.slice(0, 11) + "…" : n;
+            }
+        }
+        return `#${idx + 1}`;
     }
 
-    async function _loadPreviewContent(td, entry) {
+    // ── 6. Build tab strip ────────────────────────────────────────────────────
+
+    function _buildTabStrip() {
+        tabScroller.innerHTML = "";
+        _entries.forEach((_, idx) => {
+            const tab = document.createElement("button");
+            tab.className = "fbt-scb-tab" + (idx === _activeTabIdx ? " active" : "");
+
+            const lbl = document.createElement("span");
+            lbl.className = "fbt-scb-tab-lbl";
+            lbl.textContent = _tabLabel(idx);
+            lbl.title = _entries[idx]?.bundle_id || _entries[idx]?.subject_id || `Entry ${idx + 1}`;
+            tab.appendChild(lbl);
+
+            tab.addEventListener("click", () => {
+                if (_activeTabIdx === idx) return;
+                _activeTabIdx = idx;
+                _buildTabStrip();
+                _renderActiveTab();
+            });
+
+            if (_entries.length > 1) {
+                const closeBtn = document.createElement("button");
+                closeBtn.className = "fbt-scb-tab-close";
+                closeBtn.textContent = "×";
+                closeBtn.title = "Remove entry";
+                closeBtn.addEventListener("click", ev => {
+                    ev.stopPropagation();
+                    const bid = _entries[idx]?.bundle_id;
+                    if (bid) { const t = _tmpFrames.get(bid); if (t) { bundlesApi.deleteTmpFrame(t); _tmpFrames.delete(bid); } }
+                    _entries.splice(idx, 1);
+                    _activeTabIdx = Math.min(_activeTabIdx, _entries.length - 1);
+                    _rebuildTabs();
+                    _syncWidget();
+                });
+                tab.appendChild(closeBtn);
+            }
+
+            tabScroller.appendChild(tab);
+        });
+
+        addTabBtn.disabled = _entries.length >= MAX_ENTRIES;
+    }
+
+    // ── 7. Per-reference preview ──────────────────────────────────────────────
+
+    async function _buildRefList(entry) {
+        if (!entry.bundle_id) return [];
+        let bundle;
+        try { bundle = await bundlesApi.getBundle(entry.bundle_id); } catch { return []; }
+        const refs = [];
+        const mode = entry.visual_mode || "images";
+
+        if (mode === "video" || mode === "both") {
+            const vfile = bundle.visual?.file || "";
+            if (vfile) {
+                refs.push({
+                    type: "video",
+                    file: vfile,
+                    dir:  bundle.visual?.video_dir || "input",
+                    role: bundle.visual?.role || "reference footage",
+                });
+            }
+        }
+
+        if (mode !== "video") {
+            let files = bundle.visual?.files || [];
+            const sel = entry.image_selection;
+            if (sel != null) {
+                const indices = Array.isArray(sel) ? sel : [parseInt(sel, 10)];
+                files = indices.filter(i => i >= 0 && i < files.length).map(i => files[i]);
+            }
+            files.forEach(f => {
+                const file = typeof f === "object" ? (f.file || "") : (f || "");
+                const role = typeof f === "object" ? (f.role || "character sheet") : "character sheet";
+                if (file) refs.push({ type: "image", file, role });
+            });
+        }
+
+        // Audio preview entry
+        const aSrc  = bundle.audio?.source;
+        const aFile = bundle.audio?.file || "";
+        if (aFile && aSrc !== "none" && aSrc !== "extract_from_visual") {
+            refs.push({ type: "audio", file: aFile, role: bundle.audio?.role || "voice reference" });
+        }
+
+        return refs;
+    }
+
+    async function _loadRefPreview(area, entry) {
+        area.innerHTML = "";
         if (!entry.bundle_id) {
-            td.innerHTML = '<span class="fbt-scb-preview-note">No bundle selected.</span>';
+            area.innerHTML = '<span class="fbt-scb-preview-note">No bundle selected.</span>';
             return;
         }
-        td.innerHTML = '<span class="fbt-scb-preview-note">Loading…</span>';
-        try {
-            const bundle = await bundlesApi.getBundle(entry.bundle_id);
-            const strip = document.createElement("div");
-            strip.className = "fbt-scb-preview-strip";
+        area.innerHTML = '<span class="fbt-scb-preview-note">Loading…</span>';
 
-            if (entry.visual_mode === "video") {
-                const file = bundle.visual?.file || "";
-                if (file) {
-                    try {
-                        const frameData = await bundlesApi.extractFrame(file, 0);
-                        const prev = _tmpFrames.get(entry.bundle_id);
-                        if (prev) bundlesApi.deleteTmpFrame(prev);
-                        _tmpFrames.set(entry.bundle_id, frameData.tmp_filename);
-                        const img = document.createElement("img");
-                        img.className = "fbt-scb-thumb";
-                        img.src = `/view?filename=${encodeURIComponent(frameData.tmp_filename)}&type=input`;
-                        img.title = `${file}\n${frameData.width}×${frameData.height}, ${frameData.frame_count} frames`;
-                        strip.appendChild(img);
-                        const note = document.createElement("span");
-                        note.className = "fbt-scb-preview-note";
-                        note.style.alignSelf = "center";
-                        note.textContent = `${file} — ${frameData.width}×${frameData.height}, ${frameData.frame_count} frames`;
-                        strip.appendChild(note);
-                    } catch {
-                        const note = document.createElement("span");
-                        note.className = "fbt-scb-preview-note";
-                        note.textContent = `${file} (frame extract unavailable)`;
-                        strip.appendChild(note);
-                    }
-                } else {
-                    strip.innerHTML = '<span class="fbt-scb-preview-note">No video file in bundle.</span>';
-                }
-            } else {
-                const files = bundle.visual?.files || [];
-                const imageFiles = files
-                    .map(f => (typeof f === "object" ? (f.file || "") : (f || "")))
-                    .filter(Boolean);
-                if (imageFiles.length) {
-                    imageFiles.forEach(file => {
-                        const img = document.createElement("img");
-                        img.className = "fbt-scb-thumb";
-                        const slashIdx = file.lastIndexOf("/");
-                        const fname = slashIdx >= 0 ? file.slice(slashIdx + 1) : file;
-                        const sfolder = slashIdx >= 0 ? file.slice(0, slashIdx) : "";
-                        const _mkUrl = type => `/view?filename=${encodeURIComponent(fname)}${sfolder ? `&subfolder=${encodeURIComponent(sfolder)}` : ""}&type=${type}`;
-                        img.src = _mkUrl("input");
-                        img.onerror = () => { img.onerror = null; img.src = _mkUrl("output"); };
-                        img.title = file;
-                        img.loading = "lazy";
-                        strip.appendChild(img);
-                    });
-                } else {
-                    strip.innerHTML = '<span class="fbt-scb-preview-note">No images in bundle.</span>';
-                }
-            }
+        const refs = await _buildRefList(entry);
+        area.innerHTML = "";
 
-            // Audio player — show regardless of use_audio so user can verify the file
-            const audioSrc = bundle.audio?.source;
-            const audioFile = bundle.audio?.file || "";
-            if (audioFile && audioSrc !== "none" && audioSrc !== "extract_from_visual") {
+        if (!refs.length) {
+            area.innerHTML = '<span class="fbt-scb-preview-note">No media references in bundle.</span>';
+            return;
+        }
+
+        let refIdx = 0;
+
+        // Navigator row — arrows inline with label, centered as a group
+        const nav = document.createElement("div");
+        nav.className = "fbt-scb-ref-nav";
+        const prevRef = document.createElement("button");
+        prevRef.className = "fbt-scb-clip-nav-btn";
+        prevRef.textContent = "←";
+        const refLabel = document.createElement("span");
+        refLabel.className = "fbt-scb-ref-label";
+        const nextRef = document.createElement("button");
+        nextRef.className = "fbt-scb-clip-nav-btn";
+        nextRef.textContent = "→";
+        nav.append(prevRef, refLabel, nextRef);
+
+        const panel = document.createElement("div");
+        panel.className = "fbt-scb-ref-panel";
+
+        area.appendChild(nav);
+        area.appendChild(panel);
+
+        const _fname = path => path.split("/").pop();
+
+        async function _showRef(i) {
+            refIdx = ((i % refs.length) + refs.length) % refs.length;
+            const ref = refs[refIdx];
+            refLabel.textContent = `${refIdx + 1}/${refs.length} · ${ref.role}`;
+            prevRef.disabled = refs.length <= 1;
+            nextRef.disabled = refs.length <= 1;
+            panel.innerHTML = "";
+
+            const _addMeta = text => {
+                const m = document.createElement("div");
+                m.className = "fbt-scb-ref-meta";
+                m.textContent = text;
+                panel.appendChild(m);
+            };
+
+            if (ref.type === "image") {
+                const slashIdx = ref.file.lastIndexOf("/");
+                const fname  = slashIdx >= 0 ? ref.file.slice(slashIdx + 1) : ref.file;
+                const sfold  = slashIdx >= 0 ? ref.file.slice(0, slashIdx) : "";
+                const mkUrl  = type => `/view?filename=${encodeURIComponent(fname)}${sfold ? `&subfolder=${encodeURIComponent(sfold)}` : ""}&type=${type}`;
+                const img    = document.createElement("img");
+                img.className = "fbt-scb-ref-img";
+                img.src       = mkUrl("input");
+                img.onerror   = () => { img.onerror = null; img.src = mkUrl("output"); };
+                img.title     = ref.file;
+                img.addEventListener("click", () => window.open(img.src, "_blank"));
+                panel.appendChild(img);
+                _addMeta(_fname(ref.file));
+            } else if (ref.type === "video") {
+                const note = document.createElement("div");
+                note.className = "fbt-scb-ref-meta";
+                note.textContent = `${_fname(ref.file)} — extracting frame…`;
+                panel.appendChild(note);
+                try {
+                    const frameData = await bundlesApi.extractFrame(ref.file, 0, ref.dir);
+                    const prev = _tmpFrames.get(entry.bundle_id);
+                    if (prev) bundlesApi.deleteTmpFrame(prev);
+                    _tmpFrames.set(entry.bundle_id, frameData.tmp_filename);
+                    panel.innerHTML = "";
+                    const img = document.createElement("img");
+                    img.className = "fbt-scb-ref-img";
+                    img.src   = `/view?filename=${encodeURIComponent(frameData.tmp_filename)}&type=input`;
+                    img.title = ref.file;
+                    img.addEventListener("click", () => window.open(img.src, "_blank"));
+                    panel.appendChild(img);
+                    _addMeta(`${_fname(ref.file)} · ${frameData.width}×${frameData.height} · ${frameData.frame_count} frames`);
+                } catch {
+                    note.textContent = `${_fname(ref.file)} (frame extract unavailable)`;
+                }
+            } else if (ref.type === "audio") {
                 const aud = document.createElement("audio");
                 aud.className = "fbt-scb-preview-audio";
-                aud.src = `/view?filename=${encodeURIComponent(audioFile)}&type=input`;
-                aud.controls = true;
-                aud.preload = "none";
-                aud.title = audioFile;
-                strip.appendChild(aud);
+                aud.src      = `/view?filename=${encodeURIComponent(ref.file)}&type=input`;
+                aud.controls  = true;
+                aud.preload   = "none";
+                aud.title     = ref.file;
+                panel.appendChild(aud);
+                _addMeta(_fname(ref.file));
             }
-
-            // When audio is extracted from the video itself, add a video player so the user can hear it
-            if (audioSrc === "extract_from_visual" && entry.visual_mode === "video") {
-                const videoFile = bundle.visual?.file || "";
-                if (videoFile) {
-                    const vid = document.createElement("video");
-                    vid.className = "fbt-scb-preview-video";
-                    vid.src = `/view?filename=${encodeURIComponent(videoFile)}&type=input`;
-                    vid.controls = true;
-                    vid.preload = "none";
-                    vid.title = `${videoFile} — play to hear extracted audio`;
-                    strip.appendChild(vid);
-                }
-            }
-
-            td.innerHTML = "";
-            td.appendChild(strip);
-        } catch (err) {
-            td.innerHTML = `<span class="fbt-scb-preview-note">Error: ${err.message}</span>`;
         }
+
+        prevRef.addEventListener("click", () => _showRef(refIdx - 1));
+        nextRef.addEventListener("click", () => _showRef(refIdx + 1));
+        _showRef(0);
     }
 
-    async function _togglePreview(idx, previewRow, previewBtn) {
-        const entry = _entries[idx];
-        const td = previewRow.querySelector("td");
-        const isOpen = previewRow.style.display !== "none";
-        if (isOpen) {
-            previewRow.style.display = "none";
-            previewBtn.classList.remove("active");
-            const tmp = _tmpFrames.get(entry.bundle_id);
-            if (tmp) { bundlesApi.deleteTmpFrame(tmp); _tmpFrames.delete(entry.bundle_id); }
-        } else {
-            previewRow.style.display = "";
-            previewBtn.classList.add("active");
-            await _loadPreviewContent(td, entry);
-        }
-    }
+    // ── 8. Render active tab content ──────────────────────────────────────────
 
-    // ── 6. Build a single table row ───────────────────────────────────────────
+    function _renderActiveTab() {
+        tabContent.innerHTML = "";
+        if (!_entries.length) return;
 
-    function _buildRow(idx, previewRow) {
-        const entry = _entries[idx];
-        const tr = document.createElement("tr");
-        tr.classList.toggle("fbt-scb-empty", !entry.subject_id || !entry.bundle_id);
+        const entry = _entries[_activeTabIdx];
+        const idx   = _activeTabIdx;
 
-        // Row number
-        const numTd = document.createElement("td");
-        numTd.className = "fbt-scb-row-num";
-        numTd.textContent = String(idx + 1);
-        tr.appendChild(numTd);
+        const _lbl = text => {
+            const s = document.createElement("span");
+            s.className = "fbt-scb-field-label";
+            s.textContent = text;
+            return s;
+        };
 
-        // Subject select
-        const subjTd = document.createElement("td");
+        // ── Row 1: Subject → Bundle ──────────────────────────────────────────────
+        const row1 = document.createElement("div");
+        row1.className = "fbt-scb-form-row";
+
         const subjSel = document.createElement("select");
-        subjSel.className = "fbt-scb-sel";
-        _fillSubjectSel(subjSel, entry.subject_id);
-        subjTd.appendChild(subjSel);
-        tr.appendChild(subjTd);
+        subjSel.className = "fbt-scb-sel fbt-scb-sel-narrow";
+        _fillSubjectSel(subjSel, entry.subject_id || "");
 
-        // Bundle select
-        const bundTd = document.createElement("td");
+        const arrow = document.createElement("span");
+        arrow.className = "fbt-scb-arrow";
+        arrow.textContent = "→";
+
         const bundSel = document.createElement("select");
-        bundSel.className = "fbt-scb-sel";
-        _fillBundleSel(bundSel, entry.subject_id, entry.bundle_id);
-        bundTd.appendChild(bundSel);
-        tr.appendChild(bundTd);
+        bundSel.className = "fbt-scb-sel fbt-scb-sel-narrow";
+        _fillBundleSel(bundSel, entry.subject_id || "", entry.bundle_id || "");
 
-        // Source Profile subject select (hidden when no profiles are connected)
-        const srcTd = document.createElement("td");
-        srcTd.className = "fbt-scb-src-td";
-        srcTd.style.display = _connectedSPSubjects.length ? "" : "none";
+        row1.append(_lbl("Subject"), subjSel, arrow, _lbl("Bundle"), bundSel);
+
+        // ── Row 2: Source + Mode + Audio ─────────────────────────────────────────
+        const row2 = document.createElement("div");
+        row2.className = "fbt-scb-form-row";
+
         const srcSel = document.createElement("select");
-        srcSel.className = "fbt-scb-sel fbt-scb-src-sel";
+        srcSel.className = "fbt-scb-sel fbt-scb-sel-narrow fbt-scb-src-sel";
+        srcSel.style.display = _connectedSPSubjects.length ? "" : "none";
         _fillSourceSubjectSel(srcSel, entry.source_profile_id || "", entry.source_subject_id || "");
-        srcTd.appendChild(srcSel);
-        tr.appendChild(srcTd);
 
-        // Mode toggle
-        const modeTd = document.createElement("td");
-        modeTd.className = "fbt-scb-c";
+        // Mode buttons
         const modeWrap = document.createElement("div");
         modeWrap.className = "fbt-scb-mode";
+
         const bun0 = _bundles.find(b => b.id === entry.bundle_id);
         const _hasImages = b => Boolean(b?.visual?.files?.length);
         const _hasVideo  = b => Boolean(b?.visual?.file);
@@ -363,39 +447,42 @@ function _buildCastBuildUI(node, app) {
 
         if (!("image_selection" in entry)) entry.image_selection = null;
 
-        // Img button — "use all images"
         const imgBtn = document.createElement("button");
         imgBtn.className = "fbt-scb-mode-btn";
         imgBtn.textContent = "Img";
 
-        // Numbered sub-buttons (dynamic; always at least 2 slots rendered)
         const imgSubWrap = document.createElement("div");
         imgSubWrap.className = "fbt-scb-mode-num-wrap";
 
-        // Vid button
         const vidBtn = document.createElement("button");
         vidBtn.className = "fbt-scb-mode-btn fbt-scb-mode-btn-vid";
         vidBtn.textContent = "Vid";
 
-        modeWrap.appendChild(imgBtn);
-        modeWrap.appendChild(imgSubWrap);
-        modeWrap.appendChild(vidBtn);
-        modeTd.appendChild(modeWrap);
-        tr.appendChild(modeTd);
+        const bothBtn = document.createElement("button");
+        bothBtn.className = "fbt-scb-mode-btn fbt-scb-mode-btn-both";
+        bothBtn.textContent = "Both";
 
-        // Sync active/disabled states across the whole button group
+        modeWrap.append(imgBtn, imgSubWrap, vidBtn, bothBtn);
+
+        const _selArr  = () => Array.isArray(entry.image_selection) ? entry.image_selection : [];
+        const _selHas  = i  => _selArr().includes(i);
+        const _selNone = ()  => entry.image_selection == null || (Array.isArray(entry.image_selection) && !entry.image_selection.length);
+
         const _syncModeActive = () => {
-            const isVid = entry.visual_mode === "video";
-            const sel   = entry.image_selection;
-            imgBtn.classList.toggle("active", !isVid && sel == null);
+            const mode   = entry.visual_mode;
+            const isVid  = mode === "video";
+            const isBoth = mode === "both";
+            const hasImg = mode === "images" || isBoth;
+            // "Img" lights up when in images/both with no specific selection (all images)
+            imgBtn.classList.toggle("active", hasImg && _selNone());
             vidBtn.classList.toggle("active", isVid);
+            bothBtn.classList.toggle("active", isBoth);
+            // Numbered buttons highlight when their index is in the selection array
             imgSubWrap.querySelectorAll(".fbt-scb-mode-btn-num").forEach((btn, i) => {
-                btn.classList.toggle("active", !isVid && sel === i);
+                btn.classList.toggle("active", hasImg && _selHas(i));
             });
         };
 
-        // Build (or rebuild) numbered image sub-buttons for the given bundle.
-        // Always renders at least 2 slots; extras are disabled if the bundle has fewer images.
         const _buildNumBtns = bun => {
             imgSubWrap.innerHTML = "";
             const fileCount = _imgCount(bun);
@@ -410,82 +497,100 @@ function _buildCastBuildUI(node, app) {
                 btn.title     = hasSlot ? `Image ${i + 1}: ${role}` : "No image at this slot";
                 btn.disabled  = !hasSlot;
                 btn.addEventListener("click", () => {
-                    entry.visual_mode    = "images";
-                    entry.image_selection = i;
+                    // Stay in "both" if already there; otherwise switch to "images"
+                    if (entry.visual_mode !== "both") entry.visual_mode = "images";
+                    // Toggle this index in/out of the selection array
+                    const arr = _selArr();
+                    const pos = arr.indexOf(i);
+                    if (pos === -1) arr.push(i); else arr.splice(pos, 1);
+                    arr.sort((a, b) => a - b);
+                    // Empty array → null (all images); otherwise store sorted array
+                    entry.image_selection = arr.length ? arr : null;
                     _syncModeActive();
                     _syncWidget();
+                    if (_previewOpen) _loadRefPreview(previewArea, entry);
                 });
                 imgSubWrap.appendChild(btn);
             }
             const hasImg = fileCount > 0;
-            imgBtn.disabled = bun && !hasImg;
-            imgBtn.title    = hasImg ? "Use all image references" : "No images in bundle";
-            vidBtn.disabled = bun && !_hasVideo(bun);
-            vidBtn.title    = _hasVideo(bun) ? "Use video reference" : "No video in bundle";
+            const hasVid = _hasVideo(bun);
+            imgBtn.disabled  = bun && !hasImg;
+            imgBtn.title     = hasImg ? "Use all image references" : "No images in bundle";
+            vidBtn.disabled  = bun && !hasVid;
+            vidBtn.title     = hasVid ? "Use video reference" : "No video in bundle";
+            bothBtn.disabled = bun && !(hasImg && hasVid);
+            bothBtn.title    = (hasImg && hasVid) ? "Use both images and video" : "Bundle needs both images and a video";
             _syncModeActive();
         };
 
         _buildNumBtns(bun0);
 
-        // Audio checkbox
-        const audTd = document.createElement("td");
-        audTd.className = "fbt-scb-c";
         const audCb = document.createElement("input");
-        audCb.type = "checkbox";
+        audCb.type      = "checkbox";
         audCb.className = "fbt-scb-audio";
-        audCb.title = "Use audio reference";
-        audCb.checked = !!entry.use_audio;
-        audTd.appendChild(audCb);
-        tr.appendChild(audTd);
+        audCb.title     = "Use audio reference";
+        audCb.checked   = !!entry.use_audio;
 
-        // Dialogue text input
-        const dlgTd = document.createElement("td");
+        // Source label hides when no source profile connected
+        const srcLabel = _lbl("Source");
+        srcLabel.style.display = _connectedSPSubjects.length ? "" : "none";
+        const audLabel = _lbl("Audio");
+        row2.append(srcLabel, srcSel, _lbl("Mode"), modeWrap, audLabel, audCb);
+
+        // ── Row 3: Dialogue ──────────────────────────────────────────────────────
+        const row3 = document.createElement("div");
+        row3.className = "fbt-scb-form-row";
+
         const dlgInput = document.createElement("input");
-        dlgInput.type = "text";
-        dlgInput.className = "fbt-scb-dlg";
-        dlgInput.value = entry.dialogue || "";
-        dlgInput.placeholder = "text or %libber:key%";
-        dlgInput.title = "Dialogue for this cast entry.\n[silent] = no audio contribution\n[sounds] desc = sound event\n%libber:key% or %libber:*% = libber lookup (% delimiters required)";
-        dlgTd.appendChild(dlgInput);
-        tr.appendChild(dlgTd);
+        dlgInput.type        = "text";
+        dlgInput.className   = "fbt-scb-dlg";
+        dlgInput.value       = entry.dialogue || "";
+        dlgInput.placeholder = "dialogue / %libber:key%";
+        dlgInput.title       = "Dialogue for this cast entry.\n[silent] = no audio contribution\n[sounds] desc = sound event\n%libber:key% or %libber:*% = libber lookup";
+        row3.append(_lbl("Dialogue"), dlgInput);
+        _applyDlgToInput(dlgInput);
 
-        // Preview + Remove buttons
-        const rmTd = document.createElement("td");
-        rmTd.style.whiteSpace = "nowrap";
+        // ── Preview section ──────────────────────────────────────────────────────
+        const previewToggle = document.createElement("button");
+        previewToggle.className = "fbt-scb-preview-btn fbt-scb-preview-toggle";
+        previewToggle.textContent = "⊙ Preview";
+        previewToggle.title = "Preview media references for this entry";
 
-        const previewBtn = document.createElement("button");
-        previewBtn.className = "fbt-scb-preview-btn";
-        previewBtn.textContent = "⊙";
-        previewBtn.title = "Preview media";
-        previewBtn.addEventListener("click", () => _togglePreview(idx, previewRow, previewBtn));
-        rmTd.appendChild(previewBtn);
+        const previewArea = document.createElement("div");
+        previewArea.className = "fbt-scb-preview-area";
 
-        const rmBtn = document.createElement("button");
-        rmBtn.className = "fbt-scb-rm-btn";
-        rmBtn.textContent = "✕";
-        rmBtn.title = "Remove entry";
-        rmBtn.addEventListener("click", () => {
-            // Clean up any open tmp frame for this entry
-            const tmp = _tmpFrames.get(entry.bundle_id);
-            if (tmp) { bundlesApi.deleteTmpFrame(tmp); _tmpFrames.delete(entry.bundle_id); }
-            _entries.splice(idx, 1);
-            _rebuildTable();
-            _syncWidget();
+        if (_previewOpen) {
+            previewToggle.classList.add("active");
+            previewArea.style.display = "";
+            _loadRefPreview(previewArea, entry);
+        } else {
+            previewArea.style.display = "none";
+        }
+
+        previewToggle.addEventListener("click", () => {
+            _previewOpen = !_previewOpen;
+            previewToggle.classList.toggle("active", _previewOpen);
+            if (_previewOpen) {
+                previewArea.style.display = "";
+                _loadRefPreview(previewArea, entry);
+            } else {
+                previewArea.style.display = "none";
+                const tmp = _tmpFrames.get(entry.bundle_id);
+                if (tmp) { bundlesApi.deleteTmpFrame(tmp); _tmpFrames.delete(entry.bundle_id); }
+            }
+            _updateHeight();
         });
-        rmTd.appendChild(rmBtn);
-        tr.appendChild(rmTd);
 
-        // ── Events ────────────────────────────────────────────────────────────
+        tabContent.append(row1, row2, row3, previewToggle, previewArea);
+
+        // ── Events ───────────────────────────────────────────────────────────────
 
         subjSel.addEventListener("change", () => {
             entry.subject_id = subjSel.value;
-            // Clear bundle if it belongs to a different subject
             const cur = _bundles.find(b => b.id === entry.bundle_id);
-            if (cur?.subject_id && cur.subject_id !== entry.subject_id) {
-                entry.bundle_id = "";
-            }
+            if (cur?.subject_id && cur.subject_id !== entry.subject_id) entry.bundle_id = "";
             _fillBundleSel(bundSel, entry.subject_id, entry.bundle_id);
-            tr.classList.toggle("fbt-scb-empty", !entry.subject_id || !entry.bundle_id);
+            _buildTabStrip();
             _syncWidget();
         });
 
@@ -494,19 +599,23 @@ function _buildCastBuildUI(node, app) {
             const bun = _bundles.find(b => b.id === entry.bundle_id);
             const hasImg = _hasImages(bun);
             const hasVid = _hasVideo(bun);
-            // Default to the bundle's preferred mode; fall back if not available.
             if (bun?.visual?.type) {
                 entry.visual_mode = bun.visual.type;
-                if (entry.visual_mode === "video" && !hasVid && hasImg) entry.visual_mode = "images";
+                if (entry.visual_mode === "video"  && !hasVid && hasImg) entry.visual_mode = "images";
                 if (entry.visual_mode === "images" && !hasImg && hasVid) entry.visual_mode = "video";
+                if (entry.visual_mode === "both"   && !hasImg)           entry.visual_mode = hasVid ? "video" : "images";
+                if (entry.visual_mode === "both"   && !hasVid)           entry.visual_mode = "images";
             }
-            // If the previously-selected image index no longer exists, reset to "all".
             const fc = _imgCount(bun);
-            if (entry.image_selection != null && entry.image_selection >= fc) {
+            if (Array.isArray(entry.image_selection)) {
+                const filtered = entry.image_selection.filter(i => i < fc);
+                entry.image_selection = filtered.length ? filtered : null;
+            } else if (entry.image_selection != null && entry.image_selection >= fc) {
                 entry.image_selection = null;
             }
             _buildNumBtns(bun);
-            tr.classList.toggle("fbt-scb-empty", !entry.subject_id || !entry.bundle_id);
+            _buildTabStrip();
+            if (_previewOpen) _loadRefPreview(previewArea, entry);
             _syncWidget();
         });
 
@@ -514,7 +623,7 @@ function _buildCastBuildUI(node, app) {
             const val = srcSel.value;
             if (val) {
                 const sep = val.indexOf("::");
-                entry.source_profile_id = sep >= 0 ? val.slice(0, sep) : "";
+                entry.source_profile_id  = sep >= 0 ? val.slice(0, sep) : "";
                 entry.source_subject_id  = sep >= 0 ? val.slice(sep + 2) : val;
             } else {
                 delete entry.source_profile_id;
@@ -524,16 +633,26 @@ function _buildCastBuildUI(node, app) {
         });
 
         imgBtn.addEventListener("click", () => {
-            entry.visual_mode    = "images";
+            // Stay in "both" if already there (clearing to all images within both)
+            if (entry.visual_mode !== "both") entry.visual_mode = "images";
             entry.image_selection = null;
             _syncModeActive();
             _syncWidget();
+            if (_previewOpen) _loadRefPreview(previewArea, entry);
         });
 
         vidBtn.addEventListener("click", () => {
             entry.visual_mode = "video";
             _syncModeActive();
             _syncWidget();
+            if (_previewOpen) _loadRefPreview(previewArea, entry);
+        });
+
+        bothBtn.addEventListener("click", () => {
+            entry.visual_mode = "both";
+            _syncModeActive();
+            _syncWidget();
+            if (_previewOpen) _loadRefPreview(previewArea, entry);
         });
 
         audCb.addEventListener("change", () => {
@@ -545,52 +664,55 @@ function _buildCastBuildUI(node, app) {
             entry.dialogue = dlgInput.value;
             _syncWidget();
         });
-
-        return tr;
     }
 
-    // ── 7. Rebuild the whole tbody ────────────────────────────────────────────
+    // ── 9. Dialogue state ─────────────────────────────────────────────────────
+
+    function _applyDlgToInput(inp) {
+        const disabled = !_clipAllowsDialogue;
+        inp.disabled      = disabled;
+        inp.title         = disabled
+            ? "Dialogue disabled — this clip has 'Allows dialogue' turned off"
+            : inp.title;
+        inp.style.opacity = disabled ? "0.35" : "";
+        inp.style.cursor  = disabled ? "not-allowed" : "";
+    }
 
     function _applyDlgState() {
-        const disabled = !_clipAllowsDialogue;
-        tbody.querySelectorAll(".fbt-scb-dlg").forEach(inp => {
-            inp.disabled = disabled;
-            inp.title = disabled
-                ? "Dialogue disabled — this clip has 'Allows dialogue' turned off"
-                : "Dialogue for this cast entry.\n[silent] = no audio contribution\n[sounds] desc = sound event\n%libber:key% = libber lookup";
-            inp.style.opacity = disabled ? "0.35" : "";
-            inp.style.cursor  = disabled ? "not-allowed" : "";
-        });
-        const dlgTh = thead.querySelector("th[style*='22%']");
-        if (dlgTh) dlgTh.style.opacity = disabled ? "0.45" : "";
+        const inp = tabContent.querySelector(".fbt-scb-dlg");
+        if (inp) _applyDlgToInput(inp);
     }
 
-    function _rebuildTable() {
-        // Clean up any extracted video frames still open
-        _tmpFrames.forEach(tmp => bundlesApi.deleteTmpFrame(tmp));
-        _tmpFrames.clear();
+    // ── 10. Rebuild all tabs ──────────────────────────────────────────────────
 
-        tbody.innerHTML = "";
-        _entries.forEach((_, i) => {
-            const previewRow = _buildPreviewRowEl();
-            const entryRow = _buildRow(i, previewRow);
-            tbody.appendChild(entryRow);
-            tbody.appendChild(previewRow);
+    function _rebuildTabs() {
+        // Clean up extracted frames no longer in any entry
+        const activeIds = new Set(_entries.map(e => e.bundle_id).filter(Boolean));
+        _tmpFrames.forEach((tmp, bid) => {
+            if (!activeIds.has(bid)) { bundlesApi.deleteTmpFrame(tmp); _tmpFrames.delete(bid); }
         });
-        addBtn.style.display = _entries.length >= MAX_ENTRIES ? "none" : "";
-        _applyDlgState();
-        // Update DOM widget height
+
+        _buildTabStrip();
+        _renderActiveTab();
+        _updateHeight();
+    }
+
+    // ── 11. Widget height ─────────────────────────────────────────────────────
+
+    function _widgetHeight() {
+        // Tab strip + 3 form rows (subject/mode/dlg) + preview toggle + preview area
+        const base = 30 + 26 + 26 + 26 + 24;  // ≈ 132px
+        return base + (_previewOpen ? 140 : 0);
+    }
+
+    function _updateHeight() {
         if (displayWidget) {
-            displayWidget.computeSize = () => [0, _tableHeight()];
+            displayWidget.computeSize = () => [0, _widgetHeight()];
             node.setSize?.([node.size[0], node.size[1]]);
         }
     }
 
-    function _tableHeight() {
-        return Math.max(70, 28 + _entries.length * 28 + 26);
-    }
-
-    // ── 8. Sync entries → hidden widget ───────────────────────────────────────
+    // ── 12. Sync entries → hidden widget ─────────────────────────────────────
 
     function _syncWidget() {
         if (jsonWidget) jsonWidget.value = JSON.stringify(_entries);
@@ -598,40 +720,31 @@ function _buildCastBuildUI(node, app) {
         _updateActionPreview();
     }
 
-    // ── 9. Add DOM widget ─────────────────────────────────────────────────────
+    // ── 13. Add DOM widget ────────────────────────────────────────────────────
     let displayWidget = null;
     displayWidget = node.addDOMWidget("cast_build_table", "preview", wrap, {
-        serialize: false,
-        hideOnZoom: false,
-        margin: 0,
-        getValue() { return null; },
-        setValue() {},
+        serialize:   false,
+        hideOnZoom:  false,
+        margin:      0,
+        getValue()   { return null; },
+        setValue()   {},
     });
-    displayWidget.computeSize = () => [0, _tableHeight()];
+    displayWidget.computeSize = () => [0, _widgetHeight()];
 
-    // ── 10. Source subject column refresh ─────────────────────────────────────
-
-    function _updateSourceColVisibility() {
-        const show = _connectedSPSubjects.length > 0;
-        srcTh.style.display = show ? "" : "none";
-        tbody.querySelectorAll(".fbt-scb-src-td").forEach(td => {
-            td.style.display = show ? "" : "none";
-        });
-    }
+    // ── 14. Source subject refresh ────────────────────────────────────────────
 
     async function _refreshSourceSubjects() {
         const results = [];
-        const inp = node.inputs?.find(i => i.name === "source_profile");
-        const linkId = inp?.link;
+        const inp     = node.inputs?.find(i => i.name === "source_profile");
+        const linkId  = inp?.link;
         if (linkId) {
-            const linkObj = app.graph.links[linkId];
+            const linkObj  = app.graph.links[linkId];
             const upstream = linkObj ? app.graph.getNodeById(linkObj.origin_id) : null;
-            // Widget was renamed from "profile_id" to "profile_name"; support both.
             const profileWidget = upstream?.widgets?.find(
                 w => w.name === "profile_name" || w.name === "profile_id"
             );
             const profileVal = profileWidget?.value;
-            const isName = profileWidget?.name === "profile_name";
+            const isName     = profileWidget?.name === "profile_name";
             if (profileVal && profileVal !== "(none)") {
                 try {
                     const param = isName
@@ -641,10 +754,10 @@ function _buildCastBuildUI(node, app) {
                     if (resp.ok) {
                         const profile = await resp.json();
                         results.push({
-                            pid: profile.id,
-                            label: profile.name || profile.id || profileVal,
+                            pid:      profile.id,
+                            label:    profile.name || profile.id || profileVal,
                             subjects: (profile.subjects ?? []).map(s => ({
-                                id: s.id,
+                                id:    s.id,
                                 label: s.label || s.role_description || s.id,
                             })),
                         });
@@ -654,26 +767,28 @@ function _buildCastBuildUI(node, app) {
         }
         _connectedSPSubjects = results;
 
-        // Update each existing source select in-place (no full rebuild needed)
-        const srcSels = [...tbody.querySelectorAll(".fbt-scb-src-sel")];
-        srcSels.forEach((sel, i) => {
-            const entry = _entries[i];
+        // Update source select in the currently visible tab in-place
+        const srcSel = tabContent.querySelector(".fbt-scb-src-sel");
+        if (srcSel) {
+            const entry = _entries[_activeTabIdx];
             if (entry) {
-                _fillSourceSubjectSel(sel, entry.source_profile_id || "", entry.source_subject_id || "");
+                _fillSourceSubjectSel(srcSel, entry.source_profile_id || "", entry.source_subject_id || "");
+                const show = _connectedSPSubjects.length ? "" : "none";
+                srcSel.style.display = show;
+                // Also toggle the sibling Source label (previous sibling)
+                if (srcSel.previousElementSibling?.classList.contains("fbt-scb-field-label")) {
+                    srcSel.previousElementSibling.style.display = show;
+                }
             }
-        });
+        }
 
-        _updateSourceColVisibility();
         _updateActionPreview();
     }
 
     node._refreshSourceSubjects = _refreshSourceSubjects;
     requestAnimationFrame(() => _refreshSourceSubjects());
 
-    // ── 12. Clip timeline (single source_profile input) ──────────────────────
-    // Hide the backing STRING widget; replace with a canvas timeline that lets
-    // the user click a segment or use ← / → arrows (with wrap-around) to pick
-    // the active clip. Purely navigational — no boundary dragging.
+    // ── 15. Clip timeline ─────────────────────────────────────────────────────
 
     const clipWidget = node.widgets?.find(w => w.name === "clip_id");
     if (clipWidget) setWidgetVisible(clipWidget, false, node);
@@ -688,7 +803,7 @@ function _buildCastBuildUI(node, app) {
 
     const clipsSection = document.createElement("div");
     clipsSection.className = "fbt-scb-clips";
-    clipsSection.style.display = "none"; // hidden until a profile is connected
+    clipsSection.style.display = "none";
 
     const canvas = document.createElement("canvas");
     canvas.className = "fbt-scb-timeline";
@@ -706,7 +821,6 @@ function _buildCastBuildUI(node, app) {
     nextBtn.textContent = "→";
     navRow.append(prevBtn, navLabel, nextBtn);
 
-    // Duration / multiplier row
     const durRow = document.createElement("div");
     durRow.className = "fbt-scb-dur-row";
     const multGroup = document.createElement("div");
@@ -724,19 +838,16 @@ function _buildCastBuildUI(node, app) {
     durLabel.className = "fbt-scb-dur-label";
     durRow.append(multGroup, durLabel);
 
-    // Order: duration controls → timeline canvas → nav row
     clipsSection.appendChild(durRow);
     clipsSection.appendChild(canvas);
     clipsSection.appendChild(navRow);
 
     wrap.appendChild(clipsSection);
 
-    // Timeline state
-    let _clips    = [];   // ordered clip objects from the connected profile
-    let _activeIdx = -1;  // index into _clips; -1 = none
+    let _clips     = [];
+    let _activeIdx = -1;
     let _hoverIdx  = -1;
 
-    // When clip time data is absent or flat, synthesise equal-width slots.
     function _displayClips() {
         const hasTimes = _clips.some(c => c.end_time > c.start_time);
         if (hasTimes) return _clips;
@@ -744,7 +855,7 @@ function _buildCastBuildUI(node, app) {
     }
 
     function _drawTimeline() {
-        const dc = _displayClips();
+        const dc       = _displayClips();
         const totalDur = dc.length ? Math.max(...dc.map(c => c.end_time)) : 1;
         const W = canvas.width = canvas.offsetWidth || 300;
         const H = canvas.height;
@@ -822,7 +933,7 @@ function _buildCastBuildUI(node, app) {
     }
 
     function _updateDurRow() {
-        const clip = _clips[_activeIdx];
+        const clip    = _clips[_activeIdx];
         const hasClip = clip && clip.end_time > clip.start_time;
         const native  = hasClip ? clip.end_time - clip.start_time : 0;
         const scaled  = native * _multiplier;
@@ -834,8 +945,7 @@ function _buildCastBuildUI(node, app) {
             durLabel.textContent = "";
         }
         multBtns.forEach(btn => {
-            const m = parseInt(btn.dataset.mult, 10);
-            btn.classList.toggle("active", m === _multiplier);
+            btn.classList.toggle("active", parseInt(btn.dataset.mult, 10) === _multiplier);
         });
     }
 
@@ -860,10 +970,12 @@ function _buildCastBuildUI(node, app) {
         _updateNavRow();
         _updateDurRow();
         _updateDlgFromClip();
-        [...tbody.querySelectorAll(".fbt-scb-src-sel")].forEach((sel, i) => {
-            const entry = _entries[i];
-            if (entry) _fillSourceSubjectSel(sel, entry.source_profile_id || "", entry.source_subject_id || "");
-        });
+        // Refresh source select for the visible tab only
+        const srcSel = tabContent.querySelector(".fbt-scb-src-sel");
+        if (srcSel) {
+            const entry = _entries[_activeTabIdx];
+            if (entry) _fillSourceSubjectSel(srcSel, entry.source_profile_id || "", entry.source_subject_id || "");
+        }
         _updateActionPreview();
     }
 
@@ -907,7 +1019,7 @@ function _buildCastBuildUI(node, app) {
     new ResizeObserver(() => _drawTimeline()).observe(canvas);
 
     // ── Action preview ────────────────────────────────────────────────────────
-    // Shows the clip's action text with {A}/{B}/… substituted by cast/source labels.
+
     const actionPreviewEl = document.createElement("div");
     actionPreviewEl.className = "fbt-scb-action-preview";
     actionPreviewEl.style.display = "none";
@@ -916,27 +1028,26 @@ function _buildCastBuildUI(node, app) {
     function _buildActionPreview() {
         const clipId = _activeClipId;
         if (!clipId) return null;
-        const clip = _clipMap.get(clipId);
+        const clip   = _clipMap.get(clipId);
         const action = clip?.action;
         if (!action) return null;
 
-        // Ordered source subjects for this clip (same ordering as slot label fix).
-        const clipSubjectIds = new Set(clip.subjects ?? []);
-        const spData = _connectedSPSubjects[0];
+        const clipSubjectIds  = new Set(clip.subjects ?? []);
+        const spData          = _connectedSPSubjects[0];
         const orderedSubjects = spData
             ? spData.subjects.filter(s => clipSubjectIds.has(s.id))
             : [];
 
         const SLOTS = ["A","B","C","D","E","F","G","H","I","J"];
         const slotLabel = {};
-        orderedSubjects.forEach((subj, idx) => {
-            if (idx >= SLOTS.length) return;
+        orderedSubjects.forEach((subj, sidx) => {
+            if (sidx >= SLOTS.length) return;
             const castEntry = _entries.find(e => e.source_subject_id === subj.id);
             if (castEntry?.bundle_id) {
                 const bun = _bundles.find(b => b.id === castEntry.bundle_id);
-                slotLabel[SLOTS[idx]] = bun?.name || castEntry.bundle_id;
+                slotLabel[SLOTS[sidx]] = bun?.name || castEntry.bundle_id;
             } else {
-                slotLabel[SLOTS[idx]] = subj.label || subj.id;
+                slotLabel[SLOTS[sidx]] = subj.label || subj.id;
             }
         });
 
@@ -949,15 +1060,12 @@ function _buildCastBuildUI(node, app) {
         const text = _buildActionPreview();
         if (text == null) {
             actionPreviewEl.style.display = "none";
-            actionPreviewEl.textContent = "";
+            actionPreviewEl.textContent   = "";
         } else {
             actionPreviewEl.style.display = "";
-            actionPreviewEl.textContent = text;
+            actionPreviewEl.textContent   = text;
         }
     }
-
-    // keyed by clip id — populated in _refreshClipSelects
-    let _clipMap = new Map();
 
     function _updateDlgFromClip() {
         const clip = _clipMap.get(_activeClipId);
@@ -967,32 +1075,32 @@ function _buildCastBuildUI(node, app) {
 
     async function _refreshClipSelects() {
         const savedVal = clipWidget?.value ?? "";
-        const inp = node.inputs?.find(i => i.name === "source_profile");
-        const linkId = inp?.link;
+        const inp      = node.inputs?.find(i => i.name === "source_profile");
+        const linkId   = inp?.link;
 
         if (!linkId) {
             clipsSection.style.display = "none";
             _clips = [];
             _clipMap.clear();
-            _activeIdx = -1;
+            _activeIdx    = -1;
             _activeClipId = "";
             _clipAllowsDialogue = true;
             _applyDlgState();
             return;
         }
-        const linkObj = app.graph.links[linkId];
-        const upstream = linkObj ? app.graph.getNodeById(linkObj.origin_id) : null;
+        const linkObj   = app.graph.links[linkId];
+        const upstream  = linkObj ? app.graph.getNodeById(linkObj.origin_id) : null;
         const profileWidget = upstream?.widgets?.find(
             w => w.name === "profile_name" || w.name === "profile_id"
         );
         const profileVal = profileWidget?.value;
-        const isName = profileWidget?.name === "profile_name";
+        const isName     = profileWidget?.name === "profile_name";
 
         if (!profileVal || profileVal === "(none)") {
             clipsSection.style.display = "none";
             _clips = [];
             _clipMap.clear();
-            _activeIdx = -1;
+            _activeIdx    = -1;
             _activeClipId = "";
             _clipAllowsDialogue = true;
             _applyDlgState();
@@ -1010,17 +1118,16 @@ function _buildCastBuildUI(node, app) {
             if (resp.ok) clips = (await resp.json()).clips ?? [];
         } catch { /* leave empty */ }
 
-        _clips  = clips;
+        _clips   = clips;
         _clipMap = new Map(clips.map(c => [c.id, c]));
 
-        // Restore saved selection; fall back to first clip.
         const savedIdx = savedVal ? clips.findIndex(c => c.id === savedVal) : -1;
         if (savedIdx >= 0) {
             _selectClipIdx(savedIdx);
         } else if (clips.length) {
             _selectClipIdx(0);
         } else {
-            _activeIdx = -1;
+            _activeIdx    = -1;
             _activeClipId = "";
             if (clipWidget) clipWidget.value = "";
             _drawTimeline();
@@ -1030,7 +1137,7 @@ function _buildCastBuildUI(node, app) {
         }
 
         if (displayWidget) {
-            displayWidget.computeSize = () => [0, _tableHeight() + 28];
+            displayWidget.computeSize = () => [0, _widgetHeight() + 80];
             node.setSize?.([node.size[0], node.size[1]]);
         }
     }
@@ -1038,35 +1145,36 @@ function _buildCastBuildUI(node, app) {
     node._refreshClipSelects = _refreshClipSelects;
     requestAnimationFrame(() => _refreshClipSelects());
 
-    // ── 13. Public refresh (called by cast editor "Send to Workflow") ─────────
+    // ── 16. Public refresh ────────────────────────────────────────────────────
 
     node._refreshCastTable = function (newEntries) {
         if (Array.isArray(newEntries)) {
-            // Called by cast editor "Send to Workflow" — use the provided entries
             _entries = newEntries.map(e => ({ ...e }));
+            if (!_entries.length) _entries.push({ subject_id: "", bundle_id: "", visual_mode: "images", use_audio: false, dialogue: "" });
             _syncWidget();
         } else {
-            // Called after workflow load (onConfigure) — re-read from widget
             try {
                 const parsed = JSON.parse(jsonWidget?.value || "[]");
                 if (Array.isArray(parsed)) _entries = parsed;
             } catch { /* leave as-is */ }
+            if (!_entries.length) _entries.push({ subject_id: "", bundle_id: "", visual_mode: "images", use_audio: false, dialogue: "" });
         }
-        _rebuildTable();
+        _activeTabIdx = Math.min(_activeTabIdx, _entries.length - 1);
+        _rebuildTabs();
     };
 
-    // ── 14. Load subject + bundle lists, then render ─────────────────────────
+    // ── 17. Load subject + bundle lists, then render ──────────────────────────
     Promise.allSettled([
         bundlesApi.listSubjects(),
         bundlesApi.listBundles(),
     ]).then(([subjRes, bundRes]) => {
         _subjects = subjRes.value?.subjects ?? [];
         _bundles  = bundRes.value?.bundles  ?? [];
-        _rebuildTable();
+        _rebuildTabs();
     }).catch(() => {
-        _rebuildTable();
+        _rebuildTabs();
     });
 
-    node.size[0] = Math.max(node.size[0], 370);
-    node.size[1] = Math.max(node.size[1], _tableHeight() + 60);
+    node.size[0] = Math.max(node.size[0], 320);
+    node.size[1] = Math.max(node.size[1], _widgetHeight() + 60);
 }

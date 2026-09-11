@@ -4,34 +4,131 @@
     padding: 4px 6px 6px;
     box-sizing: border-box;
 }
-.fbt-scb-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 11px;
-    table-layout: fixed;
+
+/* ── Tab strip ────────────────────────────────────────────────────────────── */
+.fbt-scb-tab-strip {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid var(--fbt-border);
+    flex-shrink: 0;
 }
-.fbt-scb-table thead th {
-    padding: 2px 4px;
-    color: var(--fbt-muted);
-    font-weight: 500;
-    text-align: left;
-    white-space: nowrap;
+/* Scrollable tab area — grows, clips; "+" stays outside */
+.fbt-scb-tab-scroller {
+    display: flex;
+    align-items: stretch;
+    flex: 1 1 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    min-width: 0;
 }
-.fbt-scb-table thead th.fbt-scb-c { text-align: center; }
-.fbt-scb-table tbody tr {
-    border-top: 1px solid var(--fbt-border-sub);
-}
-.fbt-scb-table tbody tr.fbt-scb-empty { opacity: 0.38; }
-.fbt-scb-table tbody td {
-    padding: 3px 4px;
-    vertical-align: middle;
-}
-.fbt-scb-table tbody td.fbt-scb-c { text-align: center; }
-.fbt-scb-row-num {
-    color: var(--fbt-muted);
+.fbt-scb-tab-scroller::-webkit-scrollbar { display: none; }
+
+.fbt-scb-tab {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 3px 6px 3px 8px;
     font-size: 10px;
-    width: 16px;
+    cursor: pointer;
+    /* Visible tab shape: right separator, transparent top/sides by default */
+    border-top: 1px solid transparent;
+    border-left: 1px solid transparent;
+    border-right: 1px solid var(--fbt-border-sub);
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--fbt-muted);
+    white-space: nowrap;
+    max-width: 110px;
+    line-height: 1.4;
+    position: relative;
+    bottom: -1px; /* overlap strip's bottom border so active tab merges */
 }
+.fbt-scb-tab.active {
+    color: var(--fbt-text);
+    background: var(--fbt-input-bg);
+    border-top-color: var(--fbt-border);
+    border-left-color: var(--fbt-border);
+    border-right-color: var(--fbt-border);
+    border-bottom-color: var(--fbt-blue);
+}
+.fbt-scb-tab:hover:not(.active) {
+    color: var(--fbt-text);
+    background: var(--p-surface-hover, rgba(255,255,255,0.05));
+}
+.fbt-scb-tab-lbl {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 80px;
+    flex-shrink: 1;
+}
+.fbt-scb-tab-close {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--fbt-muted);
+    cursor: pointer;
+    font-size: 10px;
+    padding: 0 1px;
+    line-height: 1;
+    opacity: 0.6;
+}
+.fbt-scb-tab-close:hover { color: var(--fbt-red); opacity: 1; }
+
+.fbt-scb-tab-add {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    font-size: 14px;
+    line-height: 1;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--fbt-blue);
+    cursor: pointer;
+    opacity: 0.8;
+    position: relative;
+    bottom: -1px;
+}
+.fbt-scb-tab-add:hover:not(:disabled) { opacity: 1; }
+.fbt-scb-tab-add:disabled { opacity: 0.3; cursor: default; }
+
+/* ── Tab content form ─────────────────────────────────────────────────────── */
+.fbt-scb-tab-content {
+    padding: 5px 0 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.fbt-scb-form-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+.fbt-scb-arrow {
+    color: var(--fbt-muted);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+/* Short muted label preceding each input */
+.fbt-scb-field-label {
+    font-size: 9px;
+    color: var(--fbt-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    min-width: 50px;
+    text-align: right;
+}
+/* Constrained-width selects for subj/bundle/source — scale with node width */
+.fbt-scb-sel-narrow {
+    flex: 1 1 0;
+    min-width: 55px;
+    max-width: 130px;
+}
+/* ── Shared select / input / checkbox ─────────────────────────────────────── */
 .fbt-scb-sel {
     width: 100%;
     background: var(--fbt-input-bg);
@@ -47,11 +144,36 @@
     outline: none;
     border-color: var(--fbt-blue);
 }
+.fbt-scb-dlg {
+    flex: 1;
+    background: var(--fbt-input-bg);
+    border: 1px solid var(--fbt-border);
+    border-radius: 3px;
+    color: inherit;
+    font-size: 11px;
+    padding: 2px 3px;
+    box-sizing: border-box;
+    width: 100%;
+}
+.fbt-scb-dlg:focus {
+    outline: none;
+    border-color: var(--fbt-blue);
+}
+.fbt-scb-audio {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    cursor: pointer;
+    accent-color: var(--fbt-blue);
+}
+
+/* ── Mode button group ────────────────────────────────────────────────────── */
 .fbt-scb-mode {
     display: inline-flex;
     border-radius: 3px;
     overflow: hidden;
     border: 1px solid var(--fbt-border);
+    flex-shrink: 0;
 }
 .fbt-scb-mode-btn {
     padding: 2px 5px;
@@ -74,67 +196,85 @@
     background: var(--p-surface-hover, #2a2a2a);
     color: var(--p-surface-200, #ddd);
 }
-.fbt-scb-mode-num-wrap {
-    display: contents;
-}
+.fbt-scb-mode-num-wrap { display: contents; }
 .fbt-scb-mode-btn-num {
     min-width: 16px;
     padding: 2px 3px;
     border-left: 1px solid var(--fbt-border);
 }
-.fbt-scb-mode-btn-vid {
-    border-left: 1px solid var(--fbt-border);
-}
-.fbt-scb-audio {
-    width: 14px;
-    height: 14px;
-    cursor: pointer;
-    accent-color: var(--fbt-blue);
-}
-.fbt-scb-dlg {
-    width: 100%;
-    background: var(--fbt-input-bg);
-    border: 1px solid var(--fbt-border);
-    border-radius: 3px;
-    color: inherit;
-    font-size: 11px;
-    padding: 2px 3px;
-    box-sizing: border-box;
-}
-.fbt-scb-dlg:focus {
-    outline: none;
-    border-color: var(--fbt-blue);
-}
-.fbt-scb-rm-btn {
-    background: transparent;
-    border: none;
-    color: var(--fbt-red);
-    cursor: pointer;
-    font-size: 12px;
-    padding: 0 2px;
-    line-height: 1;
-}
-.fbt-scb-rm-btn:hover { color: var(--fbt-red-light); }
-.fbt-scb-preview-btn {
+.fbt-scb-mode-btn-vid  { border-left: 1px solid var(--fbt-border); }
+.fbt-scb-mode-btn-both { border-left: 1px solid var(--fbt-border); }
+
+/* ── Preview toggle button ────────────────────────────────────────────────── */
+.fbt-scb-preview-toggle {
     background: transparent;
     border: none;
     color: var(--fbt-muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 11px;
     padding: 0 2px;
     line-height: 1;
+    text-align: left;
 }
-.fbt-scb-preview-btn:hover { color: var(--fbt-blue); }
-.fbt-scb-preview-btn.active { color: var(--fbt-blue); }
-.fbt-scb-preview-row td {
-    padding: 4px 6px 8px 22px;
+.fbt-scb-preview-toggle:hover { color: var(--fbt-blue); }
+.fbt-scb-preview-toggle.active { color: var(--fbt-blue); }
+
+/* ── Preview area ─────────────────────────────────────────────────────────── */
+.fbt-scb-preview-area {
+    border: 1px solid var(--fbt-border-sub);
+    border-radius: var(--fbt-radius);
+    padding: 4px 6px 6px;
     background: var(--fbt-menu-bg);
+    margin-top: 2px;
 }
-.fbt-scb-preview-strip {
+
+/* Reference navigator — centered inline group */
+.fbt-scb-ref-nav {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: flex-start;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    margin-bottom: 6px;
+}
+.fbt-scb-ref-label {
+    font-size: 10px;
+    color: var(--fbt-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 160px;
+    text-align: center;
+}
+/* Ref panel: column layout, centered content */
+.fbt-scb-ref-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+}
+.fbt-scb-ref-img {
+    max-width: 100%;
+    max-height: 140px;
+    object-fit: contain;
+    border-radius: 3px;
+    border: 1px solid var(--fbt-border-sub);
+    background: #000;
+    cursor: zoom-in;
+    display: block;
+}
+.fbt-scb-ref-meta {
+    font-size: 9px;
+    color: var(--fbt-muted);
+    text-align: center;
+    word-break: break-all;
+    line-height: 1.3;
+}
+
+/* ── Shared preview elements ──────────────────────────────────────────────── */
+.fbt-scb-preview-note {
+    color: var(--fbt-muted);
+    font-size: 10px;
+    font-style: italic;
 }
 .fbt-scb-thumb {
     width: 72px;
@@ -160,11 +300,8 @@
     margin-top: 4px;
     flex-basis: 100%;
 }
-.fbt-scb-preview-note {
-    color: var(--fbt-muted);
-    font-size: 10px;
-    font-style: italic;
-}
+
+/* ── Add entry button (fallback — now via tab-add) ───────────────────────── */
 .fbt-scb-add-btn {
     margin-top: 5px;
     width: 100%;

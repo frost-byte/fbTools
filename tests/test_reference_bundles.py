@@ -108,7 +108,7 @@ def test_upsert_defaults_missing_fields():
     assert b["audio"]["select_every_nth"] == 1
     assert b["audio"]["start_time"] == 0.0
     assert b["audio"]["duration"] == 0.0
-    assert b["appearance_override"] == ""
+    assert b["appearance"] == {"summary": "", "hair": "", "face": "", "body": "", "default_outfit": ""}
     assert b["tags"] == []
 
 

@@ -1628,16 +1628,13 @@ function _renderSubjectForm(container, initial = {}, onSave, onCancel) {
         pronounEl.appendChild(o);
     });
     const shortNameEl = _mk("input", {
-        type: "text", placeholder: "e.g. room, hallway, courtyard",
+        type: "text", placeholder: "e.g. young woman, demonic warrior, stone hallway",
         value: initial.short_name || "",
     });
     const shortNameRow = _mk("div", { cls: "spe-form-row" }, [
-        _mk("label", {}, ["Short name (for 'the …' reference)"]), shortNameEl,
+        _mk("label", {}, ["Short name (compact descriptor)"]), shortNameEl,
     ]);
-    shortNameRow.style.display = pronounEl.value === "location" ? "" : "none";
-    pronounEl.addEventListener("change", () => {
-        shortNameRow.style.display = pronounEl.value === "location" ? "" : "none";
-    });
+    pronounEl.addEventListener("change", () => {});
 
     container.appendChild(_mk("div", { cls: "spe-form-row" }, [
         _mk("label", {}, ["Label (brief identifier)"]), labelEl,

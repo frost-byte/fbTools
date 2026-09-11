@@ -396,27 +396,40 @@ def test_h3_ref2va_retention_analysis_fully_preserved():
     assert "<Subject 1> must" not in prompt
 
 
-def test_h3_ref2va_retention_analysis_uses_appearance_summary():
-    alice = _make_subject("Alice", summary="the young woman with red hair")
+def test_h3_ref2va_retention_analysis_uses_structured_traits():
+    # Structured trait fields are used verbatim; appearance_summary is NOT used in retain clause.
+    alice = _make_subject("Alice", summary="the young woman with red hair", hair="long red hair")
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "): fully_preserved - the young woman with red hair" in prompt
+    assert "retain their long red hair" in prompt
+    # The retain line itself must not restate the full appearance_summary noun phrase.
+    ra_lines = [ln for ln in prompt.split("\n") if ln.startswith("<Subject") and "fully_preserved" in ln]
+    assert all("the young woman with red hair" not in ln for ln in ra_lines)
 
 
 def test_h3_ref2va_retention_analysis_includes_detail_fields():
     alice = _make_subject("Alice", summary="the young woman", hair="long red hair", body="tall slender frame")
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "): fully_preserved - the young woman, with long red hair and tall slender frame" in prompt
+    assert "retain their long red hair and tall slender frame" in prompt
 
 
-def test_h3_ref2va_retention_analysis_article_matches_subject_definitions():
-    # With a video reference, "a young female" → "the young female" (mirrors subject_definitions)
+def test_h3_ref2va_retention_analysis_generic_fallback_no_traits():
+    # No structured traits and no short_name → generic "retain their appearance"
     alice = _make_subject("Alice", summary="a young female", subject_id="char_alice")
     scene = _make_scene(slot_A=alice)
     ve = _video_entries(("char_alice", "alice.mp4"))
     prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
-    assert "): fully_preserved - the young female" in prompt
+    assert "retain their appearance" in prompt
+
+
+def test_h3_ref2va_retention_analysis_short_name_fallback():
+    # No structured traits but short_name set → "retain {short_name}'s appearance"
+    alice = _make_subject("Alice", summary="a young female", subject_id="char_alice")
+    alice["_short_name"] = "the young woman"
+    scene = _make_scene(slot_A=alice)
+    prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
+    assert "retain the young woman's appearance" in prompt
 
 
 def test_h3_ref2va_retention_analysis_fallback_when_no_summary():
@@ -424,7 +437,7 @@ def test_h3_ref2va_retention_analysis_fallback_when_no_summary():
     alice["appearance"] = {}
     scene = _make_scene(slot_A=alice)
     prompt = assemble_prompt(scene, "h3_ref2va")["prompt"]
-    assert "): fully_preserved - appearance retained" in prompt
+    assert "retain their appearance" in prompt
 
 
 def test_h3_ref2va_retention_marker_override():
