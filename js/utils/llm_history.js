@@ -111,10 +111,11 @@ export function makeEntry({ kind, compositionName = "", shotNumber = null, model
  * @param {object}          opts
  * @param {string|string[]} opts.kind      - Kind tag(s) to show; multiple = comma filter
  * @param {Function}        opts.onRestore - Called with the full entry dict on Restore click
- * @param {boolean}         [opts.multiKind] - Force showing the kind label even for single kind
+ * @param {boolean}         [opts.multiKind]  - Force showing the kind label even for single kind
+ * @param {number}          [opts.pageSize]   - Entries per page; 0 = no pagination (show all)
  * @returns {{ el: HTMLElement, refresh: () => Promise<void> }}
  */
-export function buildHistorySection({ kind, onRestore, multiKind = false }) {
+export function buildHistorySection({ kind, onRestore, multiKind = false, pageSize = 0 }) {
     const kinds     = Array.isArray(kind) ? kind : [kind];
     const kindParam = kinds.join(",");
     const showKind  = multiKind || kinds.length > 1;
@@ -132,18 +133,23 @@ export function buildHistorySection({ kind, onRestore, multiKind = false }) {
 
     section.append(toggle, body);
 
-    async function refresh() {
-        body.innerHTML = "";
-        let entries = [];
-        try { entries = await llmApi.historyList({ kind: kindParam }); }
-        catch { /* server unavailable */ }
+    let _allEntries = [];
+    let _page = 0;
 
-        if (!entries.length) {
+    function _renderPage() {
+        body.innerHTML = "";
+
+        if (!_allEntries.length) {
             body.appendChild(_mk("div", { cls: "fbt-hist-empty", textContent: "No runs yet." }));
             return;
         }
 
-        entries.forEach(entry => {
+        const ps      = pageSize > 0 ? pageSize : _allEntries.length;
+        const total   = Math.ceil(_allEntries.length / ps);
+        _page         = Math.max(0, Math.min(_page, total - 1));
+        const visible = _allEntries.slice(_page * ps, (_page + 1) * ps);
+
+        visible.forEach(entry => {
             const item    = _mk("div", { cls: "fbt-hist-item" });
             const summary = _mk("div", { cls: "fbt-hist-summary" });
             const detail  = _mk("div", { cls: "fbt-hist-detail" });
@@ -195,7 +201,9 @@ export function buildHistorySection({ kind, onRestore, multiKind = false }) {
                 cls: "fbt-ce-btn fbt-ce-btn-secondary", textContent: "Delete",
                 onclick: async () => {
                     await llmApi.historyDelete(entry.id).catch(() => {});
-                    refresh();
+                    _allEntries = _allEntries.filter(e => e.id !== entry.id);
+                    if (_page > 0 && _page * ps >= _allEntries.length) _page--;
+                    _renderPage();
                 },
             }));
             detail.appendChild(btnRow);
@@ -203,11 +211,42 @@ export function buildHistorySection({ kind, onRestore, multiKind = false }) {
             item.append(summary, detail);
             body.appendChild(item);
         });
+
+        // ── Pagination controls ──────────────────────────────────────────────
+        if (pageSize > 0 && total > 1) {
+            const pgRow = _mk("div", { cls: "fbt-hist-pgrow" });
+            const prevBtn = _mk("button", {
+                cls: "fbt-ce-btn fbt-hist-pgbtn",
+                textContent: "← Prev",
+                onclick: () => { _page--; _renderPage(); },
+            });
+            const nextBtn = _mk("button", {
+                cls: "fbt-ce-btn fbt-hist-pgbtn",
+                textContent: "Next →",
+                onclick: () => { _page++; _renderPage(); },
+            });
+            prevBtn.disabled = (_page === 0);
+            nextBtn.disabled = (_page >= total - 1);
+            pgRow.appendChild(prevBtn);
+            pgRow.appendChild(_mk("span", {
+                cls: "fbt-hist-pginfo",
+                textContent: `${_page + 1} / ${total}`,
+            }));
+            pgRow.appendChild(nextBtn);
+            body.appendChild(pgRow);
+        }
+    }
+
+    async function refresh() {
+        try { _allEntries = await llmApi.historyList({ kind: kindParam }); }
+        catch { _allEntries = []; }
+        _page = 0;
+        _renderPage();
     }
 
     // Initial fetch: auto-expand when there are entries
     refresh().then(() => {
-        if (!body.querySelector(".fbt-hist-empty")) {
+        if (_allEntries.length) {
             body.style.display = "";
             toggle.textContent = "▼ History";
         }
