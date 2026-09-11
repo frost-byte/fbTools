@@ -88,7 +88,16 @@ class BundleRegistry:
         updated["modified"] = _now_iso()
         updated.setdefault("name", bundle_id)
         updated.setdefault("subject_id", "")
-        updated.setdefault("appearance_override", "")
+        updated.setdefault("pronoun_style", "")
+        updated.setdefault("short_name", "")
+        # Migrate legacy appearance_override → appearance.summary when upgrading.
+        legacy_override = updated.pop("appearance_override", "") or ""
+        appearance = updated.setdefault("appearance", {})
+        appearance.setdefault("summary", legacy_override)
+        appearance.setdefault("hair", "")
+        appearance.setdefault("face", "")
+        appearance.setdefault("body", "")
+        appearance.setdefault("default_outfit", "")
         updated.setdefault("tags", [])
 
         visual = updated.setdefault("visual", {})

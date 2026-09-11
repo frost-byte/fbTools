@@ -338,9 +338,22 @@ def apply_cast_to_subjects(
                 v["audio_role"]           = audio.get("role", "")
                 v["audio_cache"]          = audio.get("audio_cache", "")
 
-        # 3. Appearance override → appearance.summary
-        override = bundle.get("appearance_override", "").strip()
-        if override:
-            subj.setdefault("appearance", {})["summary"] = override
+        # 3. Appearance — bundle fields override subject fields (bundle wins if non-empty).
+        bun_app = bundle.get("appearance") or {}
+        if isinstance(bun_app, str):
+            bun_app = {"summary": bun_app}
+        legacy = bundle.get("appearance_override", "").strip()
+        app = subj.setdefault("appearance", {})
+        bun_summary = bun_app.get("summary", "").strip() or legacy
+        if bun_summary:
+            app["summary"] = bun_summary
+        for _k in ("hair", "face", "body", "default_outfit"):
+            _v = bun_app.get(_k, "").strip()
+            if _v:
+                app[_k] = _v
+        if bundle.get("pronoun_style"):
+            subj["pronoun_style"] = bundle["pronoun_style"]
+        if bundle.get("short_name"):
+            subj["short_name"] = bundle["short_name"]
 
     return enriched
