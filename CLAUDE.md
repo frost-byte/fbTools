@@ -214,3 +214,4 @@ If the JS lookup is an intentional backwards-compat fallback for old saved workf
 - `send_status_update()` sends real-time feedback to the frontend via websocket event `fbtools.status`
 - Masks use `mask_name` (arbitrary string) + `mask_background` (bool). The old `mask_type` field is deprecated; use `scripts/migrate_masks.py` to convert legacy data.
 - Libber substitution uses `%key%` delimiters by default with recursive resolution and depth limiting.
+- Before deep-diving an unexplained failure, check `docs/GOTCHAS.md` — a short, git-tracked list of recurring technical patterns in this codebase and the ComfyUI ecosystem it runs in. Add an entry there (not here) when you resolve something non-obvious that could plausibly recur.
