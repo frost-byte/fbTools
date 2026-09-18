@@ -48,9 +48,18 @@ ALLOWLIST: dict[str, str] = {}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _python_source_text() -> str:
+    """Concatenate extension.py with every node module split out of it under
+    nodes/ (see the extension.py module-split plan) — node classes and their
+    widget schemas live in either place depending on migration progress."""
+    paths = [ROOT / "extension.py", *sorted((ROOT / "nodes").rglob("*.py"))]
+    return "\n".join(p.read_text(encoding="utf-8") for p in paths if p.is_file())
+
+
 def _python_widget_names() -> set[str]:
-    """Return all widget names defined in extension.py via io.<WidgetType>.Input()."""
-    text = (ROOT / "extension.py").read_text(encoding="utf-8")
+    """Return all widget names defined via io.<WidgetType>.Input() across
+    extension.py and nodes/*.py."""
+    text = _python_source_text()
     names: set[str] = set()
     # Case 1: positional first arg — io.Type.Input("name", ...)
     for m in _IO_POSITIONAL_RE.finditer(text):
