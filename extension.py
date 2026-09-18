@@ -17900,6 +17900,27 @@ async def _llm_vram_analysis(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@routes.post("/fbtools/llm/context_estimate")
+async def _llm_context_estimate(request):
+    """Pre-load VRAM/context-size estimate for a candidate GGUF model.
+
+    Reads only the GGUF header (no weights loaded), so the LLM panel can show
+    a capacity guideline as soon as the user picks a model, before Load.
+    """
+    try:
+        body = await request.json()
+        model_info = body.get("model_info")
+        if not model_info:
+            return web.json_response({"error": "model_info required"}, status=400)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _llm_client.estimate_context_table, model_info)
+        status = 200 if result.get("success") else 503
+        return web.json_response(result, status=status)
+    except Exception as exc:
+        logger.error("LLM context_estimate error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 # ── Active-backend routing ─────────────────────────────────────────────────────
 # All inference calls go through _route_llm(). The active backend is whichever
 # one the user last activated in the LLM panel — exactly one at a time.

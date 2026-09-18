@@ -132,7 +132,7 @@ function _txt(el, text) { el.textContent = text; }
 // ── Local sub-tab ─────────────────────────────────────────────────────────────
 
 function _renderLocalTab(pane) {
-    const _ls = { models: [], busy: false, nCtx: 4096 };
+    const _ls = { models: [], busy: false, nCtx: 4096, lastEstimate: null };
 
     // ── Status badge ───────────────────────────────────────────────────────
     const dot    = _mk("div", { cls: "llmp-status-dot" });
@@ -155,13 +155,24 @@ function _renderLocalTab(pane) {
         nCtxSel.appendChild(opt);
     });
     nCtxSel.value = _ls.nCtx;
-    nCtxSel.onchange = () => { _ls.nCtx = parseInt(nCtxSel.value); };
+    nCtxSel.onchange = () => {
+        _ls.nCtx = parseInt(nCtxSel.value);
+        // Re-highlight the active pill in the pre-load guide without a re-fetch.
+        if (_ls.lastEstimate) {
+            _renderContextCard(preloadEstCard, _ls.lastEstimate, {
+                activeCtx: _ls.nCtx, estimated: true,
+            });
+        }
+    };
 
     // ── Load / Unload ──────────────────────────────────────────────────────
     const loadBtn   = _mk("button", { cls: "llmp-btn primary" }, ["Load"]);
     const unloadBtn = _mk("button", { cls: "llmp-btn danger",   style: { display: "none" } }, ["Unload"]);
 
-    // ── Local VRAM analysis card ───────────────────────────────────────────
+    // ── Context-capacity guide (pre-load estimate for the selected model) ──
+    const preloadEstCard = _mk("div", { cls: "llmp-local-vram" });
+
+    // ── Local VRAM analysis card (live, populated after Load) ──────────────
     const localVramCard = _mk("div", { cls: "llmp-local-vram" });
 
     // ── Download prompt ────────────────────────────────────────────────────
@@ -226,6 +237,7 @@ function _renderLocalTab(pane) {
             const data = await llmApi.listModels();
             _ls.models = data.models || [];
             _populateSel();
+            _fetchAndRenderEstimate();
         } catch (_) { /* silent */ }
     }
 
@@ -237,26 +249,39 @@ function _renderLocalTab(pane) {
         } else {
             capNote.style.display = "none";
         }
+        _fetchAndRenderEstimate();
     };
 
-    function _renderVramCard(d) {
-        localVramCard.innerHTML = "";
+    /**
+     * Render a VRAM/context-capacity card. Shared by two callers:
+     *  - the pre-load capacity guide (estimate: true, reads GGUF header only)
+     *  - the live post-load analysis (estimate: false, reads the loaded model)
+     */
+    function _renderContextCard(container, d, opts = {}) {
+        container.innerHTML = "";
         if (!d || !d.success) {
             if (d?.message) {
-                localVramCard.append(_mk("span", { cls: "llmp-vram-warn" }, [`⚠ ${d.message}`]));
+                container.append(_mk("span", { cls: "llmp-vram-warn" }, [`⚠ ${d.message}`]));
             }
             return;
         }
 
         const { total_mb, used_mb, headroom_mb, arch, bytes_per_token,
-                current_n_ctx, native_max_ctx, context_table, recommendation } = d;
+                native_max_ctx, context_table, recommendation, estimated_weight_mb } = d;
+        const estimated = opts.estimated ?? !!d.estimated;
+        const activeCtx = opts.activeCtx ?? d.current_n_ctx;
 
-        const title = _mk("div", { cls: "llmp-lv-title" }, ["VRAM  /  Context"]);
+        const title = _mk("div", { cls: "llmp-lv-title" },
+            [estimated ? "Context Capacity Guide  (estimate — not loaded)" : "VRAM  /  Context  (loaded)"]);
 
-        // VRAM bar: total / used / headroom
+        // VRAM bar: total / used(+candidate weight, if estimating) / headroom
         const vramPct = total_mb > 0 ? Math.round(used_mb / total_mb * 100) : 0;
-        const vramLine = _mk("div", { cls: "llmp-lv-meta" },
-            [`GPU ${Math.round(used_mb).toLocaleString()} / ${Math.round(total_mb).toLocaleString()} MB  (${vramPct}% used,  ${Math.round(headroom_mb).toLocaleString()} MB headroom)`]);
+        let vramText = `GPU ${Math.round(used_mb).toLocaleString()} / ${Math.round(total_mb).toLocaleString()} MB  (${vramPct}% used`;
+        if (estimated && estimated_weight_mb) {
+            vramText += `,  + ~${Math.round(estimated_weight_mb).toLocaleString()} MB for this model's weights`;
+        }
+        vramText += `,  ${Math.round(headroom_mb).toLocaleString()} MB headroom for KV cache)`;
+        const vramLine = _mk("div", { cls: "llmp-lv-meta" }, [vramText]);
 
         // Architecture note (show hybrid-attention info if applicable)
         let archText = `${arch.n_layers} layers`;
@@ -270,7 +295,7 @@ function _renderLocalTab(pane) {
         // Context size pills
         const pillRow = _mk("div", { cls: "llmp-lv-row" });
         for (const row of context_table) {
-            const isActive  = row.ctx === current_n_ctx;
+            const isActive  = row.ctx === activeCtx;
             const isRec     = row.ctx === recommendation.f16;
             let cls = "llmp-ctx-pill";
             if (isActive)          cls += " active";
@@ -284,7 +309,24 @@ function _renderLocalTab(pane) {
             pillRow.appendChild(pill);
         }
 
-        localVramCard.append(title, vramLine, archLine, pillRow);
+        container.append(title, vramLine, archLine, pillRow);
+    }
+
+    async function _fetchAndRenderEstimate() {
+        const modelInfo = _ls.models.find(m => m.id === modelSel.value);
+        if (!modelInfo || modelInfo.format !== "gguf") {
+            preloadEstCard.innerHTML = "";
+            _ls.lastEstimate = null;
+            return;
+        }
+        try {
+            const d = await llmApi.contextEstimate(modelInfo);
+            _ls.lastEstimate = d;
+            _renderContextCard(preloadEstCard, d, { activeCtx: _ls.nCtx, estimated: true });
+        } catch (_) {
+            preloadEstCard.innerHTML = "";
+            _ls.lastEstimate = null;
+        }
     }
 
     loadBtn.onclick = async () => {
@@ -304,7 +346,7 @@ function _renderLocalTab(pane) {
                 );
                 try {
                     const va = await llmApi.vramAnalysis();
-                    _renderVramCard(va);
+                    _renderContextCard(localVramCard, va, { estimated: false });
                 } catch (_) {}
             } else {
                 _setStatus(`Load failed: ${r.message || "unknown error"}`);
@@ -364,6 +406,7 @@ function _renderLocalTab(pane) {
             _mk("span", { cls: "llmp-ctx-lbl" }, ["Context:"]),
             nCtxSel,
         ]),
+        preloadEstCard,
         _mk("div", { cls: "llmp-row" }, [loadBtn, unloadBtn]),
         downloadRow,
         localVramCard,

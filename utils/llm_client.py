@@ -459,21 +459,36 @@ def _query_vram_mb() -> tuple[float, float]:
     return 0.0, 0.0
 
 
-def vram_analysis() -> dict:
-    """VRAM budget vs KV-cache analysis for the currently loaded GGUF model.
+def _arch_meta_from_mi(_mi) -> dict:
+    """Build the KV-cache-relevant architecture dict from an int-lookup callback.
 
-    Reads architecture metadata from the loaded model to determine how many
-    layers actually contribute to the KV cache (hybrid models like Qwen3.8
-    use full attention only every N layers), then builds a table showing
-    KV cache cost at standard context sizes vs available VRAM headroom.
+    Some architectures (Qwen2/Qwen2.5-VL GGUF headers, notably) omit explicit
+    `attention.key_length` / `value_length` fields — llama.cpp derives head_dim
+    as `embedding_length / head_count` in that case (standard MHA/GQA head
+    sizing), so fall back to that when the explicit fields are absent.
     """
-    model = _state.get("model")
-    if model is None or _state.get("format") != "gguf":
-        return {"success": False, "message": "No GGUF model is loaded."}
+    head_count   = _mi("attention.head_count")
+    embed_length = _mi("embedding_length")
+    derived_head_dim = (embed_length // head_count) if head_count else 0
 
-    meta = model.metadata or {}
+    key_length   = _mi("attention.key_length")   or derived_head_dim
+    value_length = _mi("attention.value_length") or key_length
 
-    # Detect architecture prefix (e.g. "qwen35", "llama", "gemma3")
+    return {
+        "n_layers":               _mi("block_count"),
+        "n_kv_heads":             _mi("attention.head_count_kv"),
+        "key_length":             key_length,
+        "value_length":           value_length,
+        "full_attention_interval": _mi("full_attention_interval", 1),
+        "native_max_ctx":         _mi("context_length", 131072),
+    }
+
+
+def _arch_meta_from_kv(meta: dict) -> dict:
+    """Extract KV-cache-relevant architecture fields from a GGUF key/value dict.
+
+    Used with `Llama.metadata` (post-load, string-valued dict).
+    """
     arch_prefix = meta.get("general.architecture", "")
     if not arch_prefix:
         for k in meta:
@@ -488,12 +503,27 @@ def vram_analysis() -> dict:
         except (TypeError, ValueError):
             return default
 
-    n_layers           = _mi("block_count")
-    n_kv_heads         = _mi("attention.head_count_kv")
-    key_length         = _mi("attention.key_length")
-    value_length       = _mi("attention.value_length") or key_length
-    full_attn_interval = _mi("full_attention_interval", 1)
-    native_max_ctx     = _mi("context_length", 131072)
+    return _arch_meta_from_mi(_mi)
+
+
+def _build_context_table(
+    arch_meta: dict,
+    headroom_mb: float,
+    current_n_ctx: int | None = None,
+    have_vram_data: bool = True,
+) -> dict:
+    """Build the KV-cache-vs-VRAM table shared by the post-load and pre-load paths.
+
+    `have_vram_data=False` means the VRAM query itself failed (e.g. no GPU
+    visible) — fits_f16/fits_q8 are then `None` (unknown). Otherwise a
+    negative headroom is a real, known "won't fit" (`False`), not unknown.
+    """
+    n_layers           = arch_meta["n_layers"]
+    n_kv_heads         = arch_meta["n_kv_heads"]
+    key_length         = arch_meta["key_length"]
+    value_length       = arch_meta["value_length"] or key_length
+    full_attn_interval = arch_meta.get("full_attention_interval", 1) or 1
+    native_max_ctx     = arch_meta.get("native_max_ctx", 131072) or 131072
 
     # Hybrid attention: only 1-in-N layers grow a KV cache; the rest are recurrent
     n_full_attn = max(1, n_layers // full_attn_interval) if full_attn_interval > 1 else n_layers
@@ -502,13 +532,6 @@ def vram_analysis() -> dict:
     kv_elems    = n_full_attn * n_kv_heads * (key_length + value_length)
     bytes_f16   = kv_elems * 2   # float16
     bytes_q8    = kv_elems * 1   # q8_0 ≈ 1 byte/element
-
-    total_mb, used_mb = _query_vram_mb()
-    available_mb      = total_mb - used_mb
-
-    # Headroom = available above the current model weight footprint
-    budget_mb   = total_mb * 0.95
-    headroom_mb = budget_mb - used_mb   # positive → room for KV cache
 
     _CTX_LABELS = {4096: "4K", 8192: "8K", 16384: "16K", 32768: "32K",
                    65536: "64K", 131072: "128K", 262144: "262K"}
@@ -527,19 +550,14 @@ def vram_analysis() -> dict:
             "label":     _CTX_LABELS.get(ctx, f"{ctx // 1024}K"),
             "kv_f16_mb": kf,
             "kv_q8_mb":  kq,
-            "fits_f16":  (kf <= headroom_mb) if headroom_mb > 0 else None,
-            "fits_q8":   (kq <= headroom_mb) if headroom_mb > 0 else None,
+            "fits_f16":  (kf <= headroom_mb) if have_vram_data else None,
+            "fits_q8":   (kq <= headroom_mb) if have_vram_data else None,
         })
 
     rec_f16 = max((r["ctx"] for r in table if r.get("fits_f16")), default=ctx_sizes[0])
     rec_q8  = max((r["ctx"] for r in table if r.get("fits_q8")),  default=ctx_sizes[0])
 
-    return {
-        "success":    True,
-        "total_mb":   round(total_mb,     0),
-        "used_mb":    round(used_mb,      0),
-        "available_mb": round(available_mb, 0),
-        "headroom_mb":  round(headroom_mb,  0),
+    result = {
         "arch": {
             "n_layers":           n_layers,
             "n_full_attn_layers": n_full_attn,
@@ -549,11 +567,137 @@ def vram_analysis() -> dict:
             "value_length":       value_length,
         },
         "bytes_per_token": {"f16": bytes_f16, "q8": bytes_q8},
-        "current_n_ctx":  _state.get("n_ctx", 4096),
         "native_max_ctx": native_max_ctx,
         "context_table":  table,
         "recommendation": {"f16": rec_f16, "q8": rec_q8},
     }
+    if current_n_ctx is not None:
+        result["current_n_ctx"] = current_n_ctx
+    return result
+
+
+def vram_analysis() -> dict:
+    """VRAM budget vs KV-cache analysis for the currently loaded GGUF model.
+
+    Reads architecture metadata from the loaded model to determine how many
+    layers actually contribute to the KV cache (hybrid models like Qwen3.8
+    use full attention only every N layers), then builds a table showing
+    KV cache cost at standard context sizes vs available VRAM headroom.
+    """
+    model = _state.get("model")
+    if model is None or _state.get("format") != "gguf":
+        return {"success": False, "message": "No GGUF model is loaded."}
+
+    meta = model.metadata or {}
+    arch_meta = _arch_meta_from_kv(meta)
+
+    total_mb, used_mb = _query_vram_mb()
+    available_mb      = total_mb - used_mb
+
+    # Headroom = available above the current model weight footprint
+    budget_mb   = total_mb * 0.95
+    headroom_mb = budget_mb - used_mb   # positive → room for KV cache
+
+    result = _build_context_table(
+        arch_meta, headroom_mb, current_n_ctx=_state.get("n_ctx", 4096),
+        have_vram_data=(total_mb > 0),
+    )
+    result.update({
+        "success":      True,
+        "total_mb":     round(total_mb,     0),
+        "used_mb":      round(used_mb,      0),
+        "available_mb": round(available_mb, 0),
+        "headroom_mb":  round(headroom_mb,  0),
+    })
+    return result
+
+
+def _read_gguf_field(reader, key: str):
+    """Return the scalar value of a GGUF key/value field, or None if absent."""
+    field = reader.fields.get(key)
+    if field is None or not field.types:
+        return None
+    try:
+        from gguf import GGUFValueType
+        if field.types[0] == GGUFValueType.STRING:
+            return bytes(field.parts[field.data[0]]).decode("utf-8", errors="replace")
+        return field.parts[field.data[0]][0].item()
+    except Exception:
+        return None
+
+
+def _arch_meta_from_gguf_header(main_path: str) -> dict:
+    """Read KV-cache-relevant architecture metadata directly from a GGUF file's
+    header — no model load required. Used for the pre-load context estimate."""
+    from gguf import GGUFReader
+
+    reader = GGUFReader(main_path)
+    arch_prefix = _read_gguf_field(reader, "general.architecture") or ""
+    if not arch_prefix:
+        for key in reader.fields:
+            if key.endswith(".block_count"):
+                arch_prefix = key.split(".")[0]
+                break
+
+    def _mi(key: str, default: int = 0) -> int:
+        val = _read_gguf_field(reader, f"{arch_prefix}.{key}")
+        try:
+            return int(val) if val is not None else default
+        except (TypeError, ValueError):
+            return default
+
+    return _arch_meta_from_mi(_mi)
+
+
+def estimate_context_table(info: dict) -> dict:
+    """Pre-load VRAM/context estimate for a candidate GGUF model.
+
+    Reads only the GGUF header (via gguf.GGUFReader), so this works without
+    loading the model's weights. Headroom accounts for the candidate model's
+    own on-disk weight size (+ mmproj, + a compute-buffer fudge factor) since
+    that VRAM isn't reflected in current usage until the model is actually
+    loaded — this is an estimate, not a guarantee.
+    """
+    if info.get("format") != "gguf":
+        return {"success": False, "message": "Context estimate is only available for GGUF models."}
+
+    main_path = os.path.join(info.get("path", ""), info.get("main_file", ""))
+    if not os.path.exists(main_path):
+        return {"success": False, "message": "Model file not found."}
+
+    try:
+        arch_meta = _arch_meta_from_gguf_header(main_path)
+    except ImportError:
+        return {"success": False, "message": "gguf package not installed — cannot read model header."}
+    except Exception as e:
+        return {"success": False, "message": f"Could not read model metadata: {e}"}
+
+    if not arch_meta["n_layers"] or not arch_meta["n_kv_heads"]:
+        return {"success": False, "message": "Model header does not expose attention layer/head counts."}
+
+    weight_mb = float(info.get("size_mb") or 0)
+    mmproj_file = info.get("mmproj_file")
+    if mmproj_file:
+        try:
+            weight_mb += os.path.getsize(os.path.join(info["path"], mmproj_file)) / (1024 ** 2)
+        except OSError:
+            pass
+    weight_mb += 350  # compute-buffer / allocator overhead fudge factor
+
+    total_mb, used_mb = _query_vram_mb()
+    budget_mb   = total_mb * 0.95
+    headroom_mb = budget_mb - used_mb - weight_mb
+
+    result = _build_context_table(arch_meta, headroom_mb, have_vram_data=(total_mb > 0))
+    result.update({
+        "success":             True,
+        "estimated":           True,
+        "total_mb":            round(total_mb, 0),
+        "used_mb":             round(used_mb, 0),
+        "estimated_weight_mb": round(weight_mb, 0),
+        "headroom_mb":         round(headroom_mb, 0),
+    })
+    return result
 
 
 # ── Vision image pre-processing ───────────────────────────────────────────────

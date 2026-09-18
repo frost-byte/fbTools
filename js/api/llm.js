@@ -29,6 +29,11 @@ export class LlmAPI extends BaseAPI {
         return this.post("/unload", {});
     }
 
+    /** Pre-load VRAM/context estimate for a candidate model (no load required). */
+    contextEstimate(modelInfo) {
+        return this.post("/context_estimate", { model_info: modelInfo });
+    }
+
     /**
      * Generate text, optionally with image filenames from the ComfyUI input dir.
      * @param {string} prompt
