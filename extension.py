@@ -105,6 +105,7 @@ from .utils.source_profile_analysis import (
     append_history_entry as _spa_append_history,
     history_for_profile as _spa_history_for_profile,
     extract_video_frame as _spa_extract_frame,
+    extract_frame_at_time as _spa_extract_frame_at_time,
     extract_clip_frames as _spa_extract_clip_frames,
     build_contact_sheet_image as _spa_build_contact_sheet,
     probe_video_fps as _spa_probe_fps,
@@ -166,8 +167,15 @@ def send_status_update(
     status_text: str,
     source: str | None = None,
     level: str = "info",
+    extra: dict | None = None,
 ):
-    """Send status update to frontend via websocket."""
+    """Send status update to frontend via websocket.
+
+    `extra` merges additional structured fields into the payload (e.g. progress
+    machine-readable fields alongside the human-readable `status_text`) — used
+    by long-running multi-step operations like Detect boundaries so the UI can
+    render real progress instead of just echoing the latest message string.
+    """
     try:
         from server import PromptServer
         server = PromptServer.instance
@@ -178,6 +186,8 @@ def send_status_update(
         }
         if source:
             payload["source"] = source
+        if extra:
+            payload.update(extra)
         server.send_sync("fbtools.status", payload)
     except Exception as e:
         logger.debug(f"Failed to send status update: {e}")
@@ -14192,6 +14202,67 @@ async def _source_profiles_analyze(request: web.Request) -> web.Response:
     })
 
 
+@routes.get("/fbtools/source_profiles/frame_at")
+async def _source_profiles_frame_at(request: web.Request) -> web.Response:
+    """Return a single JPEG frame at an exact timestamp — used by the clip
+    editor's Start/End boundary thumbnails. Returns raw image bytes (not JSON)
+    so it can be used directly as an <img> src.
+
+    Query params:
+        profile_id  str   — required
+        t           float — timestamp in seconds — required
+        w           int   — thumbnail width in pixels (default 160, clamped 32-640)
+    """
+    profile_id = request.rel_url.query.get("profile_id", "").strip()
+    t_raw      = request.rel_url.query.get("t", "")
+    if not profile_id:
+        return web.json_response({"error": "profile_id is required"}, status=400)
+    try:
+        t = float(t_raw)
+    except ValueError:
+        return web.json_response({"error": "t must be a number"}, status=400)
+    try:
+        w = max(32, min(640, int(request.rel_url.query.get("w", "160"))))
+    except ValueError:
+        w = 160
+
+    registry = _load_source_registry(default_source_profiles_path())
+    profile  = registry.get_profile(profile_id)
+    if profile is None:
+        return web.json_response({"error": f"Source profile '{profile_id}' not found"}, status=404)
+
+    media_filename = profile.get("media_filename", "")
+    media_dir      = profile.get("media_dir", "input")
+    if not media_filename:
+        return web.json_response({"error": "Profile has no media_filename set"}, status=400)
+
+    base_dir   = get_output_directory() if media_dir == "output" else get_input_directory()
+    video_path = os.path.join(base_dir, media_filename)
+    if not os.path.exists(video_path):
+        return web.json_response({"error": f"Video not found: {media_filename}"}, status=404)
+
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    tmp.close()
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _spa_extract_frame_at_time, video_path, tmp.name, t, w)
+        with open(tmp.name, "rb") as f:
+            data = f.read()
+        return web.Response(
+            body=data, content_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+    except Exception as exc:
+        logger.warning("frame_at extraction failed for profile %r @ %.2fs: %s", profile_id, t, exc)
+        return web.json_response({"error": str(exc)}, status=500)
+    finally:
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
+
+
 @routes.get("/fbtools/source_profiles/analysis_history")
 async def _source_profiles_analysis_history(request: web.Request) -> web.Response:
     """Return analysis history entries for a source profile.
@@ -14209,6 +14280,31 @@ async def _source_profiles_analysis_history(request: web.Request) -> web.Respons
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@routes.post("/fbtools/source_profiles/segment_prompt_preview")
+async def _source_profiles_segment_prompt_preview(request: web.Request) -> web.Response:
+    """Return the exact VLM prompt Detect boundaries would send for the given
+    flags/override, without running any detection. Lets the editor UI show a
+    live preview as the user toggles flags or edits the override — sourced
+    from the same builder the real request uses, so it can never drift.
+
+    JSON body:
+        prompt_override  str   — optional; when non-empty, flags are ignored
+        flags             dict  — camera_cuts / subject_changes / lower_threshold
+
+    Returns:
+        { "prompt": str }
+    """
+    try:
+        body            = await request.json()
+        prompt_override = str(body.get("prompt_override", "")).strip()
+        flags           = body.get("flags") if isinstance(body.get("flags"), dict) else None
+    except Exception as exc:
+        return web.json_response({"error": f"Invalid request body: {exc}"}, status=400)
+
+    prompt = _spa_build_segment_prompt(prompt_override, flags)
+    return web.json_response({"prompt": prompt})
+
+
 @routes.post("/fbtools/source_profiles/detect_segments")
 async def _source_profiles_detect_segments(request: web.Request) -> web.Response:
     """Run VLM boundary detection on a source profile's video.
@@ -14220,11 +14316,15 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
     JSON body:
         profile_id          str   — required
         video_duration      float — required (caller probes via /fbtools/media/info)
-        interval_seconds      float — frame sampling interval per window
-                                      (default: min(segment_duration/2, 5.0))
+        interval_seconds      float — seconds between sampled frames — this is the
+                                      single "precision" knob the UI exposes
+                                      (default: 3.0)
         batch_window_seconds  float — split video into windows of this many seconds;
-                                      each window is a separate VLM call so the model
-                                      sees denser frames (default: 60, min: 30)
+                                      each window is a separate VLM call. Normally
+                                      OMITTED and auto-derived as interval_seconds * 20
+                                      so every window uses the full 20-frame-per-call
+                                      budget evenly (no wasted capacity, no silent
+                                      truncation). Pass explicitly only to override.
         prompt_override       str   — optional full prompt replacement (bypasses flags)
         flags               dict  — optional flag overrides for prompt construction:
                                     camera_cuts (bool, default True)
@@ -14274,13 +14374,16 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
     if not os.path.exists(video_path):
         return web.json_response({"error": f"Video not found: {media_filename}"}, status=404)
 
-    seg_dur = profile.get("default_segment_duration") or 10.0
     if not interval_seconds:
-        interval_seconds = max(1.0, min(seg_dur / 2.0, 5.0))
+        interval_seconds = 3.0
 
     # Split video into fixed-size windows; each window is processed separately so
     # the VLM sees a focused contact sheet rather than one frame per many seconds.
-    batch_window_seconds = max(30.0, float(body.get("batch_window_seconds", 60.0)))
+    # Window length is derived from interval_seconds so every window lands on
+    # exactly 20 frames (the per-call cap below) — full utilization of the frame
+    # budget at the requested precision, with no silent truncation.
+    _bw_raw = body.get("batch_window_seconds")
+    batch_window_seconds = max(20.0, float(_bw_raw)) if _bw_raw else max(20.0, interval_seconds * 20.0)
 
     _tmp_frames: list[str] = []
 
@@ -14371,40 +14474,70 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
 
     try:
         n_windows = len(windows)
+        run_started_at = time.time()
         send_status_update(
             _SPA_STATUS_ID,
             (f"Detect segments: {n_windows} window(s) × {batch_window_seconds:.0f}s "
              f"over {video_duration:.0f}s video — sending to VLM..."),
             source="source_profile_analysis",
+            extra={
+                "phase":       "start",
+                "profile_id":  profile_id,
+                "n_windows":   n_windows,
+                "windows":     [[round(s, 2), round(e, 2)] for s, e in windows],
+                "video_duration": round(video_duration, 2),
+            },
         )
 
         all_segments: list[dict] = []
         all_raw:      list[str]  = []
 
         for idx, (w_start, w_end) in enumerate(windows):
-            if n_windows > 1:
-                send_status_update(
-                    _SPA_STATUS_ID,
-                    f"Window {idx + 1}/{n_windows}: {w_start:.0f}s – {w_end:.0f}s ...",
-                    source="source_profile_analysis",
-                )
+            win_started_at = time.time()
+            start_text = (
+                f"Window {idx + 1}/{n_windows}: {w_start:.0f}s – {w_end:.0f}s ..."
+                if n_windows > 1 else "Analyzing video for boundaries..."
+            )
+            send_status_update(
+                _SPA_STATUS_ID, start_text, source="source_profile_analysis",
+                extra={
+                    "phase": "window_start", "profile_id": profile_id,
+                    "window_idx": idx, "n_windows": n_windows,
+                },
+            )
             segs, raw_text = await _run_window(w_start, w_end)
             all_segments.extend(segs)
             if raw_text:
                 prefix = f"[{w_start:.0f}s–{w_end:.0f}s]\n" if n_windows > 1 else ""
                 all_raw.append(f"{prefix}{raw_text}")
-            if n_windows > 1:
-                send_status_update(
-                    _SPA_STATUS_ID,
-                    f"Window {idx + 1}/{n_windows}: {len(segs)} segment(s) found",
-                    source="source_profile_analysis",
-                )
+            win_elapsed = time.time() - win_started_at
+            done_text = (
+                f"Window {idx + 1}/{n_windows}: {len(segs)} segment(s) found"
+                if n_windows > 1 else f"{len(segs)} segment(s) found"
+            )
+            _win_frames = min(20, math.ceil((w_end - w_start) / interval_seconds)) if interval_seconds > 0 else 0
+            send_status_update(
+                _SPA_STATUS_ID, done_text, source="source_profile_analysis",
+                extra={
+                    "phase": "window_done", "profile_id": profile_id,
+                    "window_idx": idx, "n_windows": n_windows,
+                    "segments_found": len(segs),
+                    "elapsed_s": round(win_elapsed, 2),
+                    "frames": _win_frames,
+                },
+            )
 
+        total_elapsed = time.time() - run_started_at
         send_status_update(
             _SPA_STATUS_ID,
             (f"Detect segments complete: {len(all_segments)} segment(s) "
              f"from {n_windows} window(s)"),
             source="source_profile_analysis",
+            extra={
+                "phase": "complete", "profile_id": profile_id,
+                "n_windows": n_windows, "total_segments": len(all_segments),
+                "elapsed_s": round(total_elapsed, 2),
+            },
         )
 
         if not all_segments:
@@ -14432,8 +14565,18 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
                 subj_prompt = _spa_build_subject_inference_prompt(action_texts, existing_labels)
                 raw_subjects = await asyncio.to_thread(
                     _run_text_inference,
-                    subj_prompt, captioner_type, profile_id, "subject_inference", 1024,
+                    # 1024 was too tight for thinking-mode models (e.g. reasoning_effort=xhigh):
+                    # the <think> block alone can exhaust the budget before any JSON is emitted,
+                    # silently yielding an empty response with zero error surfaced. Match the
+                    # 2048 already used for segment detection for the same reason.
+                    subj_prompt, captioner_type, profile_id, "subject_inference", 2048,
                 )
+                if not raw_subjects:
+                    logger.warning(
+                        "Subject inference returned empty text for profile %r "
+                        "(model may be thinking-only-truncated or backend unavailable)",
+                        profile_id,
+                    )
                 if raw_subjects:
                     inferred_subjects = _spa_parse_inferred_subjects(raw_subjects)
             except Exception as _subj_exc:
