@@ -13189,17 +13189,29 @@ class SourceProfileClipPrompt(io.ComfyNode):
         if bundle_slot_pairs:
             task_flags = ["video editing", "reference generation"]
             # Auto-generate a replacement synopsis.  Bundle slot placeholders {b}
-            # are resolved by _bare() to <Subject N>; source subject names are
-            # embedded as literals because replaced slots have no Subject label.
+            # are resolved by _bare() to <Subject N>.  Source slot placeholders
+            # {s} resolve the same way ONLY when include_original_subject_tags
+            # is set — that's what gives a replaced source subject a Subject N
+            # label in the first place (see _pre_subject_nums above); otherwise
+            # {s} would resolve to an empty string, so the source is named
+            # literally instead.
             repl_parts = []
             for _b, _s in bundle_slot_pairs:
                 _s_idx = SOURCE_SLOTS.index(_s)
                 _src_sid = source_subject_ids[_s_idx]
-                _src_name = subject_index[_src_sid].get("label", _src_sid)
-                repl_parts.append(
-                    f"{{{_b}}} takes the place of {_src_name}, "
-                    f"replicating their pose, movement, and screen position"
-                )
+                if include_original_subject_tags:
+                    repl_parts.append(
+                        f"Replace {{{_s}}} in <Video 1> with {{{_b}}}, adopting "
+                        f"{{{_b}}}'s full appearance and outfit while retaining "
+                        f"{{{_s}}}'s original motion, pose and screen position "
+                        f"throughout the shot"
+                    )
+                else:
+                    _src_name = subject_index[_src_sid].get("label", _src_sid)
+                    repl_parts.append(
+                        f"{{{_b}}} takes the place of {_src_name}, "
+                        f"replicating their pose, movement, and screen position"
+                    )
             retained = [
                 SOURCE_SLOTS[i] for i, sid in enumerate(source_subject_ids)
                 if sid not in cast_lookup
@@ -13307,7 +13319,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         load_params = {
             "start_time":        clip_start,
             "duration":          clip_dur,
-            "force_rate":        0,
+            "force_rate":        24,  # H3 requires 24fps reference video
             "frame_load_cap":    clip.get("frame_load_cap", 120),
             "skip_first_frames": 0,
             "select_every_nth":  clip.get("select_every_nth", 2),
