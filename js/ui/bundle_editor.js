@@ -277,7 +277,7 @@ function _startNew(subjectId = "") {
         pronoun_style: "",
         short_name:    "",
         appearance:    { summary: "", hair: "", face: "", body: "", default_outfit: "" },
-        visual:        { type: "images", file: "", video_dir: "input", files: [], start_time: 0.0, duration: 0.0, force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, role: "" },
+        visual:        { type: "images", file: "", video_dir: "input", files: [], start_time: 0.0, duration: 0.0, force_rate: 24, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, role: "" },
         audio:         { source: "none", file: "", audio_dir: "input", video_file: "", video_dir: "input", force_rate: 0, frame_load_cap: 0, skip_first_frames: 0, select_every_nth: 1, start_time: 0.0, duration: 0.0, retention: "timbre", role: "", audio_processing: { noise_removal: !!(_S.settings.default_audio_noise_removal), normalize_lufs: _S.settings.default_audio_normalize_lufs !== false, target_lufs: _S.settings.default_audio_target_lufs ?? -14.0 }, audio_cache: "" },
         tags:          [],
     };
