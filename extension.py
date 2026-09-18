@@ -18916,7 +18916,7 @@ def _resolve_cast_media(
     entries = scene_cast.get("entries", [])
     reference_video = ""
     image_files: list[str] = []
-    video_params: dict = {"force_rate": 0, "frame_load_cap": 96, "skip_first_frames": 0, "select_every_nth": 1}
+    video_params: dict = {"force_rate": 24, "frame_load_cap": 96, "skip_first_frames": 0, "select_every_nth": 1}
     audio_source = "none"
     audio_file = ""
     audio_params: dict = {"force_rate": 0, "frame_load_cap": 0, "skip_first_frames": 0, "select_every_nth": 1}
@@ -18952,7 +18952,7 @@ def _resolve_cast_media(
                 entry_load_params = {
                     "start_time":        float(visual.get("start_time", 0.0)),
                     "duration":          float(visual.get("duration",   0.0)),
-                    "force_rate":        visual.get("force_rate", 0),
+                    "force_rate":        visual.get("force_rate", 24),  # H3 requires 24fps
                     "frame_load_cap":    visual.get("frame_load_cap", 96),
                     "skip_first_frames": visual.get("skip_first_frames", 0),
                     "select_every_nth":  visual.get("select_every_nth", 1),
@@ -19130,13 +19130,13 @@ def _resolve_cast_media(
             _clip_lp = _sp_reg.clip_load_params(sp_id, clip_id)
             load_params = _clip_lp if _clip_lp else {
                 "start_time": 0.0, "duration": 0.0,
-                "force_rate": 0, "frame_load_cap": 96,
+                "force_rate": 24, "frame_load_cap": 96,  # H3 requires 24fps
                 "skip_first_frames": 0, "select_every_nth": 1,
             }
         else:
             load_params = {
                 "start_time": 0.0, "duration": 0.0,
-                "force_rate": 0, "frame_load_cap": 96,
+                "force_rate": 24, "frame_load_cap": 96,  # H3 requires 24fps
                 "skip_first_frames": 0, "select_every_nth": 1,
             }
 
