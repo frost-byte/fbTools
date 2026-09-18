@@ -17250,6 +17250,20 @@ class SceneCastBuild(io.ComfyNode):
                         "Wire to SourceProfileClipPrompt to scale the output frame count."
                     ),
                 ),
+                io.String.Input(
+                    "action_preview",
+                    display_name="Action Preview",
+                    default="",
+                    optional=True,
+                    multiline=True,
+                    tooltip=(
+                        "Read-only. The active clip's action text with {A}/{B}/… "
+                        "placeholders resolved to bundle names — computed and written "
+                        "by the on-node preview widget so it rides along in the "
+                        "submitted prompt for Run History tracking. Not read by "
+                        "execute(); do not edit by hand."
+                    ),
+                ),
             ],
             outputs=[
                 CastIOType.Output(
