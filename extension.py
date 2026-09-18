@@ -16274,7 +16274,7 @@ async def _concepts_get_registry(request):
 
 @routes.get("/fbtools/subjects/list")
 async def _subjects_list(request):
-    """Return [{id, name, appearance_summary, concept_id}] sorted by name."""
+    """Return [{id, name, appearance_summary, concept_id, pronoun_style}] sorted by name."""
     try:
         registry = _load_subject_registry(default_subject_profiles_path())
         items = []
@@ -16284,6 +16284,7 @@ async def _subjects_list(request):
                 "name":               s.get("name", sid),
                 "appearance_summary": s.get("appearance", {}).get("summary", ""),
                 "concept_id":         s.get("concept_id", ""),
+                "pronoun_style":      s.get("pronoun_style", ""),
             })
         items.sort(key=lambda x: x["name"].lower())
         return web.json_response({"subjects": items})
@@ -16794,7 +16795,7 @@ async def _bundles_preview_sampled(request):
 
     start_time       = float(data.get("start_time",        0.0))
     duration         = float(data.get("duration",          0.0))
-    force_rate       = int(data.get("force_rate",          0))
+    force_rate       = int(data.get("force_rate",          24))  # H3 requires 24fps
     select_every_nth = max(1, int(data.get("select_every_nth", 1)))
 
     try:
