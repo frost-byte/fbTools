@@ -115,8 +115,12 @@
 .spe-clips-toolbar select { padding:3px 6px; border-radius:var(--fbt-radius);
     border:1px solid var(--fbt-border);
     background:var(--fbt-ground); color:var(--fbt-text); font-size:12px; }
-.spe-timeline-wrap { margin-bottom:8px; overflow:hidden; border-radius:var(--fbt-radius); }
+.spe-timeline-wrap { margin-bottom:8px; display:flex; align-items:stretch; gap:4px; }
+.spe-timeline-inner { position:relative; flex:1; min-width:0; overflow:hidden; border-radius:var(--fbt-radius); }
 .spe-timeline { display:block; width:100%; height:72px; cursor:default; }
+.spe-timeline-zoom-btn { flex:0 0 auto; width:22px; padding:2px 0; opacity:.85; }
+.spe-timeline-zoom-btn:hover:not(:disabled) { opacity:1; }
+.spe-timeline-zoom-btn:disabled { opacity:.25; cursor:default; }
 .spe-clip-card { border:1px solid var(--fbt-border); border-radius:5px;
     margin-bottom:5px; overflow:hidden; background:var(--fbt-ground); }
 .spe-clip-card-head { display:flex; align-items:center; gap:6px; padding:5px 8px;
@@ -142,6 +146,21 @@
 .spe-clips-llm-note { font-size:11px; color:var(--fbt-muted); flex:1; }
 .spe-clip-nav { display:flex; align-items:center; justify-content:center; gap:8px; margin-bottom:6px; }
 .spe-clip-nav-label { font-size:12px; color:var(--fbt-muted); min-width:60px; text-align:center; }
+
+/* Start/End boundary thumbnails */
+.spe-bounds-row { display:flex; align-items:flex-start; justify-content:center;
+    gap:18px; margin-bottom:8px; }
+.spe-bound-group { display:flex; flex-direction:column; flex:0 0 auto; }
+.spe-bound-group.start { align-items:flex-end; }
+.spe-bound-group.end   { align-items:flex-start; }
+.spe-bound-thumb { width:120px; height:68px; border-radius:4px; object-fit:cover;
+    border:1px solid var(--fbt-border); background:var(--fbt-bg); display:block; }
+.spe-bound-thumb.spe-bound-thumb-empty { display:flex; align-items:center; justify-content:center;
+    font-size:10px; color:var(--fbt-muted); text-align:center; }
+.spe-bound-ctl { display:flex; align-items:center; gap:5px; margin-top:4px; font-size:11px;
+    color:var(--fbt-muted); }
+.spe-bound-mid { align-self:center; padding-top:24px; font-size:11px; color:var(--fbt-muted);
+    text-align:center; white-space:nowrap; }
 
 /* Clip LoRA editor */
 .spe-lora-section { margin-top:6px; border-top:1px solid var(--fbt-border-sub); padding-top:6px; }

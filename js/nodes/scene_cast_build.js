@@ -11,6 +11,8 @@
 
 import { setWidgetVisible } from "../utils/widgets.js";
 import { bundlesApi }       from "../api/bundles.js";
+import { app }               from "../../../scripts/app.js";
+import { api }               from "../../../scripts/api.js";
 
 const JSON_WIDGET = "cast_entries_json";
 const MAX_ENTRIES = 8;
@@ -25,14 +27,29 @@ export function setupSceneCastBuild(nodeType, _nodeData, app) {
         _buildCastBuildUI(this, app);
     };
 
+    // _refreshClipSelects() and _refreshSourceSubjects() each fetch the same
+    // profile independently and race — _buildActionPreview() needs BOTH
+    // (_clipMap/_activeClipId from the former, _connectedSPSubjects from the
+    // latter) to be from the *same* profile, or ordinal resolution mixes old
+    // clip data with new subject data (or vice versa) and the preview shows
+    // a plausible-looking but wrong result. Await both, then do one final
+    // authoritative preview update — the two functions' own internal preview
+    // calls may still run first with inconsistent intermediate state, but
+    // this always corrects it once both have actually settled.
+    async function _refreshProfileDependentState(node) {
+        await Promise.all([
+            node._refreshClipSelects?.(),
+            node._refreshSourceSubjects?.(),
+        ]);
+        node._updateActionPreview?.();
+    }
+
     const _origConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (config) {
         _origConfigure?.call(this, config);
         this._refreshCastTable?.();
-        requestAnimationFrame(() => {
-            this._refreshClipSelects?.();
-            this._refreshSourceSubjects?.();
-        });
+        const node = this;
+        requestAnimationFrame(() => _refreshProfileDependentState(node));
     };
 
     const _origConnChange = nodeType.prototype.onConnectionsChange;
@@ -41,19 +58,42 @@ export function setupSceneCastBuild(nodeType, _nodeData, app) {
         if (type === LiteGraph?.INPUT) {
             const inp = this.inputs?.[index];
             if (inp?.name === "source_profile") {
-                requestAnimationFrame(() => {
-                    this._refreshClipSelects?.();
-                    this._refreshSourceSubjects?.();
-                });
+                const node = this;
+                requestAnimationFrame(() => _refreshProfileDependentState(node));
             }
         }
     };
+
 }
+
+// The action preview only recomputes on user interaction (selecting a
+// different clip/segment) — nothing previously refreshed it after the graph
+// actually ran, so it could sit showing a stale substitution once execution
+// changed something upstream (e.g. a swapped bundle) without the user
+// re-clicking a segment. SceneCastBuild's execute() has no `ui` output, so
+// core ComfyUI never sends an "executed" websocket message for it (see
+// execution.py: that message only fires when output_ui is non-empty) —
+// onExecuted would simply never be called. It already emits its own
+// fbtools.status event on completion instead; listen for that.
+api.addEventListener("fbtools.status", (event) => {
+    const nodeId = event?.detail?.node;
+    if (nodeId == null) return;
+    const node = app.graph?._nodes?.find(n => n.id == nodeId);
+    if (node?._updateActionPreview) node._updateActionPreview();
+});
 
 function _buildCastBuildUI(node, app) {
     // ── 1. Find and hide the single JSON backing widget ───────────────────────
     const jsonWidget = node.widgets?.find(w => w.name === JSON_WIDGET);
     if (jsonWidget) setWidgetVisible(jsonWidget, false, node);
+
+    // Backing widget for the action preview text below — hidden the same way
+    // as jsonWidget. execute() never reads it (absorbed by its **_ catch-all);
+    // it exists purely so the frontend-computed preview rides along in the
+    // submitted prompt as a literal value, making it visible to Run History's
+    // [track:] scan without any runtime-capture plumbing.
+    const actionPreviewWidget = node.widgets?.find(w => w.name === "action_preview");
+    if (actionPreviewWidget) setWidgetVisible(actionPreviewWidget, false, node);
 
     // ── 2. Internal state ─────────────────────────────────────────────────────
     let _subjects  = [];
@@ -531,11 +571,66 @@ function _buildCastBuildUI(node, app) {
         audCb.title     = "Use audio reference";
         audCb.checked   = !!entry.use_audio;
 
+        // Ordinal match: instead of picking one specific source subject, match
+        // the Nth clip subject (in that clip's own order) whose resolved
+        // pronoun_style equals this bundle's own — resolved fresh per clip at
+        // execution time, so the same cast entry tracks "the 1st feminine
+        // subject" across every clip in the profile without re-picking per clip.
+        const ordToggleBtn = document.createElement("button");
+        ordToggleBtn.className = "fbt-scb-ord-toggle";
+        ordToggleBtn.textContent = "#";
+        ordToggleBtn.title =
+            "Match by ordinal position instead of a specific subject — e.g. the " +
+            "1st subject in each clip sharing this bundle's pronoun/category, " +
+            "resolved fresh per clip. No match in a given clip → falls back to " +
+            "bundle-only (no source reference) for that clip.";
+
+        const ordInput = document.createElement("input");
+        ordInput.type      = "number";
+        ordInput.min       = "1";
+        ordInput.step      = "1";
+        ordInput.className = "fbt-scb-ord-input";
+        ordInput.value     = entry.ordinal || 1;
+        ordInput.title     = "1st, 2nd, 3rd, … matching subject in the active clip";
+
+        const _isOrdinal = () => entry.match_mode === "ordinal";
+        const _syncOrdinalVisibility = () => {
+            const on = _isOrdinal();
+            ordToggleBtn.classList.toggle("active", on);
+            srcSel.style.display   = (_connectedSPSubjects.length && !on) ? "" : "none";
+            ordInput.style.display = (_connectedSPSubjects.length && on)  ? "" : "none";
+        };
+        _syncOrdinalVisibility();
+
+        ordToggleBtn.addEventListener("click", () => {
+            if (_isOrdinal()) {
+                delete entry.match_mode;
+                delete entry.ordinal;
+            } else {
+                entry.match_mode = "ordinal";
+                entry.ordinal    = entry.ordinal || 1;
+                delete entry.source_subject_id;
+                // Still need to know which connected profile to match within.
+                if (!entry.source_profile_id && _connectedSPSubjects.length === 1) {
+                    entry.source_profile_id = _connectedSPSubjects[0].pid;
+                }
+            }
+            _syncOrdinalVisibility();
+            _syncWidget();
+        });
+
+        ordInput.addEventListener("change", () => {
+            const n = parseInt(ordInput.value, 10);
+            entry.ordinal = Number.isFinite(n) && n >= 1 ? n : 1;
+            ordInput.value = entry.ordinal;
+            _syncWidget();
+        });
+
         // Source label hides when no source profile connected
         const srcLabel = _lbl("Source");
         srcLabel.style.display = _connectedSPSubjects.length ? "" : "none";
         const audLabel = _lbl("Audio");
-        row2.append(srcLabel, srcSel, _lbl("Mode"), modeWrap, audLabel, audCb);
+        row2.append(srcLabel, srcSel, ordToggleBtn, ordInput, _lbl("Mode"), modeWrap, audLabel, audCb);
 
         // ── Row 3: Dialogue ──────────────────────────────────────────────────────
         const row3 = document.createElement("div");
@@ -757,8 +852,10 @@ function _buildCastBuildUI(node, app) {
                             pid:      profile.id,
                             label:    profile.name || profile.id || profileVal,
                             subjects: (profile.subjects ?? []).map(s => ({
-                                id:    s.id,
-                                label: s.label || s.role_description || s.id,
+                                id:            s.id,
+                                label:         s.label || s.role_description || s.id,
+                                entity_type:   s.entity_type || "person",
+                                pronoun_style: s.pronoun_style || "",
                             })),
                         });
                     }
@@ -805,9 +902,61 @@ function _buildCastBuildUI(node, app) {
     clipsSection.className = "fbt-scb-clips";
     clipsSection.style.display = "none";
 
+    // Timeline row: [prev arrow] [canvas] [next arrow] — arrows get their own
+    // fixed-width space rather than overlaying the canvas, mirroring the
+    // Source Profile editor's timeline zoom/paging behavior.
+    const timelineRow = document.createElement("div");
+    timelineRow.className = "fbt-scb-timeline-row";
+
     const canvas = document.createElement("canvas");
     canvas.className = "fbt-scb-timeline";
     canvas.height = 52;
+
+    const zoomPrevBtn = document.createElement("button");
+    zoomPrevBtn.className = "fbt-scb-clip-nav-btn fbt-scb-timeline-zoom-btn";
+    zoomPrevBtn.textContent = "←";
+    zoomPrevBtn.title = "Show previous clips";
+    const zoomNextBtn = document.createElement("button");
+    zoomNextBtn.className = "fbt-scb-clip-nav-btn fbt-scb-timeline-zoom-btn";
+    zoomNextBtn.textContent = "→";
+    zoomNextBtn.title = "Show next clips";
+
+    const ZOOM_WINDOW_SIZE = 10;
+    let _zoomStart = 0;
+
+    // Paging jumps _zoomStart by a whole window, which used to redraw
+    // instantly — jarring since the visible clips change completely in one
+    // frame. Animate the pan/rescale between the old and new visible range.
+    function _animateZoomPan(fromRange, toRange) {
+        if (!fromRange || !toRange) { _drawTimeline(); return; }
+        const DURATION_MS = 180;
+        const t0 = performance.now();
+        function step(now) {
+            const t = Math.min(1, (now - t0) / DURATION_MS);
+            const eased = 1 - Math.pow(1 - t, 3);  // ease-out cubic
+            const range = [
+                fromRange[0] + (toRange[0] - fromRange[0]) * eased,
+                fromRange[1] + (toRange[1] - fromRange[1]) * eased,
+            ];
+            _drawTimeline(range);
+            if (t < 1) requestAnimationFrame(step);
+            else _drawTimeline();  // final pass to fully resync arrow disabled state
+        }
+        requestAnimationFrame(step);
+    }
+
+    zoomPrevBtn.onclick = () => {
+        const fromRange = _visibleClipRange();
+        _zoomStart = Math.max(0, _zoomStart - ZOOM_WINDOW_SIZE);
+        _animateZoomPan(fromRange, _visibleClipRange());
+    };
+    zoomNextBtn.onclick = () => {
+        const fromRange = _visibleClipRange();
+        _zoomStart = Math.min(Math.max(0, _clips.length - ZOOM_WINDOW_SIZE), _zoomStart + ZOOM_WINDOW_SIZE);
+        _animateZoomPan(fromRange, _visibleClipRange());
+    };
+
+    timelineRow.append(zoomPrevBtn, canvas, zoomNextBtn);
 
     const navRow = document.createElement("div");
     navRow.className = "fbt-scb-clip-nav";
@@ -839,7 +988,7 @@ function _buildCastBuildUI(node, app) {
     durRow.append(multGroup, durLabel);
 
     clipsSection.appendChild(durRow);
-    clipsSection.appendChild(canvas);
+    clipsSection.appendChild(timelineRow);
     clipsSection.appendChild(navRow);
 
     wrap.appendChild(clipsSection);
@@ -854,13 +1003,40 @@ function _buildCastBuildUI(node, app) {
         return _clips.map((c, i) => ({ ...c, start_time: i, end_time: i + 1 }));
     }
 
-    function _drawTimeline() {
+    // Windowing: with many clips, individual bands become too thin to click
+    // reliably. Above ZOOM_WINDOW_SIZE clips, the timeline only renders that
+    // many at a time, scaled to fill the canvas, with arrows to page _zoomStart.
+    function _visibleClipRange() {
+        const dc = _displayClips();
+        if (dc.length <= ZOOM_WINDOW_SIZE) return null;  // fits in one view
+        _zoomStart = Math.max(0, Math.min(_zoomStart, dc.length - ZOOM_WINDOW_SIZE));
+        const lastIdx = Math.min(_zoomStart + ZOOM_WINDOW_SIZE, dc.length) - 1;
+        return [dc[_zoomStart].start_time, dc[lastIdx].end_time];
+    }
+
+    function _updateZoomArrows() {
+        const zoomed = _clips.length > ZOOM_WINDOW_SIZE;
+        zoomPrevBtn.style.display = zoomed ? "" : "none";
+        zoomNextBtn.style.display = zoomed ? "" : "none";
+        if (!zoomed) return;
+        zoomPrevBtn.disabled = _zoomStart <= 0;
+        zoomNextBtn.disabled = _zoomStart + ZOOM_WINDOW_SIZE >= _clips.length;
+    }
+
+    function _timeToX(t, range, totalDur, W) {
+        if (!range) return (t / totalDur) * W;
+        return ((t - range[0]) / Math.max(range[1] - range[0], 0.001)) * W;
+    }
+
+    function _drawTimeline(overrideRange) {
+        _updateZoomArrows();
         const dc       = _displayClips();
         const totalDur = dc.length ? Math.max(...dc.map(c => c.end_time)) : 1;
+        const range    = overrideRange !== undefined ? overrideRange : _visibleClipRange();
         const W = canvas.width = canvas.offsetWidth || 300;
         const H = canvas.height;
         const ctx = canvas.getContext("2d");
-        const toX = t => (t / totalDur) * W;
+        const toX = t => _timeToX(t, range, totalDur, W);
         const BAND_TOP = 8, BAND_BOT = H - 4;
 
         ctx.clearRect(0, 0, W, H);
@@ -876,6 +1052,7 @@ function _buildCastBuildUI(node, app) {
         }
 
         dc.forEach((clip, i) => {
+            if (range && (clip.end_time <= range[0] || clip.start_time >= range[1])) return;  // outside window
             const x1 = toX(clip.start_time);
             const x2 = toX(clip.end_time);
             const clipW = Math.max(x2 - x1, 1);
@@ -988,10 +1165,11 @@ function _buildCastBuildUI(node, app) {
         const W    = rect.width;
         const dc   = _displayClips();
         const totalDur = dc.length ? Math.max(...dc.map(c => c.end_time)) : 1;
+        const range = _visibleClipRange();
         let newHover = -1;
         for (let i = 0; i < dc.length; i++) {
-            const x1 = (dc[i].start_time / totalDur) * W;
-            const x2 = (dc[i].end_time   / totalDur) * W;
+            const x1 = _timeToX(dc[i].start_time, range, totalDur, W);
+            const x2 = _timeToX(dc[i].end_time, range, totalDur, W);
             if (x >= x1 && x <= x2) { newHover = i; break; }
         }
         if (newHover !== _hoverIdx) { _hoverIdx = newHover; _drawTimeline(); }
@@ -1009,9 +1187,10 @@ function _buildCastBuildUI(node, app) {
         const W    = rect.width;
         const dc   = _displayClips();
         const totalDur = dc.length ? Math.max(...dc.map(c => c.end_time)) : 1;
+        const range = _visibleClipRange();
         for (let i = 0; i < dc.length; i++) {
-            const x1 = (dc[i].start_time / totalDur) * W;
-            const x2 = (dc[i].end_time   / totalDur) * W;
+            const x1 = _timeToX(dc[i].start_time, range, totalDur, W);
+            const x2 = _timeToX(dc[i].end_time, range, totalDur, W);
             if (x >= x1 && x <= x2) { _selectClipIdx(i); break; }
         }
     });
@@ -1025,12 +1204,57 @@ function _buildCastBuildUI(node, app) {
     actionPreviewEl.style.display = "none";
     wrap.appendChild(actionPreviewEl);
 
+    // Shown when two or more cast entries (explicit or ordinal) resolve to the
+    // same source subject in the active clip — never intentional, since only
+    // one bundle can actually replace a given subject.
+    const conflictWarningEl = document.createElement("div");
+    conflictWarningEl.className = "fbt-scb-conflict-warning";
+    conflictWarningEl.style.display = "none";
+    wrap.appendChild(conflictWarningEl);
+
+    // Mirrors utils/source_profiles.py's resolved_pronoun_style() /
+    // resolve_ordinal_subject() so the preview reflects ordinal-match entries
+    // too, not just explicit ones. This is a display aid — the backend
+    // resolution at execution time is the authoritative one.
+    const _ENTITY_PRONOUN_DEFAULTS = { location: "location", object: "object", soundscape: "object" };
+
+    function _resolvedPronounStyle(entityType, explicit) {
+        return explicit || _ENTITY_PRONOUN_DEFAULTS[(entityType || "person").toLowerCase()] || "neutral";
+    }
+
+    function _bundlePronounStyle(bundleId) {
+        const bun = _bundles.find(b => b.id === bundleId);
+        if (!bun) return "";
+        // A bundle's Pronoun dropdown defaults to "— inherit from subject —"
+        // (stored as ""), matching SceneCastBuild.execute()'s own precedence:
+        // the owning Subject Profile's pronoun_style wins when set, the
+        // bundle's own explicit value is next, entity-type default last.
+        const subj = _subjects.find(s => s.id === bun.subject_id);
+        const explicit = (subj?.pronoun_style) || bun.pronoun_style || "";
+        return _resolvedPronounStyle(bun.entity_type, explicit);
+    }
+
+    function _resolveOrdinalSubjectId(clip, subjects, wantPronoun, ordinal) {
+        if (!clip || ordinal < 1) return "";
+        const byId = new Map(subjects.map(s => [s.id, s]));
+        let matches = 0;
+        for (const sid of (clip.subjects || [])) {
+            const subj = byId.get(sid);
+            if (!subj) continue;
+            if (_resolvedPronounStyle(subj.entity_type, subj.pronoun_style) === wantPronoun) {
+                matches++;
+                if (matches === ordinal) return sid;
+            }
+        }
+        return "";
+    }
+
     function _buildActionPreview() {
         const clipId = _activeClipId;
-        if (!clipId) return null;
+        if (!clipId) return { text: null, conflicts: [] };
         const clip   = _clipMap.get(clipId);
         const action = clip?.action;
-        if (!action) return null;
+        if (!action) return { text: null, conflicts: [] };
 
         const clipSubjectIds  = new Set(clip.subjects ?? []);
         const spData          = _connectedSPSubjects[0];
@@ -1038,11 +1262,41 @@ function _buildCastBuildUI(node, app) {
             ? spData.subjects.filter(s => clipSubjectIds.has(s.id))
             : [];
 
+        // Resolve every cast entry (explicit or ordinal) to the subject id it
+        // currently applies to in this clip. Two entries landing on the same
+        // subject is never intentional (only one bundle can replace a given
+        // subject) — track it as a conflict rather than silently letting the
+        // later entry overwrite the earlier one in the lookup.
+        const resolvedIdToEntry = new Map();
+        const conflicts = [];
+        for (const e of _entries) {
+            if (!e.bundle_id) continue;
+            let sid = "";
+            if (e.match_mode === "ordinal") {
+                const pronoun = _bundlePronounStyle(e.bundle_id);
+                sid = _resolveOrdinalSubjectId(
+                    clip, spData ? spData.subjects : [], pronoun, parseInt(e.ordinal, 10) || 0,
+                );
+            } else if (e.source_subject_id) {
+                sid = e.source_subject_id;
+            }
+            if (!sid) continue;
+            const prior = resolvedIdToEntry.get(sid);
+            if (prior) {
+                const subj = spData?.subjects.find(s => s.id === sid);
+                conflicts.push({
+                    subjectLabel: subj?.label || sid,
+                    bundleNames: [prior, e].map(x => _bundles.find(b => b.id === x.bundle_id)?.name || x.bundle_id),
+                });
+            }
+            resolvedIdToEntry.set(sid, e);
+        }
+
         const SLOTS = ["A","B","C","D","E","F","G","H","I","J"];
         const slotLabel = {};
         orderedSubjects.forEach((subj, sidx) => {
             if (sidx >= SLOTS.length) return;
-            const castEntry = _entries.find(e => e.source_subject_id === subj.id);
+            const castEntry = resolvedIdToEntry.get(subj.id);
             if (castEntry?.bundle_id) {
                 const bun = _bundles.find(b => b.id === castEntry.bundle_id);
                 slotLabel[SLOTS[sidx]] = bun?.name || castEntry.bundle_id;
@@ -1051,13 +1305,14 @@ function _buildCastBuildUI(node, app) {
             }
         });
 
-        return action.replace(/\{([A-J])\}/g, (match, letter) =>
+        const text = action.replace(/\{([A-J])\}/g, (match, letter) =>
             slotLabel[letter] != null ? `[${slotLabel[letter]}]` : match
         );
+        return { text, conflicts };
     }
 
     function _updateActionPreview() {
-        const text = _buildActionPreview();
+        const { text, conflicts } = _buildActionPreview();
         if (text == null) {
             actionPreviewEl.style.display = "none";
             actionPreviewEl.textContent   = "";
@@ -1065,6 +1320,18 @@ function _buildCastBuildUI(node, app) {
             actionPreviewEl.style.display = "";
             actionPreviewEl.textContent   = text;
         }
+        if (conflicts.length) {
+            conflictWarningEl.style.display = "";
+            conflictWarningEl.textContent = conflicts
+                .map(c => `⚠ ${c.bundleNames.join(" + ")} both resolve to "${c.subjectLabel}" — only one will actually apply.`)
+                .join("\n");
+        } else {
+            conflictWarningEl.style.display = "none";
+            conflictWarningEl.textContent = "";
+        }
+        // Mirror into the hidden backing widget so this value is part of the
+        // submitted prompt, not just the on-canvas display.
+        if (actionPreviewWidget) actionPreviewWidget.value = text ?? "";
     }
 
     function _updateDlgFromClip() {
@@ -1118,7 +1385,8 @@ function _buildCastBuildUI(node, app) {
             if (resp.ok) clips = (await resp.json()).clips ?? [];
         } catch { /* leave empty */ }
 
-        _clips   = clips;
+        _clips     = clips;
+        _zoomStart = 0;
         _clipMap = new Map(clips.map(c => [c.id, c]));
 
         const savedIdx = savedVal ? clips.findIndex(c => c.id === savedVal) : -1;
@@ -1144,6 +1412,7 @@ function _buildCastBuildUI(node, app) {
 
     node._refreshClipSelects = _refreshClipSelects;
     requestAnimationFrame(() => _refreshClipSelects());
+    node._updateActionPreview = _updateActionPreview;
 
     // ── 16. Public refresh ────────────────────────────────────────────────────
 

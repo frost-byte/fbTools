@@ -205,6 +205,44 @@
 .fbt-scb-mode-btn-vid  { border-left: 1px solid var(--fbt-border); }
 .fbt-scb-mode-btn-both { border-left: 1px solid var(--fbt-border); }
 
+/* ── Ordinal match toggle + number input ──────────────────────────────────── */
+.fbt-scb-ord-toggle {
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    background: var(--fbt-input-bg);
+    border: 1px solid var(--fbt-border);
+    border-radius: 3px;
+    color: var(--fbt-muted);
+    cursor: pointer;
+    line-height: 1.4;
+    flex-shrink: 0;
+}
+.fbt-scb-ord-toggle.active {
+    background: var(--fbt-blue-active);
+    border-color: var(--fbt-blue-active);
+    color: #fff;
+}
+.fbt-scb-ord-toggle:not(.active):hover {
+    background: var(--p-surface-hover, #2a2a2a);
+    color: var(--p-surface-200, #ddd);
+}
+.fbt-scb-ord-input {
+    width: 40px;
+    padding: 2px 4px;
+    font-size: 11px;
+    background: var(--fbt-input-bg);
+    border: 1px solid var(--fbt-border);
+    border-radius: 3px;
+    color: var(--fbt-text);
+    box-sizing: border-box;
+    flex-shrink: 0;
+}
+.fbt-scb-ord-input:focus {
+    outline: none;
+    border-color: var(--fbt-blue);
+}
+
 /* ── Preview toggle button ────────────────────────────────────────────────── */
 .fbt-scb-preview-toggle {
     background: transparent;
@@ -317,6 +355,7 @@
 
 /* Clip timeline */
 .fbt-scb-clips { margin-top: 8px; border-top: 1px solid var(--fbt-border-sub); padding-top: 8px; }
+.fbt-scb-timeline-row { display: flex; align-items: stretch; gap: 4px; }
 .fbt-scb-timeline {
     display: block;
     width: 100%;
@@ -324,7 +363,13 @@
     border-radius: var(--fbt-radius);
     cursor: default;
     margin-top: 0;
+    flex: 1;
+    min-width: 0;
 }
+/* Compound selector to reliably beat .fbt-scb-clip-nav-btn's own height:22px —
+   same specificity as a single class would tie, and source order alone isn't
+   a safe thing to depend on for a cascade override. */
+.fbt-scb-clip-nav-btn.fbt-scb-timeline-zoom-btn { flex: 0 0 auto; width: 20px; height: auto; }
 .fbt-scb-clip-nav {
     display: flex;
     align-items: center;
@@ -386,4 +431,16 @@
     white-space: pre-wrap;
     word-break: break-word;
     font-style: italic;
+}
+.fbt-scb-conflict-warning {
+    font-size: 10px;
+    line-height: 1.4;
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.4);
+    border-radius: var(--fbt-radius);
+    padding: 4px 7px;
+    margin: 0 0 5px;
+    white-space: pre-wrap;
+    word-break: break-word;
 }

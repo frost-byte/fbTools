@@ -104,6 +104,8 @@ const _S = {
     historyOpen:     false,
     settingsOpen:    true,
     subjectsOpen:    true,
+    clipsSettingsOpen: true,  // whole-video Detect/segmentation settings, inside Clips section
+    clipsDescribeSettingsOpen: false,  // Describe instruction / Max frames / Every Nth
 };
 
 const _dom = {};
@@ -220,12 +222,13 @@ function _mergeLoras(lorasA, lorasB) {
     return merged;
 }
 
-function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1, dirtyIds = null, hoverIdx = -1) {
+function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1, dirtyIds = null, hoverIdx = -1, viewRange = null) {
     const W = canvas.width;
     const H = canvas.height;
     const ctx = canvas.getContext("2d");
-    const dur = totalDuration > 0 ? totalDuration : 1;
-    const toX = t => (t / dur) * W;
+    const [rangeStart, rangeEnd] = viewRange || [0, totalDuration > 0 ? totalDuration : 1];
+    const dur = Math.max(rangeEnd - rangeStart, 0.001);
+    const toX = t => ((t - rangeStart) / dur) * W;
 
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = "#111";
@@ -234,8 +237,14 @@ function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1
     const BAND_TOP = 10, BAND_BOT = H - 20;
     const HOVER_RISE = 6;  // px the hovered band extends above BAND_TOP
 
+    let firstVisible = null, lastVisible = null;
+
     // Clip bands
     clips.forEach((clip, i) => {
+        if (clip.end_time <= rangeStart || clip.start_time >= rangeEnd) return;  // outside the current window
+        if (firstVisible === null) firstVisible = clip;
+        lastVisible = clip;
+
         const x1 = toX(clip.start_time);
         const x2 = toX(clip.end_time);
         const clipW = x2 - x1;
@@ -300,15 +309,14 @@ function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1
         }
     });
 
-    // Internal boundary handles
+    // Internal boundary lines (no handle — resizing happens via the start/end
+    // inputs; the old drag-handle circle is just visual noise now)
     clips.forEach((clip, i) => {
-        if (i === 0) return;
+        if (i === 0 || clip.start_time <= rangeStart) return;
         const x = toX(clip.start_time);
         ctx.strokeStyle = "#ffffffcc";
         ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(x, BAND_TOP); ctx.lineTo(x, BAND_BOT); ctx.stroke();
-        ctx.fillStyle = "#fff";
-        ctx.beginPath(); ctx.arc(x, (BAND_TOP + BAND_BOT) / 2, 5, 0, Math.PI * 2); ctx.fill();
     });
 
     // Suggestion markers (dashed gold)
@@ -316,6 +324,7 @@ function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1
     ctx.strokeStyle = "#fbbf24";
     ctx.lineWidth = 1.5;
     suggestions.forEach(seg => {
+        if (seg.start_time <= rangeStart || seg.start_time >= rangeEnd) return;
         const x = toX(seg.start_time);
         ctx.beginPath(); ctx.moveTo(x, 2); ctx.lineTo(x, H - 2); ctx.stroke();
     });
@@ -324,22 +333,22 @@ function _drawTimeline(canvas, clips, suggestions, totalDuration, activeIdx = -1
     // Time axis ticks
     const tickStep = dur <= 20 ? 2 : dur <= 60 ? 5 : dur <= 180 ? 15 : 30;
     ctx.fillStyle = "#555"; ctx.font = "9px monospace"; ctx.textAlign = "center";
-    for (let t = 0; t <= dur + 0.001; t += tickStep) {
+    const tickStart = Math.ceil(rangeStart / tickStep) * tickStep;
+    for (let t = tickStart; t <= rangeEnd + 0.001; t += tickStep) {
         const x = Math.round(toX(t));
         ctx.fillStyle = "#444";
         ctx.fillRect(x, BAND_BOT, 1, 4);
         ctx.fillStyle = "#666";
-        ctx.fillText(`${t}`, x, H - 2);
+        ctx.fillText(`${Math.round(t)}`, x, H - 2);
     }
 
-    // Start / end labels under first / last clip
-    if (clips.length) {
+    // Start / end labels under first / last VISIBLE clip
+    if (firstVisible) {
         ctx.font = "9px monospace"; ctx.fillStyle = "#888";
         ctx.textAlign = "left";
-        ctx.fillText(_fmtT(clips[0].start_time), toX(clips[0].start_time) + 2, BAND_BOT + 4);
+        ctx.fillText(_fmtT(firstVisible.start_time), toX(firstVisible.start_time) + 2, BAND_BOT + 4);
         ctx.textAlign = "right";
-        const last = clips[clips.length - 1];
-        ctx.fillText(_fmtT(last.end_time), toX(last.end_time) - 2, BAND_BOT + 4);
+        ctx.fillText(_fmtT(lastVisible.end_time), toX(lastVisible.end_time) - 2, BAND_BOT + 4);
     }
 }
 
@@ -531,8 +540,16 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     let videoDuration = 0;
     let activeClipIdx = 0;
     let hoverClipIdx  = -1;
+    // Timeline windowing: with many clips, individual bands become too thin to
+    // click reliably. Once clip count exceeds zoomWindowSize, the timeline only
+    // renders that many clips at a time, scaled to fill the canvas width, with
+    // arrow buttons to page zoomStart left/right. clips.length <= zoomWindowSize
+    // means "not zoomed" — the timeline shows everything, as before.
+    const zoomWindowSize = 10;
+    let zoomStart = 0;
     let detectFlags = { camera_cuts: true, subject_changes: false, lower_threshold: false };
     let detectPromptOverride = "";
+    let detectProgress = null;  // { windows:[[s,e]], status:[], segs:[], elapsed:[], frames:[] }
     let lastRawResponse = "";
     let hiddenVideo = null;
     let clips = [...(profile.clips || [])];
@@ -595,12 +612,31 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
 
     const autoSegBtn = _mk("button", { cls: "spe-btn sm", onclick: runAutoSegment }, ["Auto-segment"]);
 
-    body.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
+    // ── Video settings (collapsible) ─────────────────────────────────────────
+    // Everything here applies to the whole source video and is primarily used
+    // once, when first segmenting it — collapse it out of the way once you're
+    // done and want more room for adjusting clip boundaries/descriptions below.
+    const vsChevron = _mk("i", { cls: "pi pi-chevron-" + (_S.clipsSettingsOpen ? "up" : "down") });
+    const videoSettingsTitle = _mk("div", {
+        cls: "spe-clips-subtitle",
+        style: { cursor: "pointer", display: "flex", alignItems: "center", gap: "4px",
+                 fontSize: "11px", color: "#888", margin: "4px 0 2px", userSelect: "none" },
+        title: "Whole-video settings used when first segmenting this source — collapse once done.",
+    }, ["▸ Video settings (duration, proxy, Detect boundaries)", vsChevron]);
+    const videoSettingsBody = _mk("div", { cls: "spe-collapsible" + (_S.clipsSettingsOpen ? "" : " collapsed") });
+    videoSettingsTitle.onclick = () => {
+        _S.clipsSettingsOpen = !_S.clipsSettingsOpen;
+        videoSettingsBody.classList.toggle("collapsed", !_S.clipsSettingsOpen);
+        vsChevron.className = "pi pi-chevron-" + (_S.clipsSettingsOpen ? "up" : "down");
+    };
+    body.append(videoSettingsTitle, videoSettingsBody);
+
+    videoSettingsBody.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
         _mk("label", {}, ["Duration (s):"]), durationInput,
         _mk("label", {}, ["Seg (s):"]), segDurInput,
         autoSegBtn,
     ]));
-    body.appendChild(_mk("div", { cls: "spe-clips-toolbar", style: { marginTop: "4px" } }, [
+    videoSettingsBody.appendChild(_mk("div", { cls: "spe-clips-toolbar", style: { marginTop: "4px" } }, [
         _mk("label", { title: "Proxy resolution — shorter edge in pixels (must be ÷32)" }, ["Proxy edge:"]),
         proxyEdgeSel,
     ]));
@@ -624,41 +660,141 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         title: "Create clips from detected segment boundaries, pre-filling action descriptions",
     }, ["Apply suggestions"]);
 
-    body.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
+    videoSettingsBody.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
         backendNote, detectBtn, detectSpinner, applySugBtn,
     ]));
 
-    // Detect flags row
+    // Detect flags row — tooltips explain actual VLM-prompt impact, not just the label
+    const _FLAG_TOOLTIPS = {
+        camera_cuts: (
+            "Adds: \"Hard camera cuts, lens angle changes, and scene edits are transition " +
+            "boundaries even when the subject or setting remains the same.\"\n" +
+            "A boundary CRITERION — recognizes cuts/angle changes as boundaries even with no other change."
+        ),
+        subject_changes: (
+            "Adds: \"A key subject entering or leaving the frame counts as a transition when it " +
+            "represents a notable shift in the scene's cast.\"\n" +
+            "A boundary CRITERION — recognizes people entering/leaving frame as boundaries."
+        ),
+        lower_threshold: (
+            "Adds: \"When in doubt, err on the side of marking more boundaries rather than fewer.\"\n" +
+            "NOT a new boundary type — a SENSITIVITY dial. Lowers the bar for how confident the " +
+            "VLM needs to be before calling something a boundary; use when detection is under-splitting."
+        ),
+    };
     const _mkFlagCb = (key, label, defaultOn) => {
-        const cb  = _mk("input", { type: "checkbox", id: `spe-flag-${key}-${profile.id || "new"}` });
+        const cb  = _mk("input", { type: "checkbox", id: `spe-flag-${key}-${profile.id || "new"}`,
+            title: _FLAG_TOOLTIPS[key] });
         cb.checked = defaultOn;
-        cb.onchange = () => { detectFlags[key] = cb.checked; };
-        const lbl = _mk("label", { htmlFor: cb.id, style: { fontSize: "11px" } }, [label]);
+        cb.onchange = () => { detectFlags[key] = cb.checked; _refreshPromptPreview(); };
+        const lbl = _mk("label", { htmlFor: cb.id, style: { fontSize: "11px" }, title: _FLAG_TOOLTIPS[key] }, [label]);
         return [cb, lbl];
     };
     const [camCb, camLbl]     = _mkFlagCb("camera_cuts",    "Camera cuts",     true);
     const [subjCb, subjLbl]   = _mkFlagCb("subject_changes","Subject changes",  false);
     const [lowCb, lowLbl]     = _mkFlagCb("lower_threshold","More boundaries",  false);
-    body.appendChild(_mk("div", { cls: "spe-clips-toolbar", style: { flexWrap: "wrap", gap: "6px" } }, [
+    videoSettingsBody.appendChild(_mk("div", { cls: "spe-clips-toolbar", style: { flexWrap: "wrap", gap: "6px" } }, [
         _mk("span", { style: { fontSize: "11px", color: "#888" } }, ["Flags:"]),
         camCb, camLbl, subjCb, subjLbl, lowCb, lowLbl,
     ]));
 
+    // ── Precision slider ─────────────────────────────────────────────────────
+    // Single knob: seconds between sampled frames. The per-call time window is
+    // ALWAYS derived as interval * 20 so every VLM call uses the full 20-frame
+    // budget evenly — no wasted capacity, no silently-dropped tail frames.
+    const DETECT_FRAMES_PER_CALL = 20;
+    let detectIntervalSeconds = 3.0;
+    const precisionSlider = _mk("input", {
+        type: "range", min: "1", max: "8", step: "0.5", value: String(detectIntervalSeconds),
+        style: { verticalAlign: "middle" },
+        title: (
+            "Seconds between analyzed frames — the only sampling control. Lower = catches " +
+            "quick cuts and short beats but costs more VLM calls; higher = coarser and faster, " +
+            "may miss brief transitions.\n\n" +
+            `The time window sent per VLM call is always ${DETECT_FRAMES_PER_CALL} × this value, ` +
+            "so every call fully uses its frame budget regardless of the setting."
+        ),
+    });
+    const precisionReadout = _mk("span", { style: { fontSize: "11px", color: "#888", marginLeft: "6px" } });
+    function _updatePrecisionReadout() {
+        const interval = detectIntervalSeconds;
+        const windowSec = interval * DETECT_FRAMES_PER_CALL;
+        const dur = getTotalDuration();
+        const nWindows = Math.max(1, Math.ceil(dur / windowSec));
+        precisionReadout.textContent =
+            `1 frame / ${interval.toFixed(1)}s  ·  ${Math.round(windowSec)}s per VLM call  ·  ` +
+            `~${nWindows} call${nWindows !== 1 ? "s" : ""} for this ${dur.toFixed(0)}s video`;
+    }
+    precisionSlider.oninput = () => {
+        detectIntervalSeconds = parseFloat(precisionSlider.value);
+        _updatePrecisionReadout();
+    };
+    videoSettingsBody.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
+        _mk("label", { style: { fontSize: "11px", color: "#888" }, title: precisionSlider.title },
+            ["Precision:"]),
+        precisionSlider, precisionReadout,
+    ]));
+    _updatePrecisionReadout();
+
     // Prompt override textarea (collapsible)
-    const promptToggle = _mk("button", { cls: "spe-btn sm ghost", style: { fontSize: "11px" } }, ["▸ Prompt override"]);
+    const promptToggle = _mk("button", { cls: "spe-btn sm ghost", style: { fontSize: "11px" },
+        title: "Replaces the entire boundary-detection prompt below — flags above are ignored " +
+               "when this is non-empty. The JSON output schema is still appended automatically." },
+        ["▸ Prompt override"]);
     const promptWrap   = _mk("div", { style: { display: "none", marginTop: "4px" } });
     const promptTa     = _mk("textarea", { placeholder: "Leave empty to use flags above…",
         rows: 4, style: { width: "100%", fontSize: "11px", resize: "vertical",
                           background: "var(--bg2)", color: "var(--fg)", border: "1px solid var(--border)",
                           borderRadius: "4px", padding: "4px", boxSizing: "border-box" } });
-    promptTa.oninput = () => { detectPromptOverride = promptTa.value; };
+    let _previewDebounce = null;
+    promptTa.oninput = () => {
+        detectPromptOverride = promptTa.value;
+        clearTimeout(_previewDebounce);
+        _previewDebounce = setTimeout(_refreshPromptPreview, 300);
+    };
     promptWrap.appendChild(promptTa);
     promptToggle.onclick = () => {
         const open = promptWrap.style.display === "none";
         promptWrap.style.display = open ? "block" : "none";
         promptToggle.textContent = (open ? "▾ " : "▸ ") + "Prompt override";
     };
-    body.appendChild(_mk("div", { style: { padding: "2px 0" } }, [promptToggle, promptWrap]));
+    videoSettingsBody.appendChild(_mk("div", { style: { padding: "2px 0" } }, [promptToggle, promptWrap]));
+
+    // Prompt preview (collapsible) — shows the EXACT prompt Detect boundaries will
+    // send, live-updated from the flags/override above via the backend builder
+    // itself (never hand-duplicated in JS, so it can't drift from the real prompt).
+    const previewToggle = _mk("button", { cls: "spe-btn sm ghost", style: { fontSize: "11px" },
+        title: "Preview the exact instruction text sent to the VLM, built from the flags/override " +
+               "above. Only fetched while this section is open." },
+        ["▸ Prompt preview"]);
+    const previewWrap = _mk("div", { style: { display: "none", marginTop: "4px" } });
+    const previewNote = _mk("div", { style: { fontSize: "10px", color: "#888", marginBottom: "4px" } },
+        ["This base prompt is reused per time-window; each actual call additionally appends " +
+         "a timestamp-range note pinning that window's absolute start/end seconds."]);
+    const previewPre = _mk("pre", { style: { fontSize: "10px", whiteSpace: "pre-wrap", wordBreak: "break-word",
+        maxHeight: "260px", overflowY: "auto", background: "var(--bg2)", padding: "6px",
+        border: "1px solid var(--border)", borderRadius: "4px", margin: 0 } }, ["Loading…"]);
+    previewWrap.append(previewNote, previewPre);
+    let _previewOpen = false;
+    async function _refreshPromptPreview() {
+        if (!_previewOpen) return;
+        try {
+            const r = await sourceProfilesApi.segmentPromptPreview({
+                prompt_override: detectPromptOverride.trim(),
+                flags:           detectPromptOverride.trim() ? null : { ...detectFlags },
+            });
+            previewPre.textContent = r.prompt || "";
+        } catch (err) {
+            previewPre.textContent = `(preview failed: ${_errMsg(err)})`;
+        }
+    }
+    previewToggle.onclick = () => {
+        _previewOpen = previewWrap.style.display === "none";
+        previewWrap.style.display = _previewOpen ? "block" : "none";
+        previewToggle.textContent = (_previewOpen ? "▾ " : "▸ ") + "Prompt preview";
+        if (_previewOpen) _refreshPromptPreview();
+    };
+    videoSettingsBody.appendChild(_mk("div", { style: { padding: "2px 0" } }, [previewToggle, previewWrap]));
 
     // Raw response section (shown after detection)
     const rawWrap = _mk("div", { style: { display: "none", marginTop: "6px" } });
@@ -673,14 +809,130 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     };
     rawWrap.appendChild(rawToggle);
     rawWrap.appendChild(rawPre);
-    body.appendChild(rawWrap);
+    videoSettingsBody.appendChild(rawWrap);
+
+    // ── Detect-boundaries progress strip ────────────────────────────────────
+    // One block per time-window, sized proportional to its duration, colored by
+    // status (pending/active/done). Shown only while a Detect run is active or
+    // just finished; hidden otherwise.
+    const _DETECT_BLOCK_COLOR = { pending: "#3a3a3a", active: "#f0ad4e", done: "#22c55e" };
+    const detectProgressWrap = _mk("div", { style: { display: "none", margin: "4px 0" } });
+    const detectProgressBar  = _mk("div", { style: {
+        display: "flex", gap: "1px", height: "14px", borderRadius: "2px",
+        overflow: "hidden", border: "1px solid var(--border)",
+    } });
+    const detectProgressText = _mk("div", { style: { fontSize: "10px", color: "#888", marginTop: "2px" } });
+    detectProgressWrap.append(detectProgressBar, detectProgressText);
+    body.appendChild(detectProgressWrap);
+
+    function _renderDetectProgress() {
+        if (!detectProgress) { detectProgressWrap.style.display = "none"; return; }
+        detectProgressWrap.style.display = "block";
+        detectProgressBar.innerHTML = "";
+        detectProgress.windows.forEach(([s, e], i) => {
+            const status = detectProgress.status[i] || "pending";
+            const blk = _mk("div", { style: {
+                flexGrow: String(Math.max(0.01, e - s)), flexBasis: "0",
+                background: _DETECT_BLOCK_COLOR[status],
+                transition: "background-color 0.2s",
+            } });
+            let tip = `${s.toFixed(0)}s – ${e.toFixed(0)}s`;
+            if (status === "done") {
+                tip += `  ·  ${detectProgress.segs[i] ?? 0} segment(s)  ·  ${(detectProgress.elapsed[i] ?? 0).toFixed(1)}s`;
+            } else if (status === "active") {
+                tip += "  ·  processing…";
+            } else {
+                tip += "  ·  pending";
+            }
+            blk.title = tip;
+            detectProgressBar.appendChild(blk);
+        });
+
+        const doneIdx    = detectProgress.status.map((s, i) => s === "done" ? i : -1).filter(i => i >= 0);
+        const totalSegs  = doneIdx.reduce((a, i) => a + (detectProgress.segs[i] || 0), 0);
+        const elapsedSum = doneIdx.reduce((a, i) => a + (detectProgress.elapsed[i] || 0), 0);
+        const framesSum  = doneIdx.reduce((a, i) => a + (detectProgress.frames[i] || 0), 0);
+        let text = `${doneIdx.length}/${detectProgress.windows.length} window(s) processed`;
+        if (doneIdx.length > 0) {
+            const secPerWindow = elapsedSum / doneIdx.length;
+            const framesPerSec = elapsedSum > 0 ? framesSum / elapsedSum : 0;
+            text += `  ·  ${totalSegs} segment(s) found so far  ·  ` +
+                    `${secPerWindow.toFixed(1)}s/window avg  ·  ~${framesPerSec.toFixed(1)} frames/s`;
+        }
+        detectProgressText.textContent = text;
+    }
 
     // ── Timeline canvas ───────────────────────────────────────────────────────
-    const canvasWrap = _mk("div", { cls: "spe-timeline-wrap", style: { position: "relative" } });
+    // canvasWrap is a flex row: [prev arrow] [canvasInner (canvas + tooltip)]
+    // [next arrow]. The arrows take their own fixed width rather than
+    // overlaying the canvas, so they never sit on top of a clip segment —
+    // canvasInner (flex:1) shrinks to make room for them instead.
+    const canvasWrap = _mk("div", { cls: "spe-timeline-wrap" });
+    const canvasInner = _mk("div", { cls: "spe-timeline-inner", style: { position: "relative" } });
     const canvas = document.createElement("canvas");
     canvas.className = "spe-timeline";
     canvas.height = 72;
-    canvasWrap.appendChild(canvas);
+    canvasInner.appendChild(canvas);
+
+    // Zoom-window paging arrows — only shown once clip count exceeds
+    // zoomWindowSize, since below that the full timeline already fits.
+    const zoomPrevBtn = _mk("button", {
+        cls: "spe-btn sm ghost spe-timeline-zoom-btn spe-timeline-zoom-prev",
+        title: "Show previous clips",
+    }, ["←"]);
+    const zoomNextBtn = _mk("button", {
+        cls: "spe-btn sm ghost spe-timeline-zoom-btn spe-timeline-zoom-next",
+        title: "Show next clips",
+    }, ["→"]);
+    // Paging jumps zoomStart by a whole window, which used to redraw instantly
+    // — jarring since the visible clips change completely in one frame.
+    // Animate the pan/rescale between the old and new visible range instead.
+    function _animateZoomPan(fromRange, toRange) {
+        if (!fromRange || !toRange) { redraw(); return; }
+        const DURATION_MS = 180;
+        const t0 = performance.now();
+        const dirty = new Set(clips.filter(_isProxyDirty).map(c => c.id));
+        function step(now) {
+            const t = Math.min(1, (now - t0) / DURATION_MS);
+            const eased = 1 - Math.pow(1 - t, 3);  // ease-out cubic
+            const range = [
+                fromRange[0] + (toRange[0] - fromRange[0]) * eased,
+                fromRange[1] + (toRange[1] - fromRange[1]) * eased,
+            ];
+            canvas.width = canvas.offsetWidth || 380;
+            _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx, dirty, hoverClipIdx, range);
+            if (t < 1) requestAnimationFrame(step);
+            else redraw();  // final pass to fully resync (nav list, arrow disabled state, etc.)
+        }
+        requestAnimationFrame(step);
+    }
+
+    zoomPrevBtn.onclick = () => {
+        const fromRange = _visibleClipRange();
+        zoomStart = Math.max(0, zoomStart - zoomWindowSize);
+        _animateZoomPan(fromRange, _visibleClipRange());
+    };
+    zoomNextBtn.onclick = () => {
+        const fromRange = _visibleClipRange();
+        zoomStart = Math.min(Math.max(0, clips.length - zoomWindowSize), zoomStart + zoomWindowSize);
+        _animateZoomPan(fromRange, _visibleClipRange());
+    };
+
+    function _visibleClipRange() {
+        if (clips.length <= zoomWindowSize) return null;  // fits in one view — show everything
+        zoomStart = Math.max(0, Math.min(zoomStart, clips.length - zoomWindowSize));
+        const lastIdx = Math.min(zoomStart + zoomWindowSize, clips.length) - 1;
+        return [clips[zoomStart].start_time, clips[lastIdx].end_time];
+    }
+
+    function _updateZoomArrows() {
+        const zoomed = clips.length > zoomWindowSize;
+        zoomPrevBtn.style.display = zoomed ? "" : "none";
+        zoomNextBtn.style.display = zoomed ? "" : "none";
+        if (!zoomed) return;
+        zoomPrevBtn.disabled = zoomStart <= 0;
+        zoomNextBtn.disabled = zoomStart + zoomWindowSize >= clips.length;
+    }
 
     // Floating tooltip for narrow clips that are hard to identify on hover
     const hoverTooltipEl = _mk("div", { style: {
@@ -690,9 +942,16 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         pointerEvents: "none", whiteSpace: "nowrap",
         boxShadow: "0 2px 8px rgba(0,0,0,.5)", display: "none", zIndex: "10",
     }});
-    canvasWrap.appendChild(hoverTooltipEl);
+    canvasInner.appendChild(hoverTooltipEl);
 
+    canvasWrap.append(zoomPrevBtn, canvasInner, zoomNextBtn);
     body.appendChild(canvasWrap);
+
+    // ── Clip navigation (directly below the timeline) ────────────────────────
+    // Nav row (←/label/→) and Merge/Split are rendered by renderClipList() into
+    // separate rows so Merge isn't a misclick away from the → arrow.
+    const navEl = _mk("div");
+    body.appendChild(navEl);
 
     // ── Describe prompt override ──────────────────────────────────────────────
     const DEFAULT_DESCRIBE_PROMPT =
@@ -723,7 +982,6 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         }, 800);
     };
     promptOverrideWrap.append(promptOverrideLabel, promptOverrideTa);
-    body.appendChild(promptOverrideWrap);
 
     // ── Describe frame controls ───────────────────────────────────────────────
     const descFrameRow = _mk("div", { style: { display: "flex", gap: "10px", alignItems: "center", marginBottom: "8px", fontSize: "11px" } });
@@ -752,7 +1010,26 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         _mk("label", {}, ["Max frames"]), descMaxFrInp,
         _mk("label", { style: { marginLeft: "6px" } }, ["Every Nth"]), descNthInp,
     );
-    body.appendChild(descFrameRow);
+
+    // Collapsible "Describe settings" — the instruction override and frame-sampling
+    // controls used by the per-clip Describe button below. Collapsed by default:
+    // these are set-once defaults, not something touched while adjusting clips.
+    const dsChevron = _mk("i", { cls: "pi pi-chevron-" + (_S.clipsDescribeSettingsOpen ? "up" : "down") });
+    const describeSettingsTitle = _mk("div", {
+        cls: "spe-clips-subtitle",
+        style: { cursor: "pointer", display: "flex", alignItems: "center", gap: "4px",
+                 fontSize: "11px", color: "#888", margin: "6px 0 2px", userSelect: "none" },
+        title: "Instruction and frame-sampling settings used by the Describe button on the clip below.",
+    }, ["▸ Describe settings (instruction, max frames, every Nth)", dsChevron]);
+    const describeSettingsBody = _mk("div",
+        { cls: "spe-collapsible" + (_S.clipsDescribeSettingsOpen ? "" : " collapsed") });
+    describeSettingsTitle.onclick = () => {
+        _S.clipsDescribeSettingsOpen = !_S.clipsDescribeSettingsOpen;
+        describeSettingsBody.classList.toggle("collapsed", !_S.clipsDescribeSettingsOpen);
+        dsChevron.className = "pi pi-chevron-" + (_S.clipsDescribeSettingsOpen ? "up" : "down");
+    };
+    describeSettingsBody.append(promptOverrideWrap, descFrameRow);
+    body.append(describeSettingsTitle, describeSettingsBody);
 
     // ── Clip list ─────────────────────────────────────────────────────────────
     const listEl = _mk("div");
@@ -764,27 +1041,35 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
 
     // ── Toggle ────────────────────────────────────────────────────────────────
     // ── Build-all-proxies button (sits in the title row) ─────────────────────
+    const proxyBuildStatusEl = _mk("span", {
+        cls: "spe-clips-llm-note",
+        style: { fontSize: "11px", color: "#888", marginRight: "6px", display: "none" },
+    }, [""]);
     const buildAllBtn = _mk("button", { cls: "spe-btn sm ghost",
         title: "Pre-build proxies for all clips in this profile",
         style: { marginRight: "4px" },
         onclick: async e => {
             e.stopPropagation();
+            if (_proxyBuildActive) return;  // a build (batch or single-clip) is already running
             buildAllBtn.disabled = true;
             buildAllBtn.textContent = "building…";
             try {
                 const res = await sourceProfilesApi.prebuildProxies({ profile_id: profile.id });
                 const n = res.clip_count || 0;
                 _toast(`Building ${n} proxy clip${n !== 1 ? "s" : ""} in background`, "info");
-                // Refresh status after estimated completion time (rough: 5s/clip)
-                const delay = Math.max(4000, n * 5000);
-                setTimeout(() => _refreshProxyStatus(), delay);
+                proxyBuildStatusEl.textContent = "Starting…";
+                proxyBuildStatusEl.style.display = "";
+                // Stays disabled until the "complete" status arrives — see
+                // _onProxyBuildStatus, not reset here since the background job
+                // keeps running well after this request itself returns.
+                _proxyBuildActive = true;
             } catch (err) {
                 _toast(`Proxy build failed: ${err.message}`, "error");
-            } finally {
                 buildAllBtn.disabled = false;
                 buildAllBtn.textContent = "build proxies";
             }
         } }, ["build proxies"]);
+    titleRow.insertBefore(proxyBuildStatusEl, chevron);
     titleRow.insertBefore(buildAllBtn, chevron);
 
     titleRow.onclick = () => {
@@ -803,35 +1088,39 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     // ── Redraw ────────────────────────────────────────────────────────────────
     function redraw() {
         canvas.width = canvas.offsetWidth || 380;
+        _updateZoomArrows();
         _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx,
-            new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx);
+            new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx, _visibleClipRange());
         renderClipList();
+        _updatePrecisionReadout();
     }
 
-    // ── Timeline drag ─────────────────────────────────────────────────────────
-    const MIN_DUR = 1.0;
-    let _drag = null;
+    // ── Timeline: hover + click-to-select ────────────────────────────────────
+    //
+    // Boundary-handle drag-to-resize used to live here, but with many short
+    // clips the 8px handle hitbox was too easy to grab by accident while just
+    // trying to select a clip. Resizing now happens exclusively through the
+    // clip's start/end inputs (also generally easier to line up precisely);
+    // the timeline is click-to-select only.
+    //
+    // _timeToX mirrors _drawTimeline's own coordinate mapping so hover/click
+    // hit-testing lines up with whatever's actually on screen — the full
+    // timeline, or (once zoomed) just the current window of clips.
+    function _timeToX(t, range) {
+        if (!range) return (t / (getTotalDuration() || 1)) * canvas.offsetWidth;
+        return ((t - range[0]) / Math.max(range[1] - range[0], 0.001)) * canvas.offsetWidth;
+    }
 
-    canvas.addEventListener("mousedown", e => {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const totalDur = getTotalDuration() || 1;
-        for (let i = 1; i < clips.length; i++) {
-            const hx = (clips[i].start_time / totalDur) * canvas.offsetWidth;
-            if (Math.abs(x - hx) <= 8) { _drag = { i }; e.preventDefault(); break; }
-        }
-    });
-
-    function _updateHoverTooltip(e, totalDur) {
+    function _updateHoverTooltip(e, range) {
         if (hoverClipIdx < 0) { hoverTooltipEl.style.display = "none"; return; }
         const clip = clips[hoverClipIdx];
-        const x1 = (clip.start_time / totalDur) * canvas.offsetWidth;
-        const x2 = (clip.end_time   / totalDur) * canvas.offsetWidth;
+        const x1 = _timeToX(clip.start_time, range);
+        const x2 = _timeToX(clip.end_time, range);
         if (x2 - x1 >= 40) { hoverTooltipEl.style.display = "none"; return; }
         const dur = (clip.end_time - clip.start_time).toFixed(1);
         hoverTooltipEl.textContent =
             `${clip.label || `Clip ${hoverClipIdx + 1}`}  ${clip.start_time.toFixed(1)}–${clip.end_time.toFixed(1)}s  (${dur}s)`;
-        const wrapRect = canvasWrap.getBoundingClientRect();
+        const wrapRect = canvasInner.getBoundingClientRect();
         const tipWidth = hoverTooltipEl.offsetWidth || 160;
         const mouseX   = e.clientX - wrapRect.left;
         hoverTooltipEl.style.left = Math.max(0, Math.min(canvas.offsetWidth - tipWidth, mouseX - tipWidth / 2)) + "px";
@@ -841,86 +1130,47 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     canvas.addEventListener("mousemove", e => {
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
-        const totalDur = getTotalDuration() || 1;
+        const range = _visibleClipRange();
         const BAND_TOP = 10, BAND_BOT = canvas.height - 20;
         const y = e.clientY - rect.top;
 
-        // Handle hover tracking (skip during active drag)
-        if (!_drag) {
-            let newHoverIdx = -1;
-            if (y >= BAND_TOP - 6 && y <= BAND_BOT) {
-                for (let i = 0; i < clips.length; i++) {
-                    const x1 = (clips[i].start_time / totalDur) * canvas.offsetWidth;
-                    const x2 = (clips[i].end_time   / totalDur) * canvas.offsetWidth;
-                    if (x >= x1 && x <= x2) { newHoverIdx = i; break; }
-                }
+        // Handle hover tracking
+        let newHoverIdx = -1;
+        if (y >= BAND_TOP - 6 && y <= BAND_BOT) {
+            for (let i = 0; i < clips.length; i++) {
+                const x1 = _timeToX(clips[i].start_time, range);
+                const x2 = _timeToX(clips[i].end_time, range);
+                if (x >= x1 && x <= x2) { newHoverIdx = i; break; }
             }
-            if (newHoverIdx !== hoverClipIdx) {
-                hoverClipIdx = newHoverIdx;
-                canvas.width = canvas.offsetWidth;
-                _drawTimeline(canvas, clips, suggestions, totalDur, activeClipIdx,
-                    new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx);
-            }
-            _updateHoverTooltip(e, totalDur);
         }
+        if (newHoverIdx !== hoverClipIdx) {
+            hoverClipIdx = newHoverIdx;
+            canvas.width = canvas.offsetWidth;
+            _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx,
+                new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx, range);
+        }
+        _updateHoverTooltip(e, range);
 
-        // Cursor: col-resize for boundary handles, but only when adjacent clips are wide enough to click
-        let overHandle = false;
-        for (let i = 1; i < clips.length; i++) {
-            const hx = (clips[i].start_time / totalDur) * canvas.offsetWidth;
-            if (Math.abs(x - hx) <= 8) {
-                const leftW  = hx - (clips[i - 1].start_time / totalDur) * canvas.offsetWidth;
-                const rightW = (clips[i].end_time / totalDur) * canvas.offsetWidth - hx;
-                if (leftW >= 16 && rightW >= 16) overHandle = true;
-                break;
+        // Cursor: pointer over a clip band (click to select), default otherwise.
+        let overBand = false;
+        if (y >= BAND_TOP && y <= BAND_BOT) {
+            for (let i = 0; i < clips.length; i++) {
+                const x1 = _timeToX(clips[i].start_time, range);
+                const x2 = _timeToX(clips[i].end_time, range);
+                if (x >= x1 && x <= x2) { overBand = true; break; }
             }
         }
-        if (overHandle) {
-            canvas.style.cursor = "col-resize";
-        } else {
-            let overBand = false;
-            if (y >= BAND_TOP && y <= BAND_BOT) {
-                for (let i = 0; i < clips.length; i++) {
-                    const x1 = (clips[i].start_time / totalDur) * canvas.offsetWidth;
-                    const x2 = (clips[i].end_time   / totalDur) * canvas.offsetWidth;
-                    if (x >= x1 && x <= x2) { overBand = true; break; }
-                }
-            }
-            canvas.style.cursor = overBand ? "pointer" : "default";
-        }
-
-        if (!_drag) return;
-        const i = _drag.i;
-        const t = Math.round(((x / canvas.offsetWidth) * totalDur) * 10) / 10;
-        const clamped = Math.max(clips[i - 1].start_time + MIN_DUR,
-                                 Math.min(clips[i].end_time - MIN_DUR, t));
-        clips = clips.map((c, j) =>
-            j === i - 1 ? { ...c, end_time: clamped }
-          : j === i     ? { ...c, start_time: clamped }
-          : c);
-        canvas.width = canvas.offsetWidth;
-        _drawTimeline(canvas, clips, suggestions, totalDur, activeClipIdx,
-            new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx);
+        canvas.style.cursor = overBand ? "pointer" : "default";
     });
 
     canvas.addEventListener("mouseup", e => {
-        if (_drag) {
-            // End boundary drag
-            const dragI = _drag.i;
-            _drag = null;
-            profile.clips = clips;
-            onClipsChanged(clips);
-            [dragI - 1, dragI].forEach(j => { if (clips[j]) _markTimesDirty(j); });
-            renderClipList();
-            return;
-        }
-        // No drag — treat as a click to select a clip band
+        // Click to select a clip band
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
-        const totalDur = getTotalDuration() || 1;
+        const range = _visibleClipRange();
         for (let i = 0; i < clips.length; i++) {
-            const x1 = (clips[i].start_time / totalDur) * canvas.offsetWidth;
-            const x2 = (clips[i].end_time / totalDur) * canvas.offsetWidth;
+            const x1 = _timeToX(clips[i].start_time, range);
+            const x2 = _timeToX(clips[i].end_time, range);
             if (x >= x1 && x <= x2) {
                 activeClipIdx = i;
                 redraw();
@@ -932,17 +1182,16 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     canvas.addEventListener("mouseleave", () => {
         hoverClipIdx = -1;
         hoverTooltipEl.style.display = "none";
-        if (!_drag) return;
-        const dragI = _drag.i;
-        _drag = null;
-        profile.clips = clips;
-        onClipsChanged(clips);
-        [dragI - 1, dragI].forEach(j => { if (clips[j]) _markTimesDirty(j); });
-        renderClipList();
     });
 
     // ── Proxy status helpers ──────────────────────────────────────────────────
     let _proxyStatusMap = {}; // clip_id → { fresh: bool }
+    // True from the moment any proxy build (batch or single-clip) is kicked
+    // off until its "complete" status arrives — guards against overlapping
+    // submissions, which is exactly what was flooding upsert_clip: every
+    // progress event during a build re-triggers _refreshProxyStatus(), and a
+    // second build starting mid-flight multiplies that further.
+    let _proxyBuildActive = false;
 
     // A clip is dirty when its timing was changed after the proxy was last built.
     // Both timestamps are ISO strings stored on the clip object itself and
@@ -971,7 +1220,12 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 _proxyStatusMap[c.clip_id] = c;
                 if (c.fresh) {
                     const idx = clips.findIndex(cl => cl.id === c.clip_id);
-                    if (idx >= 0) {
+                    // Only persist once per clip: every progress event during a
+                    // build calls this for *all* clips, not just the one that
+                    // just finished — without this guard, a profile with many
+                    // clips fires roughly N² upsert_clip calls before the batch
+                    // is done (this is what was flooding the server).
+                    if (idx >= 0 && (!clips[idx].proxy_built_at || _isProxyDirty(clips[idx]))) {
                         clips[idx] = { ...clips[idx], proxy_built_at: now };
                         profile.clips = clips;
                         _persistClip(clips[idx]);
@@ -986,6 +1240,33 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         const clip = clips.find(c => c.id === clip_id);
         return clip ? _isProxyDirty(clip) : false;
     }
+
+    // Live proxy-build progress. The backend already broadcasts per-clip status
+    // via send_status_update(source="proxy_build") during prebuild_proxies — this
+    // just wires up a listener so it actually reaches the UI instead of going
+    // unheard, and refreshes badges the moment each clip's build finishes rather
+    // than waiting on a guessed timeout or a slow poll loop.
+    let _proxyBuildStatusHideTimer = null;
+    function _onProxyBuildStatus(event) {
+        const d = event?.detail || {};
+        if (d.source !== "proxy_build") return;
+        const msg = String(d.status || "").trim();
+        if (msg) {
+            proxyBuildStatusEl.textContent = msg;
+            proxyBuildStatusEl.style.display = "";
+            clearTimeout(_proxyBuildStatusHideTimer);
+            if (/complete/i.test(msg)) {
+                _proxyBuildActive = false;
+                buildAllBtn.disabled = false;
+                buildAllBtn.textContent = "build proxies";
+                _proxyBuildStatusHideTimer = setTimeout(() => {
+                    proxyBuildStatusEl.style.display = "none";
+                }, 4000);
+            }
+        }
+        _refreshProxyStatus();  // also re-renders the clip list, picking up _proxyBuildActive
+    }
+    api.addEventListener("fbtools.status", _onProxyBuildStatus);
 
     function _proxyBadgeEl(clip_id) {
         const dirty = _isProxyDirtyById(clip_id);
@@ -1008,6 +1289,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     // ── Clip list render — shows one clip at a time ───────────────────────────
     function renderClipList() {
         listEl.innerHTML = "";
+        navEl.innerHTML = "";
         if (!clips.length) return;
 
         // Clamp in case clips were removed
@@ -1035,7 +1317,12 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         nextBtn.onclick  = () => { activeClipIdx = Math.min(clips.length - 1, i + 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
         mergeBtn.onclick = () => mergeWithNext(i);
         splitBtn.onclick = () => splitClip(i);
-        listEl.appendChild(_mk("div", { cls: "spe-clip-nav" }, [prevBtn, navLabel, nextBtn, mergeBtn, splitBtn]));
+        navEl.appendChild(_mk("div", { cls: "spe-clip-nav" }, [prevBtn, navLabel, nextBtn]));
+        // Merge/split on their own centered row — kept away from the ←/→ arrows
+        // so a misaimed click can't accidentally merge two clips together.
+        navEl.appendChild(_mk("div", {
+            style: { display: "flex", justifyContent: "center", gap: "8px", margin: "4px 0" },
+        }, [mergeBtn, splitBtn]));
 
         {   // single-clip block (braces preserve the original forEach-scoped variable names)
             const clip = clips[i];
@@ -1057,13 +1344,45 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                     clips[i] = { ...clips[i], start_time: s, end_time: e };
                     _markTimesDirty(i);
                     commitClip(i);
-                    renderClipList();
+                    renderClipList();  // rebuilds the card, so boundary thumbnails
+                                       // below refresh at the newly committed times
                 }
             };
+            // change fires for both stepper-arrow clicks and blur-after-typing;
+            // Enter alone doesn't blur a bare <input>, so handle it explicitly too.
             startEl.onchange = applyTimes; endEl.onchange = applyTimes;
+            const _commitOnEnter = e => { if (e.key === "Enter") applyTimes(); };
+            startEl.addEventListener("keydown", _commitOnEnter);
+            endEl.addEventListener("keydown", _commitOnEnter);
 
             const durSpan = _mk("span", { style: { color: "#888" } },
                 [`(${(clip.end_time - clip.start_time).toFixed(1)}s)`]);
+
+            // ── Boundary thumbnails ────────────────────────────────────────────
+            const canPreview = profile.media_type === "video" && !!profile.media_filename && !!profile.id;
+            const _mkBoundThumb = () => canPreview
+                ? _mk("img", { cls: "spe-bound-thumb" })
+                : _mk("div", { cls: "spe-bound-thumb spe-bound-thumb-empty" },
+                      [profile.id ? "no preview" : "save profile for preview"]);
+            const startThumb = _mkBoundThumb();
+            const endThumb   = _mkBoundThumb();
+            if (canPreview) {
+                startThumb.src = sourceProfilesApi.frameAtUrl(profile.id, clip.start_time, 160);
+                endThumb.src   = sourceProfilesApi.frameAtUrl(profile.id, clip.end_time, 160);
+                startThumb.onerror = () => { startThumb.style.visibility = "hidden"; };
+                endThumb.onerror   = () => { endThumb.style.visibility   = "hidden"; };
+            }
+            const boundsRow = _mk("div", { cls: "spe-bounds-row" }, [
+                _mk("div", { cls: "spe-bound-group start" }, [
+                    startThumb,
+                    _mk("div", { cls: "spe-bound-ctl" }, [_mk("label", {}, ["Start"]), startEl]),
+                ]),
+                _mk("div", { cls: "spe-bound-mid" }, [durSpan]),
+                _mk("div", { cls: "spe-bound-group end" }, [
+                    endThumb,
+                    _mk("div", { cls: "spe-bound-ctl" }, [_mk("label", {}, ["End"]), endEl]),
+                ]),
+            ]);
 
             const actionEl = _mk("textarea", { cls: "spe-clip-ta", rows: 2,
                 placeholder: "Action description — edit manually or click Describe" });
@@ -1219,9 +1538,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
 
             const clipBody = _mk("div", { cls: "spe-clip-card-body" }, [
                 _mk("div", { cls: "spe-clip-row", style: { marginBottom: "6px" } }, [labelInp]),
-                _mk("div", { cls: "spe-clip-row" }, [
-                    "Start:", startEl, "End:", endEl, durSpan,
-                ]),
+                boundsRow,
                 actionEl,
                 subjects.length ? subjWrap : null,
                 _mk("div", { style: { display: "flex", gap: "4px" } }, [describeBtn]),
@@ -1235,36 +1552,42 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                     applyMusicAllBtn,
                 ]),
                 musicEl,
-                _mk("label", { cls: "spe-clip-subj-check", style: { marginTop: "4px" }, title: "When off, dialogue from cast entries is ignored for this segment" }, [dlgCb, " Allows dialogue"]),
+                _mk("label", { cls: "spe-clip-subj-check", style: { marginTop: "4px" }, title: "When off, dialogue text from cast entries is ignored for this segment, and Scene Cast \"Audio\" (voice-timbre extraction) is skipped too — no audio involvement for this clip at all" }, [dlgCb, " Allows dialogue"]),
                 loraSection,
             ]);
 
             const proxyBadge = _proxyBadgeEl(clip.id);
             const buildProxyBtn = _mk("button", { cls: "spe-btn sm ghost",
-                title: "Pre-build proxy for this clip",
+                title: _proxyBuildActive
+                    ? "A proxy build is already running"
+                    : "Pre-build proxy for this clip",
+                disabled: _proxyBuildActive,
                 onclick: async e => {
                     e.stopPropagation();
+                    if (_proxyBuildActive) return;  // another build (batch or single-clip) is running
                     buildProxyBtn.disabled = true;
                     buildProxyBtn.textContent = "…";
                     try {
                         const res = await sourceProfilesApi.prebuildProxies({ profile_id: profile.id, clip_id: clip.id });
                         if ((res.clip_count ?? 1) === 0) {
                             _toast("Clip not found on server — try saving the profile first", "warn");
+                            buildProxyBtn.disabled = false;
+                            buildProxyBtn.textContent = "proxy";
                         } else {
                             _toast(`Building proxy for "${clip.label || `Clip ${i + 1}`}" in background`, "info");
-                            // Poll with increasing intervals; stop early once the proxy is marked fresh
-                            const _pollDelays = [5000, 10000, 15000, 20000, 30000, 60000];
-                            let _pi = 0;
-                            const _poll = async () => {
-                                await _refreshProxyStatus();
-                                if (_proxyStatusMap[clip.id]?.fresh && !_isProxyDirty(clips[i])) return;
-                                if (++_pi < _pollDelays.length) setTimeout(_poll, _pollDelays[_pi]);
-                            };
-                            setTimeout(_poll, _pollDelays[0]);
+                            proxyBuildStatusEl.textContent = "Starting…";
+                            proxyBuildStatusEl.style.display = "";
+                            // Stays disabled until the "complete" status arrives — see
+                            // _onProxyBuildStatus. The 90s timeout below is only a safety
+                            // net in case that event gets missed (e.g. a dropped websocket
+                            // message), so this clip's badge doesn't get stuck stale forever.
+                            _proxyBuildActive = true;
+                            setTimeout(() => {
+                                if (!_proxyStatusMap[clip.id]?.fresh) _refreshProxyStatus();
+                            }, 90000);
                         }
                     } catch (err) {
                         _toast(`Proxy build failed: ${err.message}`, "error");
-                    } finally {
                         buildProxyBtn.disabled = false;
                         buildProxyBtn.textContent = "proxy";
                     }
@@ -1295,8 +1618,9 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         profile.clips = clips;
         onClipsChanged(clips);
         canvas.width = canvas.offsetWidth;
+        _updateZoomArrows();
         _drawTimeline(canvas, clips, suggestions, getTotalDuration(), activeClipIdx,
-            new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx);
+            new Set(clips.filter(_isProxyDirty).map(c => c.id)), hoverClipIdx, _visibleClipRange());
         _persistClip(clips[i]);
     }
 
@@ -1471,24 +1795,52 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         detectBtn.disabled = true;
         detectSpinner.style.display = "inline";
         detectSpinner.textContent = " Detecting…";
+        detectProgress = null;
+        _renderDetectProgress();
+        // Timeline stays visible for orientation but edits are disabled while
+        // boundaries are being detected — see the mousedown guard below.
+        canvasWrap.style.opacity = "0.6";
+        canvasWrap.style.pointerEvents = "none";
 
-        // Live status updates from the backend — update spinner text while active
+        // Live status updates from the backend — update spinner text and the
+        // per-window progress strip as each window is processed.
         const _onStatus = (event) => {
             const d = event?.detail || {};
             if (d.source !== "source_profile_analysis") return;
             const msg = String(d.status || "").trim();
             if (msg && detecting) detectSpinner.textContent = ` ${msg}`;
+            if (d.profile_id && d.profile_id !== profile.id) return;
+            if (d.phase === "start") {
+                detectProgress = {
+                    windows: d.windows || [],
+                    status:  (d.windows || []).map(() => "pending"),
+                    segs:    (d.windows || []).map(() => 0),
+                    elapsed: (d.windows || []).map(() => 0),
+                    frames:  (d.windows || []).map(() => 0),
+                };
+                _renderDetectProgress();
+            } else if (d.phase === "window_start" && detectProgress) {
+                detectProgress.status[d.window_idx] = "active";
+                _renderDetectProgress();
+            } else if (d.phase === "window_done" && detectProgress) {
+                detectProgress.status[d.window_idx]  = "done";
+                detectProgress.segs[d.window_idx]    = d.segments_found ?? 0;
+                detectProgress.elapsed[d.window_idx] = d.elapsed_s ?? 0;
+                detectProgress.frames[d.window_idx]  = d.frames ?? 0;
+                _renderDetectProgress();
+            }
         };
         api.addEventListener("fbtools.status", _onStatus);
 
         try {
             await onEnsureSaved?.();
             const res = await sourceProfilesApi.detectSegments({
-                profile_id:      profile.id,
-                video_duration:  totalDur,
-                prompt_override: detectPromptOverride.trim(),
-                flags:           detectPromptOverride.trim() ? null : { ...detectFlags },
-                captioner_type:  getActiveCaptionerType(),
+                profile_id:       profile.id,
+                video_duration:   totalDur,
+                interval_seconds: detectIntervalSeconds,
+                prompt_override:  detectPromptOverride.trim(),
+                flags:            detectPromptOverride.trim() ? null : { ...detectFlags },
+                captioner_type:   getActiveCaptionerType(),
             });
             suggestions      = res.segments          || [];
             inferredSubjects = res.inferred_subjects || [];
@@ -1516,6 +1868,8 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             detectBtn.disabled = false;
             detectSpinner.style.display = "none";
             detectSpinner.textContent = " Detecting…";
+            canvasWrap.style.opacity = "";
+            canvasWrap.style.pointerEvents = "";
         }
     }
 
