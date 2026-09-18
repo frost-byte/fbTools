@@ -1699,114 +1699,119 @@ const _DEFAULT_APPEARANCE_QUERY =
     "  \"outfit\": clothing currently visible, or empty string if not relevant\n" +
     "Example: {\"summary\":\"...\",\"hair\":\"...\",\"face\":\"...\",\"body\":\"...\",\"outfit\":\"\"}";
 
+const _FBT_VIDEO_SOURCE_VALUE = " __video__";  // sentinel — can't collide with a real filename
+
 function _buildAppearanceAnalyzer(b, appearEl, traitInputs, detailsSec) {
-    const isVideoMode = (b.visual.type === "video" || b.visual.type === "both") && !!b.visual.file;
     let _currentTmpFrame = null;  // temp filename on server; replaced on each extraction
 
     const sec = _mk("div", { cls: "fbt-be-llm-section" });
 
     // ── Header ────────────────────────────────────────────────────────────────
-    const hdrHint = isVideoMode ? "extract a frame from the video reference"
-        : (b.visual.files?.length ? "" : "no images in bundle — using full media pool");
+    const hintEl = _mk("span", { cls: "fbt-be-llm-hint" });
     sec.appendChild(_mk("div", { cls: "fbt-be-llm-header" }, [
         _mk("span", { cls: "fbt-be-llm-title", textContent: "Analyze Appearance" }),
-        ...(hdrHint ? [_mk("span", { cls: "fbt-be-llm-hint", textContent: `(${hdrHint})` })] : []),
+        hintEl,
     ]));
 
     // ── Preview image (shared) ─────────────────────────────────────────────────
     const previewImg = _mk("img", { cls: "fbt-be-llm-preview", style: { display: "none" } });
     previewImg.alt = "";
+    const _setPreview = f => {
+        previewImg.src = f ? _viewUrl(f) : "";
+        previewImg.style.display = f ? "" : "none";
+    };
 
-    // ── Source section ────────────────────────────────────────────────────────
-    let getSourceImage;   // () => filename string | null
+    // ── Unified source dropdown — video reference (if any) plus every image ────
+    const sourceSel = document.createElement("select");
+    sourceSel.className = "fbt-ce-select fbt-be-llm-source-sel";
 
-    if (isVideoMode) {
-        // Video mode: frame extractor
-        const frameInput = _mk("input", {
-            cls: "fbt-ce-input fbt-be-llm-frame-input",
-            type: "number", value: "0", min: "0", step: "1",
-            title: "Frame index (0 = first frame)",
+    // ── Video sub-controls (frame index + extract), shown only when the video
+    // option is the current selection ───────────────────────────────────────────
+    const frameInput = _mk("input", {
+        cls: "fbt-ce-input fbt-be-llm-frame-input",
+        type: "number", value: "0", min: "0", step: "1",
+        title: "Frame index (0 = first frame)",
+    });
+    const frameCountEl = _mk("span", { cls: "fbt-be-llm-frame-count", textContent: "" });
+    const extractBtn = _mk("button", {
+        cls: "fbt-ce-btn",
+        textContent: "Extract Frame",
+        onclick: async () => {
+            // Replace previous temp frame
+            if (_currentTmpFrame) {
+                bundlesApi.deleteTmpFrame(_currentTmpFrame).catch(() => {});
+                _currentTmpFrame = null;
+            }
+            extractBtn.disabled = true;
+            extractBtn.textContent = "Extracting…";
+            previewImg.style.display = "none";
+            try {
+                const r = await bundlesApi.extractFrame(
+                    b.visual.file, parseInt(frameInput.value, 10) || 0,
+                    b.visual.video_dir || "input");
+                _currentTmpFrame = r.tmp_filename;
+                frameInput.max = r.frame_count - 1;
+                frameCountEl.textContent = `of ${r.frame_count} frames  (${r.width}×${r.height})`;
+                previewImg.src = `/view?filename=${encodeURIComponent(r.tmp_filename)}&type=input&subfolder=`;
+                previewImg.style.display = "";
+            } catch (e) {
+                _toast("Frame extraction failed: " + e.message, "error");
+            } finally {
+                extractBtn.disabled = false;
+                extractBtn.textContent = "Extract Frame";
+            }
+        },
+    });
+    const videoRow = _mk("div", { cls: "fbt-be-llm-video-row", style: { display: "none" } }, [
+        frameInput, frameCountEl, extractBtn,
+    ]);
+
+    const _onSourceChange = () => {
+        const isVideo = sourceSel.value === _FBT_VIDEO_SOURCE_VALUE;
+        videoRow.style.display = isVideo ? "" : "none";
+        hintEl.textContent = isVideo ? "(extract a frame from the video)" : "";
+        _setPreview(isVideo ? _currentTmpFrame : (sourceSel.value || null));
+    };
+
+    const rebuildOptions = () => {
+        const prev = sourceSel.value;
+        sourceSel.innerHTML = "";
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "— select source —";
+        sourceSel.appendChild(blank);
+
+        if (b.visual.file) {
+            const o = document.createElement("option");
+            o.value = _FBT_VIDEO_SOURCE_VALUE;
+            o.textContent = `🎬 ${b.visual.file}`;
+            sourceSel.appendChild(o);
+        }
+        const rawPool = b.visual.files?.length ? b.visual.files : _S.mediaImages;
+        const pool = rawPool.map(v => (typeof v === "string" ? v : (v?.file ?? "")));
+        pool.forEach(f => {
+            const o = document.createElement("option");
+            o.value = f; o.textContent = f;
+            sourceSel.appendChild(o);
         });
-        const frameCountEl = _mk("span", { cls: "fbt-be-llm-frame-count", textContent: "" });
 
-        const extractBtn = _mk("button", {
-            cls: "fbt-ce-btn",
-            textContent: "Extract Frame",
-            onclick: async () => {
-                // Replace previous temp frame
-                if (_currentTmpFrame) {
-                    bundlesApi.deleteTmpFrame(_currentTmpFrame).catch(() => {});
-                    _currentTmpFrame = null;
-                }
-                extractBtn.disabled = true;
-                extractBtn.textContent = "Extracting…";
-                previewImg.style.display = "none";
-                try {
-                    const r = await bundlesApi.extractFrame(
-                        b.visual.file, parseInt(frameInput.value, 10) || 0,
-                        b.visual.video_dir || "input");
-                    _currentTmpFrame = r.tmp_filename;
-                    frameInput.max = r.frame_count - 1;
-                    frameCountEl.textContent = `of ${r.frame_count} frames  (${r.width}×${r.height})`;
-                    previewImg.src = `/view?filename=${encodeURIComponent(r.tmp_filename)}&type=input&subfolder=`;
-                    previewImg.style.display = "";
-                } catch (e) {
-                    _toast("Frame extraction failed: " + e.message, "error");
-                } finally {
-                    extractBtn.disabled = false;
-                    extractBtn.textContent = "Extract Frame";
-                }
-            },
-        });
+        sourceSel.disabled = sourceSel.options.length <= 1;
+        // Restore previous selection, or auto-select when there's exactly one real choice
+        const values = Array.from(sourceSel.options, o => o.value).filter(Boolean);
+        if (values.includes(prev)) sourceSel.value = prev;
+        else if (values.length === 1) sourceSel.value = values[0];
+        _onSourceChange();
+    };
 
-        getSourceImage = () => _currentTmpFrame;
+    sourceSel.addEventListener("change", _onSourceChange);
+    const getSourceImage = () =>
+        sourceSel.value === _FBT_VIDEO_SOURCE_VALUE ? _currentTmpFrame : (sourceSel.value || null);
 
-        sec.appendChild(_mk("div", { cls: "fbt-be-llm-video-row" }, [
-            _mk("span", { cls: "fbt-be-llm-video-name", textContent: b.visual.file }),
-        ]));
-        sec.appendChild(_mk("div", { cls: "fbt-be-llm-top-row" }, [
-            frameInput, frameCountEl, extractBtn,
-        ]));
-
-    } else {
-        // Image mode: dropdown rebuilt dynamically from bundle's file list (falls back to full media pool)
-        const imgSel = document.createElement("select");
-        imgSel.className = "fbt-ce-select fbt-be-llm-img-sel";
-
-        const _setPreview = f => {
-            previewImg.src = f ? _viewUrl(f) : "";
-            previewImg.style.display = f ? "" : "none";
-        };
-
-        const rebuildPool = () => {
-            const rawPool = b.visual.files?.length ? b.visual.files : _S.mediaImages;
-            const pool = rawPool.map(v => (typeof v === "string" ? v : (v?.file ?? "")));
-            const prev = imgSel.value;
-            imgSel.innerHTML = "";
-            const blank = document.createElement("option");
-            blank.value = "";
-            blank.textContent = pool.length ? "— select image —" : "No images available";
-            imgSel.appendChild(blank);
-            pool.forEach(f => {
-                const o = document.createElement("option");
-                o.value = f; o.textContent = f;
-                imgSel.appendChild(o);
-            });
-            imgSel.disabled = !pool.length;
-            // Restore previous selection or auto-select when there's exactly one option
-            if (pool.includes(prev)) imgSel.value = prev;
-            else if (pool.length === 1) imgSel.value = pool[0];
-            _setPreview(imgSel.value);
-        };
-
-        imgSel.addEventListener("change", () => _setPreview(imgSel.value));
-        getSourceImage = () => imgSel.value || null;
-
-        rebuildPool();
-        sec.appendChild(_mk("div", { cls: "fbt-be-llm-top-row" }, [imgSel]));
-        // Expose for external refresh (called when bundle images change)
-        sec._refreshPool = rebuildPool;
-    }
+    rebuildOptions();
+    sec.appendChild(_mk("div", { cls: "fbt-be-llm-top-row" }, [sourceSel]));
+    sec.appendChild(videoRow);
+    // Expose for external refresh (called when bundle images change)
+    sec._refreshPool = rebuildOptions;
 
     sec.appendChild(previewImg);
 
@@ -1897,9 +1902,10 @@ function _buildAppearanceAnalyzer(b, appearEl, traitInputs, detailsSec) {
         cls: "fbt-ce-btn fbt-be-llm-analyze-btn",
         textContent: "🔍 Analyze",
         onclick: async () => {
+            const isVideo = sourceSel.value === _FBT_VIDEO_SOURCE_VALUE;
             const img = getSourceImage();
             if (!img) {
-                _toast(isVideoMode ? "Extract a frame first" : "Select an image to analyze", "warn");
+                _toast(isVideo ? "Extract a frame first" : "Select a source to analyze", "warn");
                 return;
             }
             analyzeBtn.disabled = true;
@@ -1907,9 +1913,7 @@ function _buildAppearanceAnalyzer(b, appearEl, traitInputs, detailsSec) {
             try {
                 const query = sec.querySelector("textarea.fbt-be-llm-query")?.value.trim()
                     || _DEFAULT_APPEARANCE_QUERY;
-                const frameIdx = isVideoMode
-                    ? (parseInt(sec.querySelector(".fbt-be-llm-frame-input")?.value, 10) || 0)
-                    : null;
+                const frameIdx = isVideo ? (parseInt(frameInput.value, 10) || 0) : null;
                 const r = await llmApi.generate(query, { images: [img], max_tokens: 400 });
                 if (r?.resized) {
                     _toast("Image was too large and was downscaled to 1280px for analysis — original file unchanged", "info");
@@ -1925,7 +1929,7 @@ function _buildAppearanceAnalyzer(b, appearEl, traitInputs, detailsSec) {
                         params: {
                             bundleName: b.name, bundleId: b.id,
                             subjectId: b.subject_id || null,
-                            sourceImage: img, isVideoFrame: isVideoMode,
+                            sourceImage: img, isVideoFrame: isVideo,
                             frameIndex: frameIdx, query,
                         },
                         result: { text: r.text.trim() },
@@ -1952,15 +1956,13 @@ function _buildAppearanceAnalyzer(b, appearEl, traitInputs, detailsSec) {
             // Restore query
             const qta = sec.querySelector("textarea.fbt-be-llm-query");
             if (qta && p.query) qta.value = p.query;
-            // Try to select the source image in the dropdown (image mode only)
-            if (!isVideoMode && p.sourceImage) {
-                const imgSel = sec.querySelector(".fbt-be-llm-img-sel");
-                if (imgSel) {
-                    const opt = Array.from(imgSel.options).find(o => o.value === p.sourceImage);
-                    if (opt) {
-                        imgSel.value = p.sourceImage;
-                        imgSel.dispatchEvent(new Event("change"));
-                    }
+            // Try to select the source image in the dropdown — skip video-frame
+            // entries, since the extracted temp frame no longer exists on disk.
+            if (!p.isVideoFrame && p.sourceImage) {
+                const opt = Array.from(sourceSel.options).find(o => o.value === p.sourceImage);
+                if (opt) {
+                    sourceSel.value = p.sourceImage;
+                    sourceSel.dispatchEvent(new Event("change"));
                 }
             }
             // Show result

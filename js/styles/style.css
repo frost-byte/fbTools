@@ -2912,7 +2912,7 @@ body.fbt-llm-loaded
     align-items: center;
 }
 
-.fbt-be-llm-img-sel {
+.fbt-be-llm-source-sel {
     flex: 1 1 auto;
     min-width: 0;
 }
