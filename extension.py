@@ -17356,7 +17356,7 @@ class SceneCastBuild(io.ComfyNode):
         summary = "\n".join(lines)
 
         send_status_update(
-            cls.node_id,
+            cls.hidden.unique_id,
             f"Inline cast: {n} {'entry' if n == 1 else 'entries'}"
             + (" | source profile" if has_sp else ""),
         )
