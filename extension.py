@@ -14655,6 +14655,8 @@ async def _source_profiles_auto_partition(request: web.Request) -> web.Response:
             profile_id, video_duration, segment_duration=segment_duration
         )
         _save_source_registry(registry, path)
+        global _source_profile_reload_counter
+        _source_profile_reload_counter += 1
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("auto_partition failed for profile %r", profile_id)
@@ -14692,6 +14694,8 @@ async def _source_profiles_set_clips(request: web.Request) -> web.Response:
             return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
         registry = registry.set_clips(profile_id, clips)
         _save_source_registry(registry, path)
+        global _source_profile_reload_counter
+        _source_profile_reload_counter += 1
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("set_clips failed for profile %r", profile_id)
@@ -14756,6 +14760,8 @@ async def _source_profiles_merge_subjects(request: web.Request) -> web.Response:
             added += 1
 
         _save_source_registry(registry, path)
+        global _source_profile_reload_counter
+        _source_profile_reload_counter += 1
         return web.json_response({"profile": registry.get_profile(profile_id), "added": added})
     except Exception as exc:
         logger.exception("merge_subjects failed for profile %r", profile_id)
@@ -14792,6 +14798,8 @@ async def _source_profiles_upsert_clip(request: web.Request) -> web.Response:
             return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
         registry = registry.upsert_clip(profile_id, clip)
         _save_source_registry(registry, path)
+        global _source_profile_reload_counter
+        _source_profile_reload_counter += 1
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("upsert_clip failed for profile %r", profile_id)
@@ -14827,6 +14835,8 @@ async def _source_profiles_remove_clip(request: web.Request) -> web.Response:
             return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
         registry = registry.remove_clip(profile_id, clip_id)
         _save_source_registry(registry, path)
+        global _source_profile_reload_counter
+        _source_profile_reload_counter += 1
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("remove_clip failed for profile %r", profile_id)
