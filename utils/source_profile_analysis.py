@@ -445,6 +445,54 @@ def extract_video_frame(
     )
 
 
+def extract_frame_at_time(
+    video_path: str,
+    out_path: str,
+    time_seconds: float,
+    max_width: int | None = None,
+) -> str:
+    """Extract a single frame at an exact timestamp (seconds) into out_path.
+
+    Unlike extract_video_frame (which takes a 0-1 fraction and probes duration
+    via ffprobe first), this seeks directly by time — no duration lookup needed,
+    so it's fast enough to call on every clip-boundary edit. Tries ffmpeg first,
+    falls back to cv2.
+    """
+    import subprocess
+
+    t = max(0.0, time_seconds)
+    ffmpeg_cmd = ["ffmpeg", "-y", "-ss", str(t), "-i", video_path, "-vframes", "1", "-q:v", "3"]
+    if max_width:
+        ffmpeg_cmd += ["-vf", f"scale={max_width}:-2"]
+    ffmpeg_cmd.append(out_path)
+    try:
+        subprocess.run(ffmpeg_cmd, capture_output=True, check=True, timeout=15)
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return out_path
+    except Exception:
+        pass
+
+    # Fallback: cv2 (millisecond seek — slightly less precise on some codecs)
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        try:
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+            ok, frame = cap.read()
+            if not ok:
+                raise RuntimeError(f"Could not read frame at {t}s")
+            if max_width and frame.shape[1] > max_width:
+                scale = max_width / frame.shape[1]
+                new_h = max(1, int(frame.shape[0] * scale))
+                frame = cv2.resize(frame, (max_width, new_h))
+            cv2.imwrite(out_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
+            return out_path
+        finally:
+            cap.release()
+    except Exception as e:
+        raise RuntimeError(f"Could not extract frame at {t}s from {video_path!r}: {e}")
+
+
 def probe_video_resolution(video_path: str) -> tuple[int, int]:
     """Return (width, height) of the first video stream via ffprobe, or (0, 0)."""
     import subprocess

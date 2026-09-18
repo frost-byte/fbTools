@@ -21,6 +21,19 @@ export class SourceProfilesAPI extends BaseAPI {
         return this.post("/source_profiles/save", profile);
     }
 
+    /**
+     * URL for a single JPEG frame at an exact timestamp — set directly as an
+     * <img> src (the endpoint returns raw image bytes, not JSON).
+     */
+    frameAtUrl(profileId, timeSeconds, width = 160) {
+        const q = new URLSearchParams({
+            profile_id: profileId,
+            t: String(timeSeconds),
+            w: String(width),
+        });
+        return `/fbtools/source_profiles/frame_at?${q.toString()}`;
+    }
+
     async delete(id) {
         const r = await fetch(
             `/fbtools/source_profiles/delete?id=${encodeURIComponent(id)}`,
@@ -55,18 +68,30 @@ export class SourceProfilesAPI extends BaseAPI {
 
     /**
      * Ask the VLM to detect meaningful segment boundaries in the source video.
+     * batch_window_seconds is left undefined by default so the backend derives
+     * it as interval_seconds * 20 (full frame-budget utilization) — pass it
+     * explicitly only to override that derivation.
      * Returns { segments: [{start_time, end_time, label, action}] }
      */
     detectSegments({ profile_id, video_duration = 0, interval_seconds = 0,
                      prompt_override = "", flags = null,
                      captioner_type = "qwen_vl", device = "auto",
-                     use_8bit = false, batch_window_seconds = 60 }) {
+                     use_8bit = false, batch_window_seconds = null }) {
         return this.post("/source_profiles/detect_segments", {
             profile_id, video_duration, interval_seconds,
             prompt_override, flags,
             captioner_type, device, use_8bit,
             batch_window_seconds,
         });
+    }
+
+    /**
+     * Return the exact prompt Detect boundaries would send for the given
+     * flags/override, without running detection — for a live preview panel.
+     * Returns { prompt: "..." }
+     */
+    segmentPromptPreview({ prompt_override = "", flags = null } = {}) {
+        return this.post("/source_profiles/segment_prompt_preview", { prompt_override, flags });
     }
 
     /**
