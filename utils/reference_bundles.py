@@ -111,7 +111,7 @@ class BundleRegistry:
         visual.setdefault("files", [])
         visual.setdefault("start_time", 0.0)
         visual.setdefault("duration", 0.0)
-        visual.setdefault("force_rate", 0)
+        visual.setdefault("force_rate", 24)  # H3 requires 24fps reference video
         visual.setdefault("frame_load_cap", 96)
         visual.setdefault("skip_first_frames", 0)
         visual.setdefault("select_every_nth", 1)

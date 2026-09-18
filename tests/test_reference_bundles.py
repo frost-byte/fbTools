@@ -96,7 +96,7 @@ def test_upsert_defaults_missing_fields():
     assert b["visual"]["type"] == "images"
     assert b["visual"]["file"] == ""
     assert b["visual"]["files"] == []
-    assert b["visual"]["force_rate"] == 0
+    assert b["visual"]["force_rate"] == 24  # H3 requires 24fps reference video
     assert b["visual"]["frame_load_cap"] == 96
     assert b["visual"]["skip_first_frames"] == 0
     assert b["visual"]["select_every_nth"] == 1
@@ -337,7 +337,7 @@ def test_upsert_defaults_frame_params_when_absent():
     # Bundle with no frame params at all — should get defaults
     r = reg.upsert({"id": "x", "subject_id": "s", "visual": {"type": "video", "file": "v.mp4", "files": []}})
     b = r.get("x")
-    assert b["visual"]["force_rate"] == 0
+    assert b["visual"]["force_rate"] == 24  # H3 requires 24fps reference video
     assert b["visual"]["frame_load_cap"] == 96
     assert b["visual"]["skip_first_frames"] == 0
     assert b["visual"]["select_every_nth"] == 1
