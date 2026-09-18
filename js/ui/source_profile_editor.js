@@ -1313,8 +1313,14 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         if (i === clips.length - 1) { nextBtn.disabled = true; mergeBtn.disabled = true; }
         const navLabel = _mk("span", { cls: "spe-clip-nav-label" },
             [`${clips[i].label || "Segment " + (i + 1)}  (${i + 1}/${clips.length})`]);
-        prevBtn.onclick  = () => { activeClipIdx = Math.max(0, i - 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
-        nextBtn.onclick  = () => { activeClipIdx = Math.min(clips.length - 1, i + 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
+        // Blur before redraw(): redraw() rebuilds navEl (innerHTML = ""), destroying
+        // this very button while it still holds focus. Left unblurred, the browser's
+        // default focus-recovery (focus reverts to <body>) triggers the panel host to
+        // scroll the whole view back to the top — clicking the timeline directly
+        // doesn't hit this because <canvas> isn't focusable, so nothing is destroyed
+        // out from under the focused element there.
+        prevBtn.onclick  = () => { prevBtn.blur(); activeClipIdx = Math.max(0, i - 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
+        nextBtn.onclick  = () => { nextBtn.blur(); activeClipIdx = Math.min(clips.length - 1, i + 1); redraw(); onSelect?.(clips[activeClipIdx].start_time); };
         mergeBtn.onclick = () => mergeWithNext(i);
         splitBtn.onclick = () => splitClip(i);
         navEl.appendChild(_mk("div", { cls: "spe-clip-nav" }, [prevBtn, navLabel, nextBtn]));
