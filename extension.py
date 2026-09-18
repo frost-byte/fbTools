@@ -13062,10 +13062,14 @@ class SourceProfileClipPrompt(io.ComfyNode):
                             # bun_voice below; this entry has no audio.
                             # use_audio on the cast entry: treat bundle video's audio
                             # track as the voice-timbre reference for this subject.
+                            # allows_dialogue=False on the clip means no audio
+                            # involvement for this shot at all, regardless of where
+                            # the bundle's audio would otherwise come from.
                             ve_audio_src = (
                                 "extract_from_visual"
-                                if (audio_source == "extract_from_visual"
-                                    or cast_entry.get("use_audio"))
+                                if (clip.get("allows_dialogue", True)
+                                    and (audio_source == "extract_from_visual"
+                                         or cast_entry.get("use_audio")))
                                 else "none"
                             )
                             bundle_video_entries.append({
@@ -13086,7 +13090,10 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     # voice reference.  Add an audio_only video_entry linked to the
                     # bundle slot so the assembler emits <Audio N> without also
                     # assigning a spurious <Video N> visual reference to the slot.
-                    if audio_source == "extract_from_video":
+                    # Gated on allows_dialogue like the other audio paths above —
+                    # this is an independent file, but still audio for this clip's
+                    # shot, so the clip's "no audio" setting must still apply.
+                    if audio_source == "extract_from_video" and clip.get("allows_dialogue", True):
                         aud_vfile = audio.get("video_file", "")
                         if aud_vfile:
                             aud_vdir = audio.get("video_dir", "input")
@@ -13127,9 +13134,11 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     # Standalone audio voice reference (<Audio N>) — emitted when the
                     # bundle carries a separate audio file (source == "file").
                     # extract_from_visual / extract_from_video are handled via
-                    # video_entries above.
+                    # video_entries above. Same allows_dialogue gate: a bundle's own
+                    # dedicated audio file is unrelated to the clip's footage, but
+                    # it's still audio attached to this clip's shot.
                     bun_voice: dict = {}
-                    if audio_source == "file" and audio.get("file"):
+                    if audio_source == "file" and audio.get("file") and clip.get("allows_dialogue", True):
                         bun_voice = {
                             "audio_reference_file": os.path.join(
                                 get_input_directory(), audio["file"]
@@ -13345,7 +13354,11 @@ class SourceProfileClipPrompt(io.ComfyNode):
         #   on the bundle video entry above — no extra entry needed.
         # • IMAGE mode bundles / source-only: add an audio_only entry pointing to
         #   the source profile video (the motion-donor clip).
-        if isinstance(scene_cast, dict) and video_file_for_entry:
+        # allows_dialogue=False is this clip's "no audio involvement" setting —
+        # it must also suppress use_audio extraction, not just dialogue text,
+        # or a Scene Cast Audio checkbox silently pulls the clip's own audio
+        # back in regardless of what's set here.
+        if isinstance(scene_cast, dict) and video_file_for_entry and clip.get("allows_dialogue", True):
             _audio_load = dict(load_params, frame_load_cap=4, select_every_nth=1)
             for _ce in scene_cast.get("entries", []):
                 if _ce.get("source_profile_id") != profile_id:
