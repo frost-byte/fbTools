@@ -221,6 +221,45 @@ def test_append_multiple_entries(tmp_path):
     assert len(load_history(d)) == 3
 
 
+def test_append_default_prune_keeps_most_recent_100(tmp_path):
+    d = str(tmp_path)
+    for i in range(105):
+        append_history_entry(d, "p1", "v.mp4", "people", f"prompt {i}", [], backup=False)
+    entries = load_history(d)
+    assert len(entries) == 100
+    # oldest 5 dropped, newest kept
+    assert entries[0]["prompt"] == "prompt 5"
+    assert entries[-1]["prompt"] == "prompt 104"
+
+
+def test_append_custom_max_entries(tmp_path):
+    d = str(tmp_path)
+    for i in range(5):
+        append_history_entry(d, "p1", "v.mp4", "people", f"prompt {i}", [], backup=False, max_entries=3)
+    entries = load_history(d)
+    assert len(entries) == 3
+    assert entries[0]["prompt"] == "prompt 2"
+
+
+def test_append_max_entries_zero_disables_pruning(tmp_path):
+    d = str(tmp_path)
+    for i in range(150):
+        append_history_entry(d, "p1", "v.mp4", "people", f"prompt {i}", [], backup=False, max_entries=0)
+    assert len(load_history(d)) == 150
+
+
+def test_append_prune_is_global_not_per_profile(tmp_path):
+    d = str(tmp_path)
+    for i in range(3):
+        append_history_entry(d, "p1", "v.mp4", "people", f"p1-{i}", [], backup=False, max_entries=4)
+    for i in range(3):
+        append_history_entry(d, "p2", "v.mp4", "people", f"p2-{i}", [], backup=False, max_entries=4)
+    entries = load_history(d)
+    assert len(entries) == 4
+    # oldest two p1 entries dropped globally, not per-profile
+    assert [e["prompt"] for e in entries] == ["p1-2", "p2-0", "p2-1", "p2-2"]
+
+
 def test_history_for_profile_filters_by_id(tmp_path):
     d = str(tmp_path)
     append_history_entry(d, "p1", "v.mp4", "people", "p", [], backup=False)
@@ -366,6 +405,52 @@ def test_parse_clip_desc_truncates_long_fallback():
 def test_parse_clip_desc_empty_action_field():
     raw = json.dumps({"action": ""})
     assert _parse_clip_desc(raw) == ""
+
+
+# ── shot_description prefixing ─────────────────────────────────────────────────
+
+_combine = spa._combine_shot_and_action
+
+
+def test_combine_shot_and_action_prefixes_shot():
+    assert _combine("A top-down close-up.", "They shake hands.") == "A top-down close-up. They shake hands."
+
+
+def test_combine_shot_and_action_missing_shot_returns_action_only():
+    assert _combine("", "They shake hands.") == "They shake hands."
+
+
+def test_combine_shot_and_action_missing_action_returns_shot_only():
+    assert _combine("A top-down close-up.", "") == "A top-down close-up."
+
+
+def test_combine_shot_and_action_both_empty():
+    assert _combine("", "") == ""
+
+
+def test_parse_clip_desc_prefixes_shot_description():
+    raw = json.dumps({"shot_description": "A first-person close-up.", "action": "She waves."})
+    assert _parse_clip_desc(raw) == "A first-person close-up. She waves."
+
+
+def test_parse_clip_desc_no_shot_description_key_unaffected():
+    raw = json.dumps({"action": "She waves."})
+    assert _parse_clip_desc(raw) == "She waves."
+
+
+def test_parse_segments_prefixes_shot_description():
+    raw = _seg_json([
+        {"start_time": 0.0, "end_time": 10.0, "label": "Intro",
+         "shot_description": "Top-down wide shot.", "action": "They walk in"},
+    ])
+    segs = _parse_segments(raw)
+    assert segs[0]["action"] == "Top-down wide shot. They walk in"
+
+
+def test_parse_segments_no_shot_description_key_unaffected():
+    raw = _seg_json([{"start_time": 0.0, "end_time": 10.0, "label": "Intro", "action": "They walk in"}])
+    segs = _parse_segments(raw)
+    assert segs[0]["action"] == "They walk in"
 
 
 # ── build_clip_description_prompt ─────────────────────────────────────────────
