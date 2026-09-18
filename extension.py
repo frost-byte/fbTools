@@ -26,6 +26,7 @@ from .utils.util import (
 )
 from .utils.io import save_json_file, load_prompt_json, load_json_file
 from .utils.node_output_tracker import extract_tracked_nodes, stringify_capture_values
+from .utils.h3_vram_estimator import tokens_for as h3_tokens_for, max_safe_scale as h3_max_safe_scale
 from .utils.images import image_resize_ess, find_nearest_qwen_aspect_ratio
 from .utils.pose import estimate_dwpose, dense_pose, depth_anything, depth_anything_v2, zoe, zoe_any, openpose, midas, canny
 
@@ -20073,15 +20074,56 @@ class CompositionToH3Conditioning(io.ComfyNode):
                         "'max' uses full 2048px short-edge fidelity (slower)."
                     ),
                 ),
+                io.Boolean.Input(
+                    "estimate_vram",
+                    display_name="Estimate VRAM",
+                    default=True,
+                    tooltip=(
+                        "Estimate second-pass attention memory from this canvas + the "
+                        "resolved references, and recommend a safe scale for "
+                        "MinimaxH3LatentUpscaler3D's 'scale' input. A heuristic "
+                        "calibrated from real OOM incidents on this machine — not a "
+                        "guarantee. Disable to skip the computation entirely."
+                    ),
+                ),
+                io.Float.Input(
+                    "vram_safety_buffer",
+                    display_name="VRAM Safety Buffer",
+                    default=0.85, min=0.1, max=1.0, step=0.05,
+                    optional=True,
+                    tooltip=(
+                        "Fraction of the estimated safe headroom to actually recommend "
+                        "(0.85 = recommend 85% of the theoretical max scale). Lower this "
+                        "if recommended scales still OOM in practice."
+                    ),
+                ),
+                io.Float.Input(
+                    "desired_scale",
+                    display_name="Desired Scale",
+                    default=0.0, min=0.0, max=4.0, step=0.05,
+                    optional=True,
+                    tooltip=(
+                        "Target scale for MinimaxH3LatentUpscaler3D's 'scale' input. "
+                        "0.0 = auto (use the calculated safe maximum). Any other value "
+                        "is validated against the estimate: passed through unchanged if "
+                        "it fits within budget, clamped down to the safe maximum (with "
+                        "a warning) if it doesn't."
+                    ),
+                ),
             ],
             outputs=[
                 io.Conditioning.Output(display_name="positive"),
                 io.Latent.Output(),
+                io.Float.Output(display_name="Recommended Scale",
+                                tooltip="Wire into MinimaxH3LatentUpscaler3D's 'scale' input."),
+                io.String.Output(display_name="VRAM Estimate",
+                                  tooltip="Human-readable summary of the estimate — also logged."),
             ],
         )
 
     @classmethod
-    def fingerprint_inputs(cls, h3_refplan, width, height, length, ref_image_size, **_):
+    def fingerprint_inputs(cls, h3_refplan, width, height, length, ref_image_size,
+                            estimate_vram=True, vram_safety_buffer=0.85, desired_scale=0.0, **_):
         bundle_hash = hashlib.md5(
             json.dumps(h3_refplan or {}, sort_keys=True).encode()
         ).hexdigest()
@@ -20092,11 +20134,13 @@ class CompositionToH3Conditioning(io.ComfyNode):
                 file_mtimes.append(f"{path}:{os.path.getmtime(path):.3f}")
             except OSError:
                 file_mtimes.append(f"{path}:missing")
-        return (bundle_hash, *file_mtimes, width, height, length, ref_image_size)
+        return (bundle_hash, *file_mtimes, width, height, length, ref_image_size,
+                estimate_vram, vram_safety_buffer, desired_scale)
 
     @classmethod
     def execute(cls, h3_refplan, clip, vae, audio_vae,
-                width, height, length, ref_image_size="match") -> io.NodeOutput:
+                width, height, length, ref_image_size="match",
+                estimate_vram=True, vram_safety_buffer=0.85, desired_scale=0.0) -> io.NodeOutput:
         try:
             from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
         except ImportError as exc:
@@ -20138,6 +20182,15 @@ class CompositionToH3Conditioning(io.ComfyNode):
         standalone_idx   = 0
         loaded_audio_durations: list[float] = []
 
+        # VRAM estimate: reference token count. With ref_image_size=="match",
+        # MiniMaxH3ReferenceToVideo rescales every reference to the generation
+        # canvas's own pixel area, so approximate each reference frame's cost
+        # as the canvas's own per-frame token cost rather than the reference's
+        # original (pre-rescale) resolution. With "max" (full 2048px-short-edge
+        # fidelity), use the reference's actual loaded resolution instead.
+        reference_tokens = 0.0
+        canvas_tokens_per_frame = h3_tokens_for(width, height, 1) if estimate_vram else 0.0
+
         logger.info("CompositionToH3: loading %d reference item(s) — canvas %dx%d, %d frames",
                     len(references), width, height, length)
 
@@ -20154,6 +20207,11 @@ class CompositionToH3Conditioning(io.ComfyNode):
                     h, w = frames.shape[1], frames.shape[2]
                     logger.info("  <Picture %d>  image  %s  %dx%d",
                                 ref["picture_ordinal"], fname, w, h)
+                    if estimate_vram:
+                        reference_tokens += (
+                            canvas_tokens_per_frame if ref_image_size == "match"
+                            else h3_tokens_for(w, h, 1)
+                        )
                 else:
                     logger.warning("  <Picture %d>  image  %s  FAILED TO LOAD",
                                    ref["picture_ordinal"], fname)
@@ -20164,9 +20222,15 @@ class CompositionToH3Conditioning(io.ComfyNode):
                     n = ref["video_ordinal"] - 1
                     ref_videos[f"ref_video_{n}"] = frames
                     lp = ref.get("load_params", {})
+                    n_frames = frames.shape[0]
                     logger.info("  <Video %d>    video  %s  %d frames  start=%.1fs dur=%.1fs",
-                                ref["video_ordinal"], fname, frames.shape[0],
+                                ref["video_ordinal"], fname, n_frames,
                                 lp.get("start_time", 0.0), lp.get("duration", 0.0))
+                    if estimate_vram:
+                        reference_tokens += (
+                            canvas_tokens_per_frame * n_frames if ref_image_size == "match"
+                            else h3_tokens_for(frames.shape[2], frames.shape[1], n_frames)
+                        )
                 else:
                     logger.warning("  <Video %d>    video  %s  FAILED TO LOAD",
                                    ref["video_ordinal"], fname)
@@ -20253,7 +20317,7 @@ class CompositionToH3Conditioning(io.ComfyNode):
             f"{len(ref_audios)} standalone audio(s){audio_note}",
         )
 
-        return MiniMaxH3ReferenceToVideo.execute(
+        mm_result = MiniMaxH3ReferenceToVideo.execute(
             clip, prompt, width, height, length,
             ref_image_size=ref_image_size,
             vae=vae,
@@ -20263,6 +20327,76 @@ class CompositionToH3Conditioning(io.ComfyNode):
             ref_video_audios=ref_video_audios or None,
             ref_audios=ref_audios or None,
         )
+        positive, latent = mm_result.args[0], mm_result.args[1]
+
+        if estimate_vram:
+            recommended_scale, vram_summary = cls._vram_estimate_summary(
+                width, height, length, reference_tokens, vram_safety_buffer, desired_scale,
+            )
+        else:
+            recommended_scale = desired_scale if desired_scale > 0.0 else 1.0
+            vram_summary = "VRAM estimate disabled (Estimate VRAM input is off)."
+
+        return io.NodeOutput(positive, latent, recommended_scale, vram_summary)
+
+    @classmethod
+    def _vram_estimate_summary(cls, width, height, length, reference_tokens,
+                                vram_safety_buffer, desired_scale=0.0):
+        """Compute (output_scale, summary_text) for the second-pass upscale
+        factor to feed MinimaxH3LatentUpscaler3D's 'scale' input. Heuristic —
+        see utils/h3_vram_estimator.py for the calibration this is based on.
+
+        desired_scale <= 0.0 means "auto": output the calculated safe maximum.
+        Any other value is treated as a target: passed through unchanged if it
+        fits within the estimate, clamped down to the safe maximum (with a
+        warning) if it doesn't.
+        """
+        main_tokens = h3_tokens_for(width, height, length)
+        try:
+            budget_gib = torch.cuda.mem_get_info()[1] / (1024 ** 3) if torch.cuda.is_available() else None
+        except Exception:
+            budget_gib = None
+
+        if budget_gib is None:
+            fallback = desired_scale if desired_scale > 0.0 else 1.0
+            summary = (
+                f"VRAM estimate unavailable (no CUDA device detected) — "
+                f"passing through scale {fallback:.2f}x unvalidated."
+            )
+            logger.warning("CompositionToH3: %s", summary)
+            return fallback, summary
+
+        max_scale, at_risk = h3_max_safe_scale(
+            main_tokens, reference_tokens, budget_gib, safety_buffer=vram_safety_buffer,
+        )
+
+        auto_mode = desired_scale <= 0.0
+        if auto_mode:
+            output_scale = max_scale
+            clamped = False
+        else:
+            clamped = desired_scale > max_scale
+            output_scale = max_scale if clamped else desired_scale
+
+        align = 32
+        second_w = round(width * output_scale / align) * align
+        second_h = round(height * output_scale / align) * align
+        mode_str = "auto" if auto_mode else ("target, clamped" if clamped else "target, confirmed")
+        summary = (
+            f"VRAM estimate: pass 1 {width}x{height} ({main_tokens:,.0f} main + "
+            f"{reference_tokens:,.0f} ref tokens) -> scale {output_scale:.2f}x [{mode_str}] "
+            f"for pass 2 (~{second_w}x{second_h}) | safe max {max_scale:.2f}x | "
+            f"budget {budget_gib:.1f} GiB, buffer {vram_safety_buffer:.0%}"
+        )
+        if clamped:
+            summary += f" | WARNING: requested {desired_scale:.2f}x exceeds estimated safe max — clamped"
+            logger.warning("CompositionToH3: %s", summary)
+        elif at_risk:
+            summary += " | WARNING: even scale=1.0 may be tight at this canvas/reference load"
+            logger.warning("CompositionToH3: %s", summary)
+        else:
+            logger.info("CompositionToH3: %s", summary)
+        return output_scale, summary
 
 
 # =============================================================================
