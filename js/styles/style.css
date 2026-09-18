@@ -2655,8 +2655,9 @@ body.fbt-llm-loaded
     min-height: 14px;
     word-break: break-all;
 }
-.fbt-be-proc-ok  { color: var(--comfy-menu-bg-secondary, #4a4); }
-.fbt-be-proc-err { color: #c66; }
+.fbt-be-proc-ok   { color: var(--comfy-menu-bg-secondary, #4a4); }
+.fbt-be-proc-err  { color: #c66; }
+.fbt-be-proc-warn { color: #c93; }
 .fbt-be-proc-preview {
     margin-top: 6px;
 }
