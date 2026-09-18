@@ -31,6 +31,24 @@ def _proxy_dir(base_dir: str) -> Path:
     return d
 
 
+# CompositionToH3Conditioning/SourceProfileClipPrompt always request
+# force_rate=24 at load time regardless of what fps the file is actually at
+# ("H3 requires 24fps reference video") — but that resampling work happens
+# on *every generation run*, even against an already-trimmed proxy, if the
+# proxy itself is still at the source's native fps. Baking the same 24fps
+# conversion into the proxy at build time (once) instead means generation
+# just decodes an already-24fps file — a real per-run saving, and a bigger
+# one the further the source's native fps is from 24 (e.g. a 60fps source
+# needs 2.5x the frames resampled down on every run otherwise).
+_PROXY_FPS = 24
+
+# Bumped into the filename (not just the ffmpeg command) so proxies built
+# before this fps-baking change are never mistaken for being up to date —
+# they simply get a different stem and are regenerated under the new one,
+# rather than silently kept stale by _is_fresh's mtime-only check.
+_PROXY_STEM_VERSION = f"f{_PROXY_FPS}"
+
+
 def _proxy_stem(
     profile_id: str,
     clip_id: str,
@@ -43,7 +61,7 @@ def _proxy_stem(
 
     return (
         f"{_safe(profile_id)}__{_safe(clip_id)}"
-        f"__{start:.2f}-{end:.2f}__h{short_edge}_r32"
+        f"__{start:.2f}-{end:.2f}__h{short_edge}_r32_{_PROXY_STEM_VERSION}"
     )
 
 
@@ -93,6 +111,12 @@ def _scale_filter(short_edge: int) -> str:
     w_expr = f"if(gt(iw\\,ih)\\,trunc(iw*{se}/ih/32)*32\\,{se})"
     h_expr = f"if(gt(iw\\,ih)\\,{se}\\,trunc(ih*{se}/iw/32)*32)"
     return f"scale={w_expr}:{h_expr}"
+
+
+def _video_filter_chain(short_edge: int) -> str:
+    """Full -vf chain for a proxy: fps normalization first (so scale runs on
+    fewer frames when downsampling from a higher native fps), then scale."""
+    return f"fps={_PROXY_FPS},{_scale_filter(short_edge)}"
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +177,7 @@ def ensure_source_profile_proxy(
         "-ss", f"{start_time:.3f}",   # fast seek (input side)
         "-t",  f"{duration:.3f}",
         "-i",  source_path,
-        "-vf", _scale_filter(short_edge),
+        "-vf", _video_filter_chain(short_edge),
         "-c:v", "libx264", "-crf", "18", "-preset", "fast",
         "-an",   # no audio needed for H3 reference video
         str(proxy_path),
