@@ -1138,10 +1138,10 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             poss = _possessive(info)
             # Clause overrides shot-appearance: replaced subjects are identified by source media.
             vnum = info.get("video_num")
-            appears_clause = f"original, in <Video {vnum}>" if vnum is not None else "original"
+            appears_clause = f"originally in <Video {vnum}>" if vnum is not None else "original"
             preserve_desc = (
                 f"transfer {poss} postures, gestures, position and body movements to {bun_label}; "
-                f"discard {poss} visual identity, hair and wardrobe"
+                f"discard {poss} visual identity including head, face, body, hair and wardrobe"
             )
             ra_retention = "attribute_transfer"
         else:
@@ -1229,20 +1229,22 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 )
             ra.append(f"<Video {vnum}> ({role_clause}): {video_status} - {preserve_desc}.")
 
-    # Picture entries: "<Picture N>: fully_preserved - ..."
-    # Each character-sheet image fully defines the replacement subject's visual appearance.
+    # Picture entries: "<Picture N>: fully_preserved - ..." or, when a subject
+    # has multiple reference images in the same role, a single combined entry:
+    # "<Picture N> and <Picture M>: fully_preserved - ...".
     _ra_pic_emitted: set[int] = set()
     for slot_id in ordered_slots:
         info = ref_map[slot_id]
-        for pnum in info["picture_nums"]:
-            if pnum in _ra_pic_emitted:
-                continue
-            _ra_pic_emitted.add(pnum)
-            subj_label = info["subject_label"]
-            ra.append(
-                f"<Picture {pnum}>: fully_preserved - "
-                f"{subj_label}'s facial features, hair, and clothing."
-            )
+        pnums = [p for p in info["picture_nums"] if p not in _ra_pic_emitted]
+        if not pnums:
+            continue
+        _ra_pic_emitted.update(pnums)
+        subj_label = info["subject_label"]
+        pic_tags = _join_labels([f"<Picture {p}>" for p in pnums])
+        ra.append(
+            f"{pic_tags}: fully_preserved - "
+            f"{subj_label}'s facial features, hair, and clothing."
+        )
 
     # Audio entries — format matches H3 spec: "fully_copy" or "reference - ..."
     def _audio_ra_line(
@@ -1315,10 +1317,26 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         ]
         if _bun_slots:
             dd.append("")
-            dd.append(
-                "The target video is a photorealistic, seamless identity-replacement edit "
-                "with strong temporal consistency."
-            )
+            _edit_vnums: list[int] = []
+            for _bs in _bun_slots:
+                _src_slot = ref_map[_bs].get("transfer_to_slot", "")
+                _src_info = ref_map.get(_src_slot)
+                _vn = _src_info.get("video_num") if _src_info else None
+                if _vn is not None and _vn not in _edit_vnums:
+                    _edit_vnums.append(_vn)
+            if _edit_vnums:
+                _video_ref = _join_labels([f"<Video {v}>" for v in sorted(_edit_vnums)])
+                _whose = "their" if len(_edit_vnums) > 1 else "its"
+                dd.append(
+                    f"The target video represents a photorealistic recreation of "
+                    f"{_video_ref} while retaining {_whose} original lighting, motion "
+                    f"and camera work."
+                )
+            else:
+                dd.append(
+                    "The target video is a photorealistic, seamless identity-replacement edit "
+                    "with strong temporal consistency."
+                )
 
     seen_globally: set[str] = set()
 
