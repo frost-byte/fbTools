@@ -19653,7 +19653,7 @@ class PromptCompositionLoader(io.ComfyNode):
         # Resolve cast: build video_entries for assembler + reference media tensors
         cast_media: dict = {
             "reference_video": "", "reference_images": None,
-            "video_force_rate": 0, "video_frame_cap": 16, "video_skip_first": 0, "video_every_nth": 1,
+            "video_force_rate": 24, "video_frame_cap": 16, "video_skip_first": 0, "video_every_nth": 1,
             "audio_source": "none", "audio_file": "",
             "audio_force_rate": 0, "audio_frame_cap": 0, "audio_skip_first": 0, "audio_every_nth": 1,
             "audio_start_time": 0.0, "audio_duration": 0.0,
