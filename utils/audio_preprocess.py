@@ -68,31 +68,63 @@ def spectral_denoise(audio_np: np.ndarray, sample_rate: int, strength: float = 1
     return np.stack([_denoise_ch(audio_np[c]) for c in range(audio_np.shape[0])])
 
 
+_melband_class_cache = None
+_melband_find_error: str = ""  # last failure detail, surfaced by melband_vocal_extract()
+
+
 def _find_melband_class():
-    """Locate MelBandRoformer class from the ComfyUI-MelBandRoFormer node pack."""
-    import sys
+    """Locate MelBandRoformer class from the ComfyUI-MelBandRoFormer node pack.
+
+    Loads model/mel_band_roformer.py under a synthetic, collision-free package
+    name via importlib.util.spec_from_file_location, rather than
+    `sys.path.insert(mel_dir); import model...`. The latter is a real ComfyUI
+    hazard: "model" is an extremely common top-level package name across node
+    packs (this machine also has one under comfyui_llm_party/model/), and
+    Python caches imports by bare module name in sys.modules — whichever pack
+    claims "model" first during ComfyUI's startup silently wins every later
+    `import model...` anywhere else in the process, regardless of sys.path
+    order, for the rest of its lifetime. A synthetic name sidesteps that
+    collision entirely instead of racing it.
+    """
+    global _melband_class_cache, _melband_find_error
+    if _melband_class_cache is not None:
+        return _melband_class_cache
+
+    import importlib.util
     import os
+    import sys
+    from types import ModuleType
 
-    # Already importable (e.g. installed as a package)?
-    try:
-        from model.mel_band_roformer import MelBandRoformer  # noqa: PLC0415
-        return MelBandRoformer
-    except ImportError:
-        pass
-
-    # Find it relative to this utils/ dir: ../../ComfyUI-MelBandRoFormer/
     utils_dir = os.path.dirname(os.path.abspath(__file__))
     custom_nodes_dir = os.path.dirname(os.path.dirname(utils_dir))
+    pkg_name = "_fbtools_melband_model_pkg"
+    tried_any = False
     for name in ("ComfyUI-MelBandRoFormer", "ComfyUI_MelBandRoFormer"):
-        mel_dir = os.path.join(custom_nodes_dir, name)
-        if os.path.isdir(os.path.join(mel_dir, "model")):
-            if mel_dir not in sys.path:
-                sys.path.insert(0, mel_dir)
-            try:
-                from model.mel_band_roformer import MelBandRoformer  # noqa: PLC0415
-                return MelBandRoformer
-            except ImportError:
+        model_dir = os.path.join(custom_nodes_dir, name, "model")
+        mel_file  = os.path.join(model_dir, "mel_band_roformer.py")
+        if not os.path.isfile(mel_file):
+            continue
+        tried_any = True
+        try:
+            if pkg_name not in sys.modules:
+                pkg = ModuleType(pkg_name)
+                pkg.__path__ = [model_dir]  # lets `from .mel_converter import ...` resolve
+                sys.modules[pkg_name] = pkg
+            spec = importlib.util.spec_from_file_location(f"{pkg_name}.mel_band_roformer", mel_file)
+            if spec is None or spec.loader is None:
+                _melband_find_error = f"could not create import spec for {mel_file}"
                 continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            _melband_class_cache = module.MelBandRoformer
+            return _melband_class_cache
+        except Exception as exc:
+            _melband_find_error = f"{type(exc).__name__}: {exc}"
+            sys.modules.pop(pkg_name, None)  # don't leave a half-initialized package cached
+            continue
+    if not tried_any:
+        _melband_find_error = "ComfyUI-MelBandRoFormer custom node pack not found under custom_nodes/"
     return None
 
 
@@ -111,10 +143,8 @@ def melband_vocal_extract(waveform, sample_rate: int, model_path: str):
 
     MelBandRoformer = _find_melband_class()
     if MelBandRoformer is None:
-        raise RuntimeError(
-            "MelBandRoformer class not found. "
-            "Install the ComfyUI-MelBandRoFormer custom node pack."
-        )
+        detail = f" ({_melband_find_error})" if _melband_find_error else ""
+        raise RuntimeError(f"MelBandRoformer class not found{detail}.")
 
     global _melband_cache
     if model_path not in _melband_cache:

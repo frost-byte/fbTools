@@ -16948,6 +16948,7 @@ async def _bundles_preprocess_audio(request):
 
     # Resolve MelBand Roformer model path from saved settings
     melband_path: str | None = None
+    melband_reason = ""
     if noise_removal:
         settings     = _read_composition_settings()
         melband_raw  = settings.get("melband_model_path", "").strip()
@@ -16958,6 +16959,21 @@ async def _bundles_preprocess_audio(request):
                 resolved = folder_paths.get_full_path("diffusion_models", melband_raw)
                 if resolved and os.path.isfile(resolved):
                     melband_path = resolved
+            if not melband_path:
+                melband_reason = f"configured MelBand path {melband_raw!r} not found under diffusion_models"
+        else:
+            melband_reason = "no MelBand model path configured in Settings"
+
+    # denoise_method reports what actually ran, independent of from_cache — a cache
+    # hit is only served when this same (noise_removal, melband_path) combination
+    # produced it (see cache_fingerprint below), so it's always accurate here too.
+    denoise_method = "melband" if melband_path else ("spectral_fallback" if noise_removal else "none")
+    logger.info(
+        "preprocess_audio: %s — denoise=%s%s, normalize_lufs=%s, target_lufs=%.1f",
+        os.path.basename(src_path), denoise_method,
+        f" ({melband_reason})" if melband_reason else "",
+        normalize_lufs, target_lufs,
+    )
 
     from .utils.audio_preprocess import preprocess_audio, cache_fingerprint, measure_lufs
 
@@ -16991,6 +17007,8 @@ async def _bundles_preprocess_audio(request):
             "cache_path": cache_path,
             "fingerprint": fp,
             "from_cache": True,
+            "denoise_method": denoise_method,
+            "denoise_reason": melband_reason,
             **metrics,
         })
 
@@ -17023,6 +17041,8 @@ async def _bundles_preprocess_audio(request):
         "cache_path":  cache_path,
         "fingerprint": fp,
         "from_cache":  False,
+        "denoise_method": denoise_method,
+        "denoise_reason": melband_reason,
         **(metrics or {}),
     })
 

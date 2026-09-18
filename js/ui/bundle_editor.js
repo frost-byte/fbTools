@@ -1513,11 +1513,11 @@ function _buildAudioProcessingSection(wrap, b, sourceAudioEl = null) {
     previewEl.preload   = "none";
     previewEl.style.display = "none";
 
-    _updateStatus = (overrideText) => {
+    _updateStatus = (overrideText, variant = "ok") => {
         const cache = b.audio.audio_cache;
         if (overrideText !== undefined) {
             statusEl.textContent = overrideText;
-            statusEl.className   = "fbt-be-proc-status fbt-be-proc-ok";
+            statusEl.className   = `fbt-be-proc-status fbt-be-proc-${variant}`;
         } else if (cache) {
             const base = cache.split(/[/\\]/).pop() || cache;
             statusEl.textContent = `✓ Cached · ${base}`;
@@ -1586,8 +1586,20 @@ function _buildAudioProcessingSection(wrap, b, sourceAudioEl = null) {
                 const durStr  = result.duration  != null ? `${result.duration}s`    : "";
                 const lufsStr = result.lufs_after != null ? ` · ${result.lufs_after} LUFS` : "";
                 const label   = result.from_cache ? "Cached" : "Processed";
-                _updateStatus(`✓ ${label} · ${durStr}${lufsStr}`);
-                _toast("Audio processed — click Save to persist the cache reference", "success");
+                let denoiseStr = "";
+                let variant    = "ok";
+                if (result.denoise_method === "melband") {
+                    denoiseStr = " · MelBand";
+                } else if (result.denoise_method === "spectral_fallback") {
+                    denoiseStr = ` · Spectral fallback${result.denoise_reason ? ` (${result.denoise_reason})` : ""}`;
+                    variant    = "warn";
+                }
+                _updateStatus(`✓ ${label} · ${durStr}${lufsStr}${denoiseStr}`, variant);
+                if (variant === "warn") {
+                    _toast(`Processed with spectral fallback, not MelBand — ${result.denoise_reason || "check Settings"}`, "warn");
+                } else {
+                    _toast("Audio processed — click Save to persist the cache reference", "success");
+                }
             } catch (err) {
                 statusEl.textContent = "Failed: " + err.message;
                 statusEl.className   = "fbt-be-proc-status fbt-be-proc-err";
