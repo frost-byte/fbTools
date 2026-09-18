@@ -330,6 +330,9 @@ def history_for_profile(data_dir: str, profile_id: str) -> list[dict]:
     return [e for e in reversed(all_entries) if e.get("profile_id") == profile_id]
 
 
+DEFAULT_HISTORY_MAX_ENTRIES = 100
+
+
 def append_history_entry(
     data_dir: str,
     profile_id: str,
@@ -338,6 +341,7 @@ def append_history_entry(
     prompt: str,
     candidates: list[dict],
     backup: bool = True,
+    max_entries: int = DEFAULT_HISTORY_MAX_ENTRIES,
     **extra_fields,
 ) -> dict:
     """Append a new history entry and save.  Returns the new entry dict.
@@ -345,6 +349,10 @@ def append_history_entry(
     Extra keyword arguments are merged into the entry dict verbatim, allowing
     callers to attach supplementary data (e.g. ``pass_types``, ``clip_start``,
     ``clip_end``, ``action`` for describe_clip entries).
+
+    ``max_entries`` caps the file at the N most recent entries *across all
+    profiles* (oldest dropped first) so it can't grow unbounded — pass 0 (or
+    a negative number) to disable pruning entirely.
     """
     path = _history_path(data_dir)
     entries = load_history(data_dir)
@@ -359,6 +367,8 @@ def append_history_entry(
         **extra_fields,
     }
     entries.append(entry)
+    if max_entries > 0 and len(entries) > max_entries:
+        entries = entries[-max_entries:]
 
     if backup and os.path.exists(path):
         shutil.copy2(path, path + ".bak")
@@ -588,10 +598,11 @@ Return ONLY valid JSON — no markdown, no prose, no code fences:
 {
   "segments": [
     {
-      "start_time": <float, seconds>,
-      "end_time":   <float, seconds>,
-      "label":      "short title for this segment (≤8 words)",
-      "action":     "1-2 sentence description of the action in this segment"
+      "start_time":       <float, seconds>,
+      "end_time":         <float, seconds>,
+      "label":            "short title for this segment (≤8 words)",
+      "shot_description": "one sentence describing the camera's framing, angle and point of view relative to the subjects (e.g. 'A top-down, close-up shot from a first-person perspective.')",
+      "action":           "1-2 sentence description of the action in this segment"
     }
   ]
 }
@@ -602,6 +613,7 @@ the full time range.  Times must be in ascending order with no gaps.
 _CLIP_DESCRIPTION_SCHEMA = """
 Return ONLY valid JSON — no markdown, no prose, no code fences:
 {
+  "shot_description": "one sentence describing the camera's framing, angle and point of view relative to the subjects (e.g. 'A top-down, close-up shot from a first-person perspective.')",
   "action": "1-2 sentences describing what is happening in this frame"
 }
 """.strip()
@@ -609,6 +621,7 @@ Return ONLY valid JSON — no markdown, no prose, no code fences:
 _CLIP_DESCRIPTION_SCHEMA_WITH_SLOTS = """
 Return ONLY valid JSON — no markdown, no prose, no code fences:
 {
+  "shot_description": "one sentence describing the camera's framing, angle and point of view relative to the subjects, using their placeholder labels (e.g. 'The camera shows a top-down, close-up shot of {A} from the first-person perspective of {B}.')",
   "action": "1-2 sentences using placeholder labels. On each subject's FIRST mention include position/orientation (e.g. '{A}, seated at the desk, reads aloud while {B}, standing behind, listens'). Subsequent mentions use the placeholder alone."
 }
 """.strip()
@@ -760,6 +773,23 @@ def build_clip_description_prompt(
     return base + subject_block + refine_block + "\n\n" + schema
 
 
+def _combine_shot_and_action(shot_description: str, action: str) -> str:
+    """Prefix a camera shot-framing sentence onto an action description.
+
+    Kept as a separate step (rather than asking the VLM to embed it inline)
+    so the join is deterministic regardless of model compliance. Either side
+    may be empty — callers pass whatever the VLM actually returned for a
+    schema that predates the shot_description field.
+    """
+    shot = shot_description.strip()
+    action = action.strip()
+    if not shot:
+        return action
+    if not action:
+        return shot
+    return f"{shot} {action}"
+
+
 def _parse_segments_response(raw: str, video_duration: float = 0.0) -> list[dict]:
     """Parse a VLM segment-detection response into a list of clip dicts.
 
@@ -811,7 +841,9 @@ def _parse_segments_response(raw: str, video_duration: float = 0.0) -> list[dict
             "start_time": round(start, 3),
             "end_time":   round(end, 3),
             "label":      str(item.get("label", f"Segment {len(segments) + 1}")),
-            "action":     str(item.get("action", "")),
+            "action":     _combine_shot_and_action(
+                str(item.get("shot_description", "")), str(item.get("action", "")),
+            ),
         })
         prev_end = end
 
@@ -835,7 +867,9 @@ def parse_clip_description_response(raw: str) -> str:
     try:
         data = json.loads(text)
         if isinstance(data, dict):
-            return str(data.get("action", "")).strip()
+            return _combine_shot_and_action(
+                str(data.get("shot_description", "")), str(data.get("action", "")),
+            )
     except json.JSONDecodeError:
         pass
     # Fallback: return raw stripped text
