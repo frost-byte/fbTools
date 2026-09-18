@@ -1,6 +1,592 @@
 # CHANGELOG
 
 
+## v1.28.0 (2026-09-18)
+
+### Bug Fixes
+
+- **audio**: Avoid module-name collision loading MelBandRoformer, surface fallback reason
+  ([`e62c461`](https://github.com/frost-byte/fbTools/commit/e62c4616fb8e50ff1570d9a27d8f7cfd5b2f6f77))
+
+_find_melband_class() previously did sys.path.insert(mel_dir) then `import model.mel_band_roformer`
+  — "model" is a common top-level package name across node packs (this machine also has one under
+  comfyui_llm_party/model/), and Python caches imports by bare module name, so whichever pack claims
+  "model" first during ComfyUI startup silently wins every later `import model...` for the rest of
+  the process, regardless of sys.path order. Load the file directly via
+  importlib.util.spec_from_file_location under a synthetic package name instead, sidestepping the
+  collision entirely.
+
+Also thread through *why* preprocessing fell back to spectral denoise instead of MelBand (no model
+  configured, configured path not found, or class-not-found with the underlying exception) as
+  denoise_method/ denoise_reason in the API response, and surface it as a distinct warning
+  toast/status in the bundle editor instead of reporting success indistinguishably from a real
+  MelBand run.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundles**: Default new bundle visual force_rate to 24fps
+  ([`c022e52`](https://github.com/frost-byte/fbTools/commit/c022e52d19b7a2a850a3a95929e284e74d391579))
+
+Matches every other H3 reference-loading path — a freshly-created bundle's default visual params
+  still defaulted to native fps client-side.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundles**: Default reference video force_rate to 24fps
+  ([`13eadf7`](https://github.com/frost-byte/fbTools/commit/13eadf7a3f248955b041ea2d8d5dbf429e1e059b))
+
+BundleRegistry's visual defaults left force_rate at 0 (native fps) for new bundles, inconsistent
+  with every other H3 reference-loading path in this codebase, which requires 24fps.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **composition**: Default video_force_rate to 24fps in PromptCompositionLoader
+  ([`33d1b6f`](https://github.com/frost-byte/fbTools/commit/33d1b6fcf7ddb39032fa6c36bf10774718dee87a))
+
+Matches every other H3 reference-loading path in this codebase.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **llm-client**: Robust think-tag stripping, vision image resize, MiniMaxH3 signature
+  ([`1ca74a3`](https://github.com/frost-byte/fbTools/commit/1ca74a34092849811459cae20c1c898009f796f6))
+
+- Strip thinking blocks unconditionally in both GGUF and HF paths; handle three formats: complete
+  <think>…</think> pairs, unclosed <think>, and orphaned </think> (Qwen3 emits thinking as plain
+  text ending with </think> when template detection misses) - Downscale vision images exceeding
+  1280px before encoding to prevent VRAM exhaustion from large character sheets; returns resized
+  flag so frontend can toast the user - Fix bun_subj UnboundLocalError: lookup was placed after its
+  first use; moved to immediately after bundle is resolved so Python does not treat it as unbound
+  local - Update MiniMaxH3ReferenceToVideo.execute() call to match v0.35.0 signature where vae and
+  audio_vae moved from positional to keyword arguments
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **modal**: Add missing modal_vram_profiler.py module
+  ([`ac8b956`](https://github.com/frost-byte/fbTools/commit/ac8b956534a9003f3fc684dde79a4442f4ea4758))
+
+extension.py has imported this module unconditionally (no try/except) since d6183fb, but the file
+  itself was never committed — every clone of this repo since then has had a hard ImportError on
+  startup unless the working tree happened to still have the untracked file locally.
+
+Estimates peak VRAM for a model + configuration (weights + vision + KV + activations) and recommends
+  the smallest-sufficient Modal GPU from the available set, with a measured-peak feedback-loop
+  cache. Pure stdlib + optional huggingface_hub, no ComfyUI dependencies. Verified working via the
+  project's import_test_module() harness against its bundled model presets.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **prompt-assembler**: Sharpen attribute-transfer wording and combine picture entries
+  ([`16aecc4`](https://github.com/frost-byte/fbTools/commit/16aecc449e64fd4361125cfd84ff33a7c3b5a446))
+
+Addresses two observed generation failures documented in
+  docs/h3_attribute_transfer_assembler_plan.md: the character swap not taking effect from the start
+  of the clip, and the original subject's costume/outfit persisting instead of the replacement's.
+
+- "discard visual identity, hair and wardrobe" -> "discard visual identity including head, face,
+  body, hair and wardrobe" — more explicit about what the model must actually replace. - "original,
+  in <Video N>" -> "originally in <Video N>" — grammar fix. - Picture entries for the same subject's
+  multiple reference images now combine into one retention_analysis line ("<Picture N> and <Picture
+  M>: fully_preserved - ...") via the existing _join_labels() helper, instead of one redundant line
+  per image. - The bundle-replacement edit-description sentence now names the specific source
+  video(s) being recreated when resolvable via transfer_to_slot, falling back to the generic
+  "photorealistic, seamless identity-replacement edit" wording otherwise.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast**: Default force_rate to 24fps in _resolve_cast_media
+  ([`221b80c`](https://github.com/frost-byte/fbTools/commit/221b80c254484ea8c3b91e5e75a35aafad53e0f5))
+
+Matches every other H3 reference-loading path in this codebase (see utils/reference_bundles.py) —
+  these three fallback/default video_params dicts were still defaulting to native fps.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast**: Resolve ordinal subject matches against the live profile
+  ([`b0b081a`](https://github.com/frost-byte/fbTools/commit/b0b081ac9208b3800dea12a926ecf2e3d389e5b6))
+
+Ordinal cast entries (match to "the Nth male/female subject in this clip") stored
+  source_subject_id/source_profile_id from whichever Source Profile was connected when the match was
+  first made. Swapping the upstream Source Profile for a different one left that source_profile_id
+  stale, so the entry kept resolving against a profile that was no longer connected instead of
+  re-matching against the live one.
+
+Fix: for ordinal entries, always re-resolve source_subject_id fresh against the currently-connected
+  profile/clip on every execute() — there is only ever one source_profile input, so there is nothing
+  to disambiguate by caching the old id. A no-match clears source linkage entirely rather than
+  silently keeping a stale reference. Also add a diagnostic warning when two or more cast entries
+  resolve to the same source subject (an ordinal/explicit assignment conflict), since only one
+  bundle can actually replace a given subject.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast**: Route status updates through the node's own instance id
+  ([`015308f`](https://github.com/frost-byte/fbTools/commit/015308ff1de878fa888db1e0b80296c6dadaa9e8))
+
+SceneCastBuild.execute() sent its "Inline cast: N entries" status update tagged with cls.node_id —
+  the class-level prefixed node type (e.g. "fbt_SceneCastBuild"), shared by every instance of the
+  node. With more than one SceneCastBuild in a graph, status updates from one instance would appear
+  to come from all of them. Use cls.hidden.unique_id instead, matching the per-instance pattern
+  already used elsewhere in this file.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Bump reload counter on all mutating endpoints
+  ([`d9cc9c5`](https://github.com/frost-byte/fbTools/commit/d9cc9c56cf0a45c7353b5de3c0da32fb496da852))
+
+auto_partition, set_clips, merge_subjects, upsert_clip, and remove_clip saved the registry but never
+  bumped _source_profile_reload_counter, which SourceProfileClipPrompt's fingerprint_inputs() relies
+  on to invalidate ComfyUI's execution cache. Edits made through these endpoints could leave a stale
+  cached result in place until an unrelated change happened to bump the counter.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Honor allows_dialogue across all bundle audio paths
+  ([`d26967f`](https://github.com/frost-byte/fbTools/commit/d26967fbfbf1c5d6847b9776bb5e9b0cc9e5c296))
+
+A clip's allows_dialogue=False already suppressed spoken dialogue text, but a replacement bundle's
+  own audio could still leak through via any of extract_from_visual/use_audio (bundle video entry),
+  extract_from_video (separate audio file), file (standalone voice reference), or use_audio
+  (motion-donor clip extraction) — a clip marked "no audio involvement" would still pull audio in
+  through these paths regardless of that setting.
+
+Gate all four on the same clip.get("allows_dialogue", True) check so the clip-level setting is
+  actually authoritative over every source of audio for that shot, not just dialogue text.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Honor include_original_subject_tags in auto-synopsis
+  ([`498b39e`](https://github.com/frost-byte/fbTools/commit/498b39e576d7d55a26c079ed3ba6af74a6a48eb0))
+
+The auto-generated replacement synopsis always described a replaced source subject by its literal
+  name ("{b} takes the place of Alice"), even when include_original_subject_tags was set — the flag
+  already controlled whether a replaced source subject gets a <Subject N> label elsewhere in the
+  assembler (see _pre_subject_nums in prompt_assembler.py), but the synopsis text never branched on
+  it.
+
+Also default force_rate to 24fps for this clip's own load_params, matching every other H3
+  reference-loading path.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Stop clip nav arrows from scrolling the panel to top
+  ([`a8c8bca`](https://github.com/frost-byte/fbTools/commit/a8c8bca86c5d7dc9f01293d64496f15dcef582de))
+
+prevBtn/nextBtn's own onclick handler calls redraw(), which rebuilds navEl (innerHTML = "") —
+  destroying the very button that still held focus from the click. With focus yanked out from under
+  it, it reverts to <body>, and the panel host's focus-tracking scrolls the whole view back to the
+  top. Blur the button before triggering the rebuild so focus is released deliberately instead of
+  recovered by the browser.
+
+Clicking a clip directly on the timeline never hit this, since the <canvas> element isn't focusable
+  by default — nothing gets destroyed out from under a focused element there.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **subjects**: Expose pronoun_style in /fbtools/subjects/list
+  ([`c5967f1`](https://github.com/frost-byte/fbTools/commit/c5967f196b8af0e0733a6451783261677d330f46))
+
+Required by the ordinal-match frontend (scene_cast_build.js mirrors
+  resolve_ordinal_subject()/resolved_pronoun_style() client-side to preview a match before the
+  backend runs) — the endpoint previously omitted pronoun_style entirely, so the client-side mirror
+  had nothing to resolve against. Also default force_rate to 24fps in _bundles_preview_sampled,
+  matching every other H3 reference-loading path.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Code Style
+
+- **libbers**: Narrow key column to 150px, give value column remaining width
+  ([`5cfac4c`](https://github.com/frost-byte/fbTools/commit/5cfac4cdf32672faeebc4b1bbf7c4fba5b8e48ec))
+
+table-layout: fixed with explicit first-column width stops the key input from claiming half the
+  table; value textarea now gets the majority of space. Also aligns the add-row key input to the
+  same 150px width.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Documentation
+
+- Add H3 attention mechanisms reference, tracker plan, and session logs
+  ([`4f20b31`](https://github.com/frost-byte/fbTools/commit/4f20b3163fc8249c91babea76fc15fed91be3f10))
+
+- h3_attention_mechanisms_reference.md: compatibility matrix for the MiniMax H3 VRAM/attention
+  optimization nodes (Chunk FeedForward, Low VRAM Attention, Sage Attention variants, Model Sparse
+  Attention), traced from actual patch mechanisms rather than node descriptions. -
+  comfyui-node-output-tracker-plan.md: design notes for the node-output auto-tracker feature. -
+  sessions/: dated session logs plus index.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- Add H3 VRAM estimator module, GOTCHAS log, and RefMod integration design
+  ([`78e30cb`](https://github.com/frost-byte/fbTools/commit/78e30cbfc686a710711faab5bed48007ed6de71f))
+
+Adds utils/h3_vram_estimator.py (pure token/attention-memory heuristics calibrated against a real
+  second-pass OOM incident) with unit tests, a new docs/GOTCHAS.md tracking recurring non-obvious
+  patterns (the CUDA "device limit" overhead gap this module's BASE_OVERHEAD_GIB is calibrated
+  against), and docs/h3_refmod_integration_design.md scoping a staged, natively implemented
+  RefMod-style reference-caching feature for Bundles and Source Profile clips.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- Add TaoMate-H3 conversion, Qwen3.8 deployment, and Unsloth handoff notes
+  ([`e9bb808`](https://github.com/frost-byte/fbTools/commit/e9bb808f2b6b306c165f20249746f1e2a315d11f))
+
+- taomate-h3-comfyui-conversion-plan.md: converting the TaoLiveAIGC/ TaoMate-H3 LoRA adapter for
+  ComfyUI compatibility — phases 0-4 done, converted file in place, awaiting a live A/B test. -
+  qwen38_local_deployment_guide.md: hardware-assessed local deployment notes for Qwen3.8-27B /
+  Qwen3.8-Flash-Next on an RTX 3090 24GB system, synthesized from external review sources. -
+  unsloth-comfyui-integration-handoff.md: handoff notes for wiring an Unsloth-on-Modal backend into
+  the LLM assistant's existing backend system, distinct in shape from the existing vision_llm.py
+  RPC-style integration.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Features
+
+- **bundle-editor**: Json appearance analyzer, history pagination, collapsible sections
+  ([`a3d09ca`](https://github.com/frost-byte/fbTools/commit/a3d09ca5277c2705fc25c785c4519c82e270c791))
+
+- Analyze Appearance LLM now requests structured JSON (summary/hair/face/body/outfit); → Bundle
+  button parses JSON and populates trait fields + auto-opens details section; → Subject Profile
+  extracts summary from JSON before saving - History section paginated at 8 entries per page with
+  prev/next controls - Trait details section now appears before history in form order - Visual
+  section is collapsible (<details>) with Images and Video as nested collapsible sub-sections; each
+  auto-opens when bundle already has media - Audio section is collapsible; auto-opens when source !=
+  none
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundle-editor**: Unify appearance-analyzer source into one dropdown
+  ([`71800e0`](https://github.com/frost-byte/fbTools/commit/71800e0a9ba55d9772933829e8e6a91ef493e932))
+
+Previously the panel showed either a video-frame extractor OR an image dropdown, chosen once from
+  b.visual.type — a bundle in "both" mode (images AND video both configured) could only ever analyze
+  from whichever the ternary picked, never its images. Replace with one dropdown listing the video
+  reference (if any, marked with a sentinel value) alongside every available image; the
+  frame-extraction row shows only when the video entry is selected.
+
+The "restore previous analysis" replay path now skips re-selecting a saved video-frame source (the
+  extracted temp file no longer exists), keyed off the analysis's own recorded isVideoFrame flag
+  rather than the bundle's current visual.type.
+
+Renames .fbt-be-llm-img-sel -> .fbt-be-llm-source-sel to match.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundles**: Add head turnaround image role and video source role dropdown
+  ([`5d45193`](https://github.com/frost-byte/fbTools/commit/5d451935b9652eedf4c3c76a1ebf8dec97d105d8))
+
+- Add "head turnaround" to SHEET_ROLES and wire descriptions into _SHEET_ROLE_H3 /
+  _SHEET_ROLE_INLINE in prompt_assembler.py so prompt assembly correctly describes three-angle
+  facial reference images - Define VIDEO_ROLES constant with five predefined options (full body
+  turnaround, performance, action, dialogue, expression reference) - Add role: "" field to b.visual
+  default data structure - Add _buildVideoRoleSection() that renders a dropdown with predefined
+  options plus a "custom…" fallback revealing a free-text input; existing bundles with a
+  non-standard role string are automatically migrated to the custom path on load
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **bundles**: Structured appearance traits + pronoun/short_name on bundles
+  ([`f822882`](https://github.com/frost-byte/fbTools/commit/f822882fc5cc93c02b99325f85bffef557d51fe0))
+
+- Add hair/face/body/default_outfit fields to bundle schema (upsert migrates legacy
+  appearance_override → appearance.summary) - Bundle fields override Subject fields with bundle-wins
+  merge semantics across all three resolution paths: source-profile+bundle (extension.py), Prompt
+  Compositions (prompt_compositions.py), and schema normalisation (reference_bundles.py) -
+  retention_analysis uses structured traits for retain clause instead of appearance_summary; falls
+  back to short_name's appearance or generic - Fix pronoun resolution reading both _pronoun_style
+  and pronoun_style field names - Add short_name field to Source Profile editor (always visible) and
+  Bundle editor - Fix appears_clause: video-editing subjects use (appears in [Shot 1]) not (appears
+  throughout) - Update scene_cast_build UI and tests accordingly
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **conditioning**: Wire VRAM estimator into CompositionToH3Conditioning
+  ([`f3e9daf`](https://github.com/frost-byte/fbTools/commit/f3e9daf53ae7685e1751bcd68b389c34fe447044))
+
+Adds estimate_vram (default on), vram_safety_buffer, and desired_scale inputs, and Recommended Scale
+  / VRAM Estimate outputs, using the already-tested utils/h3_vram_estimator.py
+  (tokens_for/max_safe_scale) calibrated from real OOM incidents on this machine.
+
+Reference token cost is approximated per the ref_image_size mode: "match" uses the generation
+  canvas's own per-frame token cost (since MiniMaxH3ReferenceToVideo rescales every reference to
+  that canvas area), "max" uses the reference's actual loaded resolution. Main pass tokens come from
+  the requested width/height/length. With no CUDA device available, the estimate is skipped and
+  desired_scale (or 1.0) passes through unvalidated rather than failing the node.
+
+desired_scale <= 0 means auto (output the calculated safe maximum); any other value passes through
+  unchanged if it fits the estimate, or gets clamped down to the safe maximum with a warning if it
+  doesn't.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **libbers**: Add Libber Editor tab with full CRUD UI and backend endpoints
+  ([`b4b8343`](https://github.com/frost-byte/fbTools/commit/b4b83435d1486b1db2922916083948d8b3f2c54a))
+
+Backend (extension.py): - GET /fbtools/libber/scan — scan disk + in-memory, return [{name,
+  entry_count, delimiter, max_depth}] - POST /fbtools/libber/open — ensure_libber from disk, return
+  full {name, lib_dict, ...} - POST /fbtools/libber/save_full — overwrite in-memory libber + persist
+  to disk in one call - POST /fbtools/libber/delete — remove from memory and delete disk file - POST
+  /fbtools/libber/rename — rename disk file and update memory key - Add libber_max_depth (default
+  10) to composition settings schema and POST handler
+
+API client (js/api/libber.js): - Add scan(), open(), saveFull(), deleteFull(), rename() methods
+
+UI (js/ui/libber_editor.js — new file): - List view: search, paged cards showing
+  name/entry-count/delimiter/depth, edit and delete buttons - Detail view: back nav, editable name
+  (triggers rename on blur), delimiter, max_depth, full entries table - Entries table: key
+  (normalized, monospace, editable), value (textarea, auto-saves), delete per row - Add-entry form
+  at the bottom of the table; Ctrl+Enter in value field to submit - Debounced auto-save (600 ms) on
+  any change; explicit Create button for new libbers
+
+Settings (js/ui/settings_panel.js): - Add Libber max depth row (1–50) in Compose Defaults section
+
+Panel (js/ui/fbt_panel.js): - Register Libbers tab between Sources and LLM
+
+Styles (js/styles/style.css): - Add fbt-lbe-* rules for the new editor
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **libbers**: Add save-state indicator in form header
+  ([`8138f67`](https://github.com/frost-byte/fbTools/commit/8138f67dbd067336ac257d7e41505265e0fa75bd))
+
+Three-state inline indicator to the right of the libber name input: - pending — pulsing '···'
+  (muted) while debounce timer is running - saving — spinning '↻' + text (accent colour) during
+  network call - saved — '✓ saved' (green), fades out after 1.2 s
+
+Timers are cleaned up on Back navigation so detached elements are never mutated after the form is
+  torn down.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **llm**: Pre-load VRAM/context-capacity estimate for GGUF models
+  ([`c5e9fa3`](https://github.com/frost-byte/fbTools/commit/c5e9fa3019158bf06d977fa83d5cf70dee80df41))
+
+Adds estimate_context_table() to utils/llm_client.py, reading only the GGUF header via
+  gguf.GGUFReader (no weights loaded) so the LLM panel can show a context-capacity guide as soon as
+  a model is selected, before Load. Shares its KV-cache-vs-VRAM table logic with the existing
+  post-load vram_analysis() via extracted _build_context_table()/
+  _arch_meta_from_kv()/_arch_meta_from_mi() helpers.
+
+Handles architectures whose GGUF header omits explicit attention.key_length/value_length
+  (Qwen2/2.5-VL, notably) by deriving head_dim from embedding_length/head_count. Headroom accounts
+  for the candidate model's own on-disk weight size (+ mmproj + a compute-buffer fudge factor),
+  since that VRAM isn't reflected in current usage until the model is actually loaded.
+
+New POST /fbtools/llm/context_estimate endpoint and llmApi. contextEstimate(). The LLM panel's local
+  tab now shows this guide on model selection and re-highlights the active context pill on selector
+  change without a re-fetch; the existing post-load VRAM card is unchanged in behavior, now sharing
+  the same renderer.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **run-history**: Auto-track node outputs across cache hits
+  ([`ab44329`](https://github.com/frost-byte/fbTools/commit/ab44329740907a62e43e85c0c3f0ef7853f9f9d9))
+
+[track: Label] previously only captured a tracked node's literal widget values from the static
+  submitted prompt, missing values a node actually computes at execution time — and missed them
+  entirely on a cache hit, since a cached intermediate node is pruned from the schedule before
+  execute() is ever called (comfy_execution.graph's TopologicalSort/ExecutionList prunes it based on
+  is_cached(), so there's no hook to intercept there).
+
+Fix: wrap execution.execute() to capture a tracked node's resolved kwargs on genuine execution
+  (cache miss), keyed by node_id so the stash survives into later prompts, then on every prompt
+  check caches.outputs directly for any tracked node that didn't execute — a real cache hit means
+  its inputs are unchanged, so the stashed values are re-emitted as-is.
+
+RunMetaCapture now shares the same _record_capture/ stringify_capture_values path as the
+  auto-tracker instead of duplicating its own capture logic.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **run-history**: Resolve passthrough connections and add SceneCastBuild table
+  ([`06c8977`](https://github.com/frost-byte/fbTools/commit/06c89772f093afb5df657c1856e32243a3d9f4f4))
+
+- extractWidgetValues() now resolves a connection-ref input by walking through
+  Primitive/Reroute/Set-Get passthrough chains in nodesDict (bounded depth, no execution) instead of
+  dropping every wired input outright — only genuinely computed/ambiguous values still fall through
+  to the runtime capture. - Detect a connection ref hiding inside a composite widget's nested value
+  (e.g. a V3 DynamicCombo with one sub-field wired) and treat the whole key as statically
+  unresolvable, same as a direct ref — previously this showed a stale/partial object and blocked the
+  runtime-captured version from replacing it. - Merge runtime captures (node-output auto-tracker +
+  RunMetaCapture) into their matching static entry: drop keys the static scan already resolved, keep
+  only genuinely new ones, drop the capture entirely once nothing new remains. Drop empty static
+  placeholders that a capture already covers under the same label. - Add a dedicated SceneCastBuild
+  table renderer (cast entries + resolved action_preview text), mirroring the existing LoRA Builder
+  table.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scene-cast**: Add read-only action_preview widget
+  ([`a26640f`](https://github.com/frost-byte/fbTools/commit/a26640f5473b9f4a1b2429e4599890a10650af40))
+
+Read-only string input holding the active clip's action text with {A}/{B}/... placeholders resolved
+  to bundle names. Populated by the frontend's on-node preview widget (scene_cast_build.js) so the
+  resolved text rides along in the submitted prompt for Run History tracking; execute() itself never
+  reads it.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **scripts**: Add YouTube text extractor for LLM research
+  ([`bf3a3ab`](https://github.com/frost-byte/fbTools/commit/bf3a3abf54960a69398ce6149645b3fda58d1cb5))
+
+Pulls metadata, transcript, and top comments from a YouTube video into a single markdown document
+  for pasting into an LLM chat session. Depends on the "scripts" optional-dependency group
+  (playwright, for --login) already declared in pyproject.toml — that groundwork was committed
+  previously but this implementation file was not.
+
+For personal research use only; not wired into any ComfyUI node.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Add live preview and richer progress for Detect boundaries
+  ([`b211c0a`](https://github.com/frost-byte/fbTools/commit/b211c0ad2b1f985079a24016b4f5f455843f89c9))
+
+- New GET /fbtools/source_profiles/frame_at: a single JPEG frame at an exact timestamp
+  (extract_frame_at_time, ffmpeg with cv2 fallback), used for clip-boundary start/end thumbnails
+  without a full ffprobe duration lookup on every edit. - New POST
+  /fbtools/source_profiles/segment_prompt_preview: returns the exact VLM prompt Detect boundaries
+  would send for given flags/override, without running detection — sourced from the same
+  build_segment_detection_prompt() the real request uses, so it can never drift from what actually
+  gets sent. - batch_window_seconds is now normally omitted and auto-derived as interval_seconds *
+  20 (full utilization of the 20-frame-per-call budget) rather than a flat default of 60s;
+  interval_seconds default simplified to a flat 3.0s. - send_status_update() gains an `extra` dict
+  merged into the websocket payload, used by detect_segments to emit structured per-window progress
+  (phase/window_idx/elapsed_s/frames) instead of just a human-readable message string. -
+  Subject-inference token budget raised 1024->2048, matching segment detection — 1024 was tight
+  enough for thinking-mode models that the <think> block alone could exhaust it before any JSON was
+  emitted, silently yielding an empty response with no error surfaced. Added a warning log for that
+  case.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Add shot_description field and prune history
+  ([`7a65511`](https://github.com/frost-byte/fbTools/commit/7a6551158c410ac1a3ae2c9d76d6d1fe272fff79))
+
+- VLM segment-detection and clip-description schemas now request a shot_description field (camera
+  framing/angle/POV), deterministically prefixed onto the action text via _combine_shot_and_action()
+  rather than asking the model to embed it inline — keeps the join correct regardless of model
+  compliance, and degrades gracefully for responses using the older schema with no shot_description
+  key. - append_history_entry() now caps the history file at the most recent max_entries (default
+  100, global across profiles) so it can't grow unbounded; pass max_entries=0 to disable pruning.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+- **source-profiles**: Timeline zoom/paging, proxy-build guard, segment preview UI
+  ([`8831646`](https://github.com/frost-byte/fbTools/commit/8831646cd6cb6c05483e1384f4e021e41e52e9a6))
+
+- Source Profile editor and SceneCastBuild timelines gain a zoom/paging window (10-clip default)
+  with animated pan between windows, replacing unusable click-navigation once a profile has many
+  clips. Removes the decorative boundary-marker circles on the timeline. - Fix a proxy-generation
+  flood: _refreshProxyStatus() was re-persisting every already-fresh clip on each progress event
+  (O(N^2) amplification). Also disable the build-all and per-clip proxy buttons for the duration of
+  an active build so overlapping submissions can't trigger it again. - Frontend for the
+  Detect-boundaries live preview: start/end clip thumbnails via frameAtUrl(), a live VLM-prompt
+  preview via segmentPromptPreview(), and structured per-window progress rendering
+  (phase/window_idx/elapsed_s) from the backend's richer status payload.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Performance Improvements
+
+- **proxy-cache**: Bake 24fps into source-profile clip proxies
+  ([`f9cc473`](https://github.com/frost-byte/fbTools/commit/f9cc473b2b89876a7f7127e5a4aa70b5d509a6c3))
+
+H3 reference video always resamples to 24fps at generation time (force_rate=24), but proxies were
+  previously trimmed/scaled at the source's native fps, so every run against a cached proxy paid
+  that resample cost anyway. Bake fps=24 into the proxy build itself so generation just decodes an
+  already-24fps file. Existing proxies are versioned out of the cache (stem gains an _f24 tag) so
+  they regenerate under the new scheme rather than being mistaken for fresh.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+### Refactoring
+
+- **scene-cast**: Move duration/multiplier controls above timeline
+  ([`2aac908`](https://github.com/frost-byte/fbTools/commit/2aac908fe47003ff84a6611b22f6d30dafec897c))
+
+Duration multiplier buttons and calculated duration label now appear above the canvas rather than
+  below the nav row, keeping them away from the '← m/n → Segment m' label they were crowding.
+
+Also bumped the clips section top margin/padding from 6/5px to 8/8px so there is a clearer visual
+  gap between the Add entry button and the duration controls, and changed the dur-row's margin from
+  margin-top to margin-bottom so the gap sits between it and the canvas.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01PEBgH9wV9PW2ifTFryJsGw
+
+
 ## v1.27.0 (2026-09-09)
 
 ### Bug Fixes
