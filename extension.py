@@ -89,6 +89,8 @@ from .utils.source_profiles import (
     ENTITY_TYPES as _SOURCE_ENTITY_TYPES,
     MEDIA_TYPES as _SOURCE_MEDIA_TYPES,
     MEDIA_DIRS as _SOURCE_MEDIA_DIRS,
+    resolved_pronoun_style as _sp_resolved_pronoun_style,
+    resolve_ordinal_subject as _sp_resolve_ordinal_subject,
 )
 from .utils.source_profile_analysis import (
     build_segment_detection_prompt as _spa_build_segment_prompt,
@@ -17155,6 +17157,20 @@ class SceneCastBuild(io.ComfyNode):
         _RETENTION_BUNDLE = "fully_preserved"
         _RETENTION_SOURCE = "partially_preserved"
 
+        # Bundle/subject registries — only needed to resolve a bundle's own
+        # pronoun_style for ordinal-match entries; loaded once up front.
+        _ordinal_entries_present = any(str(e.get("match_mode", "")).strip() == "ordinal" for e in raw)
+        bundle_reg = subject_reg = None
+        if _ordinal_entries_present:
+            try:
+                bundle_reg = _load_bundle_registry(default_bundle_registry_path())
+            except Exception:
+                bundle_reg = None
+            try:
+                subject_reg = _load_subject_registry(default_subject_profiles_path())
+            except Exception:
+                subject_reg = None
+
         entries = []
         for e in raw:
             subject_id        = str(e.get("subject_id",        "")).strip()
@@ -17162,6 +17178,38 @@ class SceneCastBuild(io.ComfyNode):
             source_subject_id = str(e.get("source_subject_id", "")).strip()
             bundle_id         = str(e.get("bundle_id",         "")).strip()
             retention         = str(e.get("retention",         "")).strip()
+
+            # Ordinal match: resolve source_subject_id fresh against whichever
+            # profile/clip is *currently connected* — this node only ever has
+            # one source_profile input, so there is nothing to disambiguate
+            # and no reason to gate on a previously-stored source_profile_id,
+            # which goes stale the moment the upstream Source Profile is
+            # swapped for a different one (unlike an explicit subject pick
+            # below, which legitimately should invalidate if its specific
+            # profile disconnects). No match (or nothing to resolve against)
+            # → clear source linkage entirely, falling through to the
+            # bundle-only branch below, exactly as if no source had ever been
+            # assigned for this subject.
+            if (str(e.get("match_mode", "")).strip() == "ordinal"
+                    and bundle_id and not source_subject_id):
+                profile = source_profile if isinstance(source_profile, dict) else None
+                bundle  = bundle_reg.get(bundle_id) if bundle_reg else None
+                if profile is not None and bundle is not None and clip_id:
+                    bun_subj = (subject_reg.get_subject(bundle.get("subject_id", ""))
+                                if subject_reg and bundle.get("subject_id") else None)
+                    bun_pronoun = _sp_resolved_pronoun_style(
+                        bundle.get("entity_type", "person"),
+                        (bun_subj.get("pronoun_style") if bun_subj else "") or bundle.get("pronoun_style", ""),
+                    )
+                    try:
+                        ordinal = int(e.get("ordinal", 0))
+                    except (TypeError, ValueError):
+                        ordinal = 0
+                    source_subject_id = _sp_resolve_ordinal_subject(profile, clip_id, bun_pronoun, ordinal)
+                    if source_subject_id:
+                        source_profile_id = profile.get("id", "")  # always the live connected profile
+                if not source_subject_id:
+                    source_profile_id = ""  # no match — treat as if never assigned
 
             if source_profile_id and source_subject_id:
                 # Resolve source subject (shared by source-only and hybrid paths)
@@ -17231,6 +17279,29 @@ class SceneCastBuild(io.ComfyNode):
                     "retention":       retention or _RETENTION_BUNDLE,
                     "dialogue":        str(e.get("dialogue", "") or "").strip(),
                 })
+
+        # Flag (never silently resolve) two or more entries landing on the same
+        # source subject — most likely two ordinal entries whose bundles share
+        # a pronoun_style classification and whose ordinals don't actually pick
+        # out distinct subjects in this clip, or an ordinal entry colliding
+        # with an explicit one. Only one bundle can really replace a given
+        # subject; whichever entry appears last in cast_entries_json is the one
+        # whose bundle_id/visual settings "win" for that subject downstream,
+        # but neither claim is intentional here, so surface it loudly.
+        _claims: dict[str, list[str]] = {}
+        for entry in entries:
+            sid = entry.get("source_subject_id")
+            if sid:
+                _claims.setdefault(sid, []).append(entry.get("subject_id", "?"))
+        for sid, claimants in _claims.items():
+            if len(claimants) > 1:
+                logger.warning(
+                    "SceneCastBuild: %d cast entries (%s) all resolved to the same source "
+                    "subject %r for clip %r — check for an ordinal/explicit assignment "
+                    "conflict (e.g. two bundles sharing a pronoun_style whose ordinals "
+                    "don't pick out distinct subjects in this clip).",
+                    len(claimants), ", ".join(claimants), sid, clip_id,
+                )
 
         # Map profile_id → clip_id
         clip_ids: dict = {}

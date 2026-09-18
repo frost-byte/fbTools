@@ -646,7 +646,7 @@ def test_clip_load_params_returns_correct_values():
     assert lp["duration"] == 10.0
     assert lp["select_every_nth"] == 3
     assert lp["frame_load_cap"] == 60
-    assert lp["force_rate"] == 0
+    assert lp["force_rate"] == 24  # H3 requires 24fps reference video
     assert lp["skip_first_frames"] == 0
 
 def test_clip_load_params_returns_none_for_empty_clip_id():
@@ -663,3 +663,101 @@ def test_clip_load_params_duration_clamped_to_zero():
     reg2 = reg.set_clips("p1", [{"id": "c1", "start_time": 10.0, "end_time": 5.0}])
     lp = reg2.clip_load_params("p1", "c1")
     assert lp["duration"] == 0.0
+
+
+# ── resolved_pronoun_style / resolve_ordinal_subject (SceneCastBuild) ───────────
+
+resolved_pronoun_style   = sp.resolved_pronoun_style
+resolve_ordinal_subject  = sp.resolve_ordinal_subject
+
+
+def test_resolved_pronoun_style_prefers_explicit():
+    assert resolved_pronoun_style("person", "masculine") == "masculine"
+
+
+def test_resolved_pronoun_style_falls_back_by_entity_type():
+    assert resolved_pronoun_style("location", "") == "location"
+    assert resolved_pronoun_style("object", "") == "object"
+    assert resolved_pronoun_style("soundscape", "") == "object"
+
+
+def test_resolved_pronoun_style_defaults_to_neutral():
+    assert resolved_pronoun_style("person", "") == "neutral"
+    assert resolved_pronoun_style("animal", "") == "neutral"
+    assert resolved_pronoun_style("", "") == "neutral"
+
+
+def _profile_with_clip_subjects(subjects, clip_subject_ids, clip_id="c1"):
+    return {
+        "id": "p1",
+        "subjects": subjects,
+        "clips": [{"id": clip_id, "subjects": clip_subject_ids}],
+    }
+
+
+def test_resolve_ordinal_subject_finds_first_match():
+    profile = _profile_with_clip_subjects(
+        subjects=[
+            {"id": "s1", "entity_type": "person", "pronoun_style": "feminine"},
+            {"id": "s2", "entity_type": "person", "pronoun_style": "masculine"},
+        ],
+        clip_subject_ids=["s1", "s2"],
+    )
+    assert resolve_ordinal_subject(profile, "c1", "feminine", 1) == "s1"
+
+
+def test_resolve_ordinal_subject_finds_second_match_in_clip_order():
+    profile = _profile_with_clip_subjects(
+        subjects=[
+            {"id": "s1", "entity_type": "person", "pronoun_style": "feminine"},
+            {"id": "s2", "entity_type": "person", "pronoun_style": "feminine"},
+        ],
+        clip_subject_ids=["s1", "s2"],
+    )
+    assert resolve_ordinal_subject(profile, "c1", "feminine", 2) == "s2"
+
+
+def test_resolve_ordinal_subject_no_match_returns_empty():
+    profile = _profile_with_clip_subjects(
+        subjects=[{"id": "s1", "entity_type": "person", "pronoun_style": "feminine"}],
+        clip_subject_ids=["s1"],
+    )
+    # Only one feminine subject in this clip — asking for the 2nd fails.
+    assert resolve_ordinal_subject(profile, "c1", "feminine", 2) == ""
+
+
+def test_resolve_ordinal_subject_missing_clip_returns_empty():
+    profile = _profile_with_clip_subjects(
+        subjects=[{"id": "s1", "entity_type": "person", "pronoun_style": "feminine"}],
+        clip_subject_ids=["s1"],
+    )
+    assert resolve_ordinal_subject(profile, "nonexistent", "feminine", 1) == ""
+
+
+def test_resolve_ordinal_subject_zero_ordinal_returns_empty():
+    profile = _profile_with_clip_subjects(
+        subjects=[{"id": "s1", "entity_type": "person", "pronoun_style": "feminine"}],
+        clip_subject_ids=["s1"],
+    )
+    assert resolve_ordinal_subject(profile, "c1", "feminine", 0) == ""
+
+
+def test_resolve_ordinal_subject_uses_entity_type_default_when_pronoun_unset():
+    # A location subject with no explicit pronoun_style still matches "location".
+    profile = _profile_with_clip_subjects(
+        subjects=[{"id": "s1", "entity_type": "location", "pronoun_style": ""}],
+        clip_subject_ids=["s1"],
+    )
+    assert resolve_ordinal_subject(profile, "c1", "location", 1) == "s1"
+
+
+def test_resolve_ordinal_subject_ignores_subjects_not_in_clip():
+    # s2 matches the classification but isn't part of this clip's subject list.
+    profile = _profile_with_clip_subjects(
+        subjects=[
+            {"id": "s1", "entity_type": "person", "pronoun_style": "masculine"},
+            {"id": "s2", "entity_type": "person", "pronoun_style": "feminine"},
+        ],
+        clip_subject_ids=["s1"],
+    )
+    assert resolve_ordinal_subject(profile, "c1", "feminine", 1) == ""

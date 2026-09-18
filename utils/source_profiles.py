@@ -338,7 +338,7 @@ class SourceProfileRegistry:
         return {
             "start_time":       clip["start_time"],
             "duration":         duration,
-            "force_rate":       0,
+            "force_rate":       24,  # H3 requires 24fps reference video
             "frame_load_cap":   clip.get("frame_load_cap", DEFAULT_FRAME_LOAD_CAP),
             "skip_first_frames": 0,
             "select_every_nth": clip.get("select_every_nth", DEFAULT_SELECT_EVERY_NTH),
@@ -450,3 +450,46 @@ def save_registry(registry: SourceProfileRegistry, path: str, backup: bool = Tru
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(registry.to_dict(), fh, indent=2, ensure_ascii=False)
     registry.file_path = path
+
+
+# ── Ordinal subject matching (SceneCastBuild) ────────────────────────────────
+#
+# Lets a cast entry say "the Nth subject in this clip sharing my bundle's
+# pronoun_style" instead of a literal source_subject_id, so one entry keeps
+# resolving correctly across every clip in a profile even though the actual
+# matching subject's id differs per clip.
+
+ENTITY_PRONOUN_DEFAULTS: dict[str, str] = {
+    "location":   "location",
+    "object":     "object",
+    "soundscape": "object",
+}  # anything else (person, animal, …) → "neutral"
+
+
+def resolved_pronoun_style(entity_type: str, explicit: str) -> str:
+    """Explicit pronoun_style if set, else the entity_type-based default."""
+    return explicit or ENTITY_PRONOUN_DEFAULTS.get((entity_type or "person").lower(), "neutral")
+
+
+def resolve_ordinal_subject(profile: dict, clip_id: str, want_pronoun: str, ordinal: int) -> str:
+    """Return the id of the `ordinal`-th (1-indexed) subject in the given clip
+    whose resolved pronoun_style matches `want_pronoun`, in the clip's own
+    subject order. Empty string if the clip is missing or fewer matches exist.
+    """
+    if ordinal < 1:
+        return ""
+    clip = next((c for c in profile.get("clips", []) if c.get("id") == clip_id), None)
+    if clip is None:
+        return ""
+    by_id = {s.get("id"): s for s in profile.get("subjects", [])}
+    matches = 0
+    for sid in clip.get("subjects", []):
+        subj = by_id.get(sid)
+        if subj is None:
+            continue
+        pronoun = resolved_pronoun_style(subj.get("entity_type", "person"), subj.get("pronoun_style", ""))
+        if pronoun == want_pronoun:
+            matches += 1
+            if matches == ordinal:
+                return sid
+    return ""
