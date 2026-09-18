@@ -8,17 +8,26 @@
  *
  * Runs are keyed by prompt_id (GUID) so both sources can be linked.
  *
+ * A tracked node's input can be a connection reference ([node_id, output_slot])
+ * rather than an inline value — e.g. a string bound in from another node instead
+ * of typed directly into the widget. extractWidgetValues() resolves these by
+ * walking backward through nodesDict (already fully available here — no extra
+ * fetch, no graph-wide traversal) through any chain of simple passthrough nodes
+ * (Primitive/Reroute/Set-Get) until it lands on a literal value. This only
+ * fails when the upstream node genuinely *computes* its output from other
+ * inputs — that requires actually running the graph, which is what
+ * RunMetaCapture is for; everything else resolves statically.
+ *
  * Subgraph nodes never appear in the API-format prompt[2] (nodesDict) because
- * the frontend expands them into their inner nodes before submission.  When an
- * inner node receives a value from the subgraph's exposed interface, that input
- * becomes a connection reference in the API format and is filtered out by
- * extractWidgetValues().  To capture subgraph-exposed widgets the tracker also
- * scans the workflow JSON stored in extra_pnginfo.workflow, where subgraph
- * container nodes appear with their widget values intact.
+ * the frontend expands them into their inner nodes before submission.  To
+ * capture subgraph-exposed widgets the tracker also scans the workflow JSON
+ * stored in extra_pnginfo.workflow, where subgraph container nodes appear
+ * with their widget values intact.
  */
 
 const TRACK_RE = /\[track:\s*([^\]]*)\]/;
 const LORA_BUILDER_TYPE = "fbt_LoraStackBuilder";
+const SCENE_CAST_BUILD_TYPE = "fbt_SceneCastBuild";
 const LORA_BUILDER_ROWS = 8;
 
 function getTrackLabel(title) {
@@ -31,10 +40,81 @@ function isConnectionRef(value) {
     return Array.isArray(value) && value.length === 2 && typeof value[1] === "number";
 }
 
-function extractWidgetValues(inputs) {
-    return Object.fromEntries(
-        Object.entries(inputs || {}).filter(([, v]) => !isConnectionRef(v))
-    );
+// Node types whose output is a direct, unmodified passthrough of one of their
+// own inputs — Primitives, Reroutes, Set/Get. For these (and only these) a
+// connection reference can be resolved statically: the upstream node's output
+// slot *is* one of its own input values, not the result of running code.
+const _PASSTHROUGH_TYPES = new Set([
+    "PrimitiveNode", "PrimitiveString", "PrimitiveStringMultiline",
+    "PrimitiveInt", "PrimitiveFloat", "PrimitiveBoolean",
+    "Reroute", "RerouteAdvanced", "SetNode", "GetNode",
+]);
+
+/**
+ * Resolve a connection-ref input by inspecting the upstream node already
+ * present in nodesDict — no execution, no graph-wide traversal, just a
+ * bounded walk through simple passthrough nodes (Primitive/Reroute/Set-Get
+ * chains). Stops and returns null the moment it hits a node that genuinely
+ * computes its output from other inputs, since that can't be inferred
+ * without actually running it (that's what RunMetaCapture is for).
+ */
+function _resolveConnectionRef(value, nodesDict, depth = 4) {
+    if (!isConnectionRef(value) || depth <= 0 || !nodesDict) return null;
+    const upstream = nodesDict[value[0]];
+    if (!upstream) return null;
+    const upstreamInputs = upstream.inputs || {};
+    const entries = Object.entries(upstreamInputs);
+    const literal = entries.filter(([, v]) => !isConnectionRef(v));
+    const wired   = entries.filter(([, v]) => isConnectionRef(v));
+
+    // Exactly one literal input and nothing else wired in: unambiguous passthrough
+    // regardless of node type (covers custom Primitive-alikes too).
+    if (literal.length === 1 && wired.length === 0) {
+        return { value: literal[0][1], via: `${upstream.class_type || "?"} #${value[0]}` };
+    }
+    // Known passthrough type chained from another connection (Reroute -> Reroute -> ...):
+    // keep walking one more hop.
+    if (wired.length === 1 && literal.length === 0 && _PASSTHROUGH_TYPES.has(upstream.class_type)) {
+        return _resolveConnectionRef(wired[0][1], nodesDict, depth - 1);
+    }
+    return null; // genuinely computed or ambiguous — can't infer statically
+}
+
+// A composite/conditional widget (e.g. a V3 DynamicCombo bundling a mode
+// selector with a nested option-specific field, like the Latent Upscaler's
+// {mode, scale}) can have one of its nested sub-fields converted to an input
+// and wired, while the widget's own top-level key still carries a plain
+// object value in the submitted prompt — so isConnectionRef() never fires on
+// it directly. Left unchecked, that object gets treated as a fully-resolved
+// literal, which both (a) shows a stale/partial value in the static entry and
+// (b) blocks the runtime capture's fully-resolved version from surviving the
+// merge below, since the merge only compares top-level key names. Detect any
+// connection-ref hiding at any depth inside the value and treat the whole
+// key as statically unresolvable in that case, same as a direct connection
+// ref — the runtime capture is the only source of truth for it.
+function _hasNestedLink(value, depth = 3) {
+    if (depth <= 0) return false;
+    if (isConnectionRef(value)) return true;
+    if (value && typeof value === "object") {
+        return Object.values(value).some(v => _hasNestedLink(v, depth - 1));
+    }
+    return false;
+}
+
+function extractWidgetValues(inputs, nodesDict) {
+    const out = {};
+    for (const [key, v] of Object.entries(inputs || {})) {
+        if (!isConnectionRef(v)) {
+            if (_hasNestedLink(v)) continue; // composite widget with a wired sub-field
+            out[key] = v;
+            continue;
+        }
+        const resolved = _resolveConnectionRef(v, nodesDict);
+        if (resolved) out[key] = `${resolved.value}  (via ${resolved.via})`;
+        // else: leave it out — same as before, but now only for values that
+        // are genuinely unresolvable without running the graph.
+    }
+    return out;
 }
 
 /**
@@ -160,6 +240,49 @@ function renderLoraBuilderTable(parsed, container) {
     container.appendChild(table);
 }
 
+function parseSceneCastBuildWidgets(inputs) {
+    let entries = [];
+    const raw = inputs.cast_entries_json;
+    if (typeof raw === "string") {
+        try { entries = JSON.parse(raw) || []; } catch (_) { /* malformed/empty — show nothing */ }
+    }
+    const clipId = typeof inputs.clip_id === "string" ? inputs.clip_id : "";
+    const mult   = typeof inputs.clip_duration_multiplier === "number" ? inputs.clip_duration_multiplier : null;
+    const actionPreview = typeof inputs.action_preview === "string" ? inputs.action_preview.trim() : "";
+    return { entries, clipId, mult, actionPreview };
+}
+
+function renderSceneCastBuildTable(parsed, container) {
+    const { entries, clipId, mult, actionPreview } = parsed;
+
+    const meta = [];
+    if (clipId) meta.push(`clip: ${clipId}`);
+    if (mult != null && mult !== 1) meta.push(`${mult}x duration`);
+    if (meta.length) container.appendChild(txt("span", "fbt-rh-lora-model-badge", meta.join(" · ")));
+
+    if (!entries.length) {
+        container.appendChild(txt("div", "fbt-rh-empty-node", "(no cast entries)"));
+    } else {
+        const table = mk("table", "fbt-rh-table");
+        for (const e of entries) {
+            const tr = mk("tr");
+            const mode = e.visual_mode || "images";
+            const audioFlag = e.use_audio ? " +audio" : "";
+            tr.appendChild(txt("td", "fbt-rh-key", e.subject_id || "?"));
+            tr.appendChild(txt("td", "fbt-rh-val", `${e.bundle_id || "?"} [${mode}${audioFlag}]`));
+            table.appendChild(tr);
+        }
+        container.appendChild(table);
+    }
+
+    // Resolved action text — written by the on-node preview widget into its
+    // hidden backing widget (action_preview), so it rides along here as an
+    // ordinary literal value.
+    if (actionPreview) {
+        container.appendChild(txt("div", "fbt-rh-scb-action", actionPreview));
+    }
+}
+
 // ComfyUI timestamps in execution_start messages are in milliseconds.
 // Guard against both ms (>1e12) and s (<1e12) just in case.
 function toMs(ts) {
@@ -231,7 +354,7 @@ function parseRuns(historyData, captureMap) {
                 label,
                 class_type: nodeDef.class_type || "",
                 rawInputs,
-                widgets: extractWidgetValues(rawInputs),
+                widgets: extractWidgetValues(rawInputs, nodesDict),
             });
         }
 
@@ -243,12 +366,57 @@ function parseRuns(historyData, captureMap) {
         const workflowTracked = extractWorkflowTrackedNodes(wf, capturedLabels);
         trackedNodes.push(...workflowTracked);
 
-        // Runtime captures from RunMetaCapture nodes
-        const captures = captureMap[promptId]?.captures ?? [];
+        // Runtime captures — from RunMetaCapture nodes, and from the
+        // node-output auto-tracker (extension.py) for [track:]-tagged nodes
+        // whose value couldn't be resolved statically above.
+        const rawCaptures = captureMap[promptId]?.captures ?? [];
 
-        if (!trackedNodes.length && !captures.length) continue;
+        // Merge each capture into its matching static entry: drop any capture
+        // key the static scan already resolved (that version is often cleaner
+        // — e.g. a passthrough-resolved name vs. a raw dumped object — and
+        // showing both is just noise), keep only genuinely new keys the
+        // static scan couldn't get, and drop the capture entirely once
+        // nothing new remains. LORA_BUILDER_TYPE is exempt from merging —
+        // its custom table renders straight from rawInputs and never touches
+        // captures — so its runtime capture is pure noise and gets dropped
+        // outright, never pushed as its own entry.
+        const staticByLabel = new Map(trackedNodes.map(n => [n.label, n]));
+        const captures = [];
+        for (const cap of rawCaptures) {
+            const staticNode = staticByLabel.get(cap.label);
+            if (!staticNode) {
+                captures.push(cap);
+                continue;
+            }
+            if (staticNode.class_type === LORA_BUILDER_TYPE) {
+                continue;
+            }
+            const staticKeys = new Set(Object.keys(staticNode.widgets || {}));
+            const extra = {};
+            for (const [k, v] of Object.entries(cap.values || {})) {
+                if (!staticKeys.has(k)) extra[k] = v;
+            }
+            if (Object.keys(extra).length > 0) {
+                captures.push({ ...cap, values: extra, label: `${cap.label} (extra)` });
+            }
+            // else: fully covered by the static scan already — drop the duplicate.
+        }
 
-        runs.push({ promptId, queueNum, ts, workflowName, trackedNodes, captures });
+        // A node the static scan couldn't resolve at all (zero widgets — every
+        // input was a wired, genuinely-computed value) but that a capture
+        // picked up under the same original label would otherwise show up
+        // twice: once as a useless "(no values)" placeholder here, once for
+        // real under captures. Drop the empty static entry in that case.
+        const captureLabels = new Set(rawCaptures.map(c => c.label));
+        const resolvedTrackedNodes = trackedNodes.filter(n =>
+            n.class_type === LORA_BUILDER_TYPE ||
+            Object.keys(n.widgets || {}).length > 0 ||
+            !captureLabels.has(n.label)
+        );
+
+        if (!resolvedTrackedNodes.length && !captures.length) continue;
+
+        runs.push({ promptId, queueNum, ts, workflowName, trackedNodes: resolvedTrackedNodes, captures });
     }
 
     runs.sort((a, b) => b.queueNum - a.queueNum);
@@ -329,6 +497,8 @@ function renderRun(run) {
         nodeEl.appendChild(txt("div", "fbt-rh-node-label", node.label));
         if (node.class_type === LORA_BUILDER_TYPE) {
             renderLoraBuilderTable(parseLoraBuilderWidgets(node.rawInputs), nodeEl);
+        } else if (node.class_type === SCENE_CAST_BUILD_TYPE) {
+            renderSceneCastBuildTable(parseSceneCastBuildWidgets(node.rawInputs), nodeEl);
         } else {
             renderValueTable(node.widgets, nodeEl);
         }

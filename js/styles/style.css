@@ -3243,6 +3243,16 @@ body.fbt-llm-loaded
     margin-bottom: 4px;
 }
 
+.fbt-rh-scb-action {
+    font-size: 11px;
+    font-style: italic;
+    color: var(--p-surface-300, #aaa);
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-color, #333);
+    white-space: pre-wrap;
+}
+
 .fbt-rh-lora-hdr {
     font-size: 9px;
     color: var(--p-surface-500, #666);
