@@ -178,7 +178,11 @@ def _fbtools_capture_for_node(prompt_id, unique_id, dynprompt, execution_list, e
         }
         while len(_TRACKED_KWARGS_BY_NODE_ID) > _TRACKED_PROMPT_MAX:
             _TRACKED_KWARGS_BY_NODE_ID.pop(next(iter(_TRACKED_KWARGS_BY_NODE_ID)))
-            _TRACKED_EMITTED_BY_PROMPT.setdefault(prompt_id, set()).add(unique_id)
+        # Mark this node as already emitted for this prompt_id so the backfill
+        # pass below (which re-checks every tracked node's cache status on
+        # every subsequent node's execute() call) doesn't re-emit it a second
+        # time once its own output lands in caches.outputs a moment later.
+        _TRACKED_EMITTED_BY_PROMPT.setdefault(prompt_id, set()).add(unique_id)
     except Exception:
         logger.debug("node-output-tracker: capture failed", exc_info=True)
 
