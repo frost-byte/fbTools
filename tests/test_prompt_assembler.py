@@ -1537,3 +1537,117 @@ class TestAppearanceOverrides:
         resolved = _make_resolved_subjects(summary="untouched summary")
         result = assemble_composition(comp, resolved, None, "h3_ref2va")
         assert "untouched summary" in result["prompt"]
+
+
+# ── assemble_composition: hybrid cast retention markers (bundle-slot fix) ───────
+#
+# apply_cast_to_subjects (utils/prompt_compositions.py) mints an extra
+# "<slot>_bundle" key for a hybrid cast entry (bundle replacing a subject that
+# also has a source video), pairing the donor slot ("_cast_retention":
+# "replaced") with the replacement slot ("_cast_retention": "attribute_transfer").
+# These tests confirm assemble_composition surfaces that pairing end-to-end
+# into the assembled prompt text, exercising both the slot-letter-minting fix
+# for the new key and the "_transfer_to_slot" remap fix (apply_cast_to_subjects
+# stamps composition-level slot keys like "S1_bundle", but ref_map/
+# slot_assignments are keyed by template letters like "B" — assemble_composition
+# must translate one to the other or the donor/replacement pairing can't find
+# itself).
+
+pc = import_test_module("utils/prompt_compositions.py")
+apply_cast_to_subjects = pc.apply_cast_to_subjects
+
+
+class _HybridBundleRegistry:
+    def __init__(self, bundles):
+        self._b = bundles
+
+    def get(self, bundle_id):
+        return self._b.get(bundle_id)
+
+
+def _hybrid_composition():
+    return {
+        "id": "test_hybrid_comp",
+        "name": "Hybrid Test",
+        "model_type": "h3_ref2va",
+        "style": "",
+        "subjects": {"S1": "alice"},
+        "shots": [
+            {
+                "id": "shot_1", "timestamp": None,
+                "camera": "Close-up of {A}", "action": "{A} walks forward.",
+                "dialogue": None, "sound_events": None,
+            }
+        ],
+        "overall_soundscape": "", "non_diegetic_music": "N/A",
+    }
+
+
+class TestHybridCastRetentionInAssembledPrompt:
+    def test_motion_transfer_sentence_appears_for_bundle_replacement(self):
+        comp = _hybrid_composition()
+        alice = _make_resolved_subjects(summary="a woman with long red hair")["S1"]
+        alice["subject_id"] = "alice"
+        cast = {"entries": [{
+            "subject_id": "alice",
+            "bundle_id": "b1",
+            "source_profile_id": "sp1",
+            "source_subject_id": "src1",
+            "role_description": "a woman with long red hair",
+            "retention": "partially_preserved",
+            "visual_mode": "images",
+            "use_audio": False,
+        }]}
+        breg = _HybridBundleRegistry({"b1": {
+            "visual": {"type": "images", "files": ["bundle_ref.png"], "file": ""},
+            "audio": {"source": "none", "file": ""},
+            "appearance_override": "a woman with short dark hair",
+        }})
+        enriched = apply_cast_to_subjects({"S1": alice}, comp, cast, breg)
+
+        # Sanity: apply_cast_to_subjects produced the paired donor/replacement
+        # slots with the composition-level "_transfer_to_slot" values that
+        # assemble_composition must remap through slot_map.
+        assert enriched["S1"]["_cast_retention"] == "replaced"
+        assert enriched["S1"]["_transfer_to_slot"] == "S1_bundle"
+        assert enriched["S1_bundle"]["_cast_retention"] == "attribute_transfer"
+        assert enriched["S1_bundle"]["_transfer_to_slot"] == "S1"
+
+        result = assemble_composition(comp, enriched, None, "h3_ref2va")
+        prompt = result["prompt"]
+
+        # The bundle-replacement subject gets a motion-transfer sentence citing
+        # the donor subject's appearance — this only fires when
+        # retention_marker == "attribute_transfer" AND the remapped
+        # "_transfer_to_slot" resolves to a real ref_map entry (the donor).
+        assert "Their pose, movement, and screen position in the scene match those of" in prompt
+        assert "a woman with long red hair" in prompt
+
+    def test_replacement_bundle_appearance_and_images_survive_into_prompt(self):
+        # Companion to test_hybrid_entry_keeps_bundle_appearance_and_images in
+        # test_cast_enrichment.py — confirms the bundle's own data (not the
+        # donor's) is what actually reaches the assembled prompt text for the
+        # replacement <Subject N>.
+        comp = _hybrid_composition()
+        alice = _make_resolved_subjects(summary="a woman with long red hair")["S1"]
+        alice["subject_id"] = "alice"
+        cast = {"entries": [{
+            "subject_id": "alice",
+            "bundle_id": "b1",
+            "source_profile_id": "sp1",
+            "source_subject_id": "src1",
+            "role_description": "a woman with long red hair",
+            "retention": "partially_preserved",
+            "visual_mode": "images",
+            "use_audio": False,
+        }]}
+        breg = _HybridBundleRegistry({"b1": {
+            "visual": {"type": "images", "files": ["bundle_ref.png"], "file": ""},
+            "audio": {"source": "none", "file": ""},
+            "appearance_override": "a woman with short dark hair",
+        }})
+        enriched = apply_cast_to_subjects({"S1": alice}, comp, cast, breg)
+        result = assemble_composition(comp, enriched, None, "h3_ref2va")
+        # Definite-article substitution turns "a woman…" into "the woman…" when a
+        # picture/video reference is cited, so match on the descriptive tail only.
+        assert "woman with short dark hair" in result["prompt"]

@@ -215,87 +215,122 @@ def test_missing_bundle_skipped_gracefully():
     assert result["S1"]["character_sheet_images"] == []
 
 
-def test_positional_different_subject_applies_bundle_to_slot():
-    # "bob" cast at position 0 targets S1 (positional mapping).
-    # Bundle media is applied even though the subject differs from the composition.
+def test_entry_with_unmatched_subject_id_is_ignored():
+    # Cast entries bind by subject identity, not array position/order — an
+    # entry for "bob" against a composition that only has "alice" in S1 has
+    # nothing to bind to and must be a no-op. This is the fix for the bug
+    # where positional matching applied a mismatched entry to whatever slot
+    # happened to sort into that array index, regardless of who was there.
     subj = _subject("Alice")
     comp = _composition({"S1": "alice"})
     cast = _cast([_entry("bob", "b1")])
     reg  = _BundleRegistry({"b1": _bundle(files=["bob.png"])})
     result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["character_sheet_images"] == ["bob.png"]
-
-
-class _SubjectRegistry:
-    """Minimal duck-typed subject registry for tests."""
-    def __init__(self, subjects):
-        self._s = subjects
-
-    def get_subject(self, subject_id):
-        return self._s.get(subject_id)
-
-
-def test_positional_recast_replaces_subject_when_registry_provided():
-    # When a subject_registry is present, a different-subject entry fully replaces
-    # the slot's subject (name, appearance, etc.) before bundle enrichment.
-    alice = _subject("Alice", summary="a tall woman")
-    angie = _subject("Angie", summary="a short woman with red hair")
-    comp  = _composition({"S1": "alice"})
-    cast  = _cast([_entry("angie", "b1", visual_mode="images")])
-    breg  = _BundleRegistry({"b1": _bundle(files=["angie_ref.png"])})
-    sreg  = _SubjectRegistry({"angie": angie})
-    result = apply_cast_to_subjects({"S1": alice}, comp, cast, breg, sreg)
-    assert result["S1"]["name"] == "Angie"
-    assert result["S1"]["subject_id"] == "angie"
-    assert result["S1"]["appearance"]["summary"] == "a short woman with red hair"
-    assert result["S1"]["character_sheet_images"] == ["angie_ref.png"]
+    assert result["S1"]["character_sheet_images"] == []
 
 
 def test_blank_entry_is_passthrough():
-    # An entry with no subject_id keeps the composition's original subject unchanged.
+    # An entry with no subject_id keeps the composition's original subject
+    # unchanged; a later entry still binds by subject_id, independent of the
+    # blank entry's position in the array.
     alice = _subject("Alice")
     joe   = _subject("Joe")
     comp  = _composition({"S1": "alice", "S2": "joe"})
-    # Skip S1 (blank), override S2 with Angie's bundle
     cast  = _cast([
         {"subject_id": "", "bundle_id": "", "visual_mode": "images", "use_audio": False},
-        _entry("angie", "b2", visual_mode="images"),
+        _entry("joe", "b2", visual_mode="images"),
     ])
-    breg  = _BundleRegistry({"b2": _bundle(files=["angie_ref.png"])})
-    sreg  = _SubjectRegistry({"angie": _subject("Angie")})
-    result = apply_cast_to_subjects({"S1": alice, "S2": joe}, comp, cast, breg, sreg)
+    breg  = _BundleRegistry({"b2": _bundle(files=["joe_ref.png"])})
+    result = apply_cast_to_subjects({"S1": alice, "S2": joe}, comp, cast, breg)
     # S1 untouched (blank row)
     assert result["S1"]["name"] == "Alice"
     assert result["S1"]["character_sheet_images"] == []
-    # S2 replaced with Angie + her bundle image
-    assert result["S2"]["name"] == "Angie"
-    assert result["S2"]["character_sheet_images"] == ["angie_ref.png"]
+    # S2 enriched — matched by subject_id "joe", not by array position
+    assert result["S2"]["name"] == "Joe"
+    assert result["S2"]["character_sheet_images"] == ["joe_ref.png"]
 
 
-def test_recast_two_subjects_both_replaced():
+def test_matching_is_order_independent():
+    # Entries listed out of composition-slot order still bind to the correct
+    # slot, since matching is by subject_id, not by sorted-slot-index.
     alice = _subject("Alice")
     bob   = _subject("Bob")
-    angie = _subject("Angie", summary="a short woman with red hair")
-    joe   = _subject("Joe",   summary="a stocky guy with a beard")
     comp  = _composition({"S1": "alice", "S2": "bob"})
     cast  = _cast([
-        _entry("angie", "ba", visual_mode="video", use_audio=True),
-        _entry("joe",   "bj", visual_mode="images"),
+        _entry("bob",   "bj", visual_mode="images"),   # listed first, targets S2
+        _entry("alice", "ba", visual_mode="images"),   # listed second, targets S1
     ])
     breg = _BundleRegistry({
-        "ba": _bundle(video_file="angie.mp4", audio_source="extract_from_visual"),
-        "bj": _bundle(files=["joe_ref.png"], appearance_override="the big guy"),
+        "ba": _bundle(files=["a.png"]),
+        "bj": _bundle(files=["j.png"]),
     })
-    sreg = _SubjectRegistry({"angie": angie, "joe": joe})
-    result = apply_cast_to_subjects({"S1": alice, "S2": bob}, comp, cast, breg, sreg)
-    assert result["S1"]["name"] == "Angie"
-    assert result["S1"]["subject_id"] == "angie"
-    assert result["S2"]["name"] == "Joe"
-    assert result["S2"]["subject_id"] == "joe"
-    # Joe's appearance override from bundle
-    assert result["S2"]["appearance"]["summary"] == "the big guy"
-    # Angie's video soundtrack does NOT set voice.audio_reference_file
-    assert result["S1"]["voice"]["audio_reference_file"] == ""
+    result = apply_cast_to_subjects({"S1": alice, "S2": bob}, comp, cast, breg)
+    assert result["S1"]["character_sheet_images"] == ["a.png"]
+    assert result["S2"]["character_sheet_images"] == ["j.png"]
+
+
+# ── Hybrid entries (bundle replacing a subject that also has a source video) ───
+
+def _hybrid_entry(subject_id, bundle_id, source_profile_id="sp1", source_subject_id="src1",
+                   role_description="", retention="partially_preserved"):
+    return {
+        "subject_id":        subject_id,
+        "bundle_id":         bundle_id,
+        "source_profile_id": source_profile_id,
+        "source_subject_id": source_subject_id,
+        "role_description":  role_description,
+        "retention":         retention,
+        "visual_mode":       "images",
+        "use_audio":         False,
+    }
+
+
+def test_hybrid_entry_keeps_bundle_appearance_and_images():
+    # Previously the hybrid branch never inspected bundle_id at all, so the
+    # bundle's appearance/images were silently dropped from the subject list
+    # used for prompt text (even though media wiring elsewhere still used the
+    # bundle correctly) — refplan and prompt text ended up describing
+    # different subjects for the same entry. Confirm the bundle's own data
+    # now survives onto its minted slot.
+    comp = _composition({"S1": "alice"})
+    cast = _cast([_hybrid_entry("alice", "b1", role_description="a woman in the video")])
+    breg = _BundleRegistry({"b1": _bundle(files=["bundle_ref.png"], appearance_override="a redheaded woman")})
+    result = apply_cast_to_subjects({"S1": _subject("Alice")}, comp, cast, breg)
+    assert "S1_bundle" in result
+    assert result["S1_bundle"]["character_sheet_images"] == ["bundle_ref.png"]
+    assert result["S1_bundle"]["appearance"]["summary"] == "a redheaded woman"
+
+
+def test_hybrid_entry_pairs_donor_and_replacement_retention_markers():
+    # The original (source-derived) slot becomes the motion donor, marked
+    # "replaced" and pointing at the new bundle slot; the bundle slot is
+    # marked "attribute_transfer" and points back — mirroring
+    # SourceProfileClipPrompt's SOURCE_SLOTS/BUNDLE_SLOTS pairing so the
+    # retention_marker-gated prompt_assembler features fire for compositions
+    # the same way they do for Source Profile clips.
+    comp = _composition({"S1": "alice"})
+    cast = _cast([_hybrid_entry("alice", "b1")])
+    breg = _BundleRegistry({"b1": _bundle(files=["ref.png"])})
+    result = apply_cast_to_subjects({"S1": _subject("Alice")}, comp, cast, breg)
+    assert result["S1"]["_cast_retention"] == "replaced"
+    assert result["S1"]["_transfer_to_slot"] == "S1_bundle"
+    assert result["S1_bundle"]["_cast_retention"] == "attribute_transfer"
+    assert result["S1_bundle"]["_transfer_to_slot"] == "S1"
+
+
+def test_source_derived_entry_without_bundle_has_no_transfer_slot():
+    # A pure source-derived entry (no bundle_id) has nothing to pair with —
+    # it should carry the entry's own retention value and no transfer slot.
+    comp = _composition({"S1": "alice"})
+    cast = _cast([{
+        "subject_id": "alice", "bundle_id": "", "source_profile_id": "sp1",
+        "source_subject_id": "src1", "role_description": "a woman",
+        "retention": "fully_preserved", "visual_mode": "images", "use_audio": False,
+    }])
+    result = apply_cast_to_subjects({"S1": _subject("Alice")}, comp, cast, _BundleRegistry({}))
+    assert result["S1"]["_cast_retention"] == "fully_preserved"
+    assert "_transfer_to_slot" not in result["S1"]
+    assert "S1_bundle" not in result
 
 
 def test_extra_cast_entries_beyond_slot_count_ignored():

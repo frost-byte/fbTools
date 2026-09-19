@@ -1754,6 +1754,22 @@ def assemble_composition(
     # Map S1→A, S2→B, … in stable order
     slot_keys = list(composition.get("subjects", {}).keys())
     slot_map = {sk: chr(ord("A") + i) for i, sk in enumerate(slot_keys)}
+    _next_letter_idx = len(slot_keys)
+
+    # apply_cast_to_subjects mints an extra "<slot>_bundle" key (not part of the
+    # composition's own subject roster) when a hybrid cast entry replaces a
+    # subject that also has a source-video reference — the original slot stays
+    # as the motion donor and the bundle gets its own slot so both surface as
+    # separate <Subject N> references (donor "replaced", bundle
+    # "attribute_transfer"). Give each such key a letter the same way
+    # background/outfit-reference slots get one below, or it would silently
+    # never appear in the assembled prompt.
+    bundle_slot_keys = [sk for sk in resolved_subjects if sk not in slot_map]
+    for bsk in bundle_slot_keys:
+        slot_map[bsk] = chr(ord("A") + _next_letter_idx)
+        _next_letter_idx += 1
+
+    import copy as _copy
 
     slot_assignments = {}
     for sk, subject in resolved_subjects.items():
@@ -1761,9 +1777,22 @@ def assemble_composition(
         if letter:
             slot_assignments[letter] = subject
 
+    # apply_cast_to_subjects stamps "_transfer_to_slot" with a composition-level
+    # slot key (e.g. "S1_bundle"), but _build_ref_map / _assemble_h3_ref2va look
+    # sibling slots up by the template letter (e.g. "B") used in slot_assignments
+    # and ref_map. Remap through slot_map here or the motion-transfer sentence and
+    # donor/replacement pairing silently fail to find each other.
+    for letter, subject in list(slot_assignments.items()):
+        transfer_target = subject.get("_transfer_to_slot")
+        if transfer_target and transfer_target in slot_map:
+            mapped = slot_map[transfer_target]
+            if mapped != transfer_target:
+                subject = _copy.deepcopy(subject)
+                subject["_transfer_to_slot"] = mapped
+                slot_assignments[letter] = subject
+
     # Apply composition-level slot descriptors: per-slot appearance summary override.
     # These sit on top of the profile's stored appearance.summary without modifying it.
-    import copy as _copy
     slot_descriptors   = composition.get("slot_descriptors",   {})
     appearance_overrides = composition.get("appearance_overrides", {})
     for sk in slot_keys:
@@ -1781,8 +1810,8 @@ def assemble_composition(
                 if isinstance(value, str) and value.strip():
                     app[field] = value.strip()
 
-    # Running letter index for extra slots (background + outfit references).
-    _next_letter_idx = len(slot_keys)
+    # Running letter index for extra slots (background + outfit references) —
+    # continues on from any bundle-replacement slots minted above.
 
     # Background as visual reference: inject as an additional <Subject N> slot.
     # Uses {BG} shortcut in shot action/camera fields.
@@ -1879,6 +1908,10 @@ def assemble_composition(
             **{
                 slot_map[fk]: {"role": fk, "needs_voice": False, "needs_character_sheet": True}
                 for fk in slot_map if fk.startswith("Fit_")
+            },
+            **{
+                slot_map[bk]: {"role": bk, "needs_voice": True, "needs_character_sheet": True}
+                for bk in bundle_slot_keys
             },
         },
         "environment": {

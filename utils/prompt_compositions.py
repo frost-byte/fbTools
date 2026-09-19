@@ -221,6 +221,62 @@ def validate_composition(composition: dict) -> list[str]:
 
 # ── Cast enrichment ────────────────────────────────────────────────────────────
 
+def _enrich_subject_with_bundle(subj: dict, bundle: dict, entry: dict) -> None:
+    """Apply bundle images/audio/appearance onto subj in place.
+
+    image-mode visual.files      → appended to character_sheet_images
+    use_audio=True + source=file → bundle audio → voice.audio_reference_file
+    appearance_override          → replaces appearance.summary
+    """
+    visual_mode = entry.get("visual_mode", "images")
+    visual      = bundle.get("visual", {})
+    audio       = bundle.get("audio", {})
+
+    # 1. Image-mode files → character_sheet_images (deduplicated, appended)
+    if visual_mode == "images":
+        files = [f for f in visual.get("files", []) if f]
+        if files:
+            sheets: list = subj.setdefault("character_sheet_images", [])
+            for f in files:
+                if f not in sheets:
+                    sheets.append(f)
+
+    # 2. Audio → voice fields
+    # extract_from_visual means the audio is a VIDEO SOUNDTRACK — it is handled
+    # at the video-entry level (video_entries_full / soundtrack_audio in the
+    # refplan) and must NOT also appear as a standalone voice.audio_reference_file,
+    # which would create a duplicate reference.  Only source="file" (a separate
+    # standalone audio asset) populates the subject's voice fields.
+    if entry.get("use_audio", False) and audio.get("source") == "file":
+        audio_file = audio.get("file", "")
+        if audio_file:
+            v = subj.setdefault("voice", {})
+            v["audio_reference_file"] = audio_file
+            v["audio_start_time"]     = audio.get("start_time", 0.0)
+            v["audio_duration"]       = audio.get("duration", 0.0)
+            v["audio_retention"]      = audio.get("retention", "timbre")
+            v["audio_role"]           = audio.get("role", "")
+            v["audio_cache"]          = audio.get("audio_cache", "")
+
+    # 3. Appearance — bundle fields override subject fields (bundle wins if non-empty).
+    bun_app = bundle.get("appearance") or {}
+    if isinstance(bun_app, str):
+        bun_app = {"summary": bun_app}
+    legacy = bundle.get("appearance_override", "").strip()
+    app = subj.setdefault("appearance", {})
+    bun_summary = bun_app.get("summary", "").strip() or legacy
+    if bun_summary:
+        app["summary"] = bun_summary
+    for _k in ("hair", "face", "body", "default_outfit"):
+        _v = bun_app.get(_k, "").strip()
+        if _v:
+            app[_k] = _v
+    if bundle.get("pronoun_style"):
+        subj["pronoun_style"] = bundle["pronoun_style"]
+    if bundle.get("short_name"):
+        subj["short_name"] = bundle["short_name"]
+
+
 def apply_cast_to_subjects(
     resolved_subjects: dict,
     composition: dict,
@@ -228,20 +284,36 @@ def apply_cast_to_subjects(
     bundle_registry,
     subject_registry=None,
 ) -> dict:
-    """Apply a scene cast to resolved_subjects using positional (row-order) mapping.
+    """Apply a scene cast to resolved_subjects, matching cast entries to
+    composition slots by subject identity (entry["subject_id"] against each
+    slot's current subject_id) — array order in scene_cast["entries"] carries
+    no meaning. This mirrors how SourceProfileClipPrompt matches SceneCastBuild
+    cast entries to a clip's own subjects by source_subject_id, so a cast built
+    once against a shared roster binds consistently whichever node consumes it.
+    A blank entry (no subject_id), or one whose subject_id isn't currently in
+    resolved_subjects, is a no-op.
 
-    Cast entries are matched to composition slots by position: entry 0 → the
-    first slot (sorted), entry 1 → the second slot, etc.  A blank entry (no
-    subject_id) is a pass-through that preserves the composition's original
-    subject for that position.
-
-    For each non-blank entry:
-      - If subject_id differs from the slot's current subject, the slot is
-        replaced entirely with the new subject loaded from subject_registry.
-      - Bundle enrichment is then applied on top of whoever is in the slot:
-          image-mode visual.files      → appended to character_sheet_images
-          use_audio=True + source=file → bundle audio → voice.audio_reference_file
-          appearance_override          → replaces appearance.summary
+    For each matched entry:
+      - Pure source-derived (source_profile_id + source_subject_id, no
+        bundle_id): the slot becomes a synthetic subject built from the
+        source-profile annotation, retention from entry["retention"].
+      - Pure bundle-backed (bundle_id, no source_profile_id/source_subject_id):
+        bundle enrichment (images/audio/appearance) is applied in place on
+        top of whoever currently occupies the slot.
+      - Hybrid (source_profile_id + source_subject_id + bundle_id — a bundle
+        replacing a subject that also has a source-video reference): the
+        matched slot keeps the source-derived subject as the motion donor,
+        marked "replaced", and a NEW slot ("<slot>_bundle") is minted for the
+        bundle, marked "attribute_transfer", each pointing at the other via
+        _transfer_to_slot. This mirrors SourceProfileClipPrompt's
+        SOURCE_SLOTS/BUNDLE_SLOTS pairing so the same prompt_assembler.py
+        features gated on retention_marker (the motion-transfer sentence, the
+        sharpened discard-identity wording, the specific-video-naming edit
+        description) fire identically for both the Source Profile and
+        Composition paths — previously this branch never inspected bundle_id
+        at all, so a hybrid entry's bundle data (appearance/images/audio) was
+        silently dropped from the prompt text even though _resolve_cast_media
+        still wired its media into the reference plan.
 
     bundle_registry must support .get(bundle_id) -> dict | None.
     subject_registry, if provided, must support .get_subject(subject_id) -> dict | None.
@@ -251,31 +323,34 @@ def apply_cast_to_subjects(
     import copy as _copy
 
     enriched = {slot: _copy.deepcopy(subj) for slot, subj in resolved_subjects.items()}
-    ordered_slots = sorted(enriched.keys())
 
-    for i, entry in enumerate(scene_cast.get("entries", [])):
-        if i >= len(ordered_slots):
-            break
+    # Identity lookup: which slot does a given subject_id currently occupy?
+    # This — not array position — is what a cast entry binds against.
+    slot_by_subject_id = {
+        subj.get("subject_id", ""): slot
+        for slot, subj in enriched.items()
+        if subj.get("subject_id")
+    }
 
+    for entry in scene_cast.get("entries", []):
         subject_id        = entry.get("subject_id", "")
         bundle_id         = entry.get("bundle_id", "")
         source_profile_id = entry.get("source_profile_id", "")
         source_subject_id = entry.get("source_subject_id", "")
 
-        # Blank row — keep the composition's original subject for this position
         if not subject_id:
-            continue
+            continue  # blank row — no-op
 
-        slot = ordered_slots[i]
+        slot = slot_by_subject_id.get(subject_id)
+        if slot is None:
+            continue  # entry references a subject not in this composition — no-op
 
-        # ── Source-derived entry ──────────────────────────────────────────────
-        # Build a synthetic subject from the source profile annotation rather
-        # than loading from subject_registry or applying bundle enrichment.
+        # ── Source-derived / hybrid entry ──────────────────────────────────────
         if source_profile_id and source_subject_id:
             role_description = entry.get("role_description", "")
             entity_type      = entry.get("entity_type", "person")
             retention        = entry.get("retention", "partially_preserved")
-            enriched[slot] = {
+            donor = {
                 "subject_id":        subject_id,
                 "name":              role_description or subject_id,
                 "source_profile_id": source_profile_id,
@@ -289,71 +364,43 @@ def apply_cast_to_subjects(
                 "concept_id": "",
                 "_cast_retention": retention,
             }
+
+            if bundle_id:
+                bundle = bundle_registry.get(bundle_id)
+                if bundle is not None:
+                    bundle_slot = f"{slot}_bundle"
+                    donor["_cast_retention"]   = "replaced"
+                    donor["_transfer_to_slot"] = bundle_slot
+
+                    bun_subject_id = bundle.get("subject_id", "")
+                    bun_subj = (subject_registry.get_subject(bun_subject_id)
+                                if subject_registry and bun_subject_id else None) or {}
+                    replacement = {
+                        "subject_id":             bundle_id,
+                        "name":                   bundle.get("name") or role_description or bundle_id,
+                        "concept_id":             None,
+                        "character_sheet_images": [],
+                        "appearance": {"summary": "", "hair": "", "face": "", "body": "", "default_outfit": ""},
+                        "voice": {},
+                        "_cast_retention":   "attribute_transfer",
+                        "_transfer_to_slot": slot,
+                        "_pronoun_style":    bun_subj.get("pronoun_style", ""),
+                        "_short_name":       bun_subj.get("short_name", ""),
+                        "entity_type":       bundle.get("entity_type", entity_type),
+                    }
+                    _enrich_subject_with_bundle(replacement, bundle, entry)
+                    enriched[bundle_slot] = replacement
+
+            enriched[slot] = donor
             continue
 
-        # ── Bundle-backed entry ───────────────────────────────────────────────
-        # Replace the slot's subject when it differs from what the composition defined
-        current_sid = enriched.get(slot, {}).get("subject_id", "")
-        if subject_id != current_sid and subject_registry is not None:
-            new_subj = subject_registry.get_subject(subject_id)
-            if new_subj is not None:
-                enriched[slot] = _copy.deepcopy(dict(new_subj))
-                enriched[slot]["subject_id"] = subject_id
-
-        # Bundle enrichment (skip if no bundle selected)
+        # ── Pure bundle-backed entry ─────────────────────────────────────────────
         if not bundle_id:
             continue
         bundle = bundle_registry.get(bundle_id)
         if bundle is None:
             continue
 
-        subj        = enriched[slot]
-        visual_mode = entry.get("visual_mode", "images")
-        visual      = bundle.get("visual", {})
-        audio       = bundle.get("audio", {})
-
-        # 1. Image-mode files → character_sheet_images (deduplicated, appended)
-        if visual_mode == "images":
-            files = [f for f in visual.get("files", []) if f]
-            if files:
-                sheets: list = subj.setdefault("character_sheet_images", [])
-                for f in files:
-                    if f not in sheets:
-                        sheets.append(f)
-
-        # 2. Audio → voice fields
-        # extract_from_visual means the audio is a VIDEO SOUNDTRACK — it is handled
-        # at the video-entry level (video_entries_full / soundtrack_audio in the
-        # refplan) and must NOT also appear as a standalone voice.audio_reference_file,
-        # which would create a duplicate reference.  Only source="file" (a separate
-        # standalone audio asset) populates the subject's voice fields.
-        if entry.get("use_audio", False) and audio.get("source") == "file":
-            audio_file = audio.get("file", "")
-            if audio_file:
-                v = subj.setdefault("voice", {})
-                v["audio_reference_file"] = audio_file
-                v["audio_start_time"]     = audio.get("start_time", 0.0)
-                v["audio_duration"]       = audio.get("duration", 0.0)
-                v["audio_retention"]      = audio.get("retention", "timbre")
-                v["audio_role"]           = audio.get("role", "")
-                v["audio_cache"]          = audio.get("audio_cache", "")
-
-        # 3. Appearance — bundle fields override subject fields (bundle wins if non-empty).
-        bun_app = bundle.get("appearance") or {}
-        if isinstance(bun_app, str):
-            bun_app = {"summary": bun_app}
-        legacy = bundle.get("appearance_override", "").strip()
-        app = subj.setdefault("appearance", {})
-        bun_summary = bun_app.get("summary", "").strip() or legacy
-        if bun_summary:
-            app["summary"] = bun_summary
-        for _k in ("hair", "face", "body", "default_outfit"):
-            _v = bun_app.get(_k, "").strip()
-            if _v:
-                app[_k] = _v
-        if bundle.get("pronoun_style"):
-            subj["pronoun_style"] = bundle["pronoun_style"]
-        if bundle.get("short_name"):
-            subj["short_name"] = bundle["short_name"]
+        _enrich_subject_with_bundle(enriched[slot], bundle, entry)
 
     return enriched
