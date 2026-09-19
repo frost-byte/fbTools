@@ -62,3 +62,25 @@ which backs `CompositionToH3Conditioning`'s VRAM estimate / recommended
 calibration — see that module's docstring for the source numbers).
 
 ---
+
+## `utils/*.py` modules shouldn't import each other
+
+**Symptom**: a "pure" `utils/*.py` module (one designed to have no ComfyUI
+dependencies, loaded via `tests/conftest.py`'s `import_test_module()` by raw
+file path) that does `from .other_module import x` can behave inconsistently
+between the live ComfyUI server and the test harness, or simply fail to
+import, because `utils/` has no `__init__.py` — it isn't a real package, so
+relative imports within it rely on implicit namespace-package resolution
+that both loading paths handle differently.
+
+**Fix pattern**: for a pure `utils/*.py` module, don't import a sibling
+`utils/*.py` module even if the thing you need is tiny and pure. Either
+duplicate the small piece of logic locally with a comment cross-referencing
+the canonical copy (e.g. `utils/prompt_assembler.py::_slot_letter()` mirrors
+`utils/slot_letters.py::slot_letter()` this way), or promote the shared logic
+to stdlib-only code both call sites can inline. This rule applies to
+`utils/*.py` files specifically — `extension.py` and `scripts/*.py` are real
+packages/entry points and import from `utils/*.py` normally via `.utils.x`
+(extension.py) or a `sys.path` insert (standalone scripts).
+
+---

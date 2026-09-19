@@ -12,16 +12,18 @@ Schema
     "name": str,                     # human display name
     "model_type": str,               # h3_ref2va | h3_fl2va | wan22 | bernini | ...
     "style": str,                    # overall visual style
-    "subjects": {                    # slot key → subject_id reference
-        "S1": "character_a",
-        "S2": "character_b"
+    "subjects": {                    # slot key → subject_id reference; keys are
+                                      # spreadsheet-column-style letters (A, B,
+                                      # ..., Z, AA, ...) — see utils/slot_letters.py
+        "A": "character_a",
+        "B": "character_b"
     },
     "_subject_snapshots": {          # cached at save time; fallback if subject deleted
-        "S1": { ...full subject dict... },
-        "S2": { ...full subject dict... }
+        "A": { ...full subject dict... },
+        "B": { ...full subject dict... }
     },
     "outfit_overrides": {            # slot key → override string
-        "S1": "grey sweater"
+        "A": "grey sweater"
     },
     "background": "cafe_interior",   # background_id reference (or "" / null)
     "_background_snapshot": { ... }, # cached background at save time
@@ -29,10 +31,10 @@ Schema
         {
             "id": "shot_1",
             "timestamp": null | "MM:SS.mmm",
-            "camera": str,
-            "action": str,
+            "camera": str,           # may reference subjects via {A}/{B}/... placeholders
+            "action": str,           # may reference subjects via {A}/{B}/... placeholders
             "dialogue": {
-                "speaker": "S1",
+                "speaker": "A",
                 "language": "English",
                 "text": str
             } | null,

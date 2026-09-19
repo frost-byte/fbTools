@@ -19486,9 +19486,10 @@ class PromptCompositionLoader(io.ComfyNode):
         # a different random pick than what landed in the assembled prompt, but
         # durations are close enough for trim purposes since Libber values for
         # the same key are authored in similar length ranges.
+        # Composition subject-slot keys are already letters (A, B, ...), so the
+        # dialogue speaker key IS the slot_trim_to key directly — no mapping needed.
         slot_trim_to: dict[str, float] = {}
-        sk_list = list(composition.get("subjects", {}).keys())
-        sk_to_letter = {sk: chr(ord("A") + i) for i, sk in enumerate(sk_list)}
+        _comp_subjects = composition.get("subjects", {})
         _cs = _read_composition_settings()
         _libbers_l = composition.get("libbers", [])
         _delim = _cs.get("libber_delimiter", "%")
@@ -19503,8 +19504,8 @@ class PromptCompositionLoader(io.ComfyNode):
             )
             _cps = _PACE_CHARS_PER_SEC.get(_dlg.get("speech_pace") or "normal", 13.0)
             _dur = _estimate_speech_duration(_resolved, _cps)
-            _letter = sk_to_letter.get(_dlg.get("speaker", ""))
-            if _letter:
+            _letter = _dlg.get("speaker", "")
+            if _letter and _letter in _comp_subjects:
                 slot_trim_to[_letter] = slot_trim_to.get(_letter, 0.0) + _dur
 
         # Build FBTOOLS_H3_REFPLAN from enriched subjects + full video descriptors

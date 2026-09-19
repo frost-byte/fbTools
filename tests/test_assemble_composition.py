@@ -1,7 +1,10 @@
 """Tests for assemble_composition() and the composition adapter layer.
 
-These exercise the S1/S2→A/B slot remapping, composition-shot→template conversion,
-dialogue positional mapping, background integration, and all 8 model types.
+These exercise composition-shot->template conversion, dialogue positional
+mapping, background integration, and all 8 model types. Composition subject
+slots are keyed directly by letters (A, B, C, ...) — no S1/S2 translation
+layer exists anymore (see utils/slot_letters.py and the Composition
+notation-migration plan).
 """
 
 import pytest
@@ -56,7 +59,7 @@ def _bg(name="Café", description="A warm sunlit café", lighting="soft window l
 def _shot(action="Characters talk.", camera="Medium shot.", dialogue_text=None, sound=None, sid=None):
     d = None
     if dialogue_text:
-        d = {"speaker": sid or "S1", "language": "en-us", "text": dialogue_text}
+        d = {"speaker": sid or "A", "language": "en-us", "text": dialogue_text}
     return {
         "id": None,  # assigned by test or left for adapter
         "timestamp": None,
@@ -95,22 +98,22 @@ def _comp(
     }
 
 
-# ── Slot remapping ─────────────────────────────────────────────────────────────
+# ── Slot handling ──────────────────────────────────────────────────────────────
 
-def test_s1_maps_to_slot_a():
+def test_first_subject_appears_in_prompt():
     alice = _subject("Alice", summary="tall woman")
-    comp = _comp(subjects={"S1": "alice_id"})
-    resolved = {"S1": alice}
+    comp = _comp(subjects={"A": "alice_id"})
+    resolved = {"A": alice}
     result = assemble_composition(comp, resolved, None, "h3_ref2va")
     # H3 ref2va uses <Subject N> labels; the appearance summary (not the name) appears
     assert "tall woman" in result["prompt"]
 
 
-def test_two_subjects_remapped_in_order():
+def test_two_subjects_both_appear():
     alice = _subject("Alice", summary="tall woman")
     bob = _subject("Bob", summary="short man")
-    comp = _comp(subjects={"S1": "alice_id", "S2": "bob_id"})
-    resolved = {"S1": alice, "S2": bob}
+    comp = _comp(subjects={"A": "alice_id", "B": "bob_id"})
+    resolved = {"A": alice, "B": bob}
     result = assemble_composition(comp, resolved, None, "h3_ref2va")
     prompt = result["prompt"]
     # H3 ref2va uses <Subject N> labels; appearance summaries appear, not names
@@ -118,30 +121,30 @@ def test_two_subjects_remapped_in_order():
     assert "short man" in prompt
 
 
-def test_subject_1_label_for_s1_in_h3_ref2va():
+def test_subject_1_label_for_first_slot_in_h3_ref2va():
     alice = _subject("Alice")
-    comp = _comp(subjects={"S1": "alice_id"})
-    result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "alice_id"})
+    result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     # h3_ref2va assigns <Subject 1> to first slot
     assert "<Subject 1>" in result["prompt"]
 
 
-def test_subject_2_label_for_s2_in_h3_ref2va():
+def test_subject_2_label_for_second_slot_in_h3_ref2va():
     alice = _subject("Alice")
     bob = _subject("Bob")
-    comp = _comp(subjects={"S1": "alice_id", "S2": "bob_id"})
-    result = assemble_composition(comp, {"S1": alice, "S2": bob}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "alice_id", "B": "bob_id"})
+    result = assemble_composition(comp, {"A": alice, "B": bob}, None, "h3_ref2va")
     assert "<Subject 1>" in result["prompt"]
     assert "<Subject 2>" in result["prompt"]
 
 
-def test_outfit_override_remapped_with_slot():
+def test_outfit_override_applied_to_slot():
     alice = _subject("Alice", summary="tall woman")
     comp = _comp(
-        subjects={"S1": "alice_id"},
-        outfit_overrides={"S1": "red dress"},
+        subjects={"A": "alice_id"},
+        outfit_overrides={"A": "red dress"},
     )
-    result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
+    result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     assert "red dress" in result["prompt"]
 
 
@@ -149,39 +152,39 @@ def test_outfit_override_for_second_slot():
     alice = _subject("Alice")
     bob = _subject("Bob")
     comp = _comp(
-        subjects={"S1": "a", "S2": "b"},
-        outfit_overrides={"S2": "blue jacket"},
+        subjects={"A": "a", "B": "b"},
+        outfit_overrides={"B": "blue jacket"},
     )
-    result = assemble_composition(comp, {"S1": alice, "S2": bob}, None, "wan22")
+    result = assemble_composition(comp, {"A": alice, "B": bob}, None, "wan22")
     assert "blue jacket" in result["prompt"]
 
 
-# ── {S1}/{S2} placeholder replacement in action/camera ────────────────────────
+# ── {A}/{B} placeholders in action/camera ──────────────────────────────────────
 
-def test_s1_placeholder_in_action_replaced():
+def test_a_placeholder_in_action_resolved():
     alice = _subject("Alice")
-    shots = [_shot(action="{S1} walks forward.", camera="Wide shot.")]
-    comp = _comp(subjects={"S1": "a"}, shots=shots)
-    result = assemble_composition(comp, {"S1": alice}, None, "wan22")
-    # {S1} should have been translated to {A} → then replaced with Alice's name/ref
-    assert "{S1}" not in result["prompt"]
+    shots = [_shot(action="{A} walks forward.", camera="Wide shot.")]
+    comp = _comp(subjects={"A": "a"}, shots=shots)
+    result = assemble_composition(comp, {"A": alice}, None, "wan22")
+    # {A} is resolved to Alice's name/ref by assemble_prompt's own substitution
+    assert "{A}" not in result["prompt"]
     assert "Alice" in result["prompt"] or "walks forward" in result["prompt"]
 
 
-def test_s2_placeholder_in_camera_replaced():
+def test_b_placeholder_in_camera_resolved():
     alice = _subject("Alice")
     bob = _subject("Bob")
-    shots = [_shot(action="Scene.", camera="Close-up of {S2}.")]
-    comp = _comp(subjects={"S1": "a", "S2": "b"}, shots=shots)
-    result = assemble_composition(comp, {"S1": alice, "S2": bob}, None, "h3_fl2va")
-    assert "{S2}" not in result["prompt"]
+    shots = [_shot(action="Scene.", camera="Close-up of {B}.")]
+    comp = _comp(subjects={"A": "a", "B": "b"}, shots=shots)
+    result = assemble_composition(comp, {"A": alice, "B": bob}, None, "h3_fl2va")
+    assert "{B}" not in result["prompt"]
 
 
 def test_placeholder_not_in_raw_text_when_no_subjects():
-    shots = [_shot(action="{S1} stands there.")]
+    shots = [_shot(action="{A} stands there.")]
     comp = _comp(subjects={}, shots=shots)
     result = assemble_composition(comp, {}, None, "wan22")
-    # No subjects mapped; {S1} becomes {A} (unresolvable) but should not crash
+    # No subjects mapped; {A} is unresolvable but should not crash
     assert result["prompt"]  # just check no exception
 
 
@@ -190,8 +193,8 @@ def test_placeholder_not_in_raw_text_when_no_subjects():
 def test_first_shot_dialogue_maps_to_shot_1():
     alice = _subject("Alice", audio="a.wav")
     shots = [_shot(action="Alice speaks.", dialogue_text="Hello world.")]
-    comp = _comp(subjects={"S1": "a"}, shots=shots)
-    result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a"}, shots=shots)
+    result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     assert "Hello world." in result["prompt"]
 
 
@@ -199,11 +202,11 @@ def test_second_shot_dialogue_maps_positionally():
     alice = _subject("Alice", audio="a.wav")
     bob = _subject("Bob", audio="b.wav")
     shots = [
-        _shot(action="{S1} speaks.", dialogue_text="Good morning.", sid="S1"),
-        _shot(action="{S2} replies.", dialogue_text="Morning!", sid="S2"),
+        _shot(action="{A} speaks.", dialogue_text="Good morning.", sid="A"),
+        _shot(action="{B} replies.", dialogue_text="Morning!", sid="B"),
     ]
-    comp = _comp(subjects={"S1": "a", "S2": "b"}, shots=shots)
-    result = assemble_composition(comp, {"S1": alice, "S2": bob}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a", "B": "b"}, shots=shots)
+    result = assemble_composition(comp, {"A": alice, "B": bob}, None, "h3_ref2va")
     prompt = result["prompt"]
     assert "Good morning." in prompt
     assert "Morning!" in prompt
@@ -215,8 +218,8 @@ def test_shot_without_dialogue_does_not_advance_counter():
         _shot(action="Silent moment."),  # no dialogue
         _shot(action="Alice speaks.", dialogue_text="Hi there."),
     ]
-    comp = _comp(subjects={"S1": "a"}, shots=shots)
-    result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a"}, shots=shots)
+    result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     # Second shot's dialogue is the first (and only) dialogue → shot_1 in map
     assert "Hi there." in result["prompt"]
 
@@ -225,9 +228,9 @@ def test_dialogue_tags_use_subject_language():
     alice = _subject("Alice", audio="a.wav", language="ja-jp")
     shots = [_shot(action="Alice speaks.", dialogue_text="こんにちは。")]
     # use_dialogue_tags must be True for <d>[lang] text</d> wrapping to apply
-    comp = _comp(subjects={"S1": "a"}, shots=shots)
+    comp = _comp(subjects={"A": "a"}, shots=shots)
     comp["use_dialogue_tags"] = True
-    result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
+    result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     assert "<d>[ja-jp] こんにちは。</d>" in result["prompt"]
 
 
@@ -236,24 +239,24 @@ def test_dialogue_tags_use_subject_language():
 def test_background_description_in_environment():
     alice = _subject("Alice")
     bg = _bg(description="A foggy forest clearing")
-    comp = _comp(subjects={"S1": "a"})
-    result = assemble_composition(comp, {"S1": alice}, bg, "h3_ref2va")
+    comp = _comp(subjects={"A": "a"})
+    result = assemble_composition(comp, {"A": alice}, bg, "h3_ref2va")
     assert "foggy forest" in result["prompt"]
 
 
 def test_background_soundscape_used_when_composition_soundscape_empty():
     alice = _subject("Alice")
     bg = _bg(soundscape="Wind through trees.")
-    comp = _comp(subjects={"S1": "a"}, soundscape="")
-    result = assemble_composition(comp, {"S1": alice}, bg, "h3_ref2va")
+    comp = _comp(subjects={"A": "a"}, soundscape="")
+    result = assemble_composition(comp, {"A": alice}, bg, "h3_ref2va")
     assert "Wind through trees." in result["prompt"]
 
 
 def test_composition_soundscape_overrides_background():
     alice = _subject("Alice")
     bg = _bg(soundscape="Wind through trees.")
-    comp = _comp(subjects={"S1": "a"}, soundscape="Busy city street.")
-    result = assemble_composition(comp, {"S1": alice}, bg, "h3_ref2va")
+    comp = _comp(subjects={"A": "a"}, soundscape="Busy city street.")
+    result = assemble_composition(comp, {"A": alice}, bg, "h3_ref2va")
     assert "Busy city street." in result["prompt"]
     # Background soundscape should NOT appear since comp has its own
     assert "Wind through trees." not in result["prompt"]
@@ -261,8 +264,8 @@ def test_composition_soundscape_overrides_background():
 
 def test_none_background_does_not_crash():
     alice = _subject("Alice")
-    comp = _comp(subjects={"S1": "a"})
-    result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a"})
+    result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     assert result["prompt"]
 
 
@@ -270,8 +273,8 @@ def test_none_background_does_not_crash():
 
 def test_style_appears_in_prompt():
     alice = _subject("Alice")
-    comp = _comp(subjects={"S1": "a"}, style="noir black and white")
-    result = assemble_composition(comp, {"S1": alice}, None, "wan22")
+    comp = _comp(subjects={"A": "a"}, style="noir black and white")
+    result = assemble_composition(comp, {"A": alice}, None, "wan22")
     assert "noir black and white" in result["prompt"]
 
 
@@ -280,16 +283,16 @@ def test_style_appears_in_prompt():
 def test_concept_ids_extracted_from_resolved_subjects():
     alice = _subject("Alice", concept_id="char_alice")
     bob = _subject("Bob", concept_id="char_bob")
-    comp = _comp(subjects={"S1": "a", "S2": "b"})
-    result = assemble_composition(comp, {"S1": alice, "S2": bob}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a", "B": "b"})
+    result = assemble_composition(comp, {"A": alice, "B": bob}, None, "h3_ref2va")
     assert "char_alice" in result["concept_ids"]
     assert "char_bob" in result["concept_ids"]
 
 
 def test_concept_ids_empty_when_no_concepts():
     alice = _subject("Alice")
-    comp = _comp(subjects={"S1": "a"})
-    result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a"})
+    result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     assert result["concept_ids"] == []
 
 
@@ -300,32 +303,32 @@ def test_all_model_types_produce_output(model_type):
     alice = _subject("Alice", summary="tall woman with red hair", sheets=["a.png"], audio="a.wav")
     bob = _subject("Bob", summary="short man")
     shots = [
-        _shot(action="{S1} greets {S2}.", dialogue_text="Hello.", camera="Two-shot."),
-        _shot(action="{S2} nods.", dialogue_text="Hi.", camera="Close-up of {S2}."),
+        _shot(action="{A} greets {B}.", dialogue_text="Hello.", camera="Two-shot."),
+        _shot(action="{B} nods.", dialogue_text="Hi.", camera="Close-up of {B}."),
     ]
     bg = _bg()
     comp = _comp(
-        subjects={"S1": "a", "S2": "b"},
+        subjects={"A": "a", "B": "b"},
         shots=shots,
         style="cinematic",
         soundscape="café ambience",
         music="soft jazz",
     )
-    result = assemble_composition(comp, {"S1": alice, "S2": bob}, bg, model_type)
+    result = assemble_composition(comp, {"A": alice, "B": bob}, bg, model_type)
     assert result["prompt"], f"Empty prompt for model_type={model_type}"
     assert isinstance(result["concept_ids"], list)
     assert isinstance(result["assembly_report"], str)
 
 
 @pytest.mark.parametrize("model_type", MODEL_TYPES)
-def test_all_model_types_no_s_placeholders_in_output(model_type):
-    """Slot placeholders {S1} must not leak into the assembled prompt."""
+def test_all_model_types_no_slot_placeholders_in_output(model_type):
+    """Slot placeholders {A}/{B} must not leak into the assembled prompt."""
     alice = _subject("Alice")
-    shots = [_shot(action="{S1} walks.", camera="Wide.")]
-    comp = _comp(subjects={"S1": "a"}, shots=shots)
-    result = assemble_composition(comp, {"S1": alice}, None, model_type)
-    assert "{S1}" not in result["prompt"], f"{{S1}} leaked for model_type={model_type}"
-    assert "{S2}" not in result["prompt"]
+    shots = [_shot(action="{A} walks.", camera="Wide.")]
+    comp = _comp(subjects={"A": "a"}, shots=shots)
+    result = assemble_composition(comp, {"A": alice}, None, model_type)
+    assert "{A}" not in result["prompt"], f"{{A}} leaked for model_type={model_type}"
+    assert "{B}" not in result["prompt"]
 
 
 # ── Edge cases ────────────────────────────────────────────────────────────────
@@ -339,8 +342,8 @@ def test_empty_subjects_does_not_crash():
 
 def test_empty_shots_does_not_crash():
     alice = _subject("Alice")
-    comp = _comp(subjects={"S1": "a"}, shots=[])
-    result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a"}, shots=[])
+    result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     assert result["prompt"]
 
 
@@ -348,9 +351,9 @@ def test_three_subjects_slot_mapping():
     alice = _subject("Alice")
     bob = _subject("Bob")
     carol = _subject("Carol")
-    comp = _comp(subjects={"S1": "a", "S2": "b", "S3": "c"})
+    comp = _comp(subjects={"A": "a", "B": "b", "C": "c"})
     result = assemble_composition(
-        comp, {"S1": alice, "S2": bob, "S3": carol}, None, "h3_ref2va"
+        comp, {"A": alice, "B": bob, "C": carol}, None, "h3_ref2va"
     )
     # All three subjects should appear in subject_definitions
     assert "<Subject 1>" in result["prompt"]
@@ -361,10 +364,10 @@ def test_three_subjects_slot_mapping():
 def test_reference_image_order_follows_slot_order():
     alice = _subject("Alice", sheets=["a1.png", "a2.png"])
     bob = _subject("Bob", sheets=["b1.png"])
-    comp = _comp(subjects={"S1": "a", "S2": "b"})
-    result = assemble_composition(comp, {"S1": alice, "S2": bob}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a", "B": "b"})
+    result = assemble_composition(comp, {"A": alice, "B": bob}, None, "h3_ref2va")
     order = result["reference_image_order"]
-    # Slot A (S1=Alice) first, then Slot B (S2=Bob)
+    # Slot A (Alice) first, then Slot B (Bob)
     assert order[0][1] == "a1.png"
     assert order[1][1] == "a2.png"
     assert order[2][1] == "b1.png"
@@ -373,14 +376,14 @@ def test_reference_image_order_follows_slot_order():
 def test_audio_slots_from_composition():
     alice = _subject("Alice", audio="alice.wav")
     bob = _subject("Bob")  # no audio
-    comp = _comp(subjects={"S1": "a", "S2": "b"})
-    result = assemble_composition(comp, {"S1": alice, "S2": bob}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a", "B": "b"})
+    result = assemble_composition(comp, {"A": alice, "B": bob}, None, "h3_ref2va")
     # Only Alice (A) has audio
     assert result["audio_slots"] == ["A"]
 
 
 def test_music_field_passed_through():
     alice = _subject("Alice")
-    comp = _comp(subjects={"S1": "a"}, music="Epic orchestral score.")
-    result = assemble_composition(comp, {"S1": alice}, None, "h3_ref2va")
+    comp = _comp(subjects={"A": "a"}, music="Epic orchestral score.")
+    result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     assert "Epic orchestral score." in result["prompt"]

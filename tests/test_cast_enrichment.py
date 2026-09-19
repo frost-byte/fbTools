@@ -73,86 +73,86 @@ def _bundle(
 
 def test_image_files_appended_to_sheets():
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1", visual_mode="images")])
     reg  = _BundleRegistry({"b1": _bundle(files=["a1.png", "a2.png"])})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["character_sheet_images"] == ["a1.png", "a2.png"]
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == ["a1.png", "a2.png"]
 
 
 def test_image_files_appended_to_existing_sheets():
     subj = _subject("Alice", sheets=["profile.png"])
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1", visual_mode="images")])
     reg  = _BundleRegistry({"b1": _bundle(files=["ref.png"])})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["character_sheet_images"] == ["profile.png", "ref.png"]
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == ["profile.png", "ref.png"]
 
 
 def test_image_files_deduplicated():
     subj = _subject("Alice", sheets=["same.png"])
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1", visual_mode="images")])
     reg  = _BundleRegistry({"b1": _bundle(files=["same.png", "other.png"])})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["character_sheet_images"] == ["same.png", "other.png"]
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == ["same.png", "other.png"]
 
 
 def test_video_mode_entry_does_not_add_sheets():
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1", visual_mode="video")])
     reg  = _BundleRegistry({"b1": _bundle(video_file="alice.mp4")})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["character_sheet_images"] == []
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == []
 
 
 # ── Audio → voice.audio_reference_file ────────────────────────────────────────
 
 def test_audio_file_source_sets_reference():
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1", use_audio=True)])
     reg  = _BundleRegistry({"b1": _bundle(audio_source="file", audio_file="alice.wav")})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["voice"]["audio_reference_file"] == "alice.wav"
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["voice"]["audio_reference_file"] == "alice.wav"
 
 
 def test_audio_extract_from_visual_does_not_set_voice_file():
     # extract_from_visual is a VIDEO SOUNDTRACK — handled at video-entry level in
     # the refplan; must NOT also appear as a standalone voice.audio_reference_file.
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1", visual_mode="video", use_audio=True)])
     reg  = _BundleRegistry({"b1": _bundle(
         video_file="alice_clip.mp4",
         audio_source="extract_from_visual",
     )})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["voice"]["audio_reference_file"] == ""
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["voice"]["audio_reference_file"] == ""
 
 
 def test_use_audio_false_does_not_set_reference():
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1", use_audio=False)])
     reg  = _BundleRegistry({"b1": _bundle(audio_source="file", audio_file="alice.wav")})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["voice"]["audio_reference_file"] == ""
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["voice"]["audio_reference_file"] == ""
 
 
 def test_audio_source_none_does_not_set_reference():
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1", use_audio=True)])
     reg  = _BundleRegistry({"b1": _bundle(audio_source="none")})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["voice"]["audio_reference_file"] == ""
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["voice"]["audio_reference_file"] == ""
 
 
 def test_audio_file_source_carries_timing_and_role():
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1", use_audio=True)])
     reg  = _BundleRegistry({"b1": _bundle(
         audio_source="file",
@@ -165,8 +165,8 @@ def test_audio_file_source_carries_timing_and_role():
     bundle["audio"]["duration"]   = 8.0
     bundle["audio"]["retention"]  = "reuse"
     bundle["audio"]["role"]       = "dialogue track"
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    v = result["S1"]["voice"]
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    v = result["A"]["voice"]
     assert v["audio_reference_file"] == "alice.wav"
     assert v["audio_start_time"]     == 2.5
     assert v["audio_duration"]       == 8.0
@@ -178,20 +178,20 @@ def test_audio_file_source_carries_timing_and_role():
 
 def test_appearance_override_replaces_summary():
     subj = _subject("Alice", summary="a tall woman")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1")])
     reg  = _BundleRegistry({"b1": _bundle(appearance_override="the girl from this clip")})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["appearance"]["summary"] == "the girl from this clip"
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["appearance"]["summary"] == "the girl from this clip"
 
 
 def test_empty_appearance_override_leaves_summary_intact():
     subj = _subject("Alice", summary="a tall woman")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1")])
     reg  = _BundleRegistry({"b1": _bundle(appearance_override="")})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["appearance"]["summary"] == "a tall woman"
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["appearance"]["summary"] == "a tall woman"
 
 
 # ── Safety and edge cases ──────────────────────────────────────────────────────
@@ -199,34 +199,34 @@ def test_empty_appearance_override_leaves_summary_intact():
 def test_originals_not_mutated():
     subj = _subject("Alice")
     original_sheets = subj["character_sheet_images"]
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "b1")])
     reg  = _BundleRegistry({"b1": _bundle(files=["new.png"])})
-    apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
+    apply_cast_to_subjects({"A": subj}, comp, cast, reg)
     assert original_sheets == []  # original subject unchanged
 
 
 def test_missing_bundle_skipped_gracefully():
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("alice", "no_such_bundle")])
     reg  = _BundleRegistry({})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["character_sheet_images"] == []
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == []
 
 
 def test_entry_with_unmatched_subject_id_is_ignored():
     # Cast entries bind by subject identity, not array position/order — an
-    # entry for "bob" against a composition that only has "alice" in S1 has
+    # entry for "bob" against a composition that only has "alice" in A has
     # nothing to bind to and must be a no-op. This is the fix for the bug
     # where positional matching applied a mismatched entry to whatever slot
     # happened to sort into that array index, regardless of who was there.
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_entry("bob", "b1")])
     reg  = _BundleRegistry({"b1": _bundle(files=["bob.png"])})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, reg)
-    assert result["S1"]["character_sheet_images"] == []
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == []
 
 
 def test_blank_entry_is_passthrough():
@@ -235,19 +235,19 @@ def test_blank_entry_is_passthrough():
     # blank entry's position in the array.
     alice = _subject("Alice")
     joe   = _subject("Joe")
-    comp  = _composition({"S1": "alice", "S2": "joe"})
+    comp  = _composition({"A": "alice", "B": "joe"})
     cast  = _cast([
         {"subject_id": "", "bundle_id": "", "visual_mode": "images", "use_audio": False},
         _entry("joe", "b2", visual_mode="images"),
     ])
     breg  = _BundleRegistry({"b2": _bundle(files=["joe_ref.png"])})
-    result = apply_cast_to_subjects({"S1": alice, "S2": joe}, comp, cast, breg)
-    # S1 untouched (blank row)
-    assert result["S1"]["name"] == "Alice"
-    assert result["S1"]["character_sheet_images"] == []
-    # S2 enriched — matched by subject_id "joe", not by array position
-    assert result["S2"]["name"] == "Joe"
-    assert result["S2"]["character_sheet_images"] == ["joe_ref.png"]
+    result = apply_cast_to_subjects({"A": alice, "B": joe}, comp, cast, breg)
+    # A untouched (blank row)
+    assert result["A"]["name"] == "Alice"
+    assert result["A"]["character_sheet_images"] == []
+    # B enriched — matched by subject_id "joe", not by array position
+    assert result["B"]["name"] == "Joe"
+    assert result["B"]["character_sheet_images"] == ["joe_ref.png"]
 
 
 def test_matching_is_order_independent():
@@ -255,18 +255,18 @@ def test_matching_is_order_independent():
     # slot, since matching is by subject_id, not by sorted-slot-index.
     alice = _subject("Alice")
     bob   = _subject("Bob")
-    comp  = _composition({"S1": "alice", "S2": "bob"})
+    comp  = _composition({"A": "alice", "B": "bob"})
     cast  = _cast([
-        _entry("bob",   "bj", visual_mode="images"),   # listed first, targets S2
-        _entry("alice", "ba", visual_mode="images"),   # listed second, targets S1
+        _entry("bob",   "bj", visual_mode="images"),   # listed first, targets B
+        _entry("alice", "ba", visual_mode="images"),   # listed second, targets A
     ])
     breg = _BundleRegistry({
         "ba": _bundle(files=["a.png"]),
         "bj": _bundle(files=["j.png"]),
     })
-    result = apply_cast_to_subjects({"S1": alice, "S2": bob}, comp, cast, breg)
-    assert result["S1"]["character_sheet_images"] == ["a.png"]
-    assert result["S2"]["character_sheet_images"] == ["j.png"]
+    result = apply_cast_to_subjects({"A": alice, "B": bob}, comp, cast, breg)
+    assert result["A"]["character_sheet_images"] == ["a.png"]
+    assert result["B"]["character_sheet_images"] == ["j.png"]
 
 
 # ── Hybrid entries (bundle replacing a subject that also has a source video) ───
@@ -292,13 +292,13 @@ def test_hybrid_entry_keeps_bundle_appearance_and_images():
     # bundle correctly) — refplan and prompt text ended up describing
     # different subjects for the same entry. Confirm the bundle's own data
     # now survives onto its minted slot.
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_hybrid_entry("alice", "b1", role_description="a woman in the video")])
     breg = _BundleRegistry({"b1": _bundle(files=["bundle_ref.png"], appearance_override="a redheaded woman")})
-    result = apply_cast_to_subjects({"S1": _subject("Alice")}, comp, cast, breg)
-    assert "S1_bundle" in result
-    assert result["S1_bundle"]["character_sheet_images"] == ["bundle_ref.png"]
-    assert result["S1_bundle"]["appearance"]["summary"] == "a redheaded woman"
+    result = apply_cast_to_subjects({"A": _subject("Alice")}, comp, cast, breg)
+    assert "A_bundle" in result
+    assert result["A_bundle"]["character_sheet_images"] == ["bundle_ref.png"]
+    assert result["A_bundle"]["appearance"]["summary"] == "a redheaded woman"
 
 
 def test_hybrid_entry_pairs_donor_and_replacement_retention_markers():
@@ -308,41 +308,41 @@ def test_hybrid_entry_pairs_donor_and_replacement_retention_markers():
     # SourceProfileClipPrompt's SOURCE_SLOTS/BUNDLE_SLOTS pairing so the
     # retention_marker-gated prompt_assembler features fire for compositions
     # the same way they do for Source Profile clips.
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([_hybrid_entry("alice", "b1")])
     breg = _BundleRegistry({"b1": _bundle(files=["ref.png"])})
-    result = apply_cast_to_subjects({"S1": _subject("Alice")}, comp, cast, breg)
-    assert result["S1"]["_cast_retention"] == "replaced"
-    assert result["S1"]["_transfer_to_slot"] == "S1_bundle"
-    assert result["S1_bundle"]["_cast_retention"] == "attribute_transfer"
-    assert result["S1_bundle"]["_transfer_to_slot"] == "S1"
+    result = apply_cast_to_subjects({"A": _subject("Alice")}, comp, cast, breg)
+    assert result["A"]["_cast_retention"] == "replaced"
+    assert result["A"]["_transfer_to_slot"] == "A_bundle"
+    assert result["A_bundle"]["_cast_retention"] == "attribute_transfer"
+    assert result["A_bundle"]["_transfer_to_slot"] == "A"
 
 
 def test_source_derived_entry_without_bundle_has_no_transfer_slot():
     # A pure source-derived entry (no bundle_id) has nothing to pair with —
     # it should carry the entry's own retention value and no transfer slot.
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([{
         "subject_id": "alice", "bundle_id": "", "source_profile_id": "sp1",
         "source_subject_id": "src1", "role_description": "a woman",
         "retention": "fully_preserved", "visual_mode": "images", "use_audio": False,
     }])
-    result = apply_cast_to_subjects({"S1": _subject("Alice")}, comp, cast, _BundleRegistry({}))
-    assert result["S1"]["_cast_retention"] == "fully_preserved"
-    assert "_transfer_to_slot" not in result["S1"]
-    assert "S1_bundle" not in result
+    result = apply_cast_to_subjects({"A": _subject("Alice")}, comp, cast, _BundleRegistry({}))
+    assert result["A"]["_cast_retention"] == "fully_preserved"
+    assert "_transfer_to_slot" not in result["A"]
+    assert "A_bundle" not in result
 
 
 def test_extra_cast_entries_beyond_slot_count_ignored():
     subj = _subject("Alice")
-    comp = _composition({"S1": "alice"})
+    comp = _composition({"A": "alice"})
     cast = _cast([
         _entry("angie", "ba"),
-        _entry("joe",   "bj"),  # position 1 — no S2 exists
+        _entry("joe",   "bj"),  # position 1 — no B exists
     ])
     breg = _BundleRegistry({"ba": _bundle(files=["a.png"]), "bj": _bundle(files=["j.png"])})
-    result = apply_cast_to_subjects({"S1": subj}, comp, cast, breg)
-    assert "S2" not in result
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, breg)
+    assert "B" not in result
 
 
 def test_resolve_subjects_injects_subject_id_from_live_registry():
@@ -350,37 +350,37 @@ def test_resolve_subjects_injects_subject_id_from_live_registry():
     class _Reg:
         def get_subject(self, sid):
             return {"name": sid, "appearance": {"summary": "summary"}, "character_sheet_images": []}
-    comp = {"subjects": {"S1": "alice", "S2": "bob"}, "_subject_snapshots": {}}
+    comp = {"subjects": {"A": "alice", "B": "bob"}, "_subject_snapshots": {}}
     result = resolve_subjects(comp, _Reg())
-    assert result["S1"]["subject_id"] == "alice"
-    assert result["S2"]["subject_id"] == "bob"
+    assert result["A"]["subject_id"] == "alice"
+    assert result["B"]["subject_id"] == "bob"
 
 
 def test_resolve_subjects_injects_subject_id_from_snapshot():
     """Snapshot path must also carry subject_id for video matching."""
     comp = {
-        "subjects": {"S1": "alice"},
-        "_subject_snapshots": {"S1": {"name": "alice", "appearance": {"summary": "s"}}},
+        "subjects": {"A": "alice"},
+        "_subject_snapshots": {"A": {"name": "alice", "appearance": {"summary": "s"}}},
     }
     result = resolve_subjects(comp, subject_registry=None)
-    assert result["S1"]["subject_id"] == "alice"
+    assert result["A"]["subject_id"] == "alice"
 
 
 def test_resolve_subjects_preserves_existing_subject_id_in_snapshot():
     """If snapshot already has subject_id (from SubjectProfileLoad), don't overwrite it."""
     comp = {
-        "subjects": {"S1": "alice"},
-        "_subject_snapshots": {"S1": {"name": "alice", "subject_id": "alice_v2",
+        "subjects": {"A": "alice"},
+        "_subject_snapshots": {"A": {"name": "alice", "subject_id": "alice_v2",
                                       "appearance": {"summary": "s"}}},
     }
     result = resolve_subjects(comp, subject_registry=None)
-    assert result["S1"]["subject_id"] == "alice_v2"
+    assert result["A"]["subject_id"] == "alice_v2"
 
 
 def test_multiple_subjects_each_enriched_independently():
     alice = _subject("Alice")
     bob   = _subject("Bob")
-    comp  = _composition({"S1": "alice", "S2": "bob"})
+    comp  = _composition({"A": "alice", "B": "bob"})
     cast  = _cast([
         _entry("alice", "ba", visual_mode="images", use_audio=True),
         _entry("bob",   "bb", visual_mode="images"),
@@ -389,10 +389,10 @@ def test_multiple_subjects_each_enriched_independently():
         "ba": _bundle(files=["a.png"], audio_source="file", audio_file="a.wav"),
         "bb": _bundle(files=["b.png"], appearance_override="the big guy"),
     })
-    result = apply_cast_to_subjects({"S1": alice, "S2": bob}, comp, cast, reg)
-    assert result["S1"]["character_sheet_images"] == ["a.png"]
-    assert result["S1"]["voice"]["audio_reference_file"] == "a.wav"
-    assert result["S2"]["character_sheet_images"] == ["b.png"]
-    assert result["S2"]["appearance"]["summary"] == "the big guy"
+    result = apply_cast_to_subjects({"A": alice, "B": bob}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == ["a.png"]
+    assert result["A"]["voice"]["audio_reference_file"] == "a.wav"
+    assert result["B"]["character_sheet_images"] == ["b.png"]
+    assert result["B"]["appearance"]["summary"] == "the big guy"
     # Alice's appearance not touched
-    assert result["S1"]["appearance"]["summary"] == "a tall woman"
+    assert result["A"]["appearance"]["summary"] == "a tall woman"

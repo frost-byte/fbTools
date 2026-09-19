@@ -1729,6 +1729,23 @@ def assemble_prompt(
 
 # ── Prompt Composition adapter ─────────────────────────────────────────────────
 
+def _slot_letter(index: int) -> str:
+    """0-based -> 'A','B',...,'Z','AA','AB',... (bijective base-26).
+
+    Mirrors utils/slot_letters.py::slot_letter() — duplicated locally rather
+    than imported since this module has no ComfyUI dependencies and pure
+    utils/*.py modules in this repo don't import each other (utils/ has no
+    __init__.py, so intra-package relative imports there are unreliable; see
+    docs/GOTCHAS.md). Keep the two in lockstep if the algorithm ever changes.
+    """
+    n = index + 1
+    letters = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
 def assemble_composition(
     composition: dict,
     resolved_subjects: dict[str, dict],
@@ -1739,7 +1756,7 @@ def assemble_composition(
 ) -> dict:
     """Assemble a prompt from a PromptComposition dict.
 
-    Converts composition format (S1/S2 slot keys, shots list, background dict)
+    Converts composition format (A/B/... slot keys, shots list, background dict)
     into the scene_instance format expected by assemble_prompt(), then delegates.
 
     Args:
@@ -1751,9 +1768,12 @@ def assemble_composition(
 
     Returns same dict as assemble_prompt().
     """
-    # Map S1→A, S2→B, … in stable order
+    # Composition subject-slot keys are themselves already letters (A, B, ...,
+    # AA, ...) — slot_map starts as an identity map for the base roster and
+    # only does real work for synthetic keys minted below (bundle-replacement,
+    # background, outfit-reference), which still need a letter of their own.
     slot_keys = list(composition.get("subjects", {}).keys())
-    slot_map = {sk: chr(ord("A") + i) for i, sk in enumerate(slot_keys)}
+    slot_map = {sk: sk for sk in slot_keys}
     _next_letter_idx = len(slot_keys)
 
     # apply_cast_to_subjects mints an extra "<slot>_bundle" key (not part of the
@@ -1766,7 +1786,7 @@ def assemble_composition(
     # never appear in the assembled prompt.
     bundle_slot_keys = [sk for sk in resolved_subjects if sk not in slot_map]
     for bsk in bundle_slot_keys:
-        slot_map[bsk] = chr(ord("A") + _next_letter_idx)
+        slot_map[bsk] = _slot_letter(_next_letter_idx)
         _next_letter_idx += 1
 
     import copy as _copy
@@ -1778,8 +1798,8 @@ def assemble_composition(
             slot_assignments[letter] = subject
 
     # apply_cast_to_subjects stamps "_transfer_to_slot" with a composition-level
-    # slot key (e.g. "S1_bundle"), but _build_ref_map / _assemble_h3_ref2va look
-    # sibling slots up by the template letter (e.g. "B") used in slot_assignments
+    # slot key (e.g. "A_bundle"), but _build_ref_map / _assemble_h3_ref2va look
+    # sibling slots up by the template letter (e.g. "C") used in slot_assignments
     # and ref_map. Remap through slot_map here or the motion-transfer sentence and
     # donor/replacement pairing silently fail to find each other.
     for letter, subject in list(slot_assignments.items()):
@@ -1813,13 +1833,24 @@ def assemble_composition(
     # Running letter index for extra slots (background + outfit references) —
     # continues on from any bundle-replacement slots minted above.
 
+    # outfit_overrides is populated below (from composition["outfit_overrides"]),
+    # but the text-only-outfit branch a few lines down reads it too — must exist
+    # before that loop runs or a composition with a text-only outfit override
+    # raises UnboundLocalError the moment resolved_outfits is non-empty.
+    outfit_overrides: dict[str, str] = {}
+
     # Background as visual reference: inject as an additional <Subject N> slot.
-    # Uses {BG} shortcut in shot action/camera fields.
+    # Uses {BG} shortcut in shot action/camera fields. "BG" is a fixed sentinel
+    # matching that literal user-typed token — it must never be renamed to
+    # avoid a slot-letter collision (see slot_letters docs): a real subject
+    # slot could theoretically also generate to "BG" past 58 subjects, but
+    # renaming this key would instead break the {BG} shortcut for everyone,
+    # so this is an accepted, extremely-low-probability limitation instead.
     bg_letter = None
     if composition.get("background_as_reference") and resolved_background:
         ref_images = resolved_background.get("reference_images", [])
         if ref_images:
-            bg_letter = chr(ord("A") + _next_letter_idx)
+            bg_letter = _slot_letter(_next_letter_idx)
             _next_letter_idx += 1
             slot_map["BG"] = bg_letter
             bg_desc = resolved_background.get("description", "")
@@ -1861,7 +1892,7 @@ def assemble_composition(
                     outfit_overrides[letter] = outfit["description"]
                 continue
             fit_key = f"Fit_{fit_counter}"
-            fit_letter = chr(ord("A") + _next_letter_idx)
+            fit_letter = _slot_letter(_next_letter_idx)
             _next_letter_idx += 1
             slot_map[fit_key] = fit_letter
             slot_assignments[fit_letter] = {
@@ -1874,7 +1905,6 @@ def assemble_composition(
             }
             fit_counter += 1
 
-    outfit_overrides = {}
     for sk, override in composition.get("outfit_overrides", {}).items():
         letter = slot_map.get(sk)
         if letter and override:
@@ -1947,7 +1977,9 @@ def assemble_composition(
 
 
 def _remap_slots(text: str, slot_map: dict[str, str]) -> str:
-    """Replace {S1}/{S2}/… composition slot keys with {A}/{B}/… template slot letters."""
+    """Replace synthetic slot keys (Fit_1, BG, <slot>_bundle, …) with their minted
+    template letters. Base subject-slot keys are already letters and map to
+    themselves (identity), so this is a no-op for them."""
     for sk, letter in slot_map.items():
         text = text.replace(f"{{{sk}}}", f"{{{letter}}}")
     return text
@@ -1961,7 +1993,8 @@ def _composition_shots_to_template(shots: list[dict], slot_map: dict[str, str]) 
         has_dialogue = bool(dlg.get("text"))
         action = _remap_slots(shot.get("action", ""), slot_map)
         camera = _remap_slots(shot.get("camera", ""), slot_map)
-        # Map the speaker slot key (S1 → A) so the h3 assembler can look up language
+        # Map the speaker slot key through slot_map (identity for base subject
+        # slots) so the h3 assembler can look up language
         template_dlg = None
         if has_dialogue:
             speaker_sk = dlg.get("speaker", "")

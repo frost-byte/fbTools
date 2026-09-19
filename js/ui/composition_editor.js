@@ -226,15 +226,33 @@ function _newShot() {
     };
 }
 
+// Spreadsheet-column-style slot letters: A, B, ..., Z, AA, AB, ...
+// Mirrors utils/slot_letters.py::slot_letter() — keep in lockstep.
+function _slotLetterForIndex(index) {
+    let n = index + 1;
+    let letters = "";
+    while (n > 0) {
+        const rem = (n - 1) % 26;
+        letters = String.fromCharCode(65 + rem) + letters;
+        n = Math.floor((n - 1) / 26);
+    }
+    return letters;
+}
+
 function _slotKeys() {
-    return Object.keys(_S.composition?.subjects || {}).sort();
+    // Composition subject-slot keys are letters (A, B, ..., AA, ...) — plain
+    // insertion order is always correct (JS never reorders non-integer-index
+    // string keys), and is required once slots can mix single/double letters
+    // (a lexicographic sort would put "AA" before "B").
+    return Object.keys(_S.composition?.subjects || {});
 }
 
 function _nextSlotKey() {
-    const keys = _slotKeys();
-    for (let i = 1; i <= 9; i++) {
-        const k = `S${i}`;
-        if (!keys.includes(k)) return k;
+    const keys = new Set(_slotKeys());
+    const MAX_SLOTS_SAFETY_CAP = 500; // guard against runaway loops, not a real product cap
+    for (let i = 0; i < MAX_SLOTS_SAFETY_CAP; i++) {
+        const k = _slotLetterForIndex(i);
+        if (!keys.has(k)) return k;
     }
     return null;
 }
@@ -270,7 +288,7 @@ function _sectionToggle(headerEl, bodyEl) {
     });
 }
 
-// ── Slot-reference completion ({S1}, {S2} …) ──────────────────────────────────
+// ── Slot-reference completion ({A}, {B} …) ─────────────────────────────────────
 
 function _dismissCompletion() {
     if (_completionEl) { _completionEl.remove(); _completionEl = null; }
@@ -335,8 +353,8 @@ function _attachCompletion(el) {
         const last   = before.lastIndexOf("{");
         if (last === -1) { _dismissCompletion(); return; }
         const fragment = before.substring(last + 1);
-        // Only complete short, slot-key-shaped fragments: "", "S", "S1" …
-        if (fragment.length > 3 || !/^S?\d*$/.test(fragment)) { _dismissCompletion(); return; }
+        // Only complete short, slot-key-shaped fragments: "", "A", "AB" …
+        if (fragment.length > 3 || !/^[A-Za-z]{0,3}$/.test(fragment)) { _dismissCompletion(); return; }
         const matches = _slotKeys().filter(k => k.toLowerCase().startsWith(fragment.toLowerCase()));
         if (!matches.length) { _dismissCompletion(); return; }
         _showCompletion(el, matches, last);
@@ -1787,7 +1805,7 @@ async function _llmGenDialogue() {
     const shot = _S.composition.shots[_focusedShotIdx];
     if (!shot) return;
 
-    const speakerKey = shot.dialogue?.speaker || Object.keys(_S.composition.subjects || {})[0] || "S1";
+    const speakerKey = shot.dialogue?.speaker || Object.keys(_S.composition.subjects || {})[0] || "A";
     const subjectId  = _S.composition.subjects?.[speakerKey];
     const subject    = _S.subjects.find(s => s.id === subjectId);
     const speaker    = subject?.name || speakerKey;
@@ -2703,7 +2721,7 @@ function _buildSubjectSlotsSection(parent) {
         textContent: "+ Add Subject Slot",
         onclick: () => {
             const key = _nextSlotKey();
-            if (!key) return _toast("Maximum 9 subject slots", "warn");
+            if (!key) return _toast("Could not allocate a new slot", "warn");
             _S.composition.subjects[key] = "";
             _rebuildSlots();
             _markDirty();
@@ -2905,16 +2923,31 @@ function _rebuildSlots() {
     }
 }
 
+// Rewrites {OLD} -> {NEW} literal placeholder occurrences in free text using
+// an old-key -> new-key map, longest-key-first so e.g. a 10th slot's 2-char
+// key can't get partially clobbered by a shorter key's replacement running first.
+function _rewritePlaceholders(text, oldToNew) {
+    if (!text) return text;
+    const entries = [...oldToNew.entries()].sort((a, b) => b[0].length - a[0].length);
+    for (const [oldKey, newKey] of entries) {
+        text = text.split(`{${oldKey}}`).join(`{${newKey}}`);
+    }
+    return text;
+}
+
 function _renumberSlots() {
     const comp = _S.composition;
-    const oldKeys = Object.keys(comp.subjects || {}).sort();
+    // Insertion order, not .sort() — slot keys are letters (A, B, ..., AA, ...)
+    // and a lexicographic sort would misorder "AA" ahead of "B".
+    const oldKeys = Object.keys(comp.subjects || {});
+    const oldToNew = new Map(oldKeys.map((k, i) => [k, _slotLetterForIndex(i)]));
     const newSubjects = {};
     const newOutfits = {};
     const newOutfitIds = {};
     const newDescriptors = {};
     const newAppOverrides = {};
-    oldKeys.forEach((k, i) => {
-        const newKey = `S${i + 1}`;
+    oldKeys.forEach(k => {
+        const newKey = oldToNew.get(k);
         newSubjects[newKey] = comp.subjects[k];
         if (comp.outfit_overrides?.[k])     newOutfits[newKey]      = comp.outfit_overrides[k];
         if (comp.outfit_ids?.[k])           newOutfitIds[newKey]    = comp.outfit_ids[k];
@@ -2926,13 +2959,18 @@ function _renumberSlots() {
     comp.outfit_ids = newOutfitIds;
     comp.slot_descriptors = newDescriptors;
     comp.appearance_overrides = newAppOverrides;
-    // Update shot dialogue speaker keys
+    // Update shot dialogue speaker keys, and rewrite any hand-typed {OLD}
+    // placeholders in shot action/camera text so a removed early slot doesn't
+    // silently leave a stale reference pointing at a different subject now
+    // occupying that renumbered key.
     (comp.shots || []).forEach(shot => {
-        if (shot.dialogue?.speaker) {
-            const oldIdx = oldKeys.indexOf(shot.dialogue.speaker);
-            if (oldIdx >= 0) shot.dialogue.speaker = `S${oldIdx + 1}`;
+        if (shot.dialogue?.speaker && oldToNew.has(shot.dialogue.speaker)) {
+            shot.dialogue.speaker = oldToNew.get(shot.dialogue.speaker);
         }
+        shot.action = _rewritePlaceholders(shot.action, oldToNew);
+        shot.camera = _rewritePlaceholders(shot.camera, oldToNew);
     });
+    comp.scene_synopsis = _rewritePlaceholders(comp.scene_synopsis, oldToNew);
 }
 
 // Shots section
@@ -3002,7 +3040,7 @@ function _buildShotCard(shot, index) {
     ts.addEventListener("input", () => { shot.timestamp = ts.value.trim() || null; _markDirty(); });
     card.appendChild(_labeledRow("Timestamp", ts));
 
-    // Camera — {S} completion enabled
+    // Camera — {A}/{B} completion enabled
     const cam = _mk("input", {
         cls: "fbt-ce-input",
         type: "text",
@@ -3014,10 +3052,10 @@ function _buildShotCard(shot, index) {
     _attachLibberCompletion(cam);
     card.appendChild(_labeledRow("Camera", cam));
 
-    // Action — {S} completion enabled
+    // Action — {A}/{B} completion enabled
     const action = _mk("textarea", {
         cls: "fbt-ce-textarea fbt-ce-action",
-        placeholder: "Describe what happens. Type { to insert a subject reference ({S1}, {S2} …).",
+        placeholder: "Describe what happens. Type { to insert a subject reference ({A}, {B} …).",
         value: shot.action || "",
         rows: 3,
     });
@@ -3048,7 +3086,7 @@ function _buildShotCard(shot, index) {
                 id: k,
                 label: `${k} — ${_S.subjects.find(s => s.id === _S.composition.subjects[k])?.name || _S.composition.subjects[k] || k}`,
               }))
-            : [{ id: "S1", label: "S1" }];
+            : [{ id: "A", label: "A" }];
 
         const spkSel = _sel(speakerOpts, dlg?.speaker || speakerOpts[0].id);
         spkSel.className = "fbt-ce-select";
@@ -3087,7 +3125,7 @@ function _buildShotCard(shot, index) {
 
     dlgCheck.addEventListener("change", () => {
         if (dlgCheck.checked) {
-            shot.dialogue = { speaker: _slotKeys()[0] || "S1", language: "English", text: "", speech_pace: _S.settings?.default_speech_pace ?? "normal" };
+            shot.dialogue = { speaker: _slotKeys()[0] || "A", language: "English", text: "", speech_pace: _S.settings?.default_speech_pace ?? "normal" };
             buildDlgFields(shot.dialogue);
             dlgFields.style.display = "";
         } else {
@@ -3631,11 +3669,11 @@ function _buildEditor(parent) {
     }));
 
     // Synopsis — concise scene overview used as the summary body in H3 prompts.
-    // Supports {S1}/{S2}/… shorthand; expanded to <Subject N> labels at assemble time.
+    // Supports {A}/{B}/… shorthand; expanded to <Subject N> labels at assemble time.
     form.appendChild(_editorSection("Synopsis", body => {
         _dom.synopsisArea = _mk("textarea", {
             cls: "fbt-ce-textarea",
-            placeholder: "{S1} eating a cookie in the café. {S2} enters with a dog, which lunges toward the cookie.",
+            placeholder: "{A} eating a cookie in the café. {B} enters with a dog, which lunges toward the cookie.",
             rows: 3,
         });
         _dom.synopsisArea.addEventListener("input", () => {

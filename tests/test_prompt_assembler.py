@@ -1432,7 +1432,7 @@ class TestValidateH3AudioTotal:
 assemble_composition = pa.assemble_composition
 
 
-def _simple_composition(subjects_keys=("S1",), slot_descriptors=None, appearance_overrides=None):
+def _simple_composition(subjects_keys=("A",), slot_descriptors=None, appearance_overrides=None):
     comp = {
         "id": "test_comp",
         "name": "Test",
@@ -1443,7 +1443,7 @@ def _simple_composition(subjects_keys=("S1",), slot_descriptors=None, appearance
             {
                 "id": "shot_1", "timestamp": None,
                 "camera": "Close-up", "action": "{A} speaks.",
-                "dialogue": {"speaker": "S1", "text": "Hello."}, "sound_events": None,
+                "dialogue": {"speaker": "A", "text": "Hello."}, "sound_events": None,
             }
         ],
         "overall_soundscape": "", "non_diegetic_music": "N/A",
@@ -1455,7 +1455,7 @@ def _simple_composition(subjects_keys=("S1",), slot_descriptors=None, appearance
     return comp
 
 
-def _make_resolved_subjects(keys=("S1",), summary="original summary", face="original face"):
+def _make_resolved_subjects(keys=("A",), summary="original summary", face="original face"):
     return {
         k: {
             "subject_id": k.lower(),
@@ -1471,32 +1471,32 @@ def _make_resolved_subjects(keys=("S1",), summary="original summary", face="orig
 
 class TestSlotDescriptors:
     def test_slot_descriptor_overrides_summary(self):
-        comp = _simple_composition(slot_descriptors={"S1": "custom appearance description"})
+        comp = _simple_composition(slot_descriptors={"A": "custom appearance description"})
         resolved = _make_resolved_subjects()
         result = assemble_composition(comp, resolved, None, "h3_ref2va")
         assert "custom appearance description" in result["prompt"]
 
     def test_slot_descriptor_does_not_mutate_original_subject(self):
-        comp = _simple_composition(slot_descriptors={"S1": "override text"})
+        comp = _simple_composition(slot_descriptors={"A": "override text"})
         resolved = _make_resolved_subjects()
-        orig_summary = resolved["S1"]["appearance"]["summary"]
+        orig_summary = resolved["A"]["appearance"]["summary"]
         assemble_composition(comp, resolved, None, "h3_ref2va")
-        assert resolved["S1"]["appearance"]["summary"] == orig_summary
+        assert resolved["A"]["appearance"]["summary"] == orig_summary
 
     def test_empty_slot_descriptor_uses_profile_summary(self):
-        comp = _simple_composition(slot_descriptors={"S1": ""})
+        comp = _simple_composition(slot_descriptors={"A": ""})
         resolved = _make_resolved_subjects(summary="profile summary")
         result = assemble_composition(comp, resolved, None, "h3_ref2va")
         assert "profile summary" in result["prompt"]
 
     def test_whitespace_slot_descriptor_treated_as_empty(self):
-        comp = _simple_composition(slot_descriptors={"S1": "   "})
+        comp = _simple_composition(slot_descriptors={"A": "   "})
         resolved = _make_resolved_subjects(summary="profile summary")
         result = assemble_composition(comp, resolved, None, "h3_ref2va")
         assert "profile summary" in result["prompt"]
 
     def test_unknown_slot_key_ignored(self):
-        comp = _simple_composition(slot_descriptors={"S99": "should be ignored"})
+        comp = _simple_composition(slot_descriptors={"Z99": "should be ignored"})
         resolved = _make_resolved_subjects(summary="profile summary")
         result = assemble_composition(comp, resolved, None, "h3_ref2va")
         assert "profile summary" in result["prompt"]
@@ -1504,28 +1504,28 @@ class TestSlotDescriptors:
 
 class TestAppearanceOverrides:
     def test_field_override_updates_face(self):
-        comp = _simple_composition(appearance_overrides={"S1": {"face": "new face description"}})
+        comp = _simple_composition(appearance_overrides={"A": {"face": "new face description"}})
         resolved = _make_resolved_subjects(face="original face")
         result = assemble_composition(comp, resolved, None, "h3_ref2va")
         # face appears in h3 subject_definitions section
         assert "new face description" in result["prompt"]
 
     def test_field_override_does_not_mutate_original(self):
-        comp = _simple_composition(appearance_overrides={"S1": {"face": "overridden face"}})
+        comp = _simple_composition(appearance_overrides={"A": {"face": "overridden face"}})
         resolved = _make_resolved_subjects(face="original face")
         assemble_composition(comp, resolved, None, "h3_ref2va")
-        assert resolved["S1"]["appearance"]["face"] == "original face"
+        assert resolved["A"]["appearance"]["face"] == "original face"
 
     def test_empty_string_override_not_applied(self):
-        comp = _simple_composition(appearance_overrides={"S1": {"face": ""}})
+        comp = _simple_composition(appearance_overrides={"A": {"face": ""}})
         resolved = _make_resolved_subjects(face="original face")
         result = assemble_composition(comp, resolved, None, "h3_ref2va")
         assert "original face" in result["prompt"]
 
     def test_descriptor_and_field_override_both_applied(self):
         comp = _simple_composition(
-            slot_descriptors={"S1": "custom summary"},
-            appearance_overrides={"S1": {"face": "custom face"}},
+            slot_descriptors={"A": "custom summary"},
+            appearance_overrides={"A": {"face": "custom face"}},
         )
         resolved = _make_resolved_subjects(summary="original summary", face="original face")
         result = assemble_composition(comp, resolved, None, "h3_ref2va")
@@ -1547,11 +1547,12 @@ class TestAppearanceOverrides:
 # "replaced") with the replacement slot ("_cast_retention": "attribute_transfer").
 # These tests confirm assemble_composition surfaces that pairing end-to-end
 # into the assembled prompt text, exercising both the slot-letter-minting fix
-# for the new key and the "_transfer_to_slot" remap fix (apply_cast_to_subjects
-# stamps composition-level slot keys like "S1_bundle", but ref_map/
-# slot_assignments are keyed by template letters like "B" — assemble_composition
-# must translate one to the other or the donor/replacement pairing can't find
-# itself).
+# for the new "_bundle" key and the "_transfer_to_slot" remap fix
+# (apply_cast_to_subjects stamps composition-level slot keys like "A_bundle",
+# but ref_map/slot_assignments are keyed by template letters — since base
+# subject keys are already letters this is usually identity, but the bundle
+# key itself still needs a freshly-minted letter of its own, and
+# "_transfer_to_slot" must be translated to point at it).
 
 pc = import_test_module("utils/prompt_compositions.py")
 apply_cast_to_subjects = pc.apply_cast_to_subjects
@@ -1571,7 +1572,7 @@ def _hybrid_composition():
         "name": "Hybrid Test",
         "model_type": "h3_ref2va",
         "style": "",
-        "subjects": {"S1": "alice"},
+        "subjects": {"A": "alice"},
         "shots": [
             {
                 "id": "shot_1", "timestamp": None,
@@ -1586,7 +1587,7 @@ def _hybrid_composition():
 class TestHybridCastRetentionInAssembledPrompt:
     def test_motion_transfer_sentence_appears_for_bundle_replacement(self):
         comp = _hybrid_composition()
-        alice = _make_resolved_subjects(summary="a woman with long red hair")["S1"]
+        alice = _make_resolved_subjects(summary="a woman with long red hair")["A"]
         alice["subject_id"] = "alice"
         cast = {"entries": [{
             "subject_id": "alice",
@@ -1603,15 +1604,15 @@ class TestHybridCastRetentionInAssembledPrompt:
             "audio": {"source": "none", "file": ""},
             "appearance_override": "a woman with short dark hair",
         }})
-        enriched = apply_cast_to_subjects({"S1": alice}, comp, cast, breg)
+        enriched = apply_cast_to_subjects({"A": alice}, comp, cast, breg)
 
         # Sanity: apply_cast_to_subjects produced the paired donor/replacement
         # slots with the composition-level "_transfer_to_slot" values that
         # assemble_composition must remap through slot_map.
-        assert enriched["S1"]["_cast_retention"] == "replaced"
-        assert enriched["S1"]["_transfer_to_slot"] == "S1_bundle"
-        assert enriched["S1_bundle"]["_cast_retention"] == "attribute_transfer"
-        assert enriched["S1_bundle"]["_transfer_to_slot"] == "S1"
+        assert enriched["A"]["_cast_retention"] == "replaced"
+        assert enriched["A"]["_transfer_to_slot"] == "A_bundle"
+        assert enriched["A_bundle"]["_cast_retention"] == "attribute_transfer"
+        assert enriched["A_bundle"]["_transfer_to_slot"] == "A"
 
         result = assemble_composition(comp, enriched, None, "h3_ref2va")
         prompt = result["prompt"]
@@ -1629,7 +1630,7 @@ class TestHybridCastRetentionInAssembledPrompt:
         # donor's) is what actually reaches the assembled prompt text for the
         # replacement <Subject N>.
         comp = _hybrid_composition()
-        alice = _make_resolved_subjects(summary="a woman with long red hair")["S1"]
+        alice = _make_resolved_subjects(summary="a woman with long red hair")["A"]
         alice["subject_id"] = "alice"
         cast = {"entries": [{
             "subject_id": "alice",
@@ -1646,7 +1647,7 @@ class TestHybridCastRetentionInAssembledPrompt:
             "audio": {"source": "none", "file": ""},
             "appearance_override": "a woman with short dark hair",
         }})
-        enriched = apply_cast_to_subjects({"S1": alice}, comp, cast, breg)
+        enriched = apply_cast_to_subjects({"A": alice}, comp, cast, breg)
         result = assemble_composition(comp, enriched, None, "h3_ref2va")
         # Definite-article substitution turns "a woman…" into "the woman…" when a
         # picture/video reference is cited, so match on the descriptive tail only.
