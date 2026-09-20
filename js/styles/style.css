@@ -9,6 +9,7 @@
 @import "./ui/llm_panel.css";
 @import "./ui/node_inspector.css";
 @import "./ui/source_profile_editor.css";
+@import "./ui/kdenlive_archive.css";
 
 /* ── Legacy styles (pre-existing content) ─────────────────────────────────── */
 textarea.prompt-value-input {

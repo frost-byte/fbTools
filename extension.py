@@ -12,6 +12,7 @@ from typing_extensions import override
 from nodes import ImageScaleBy
 from .nodes.shared import prefixed_node_id
 from .nodes.run_tracking import RunMetaCapture, JobCompleteNotifier
+from .nodes import kdenlive_archive as _kdenlive_archive_routes  # noqa: F401  (registers /fbtools/kdenlive/* routes on import)
 from .utils.util import (
     draw_pose_json,
     draw_pose,
