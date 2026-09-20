@@ -40,6 +40,7 @@ export function setupSceneCastBuild(nodeType, _nodeData, app) {
         await Promise.all([
             node._refreshClipSelects?.(),
             node._refreshSourceSubjects?.(),
+            node._refreshCompositionSubjects?.(),
         ]);
         node._updateActionPreview?.();
     }
@@ -57,7 +58,7 @@ export function setupSceneCastBuild(nodeType, _nodeData, app) {
         _origConnChange?.call(this, type, index, connected, linkInfo);
         if (type === LiteGraph?.INPUT) {
             const inp = this.inputs?.[index];
-            if (inp?.name === "source_profile") {
+            if (inp?.name === "source_profile" || inp?.name === "prompt_composition") {
                 const node = this;
                 requestAnimationFrame(() => _refreshProfileDependentState(node));
             }
@@ -99,6 +100,11 @@ function _buildCastBuildUI(node, app) {
     let _subjects  = [];
     let _bundles   = [];
     let _connectedSPSubjects = [];
+    // Prompt Composition wired into `prompt_composition`: {id, name, roster:[{slot,id,label,
+    // entity_type,pronoun_style}]} in the composition's own subject order. A connected
+    // Source Profile takes precedence (mirrors the backend), so the composition is
+    // only "active" when no profile is connected.
+    let _connectedComposition = null;
     let _clipAllowsDialogue  = true;
     let _activeClipId        = "";
     let _multiplier          = 1;
@@ -159,6 +165,25 @@ function _buildCastBuildUI(node, app) {
         blank.textContent = "— subject —";
         if (!currentId) blank.selected = true;
         sel.appendChild(blank);
+        if (_compositionActive()) {
+            // Cast pool = the composition's own subjects, labelled with their slot letter.
+            const inRoster = new Set(_connectedComposition.roster.map(r => r.id));
+            _connectedComposition.roster.forEach(r => {
+                const o = document.createElement("option");
+                o.value = r.id;
+                o.textContent = `${r.slot} · ${r.label}`;
+                if (r.id === currentId) o.selected = true;
+                sel.appendChild(o);
+            });
+            if (currentId && !inRoster.has(currentId)) {
+                const o = document.createElement("option");
+                o.value = currentId;
+                o.textContent = `${_subjects.find(s => s.id === currentId)?.name || currentId} (not in composition)`;
+                o.selected = true;
+                sel.appendChild(o);
+            }
+            return;
+        }
         _subjects.forEach(s => {
             const o = document.createElement("option");
             o.value = s.id;
@@ -166,6 +191,30 @@ function _buildCastBuildUI(node, app) {
             if (s.id === currentId) o.selected = true;
             sel.appendChild(o);
         });
+    }
+
+    function _compositionActive() {
+        return !!_connectedComposition && !_connectedSPSubjects.length;
+    }
+
+    // Composition ordinal: "the Nth subject in the connected composition sharing this
+    // bundle's pronoun_style". Display aid only — SceneCastBuild.execute() resolves it
+    // authoritatively (utils/source_profiles.py::resolve_ordinal_from_list).
+    function _resolveCompositionOrdinal(entry) {
+        if (!_compositionActive() || entry.match_mode !== "ordinal") return null;
+        const roster = _connectedComposition.roster.map(r => ({
+            id: r.id, entity_type: r.entity_type, pronoun_style: r.pronoun_style,
+        }));
+        return _resolveOrdinalFromList(roster, _bundlePronounStyle(entry.bundle_id), entry.ordinal || 1);
+    }
+
+    function _reresolveCompositionOrdinals() {
+        let changed = false;
+        for (const e of _entries) {
+            const sid = _resolveCompositionOrdinal(e);
+            if (sid !== null && sid !== (e.subject_id || "")) { e.subject_id = sid; changed = true; }
+        }
+        if (changed) _syncWidget();
     }
 
     function _fillBundleSel(sel, subjectId, currentBundleId) {
@@ -463,7 +512,10 @@ function _buildCastBuildUI(node, app) {
 
         const bundSel = document.createElement("select");
         bundSel.className = "fbt-scb-sel fbt-scb-sel-narrow";
-        _fillBundleSel(bundSel, entry.subject_id || "", entry.bundle_id || "");
+        // In composition-ordinal mode the bundle decides the subject, so don't filter bundles by it.
+        const _compOrdinal = _compositionActive() && entry.match_mode === "ordinal";
+        _fillBundleSel(bundSel, _compOrdinal ? "" : (entry.subject_id || ""), entry.bundle_id || "");
+        subjSel.disabled = _compOrdinal;
 
         row1.append(_lbl("Subject"), subjSel, arrow, _lbl("Bundle"), bundSel);
 
@@ -598,7 +650,7 @@ function _buildCastBuildUI(node, app) {
             const on = _isOrdinal();
             ordToggleBtn.classList.toggle("active", on);
             srcSel.style.display   = (_connectedSPSubjects.length && !on) ? "" : "none";
-            ordInput.style.display = (_connectedSPSubjects.length && on)  ? "" : "none";
+            ordInput.style.display = ((_connectedSPSubjects.length || _compositionActive()) && on) ? "" : "none";
         };
         _syncOrdinalVisibility();
 
@@ -617,6 +669,11 @@ function _buildCastBuildUI(node, app) {
             }
             _syncOrdinalVisibility();
             _syncWidget();
+            if (_compositionActive()) {
+                _reresolveCompositionOrdinals();
+                _renderActiveTab();
+                _buildTabStrip();
+            }
         });
 
         ordInput.addEventListener("change", () => {
@@ -624,6 +681,11 @@ function _buildCastBuildUI(node, app) {
             entry.ordinal = Number.isFinite(n) && n >= 1 ? n : 1;
             ordInput.value = entry.ordinal;
             _syncWidget();
+            if (_compositionActive()) {
+                _reresolveCompositionOrdinals();
+                _renderActiveTab();
+                _buildTabStrip();
+            }
         });
 
         // Source label hides when no source profile connected
@@ -709,6 +771,10 @@ function _buildCastBuildUI(node, app) {
                 entry.image_selection = null;
             }
             _buildNumBtns(bun);
+            if (_compositionActive() && entry.match_mode === "ordinal") {
+                _reresolveCompositionOrdinals();
+                subjSel.value = entry.subject_id || "";
+            }
             _buildTabStrip();
             if (_previewOpen) _loadRefPreview(previewArea, entry);
             _syncWidget();
@@ -884,6 +950,56 @@ function _buildCastBuildUI(node, app) {
 
     node._refreshSourceSubjects = _refreshSourceSubjects;
     requestAnimationFrame(() => _refreshSourceSubjects());
+
+    // ── 14b. Prompt Composition subject pool ──────────────────────────────────
+    // Same shape as _refreshSourceSubjects(): follow the wired loader's selected
+    // value (CompositionLoad re-fires onConnectionsChange when it changes) and
+    // fetch the composition to build the cast pool.
+
+    async function _refreshCompositionSubjects() {
+        let result = null;
+        const inp    = node.inputs?.find(i => i.name === "prompt_composition");
+        const linkId = inp?.link;
+        if (linkId) {
+            const linkObj  = app.graph.links[linkId];
+            const upstream = linkObj ? app.graph.getNodeById(linkObj.origin_id) : null;
+            const name     = upstream?.widgets?.find(w => w.name === "composition_name")?.value;
+            if (name && name !== "(none)") {
+                try {
+                    const list  = await (await fetch("/fbtools/compositions/list")).json();
+                    const match = (list.compositions ?? []).find(c => c.name === name);
+                    if (match) {
+                        const resp = await fetch(`/fbtools/compositions/get?id=${encodeURIComponent(match.id)}`);
+                        if (resp.ok) {
+                            const comp = await resp.json();
+                            result = {
+                                id:   comp.id || match.id,
+                                name: comp.name || name,
+                                roster: Object.entries(comp.subjects ?? {})
+                                    .filter(([, sid]) => sid)
+                                    .map(([slot, sid]) => {
+                                        const s = _subjects.find(x => x.id === sid);
+                                        return {
+                                            slot,
+                                            id:            sid,
+                                            label:         s?.name || sid,
+                                            entity_type:   s?.entity_type || "person",
+                                            pronoun_style: s?.pronoun_style || "",
+                                        };
+                                    }),
+                            };
+                        }
+                    }
+                } catch { /* skip */ }
+            }
+        }
+        _connectedComposition = result;
+        _reresolveCompositionOrdinals();
+        if (_entries.length) _renderActiveTab();
+    }
+
+    node._refreshCompositionSubjects = _refreshCompositionSubjects;
+    requestAnimationFrame(() => _refreshCompositionSubjects());
 
     // ── 15. Clip timeline ─────────────────────────────────────────────────────
 
@@ -1447,6 +1563,7 @@ function _buildCastBuildUI(node, app) {
         _subjects = subjRes.value?.subjects ?? [];
         _bundles  = bundRes.value?.bundles  ?? [];
         _rebuildTabs();
+        _refreshCompositionSubjects();
     }).catch(() => {
         _rebuildTabs();
     });

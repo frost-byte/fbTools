@@ -396,3 +396,34 @@ def test_multiple_subjects_each_enriched_independently():
     assert result["B"]["appearance"]["summary"] == "the big guy"
     # Alice's appearance not touched
     assert result["A"]["appearance"]["summary"] == "a tall woman"
+
+
+# ── composition_ordinal_roster (SceneCastBuild composition ordinal matching) ────
+
+composition_ordinal_roster = pc.composition_ordinal_roster
+_sp = import_test_module("utils/source_profiles.py")
+
+
+def test_roster_follows_slot_order_and_skips_empty_slots():
+    comp = {"subjects": {"A": "amy", "B": "", "C": "bob"}}
+    lookup = {"amy": {"pronoun_style": "feminine"}, "bob": {"pronoun_style": "masculine", "entity_type": "person"}}.get
+    roster = composition_ordinal_roster(comp, lookup)
+    assert [r["subject_id"] for r in roster] == ["amy", "bob"]
+    assert roster[0] == {"subject_id": "amy", "entity_type": "person", "pronoun_style": "feminine"}
+
+
+def test_roster_defaults_for_unknown_subjects():
+    roster = composition_ordinal_roster({"subjects": {"A": "ghost"}}, lambda sid: None)
+    assert roster == [{"subject_id": "ghost", "entity_type": "person", "pronoun_style": ""}]
+    assert composition_ordinal_roster({}, lambda sid: None) == []
+
+
+def test_roster_feeds_ordinal_resolution():
+    comp = {"subjects": {"A": "amy", "B": "bob", "C": "cara"}}
+    lookup = {"amy": {"pronoun_style": "feminine"}, "bob": {"pronoun_style": "masculine"},
+              "cara": {"pronoun_style": "feminine"}}.get
+    roster = composition_ordinal_roster(comp, lookup)
+    resolve = _sp.resolve_ordinal_from_list
+    assert resolve(roster, "feminine", 2, id_key="subject_id") == "cara"
+    assert resolve(roster, "masculine", 1, id_key="subject_id") == "bob"
+    assert resolve(roster, "feminine", 3, id_key="subject_id") == ""

@@ -96,6 +96,7 @@ from .utils.source_profiles import (
     MEDIA_DIRS as _SOURCE_MEDIA_DIRS,
     resolved_pronoun_style as _sp_resolved_pronoun_style,
     resolve_ordinal_subject as _sp_resolve_ordinal_subject,
+    resolve_ordinal_from_list as _sp_resolve_ordinal_from_list,
 )
 from .utils.source_profile_analysis import (
     build_segment_detection_prompt as _spa_build_segment_prompt,
@@ -16983,6 +16984,16 @@ class SceneCastBuild(io.ComfyNode):
                     optional=True,
                     tooltip="Source profile whose subjects are available as cast pool options.",
                 ),
+                CompositionIOType.Input(
+                    "prompt_composition",
+                    display_name="Prompt Composition",
+                    optional=True,
+                    tooltip=(
+                        "Prompt Composition whose subjects are the cast pool. Use this "
+                        "instead of a Source Profile; if both are connected the Source "
+                        "Profile drives the node and this input is ignored."
+                    ),
+                ),
                 io.String.Input(
                     "clip_id",
                     display_name="Clip ID",
@@ -17047,6 +17058,11 @@ class SceneCastBuild(io.ComfyNode):
                         "Wire to SourceProfileClipPrompt clip_duration_multiplier input."
                     ),
                 ),
+                CompositionIOType.Output(
+                    "prompt_composition",
+                    display_name="Prompt Composition",
+                    tooltip="Pass-through of the connected Prompt Composition.",
+                ),
             ],
         )
 
@@ -17057,6 +17073,7 @@ class SceneCastBuild(io.ComfyNode):
         source_profile=None,
         clip_id: str = "",
         clip_duration_multiplier: int = 1,
+        prompt_composition=None,
         **_,
     ):
         bundle_mtime = subject_mtime = source_mtime = 0
@@ -17075,7 +17092,10 @@ class SceneCastBuild(io.ComfyNode):
         except OSError:
             pass
         sp_id = source_profile.get("id", "") if isinstance(source_profile, dict) else ""
-        return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json, clip_id, sp_id, clip_duration_multiplier)
+        pc_id = prompt_composition.get("id", "") if isinstance(prompt_composition, dict) else ""
+        pc_subjects = json.dumps(prompt_composition.get("subjects", {}), sort_keys=True) if isinstance(prompt_composition, dict) else ""
+        return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json, clip_id, sp_id,
+                clip_duration_multiplier, pc_id, pc_subjects)
 
     @classmethod
     def execute(
@@ -17084,6 +17104,7 @@ class SceneCastBuild(io.ComfyNode):
         source_profile=None,
         clip_id: str = "",
         clip_duration_multiplier: int = 1,
+        prompt_composition=None,
         **_,
     ) -> io.NodeOutput:
         try:
@@ -17099,6 +17120,22 @@ class SceneCastBuild(io.ComfyNode):
             pid = source_profile.get("id", "")
             if pid:
                 connected_profiles[pid] = source_profile
+
+        # Composition-driven cast: the composition's own subjects are the pool
+        # and ordinal entries resolve against them. A Source Profile, when also
+        # connected, keeps driving the node (the UI hides the composition then).
+        comp_roster = None
+        if isinstance(prompt_composition, dict):
+            if isinstance(source_profile, dict):
+                logger.warning(
+                    "SceneCastBuild: both source_profile and prompt_composition are connected; "
+                    "using the Source Profile and ignoring the Prompt Composition."
+                )
+            else:
+                comp_roster = _composition_ordinal_roster(
+                    prompt_composition,
+                    _load_subject_registry(default_subject_profiles_path()).get_subject,
+                )
 
         _RETENTION_BUNDLE = "fully_preserved"
         _RETENTION_SOURCE = "partially_preserved"
@@ -17136,7 +17173,34 @@ class SceneCastBuild(io.ComfyNode):
             # → clear source linkage entirely, falling through to the
             # bundle-only branch below, exactly as if no source had ever been
             # assigned for this subject.
-            if (str(e.get("match_mode", "")).strip() == "ordinal"
+            if (comp_roster is not None
+                    and str(e.get("match_mode", "")).strip() == "ordinal" and bundle_id):
+                # Composition ordinal: "the Nth subject in this composition sharing
+                # my bundle's pronoun_style" becomes the entry's subject_id, and the
+                # entry stays a plain bundle-backed one (no source linkage).
+                _bundle = bundle_reg.get(bundle_id) if bundle_reg else None
+                _resolved = ""
+                if _bundle is not None:
+                    _bun_subj = (subject_reg.get_subject(_bundle.get("subject_id", ""))
+                                 if subject_reg and _bundle.get("subject_id") else None)
+                    _pronoun = _sp_resolved_pronoun_style(
+                        _bundle.get("entity_type", "person"),
+                        (_bun_subj.get("pronoun_style") if _bun_subj else "") or _bundle.get("pronoun_style", ""),
+                    )
+                    try:
+                        _n = int(e.get("ordinal", 0))
+                    except (TypeError, ValueError):
+                        _n = 0
+                    _resolved = _sp_resolve_ordinal_from_list(comp_roster, _pronoun, _n, id_key="subject_id")
+                if not _resolved:
+                    logger.warning(
+                        "SceneCastBuild: ordinal entry for bundle %r matched no subject in the composition, skipping",
+                        bundle_id,
+                    )
+                    continue
+                subject_id = _resolved
+                source_profile_id = source_subject_id = ""
+            elif (str(e.get("match_mode", "")).strip() == "ordinal"
                     and bundle_id and not source_subject_id):
                 profile = source_profile if isinstance(source_profile, dict) else None
                 bundle  = bundle_reg.get(bundle_id) if bundle_reg else None
@@ -17297,7 +17361,7 @@ class SceneCastBuild(io.ComfyNode):
             + (" | source profile" if has_sp else ""),
         )
         mult = max(1, int(clip_duration_multiplier or 1))
-        return io.NodeOutput(cast, summary, source_profile or {}, clip_id or "", mult)
+        return io.NodeOutput(cast, summary, source_profile or {}, clip_id or "", mult, prompt_composition or {})
 
 
 # ── Scene Cast reload endpoint ────────────────────────────────────────────────
@@ -17317,6 +17381,7 @@ async def _casts_reload(request):
 from .utils.prompt_compositions import (
     list_compositions as _list_compositions,
     load_composition as _load_composition,
+    composition_ordinal_roster as _composition_ordinal_roster,
     save_composition as _save_composition,
     delete_composition as _delete_composition,
     resolve_subjects as _resolve_composition_subjects,
@@ -18840,6 +18905,106 @@ def _composition_get_names() -> list[str]:
         return ["(none)"]
 
 
+# ── Custom type + loader: PROMPT_COMPOSITION ─────────────────────────────────
+
+COMPOSITION_TYPE = "PROMPT_COMPOSITION"
+
+
+@io.comfytype(io_type=COMPOSITION_TYPE)
+class CompositionIOType:
+    """Carries a full saved Prompt Composition dict between nodes."""
+    Type = object  # composition dict (see utils/prompt_compositions.py schema)
+
+    class Input(io.Input):
+        def __init__(self, name: str, **kwargs):
+            super().__init__(name, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, name: str = "prompt_composition", **kwargs):
+            super().__init__(name, **kwargs)
+
+
+class CompositionLoad(io.ComfyNode):
+    """Load a saved Prompt Composition and expose it for wiring into SceneCastBuild.
+
+    Mirrors SourceProfileLoad: the composition's subjects become the cast pool
+    in SceneCastBuild, and changing the selection here refreshes it downstream.
+    Assembling a prompt is still PromptCompositionLoader's job.
+    """
+    node_id = prefixed_node_id("CompositionLoad")
+    display_name = "Composition Load"
+    category = "🧊 frost-byte/Scene"
+    is_output_node = True
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            is_output_node=cls.is_output_node,
+            inputs=[
+                io.Combo.Input(
+                    "composition_name",
+                    options=_composition_get_names(),
+                    display_name="Composition",
+                    tooltip="Saved Prompt Composition to load. Press R to refresh the list after adding new compositions.",
+                ),
+            ],
+            outputs=[
+                CompositionIOType.Output(
+                    "prompt_composition",
+                    display_name="Prompt Composition",
+                    tooltip="Full composition dict for wiring into SceneCastBuild.",
+                ),
+                io.String.Output(
+                    "subject_info",
+                    display_name="Subject Info",
+                    tooltip="Slot letter, subject and pronoun style for each subject in this composition.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, composition_name: str = "", **_):
+        comps_dir = os.path.join(user_data_dir(), "prompt_compositions")
+        try:
+            dir_mtime = os.path.getmtime(comps_dir)
+        except OSError:
+            dir_mtime = 0
+        file_mtime = 0
+        if composition_name:
+            matched = next((c for c in _list_compositions(user_data_dir()) if c["name"] == composition_name), None)
+            if matched:
+                try:
+                    file_mtime = os.path.getmtime(os.path.join(comps_dir, f"{matched['id']}.json"))
+                except OSError:
+                    pass
+        return (comps_dir, composition_name, dir_mtime, file_mtime, _composition_reload_counter)
+
+    @classmethod
+    def execute(cls, composition_name: str = "") -> io.NodeOutput:
+        matched = None
+        if composition_name and composition_name != "(none)":
+            matched = next((c for c in _list_compositions(user_data_dir()) if c["name"] == composition_name), None)
+        if matched is None:
+            logger.warning("CompositionLoad: composition %r not found", composition_name)
+            return io.NodeOutput(None, "")
+
+        composition = _load_composition(user_data_dir(), matched["id"])
+        registry = _load_subject_registry(default_subject_profiles_path())
+        lines = []
+        for slot, sid in composition.get("subjects", {}).items():
+            subj = registry.get_subject(sid) if sid else None
+            name = (subj or {}).get("name") or sid or "(empty)"
+            pronoun = (subj or {}).get("pronoun_style", "")
+            lines.append(f"{slot}: {name}" + (f" [{pronoun}]" if pronoun else ""))
+        subject_info = "\n".join(lines) if lines else "(no subjects defined)"
+
+        send_status_update(cls.node_id, f"Loaded: {composition_name} | {len(lines)} subject(s)")
+        return io.NodeOutput(composition, subject_info)
+
+
 def _resolve_cast_media(
     scene_cast: dict,
     bundle_registry,
@@ -20264,6 +20429,7 @@ class FBToolsExtension(ComfyExtension):
             # Scene Composition nodes
             SceneCompose,
             PromptAssemble,
+            CompositionLoad,
             PromptCompositionLoader,
             CompositionToH3Conditioning,
             # Scene Cast nodes

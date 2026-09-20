@@ -170,6 +170,26 @@ def delete_composition(data_dir: str, composition_id: str) -> None:
         os.remove(bak)
 
 
+def composition_ordinal_roster(composition: dict, subject_lookup) -> list[dict]:
+    """Ordered [{subject_id, entity_type, pronoun_style}] for a composition's
+    subjects, in slot order (empty slots skipped), for ordinal matching.
+
+    subject_lookup(subject_id) -> subject dict | None supplies each subject's
+    pronoun_style / entity_type (defaults: "person" / "" when absent).
+    """
+    roster = []
+    for sid in (composition.get("subjects") or {}).values():
+        if not sid:
+            continue
+        subj = subject_lookup(sid) or {}
+        roster.append({
+            "subject_id":    sid,
+            "entity_type":   subj.get("entity_type", "person"),
+            "pronoun_style": subj.get("pronoun_style", ""),
+        })
+    return roster
+
+
 # ── Subject resolution ─────────────────────────────────────────────────────────
 
 def resolve_subjects(composition: dict, subject_registry=None) -> dict[str, dict]:
