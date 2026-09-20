@@ -19378,7 +19378,9 @@ def _apply_composition_libbers(text: str, libbers: list, delimiter: str, manager
 
     # ── Pass 1: %key:N% and %*:N% — indexed refs ─────────────────────────────
     def _replace_indexed(m: re.Match) -> str:
-        inner = m.group(1)   # e.g. "key:2" or "*:1"
+        inner = m.group(1)   # e.g. "key:2", "*:1" or "*.1"
+        if inner.startswith("*."):
+            inner = "*:" + inner[2:]
         raw_key, idx_str = inner.rsplit(":", 1)
         try:
             idx = int(idx_str) - 1
@@ -19397,7 +19399,8 @@ def _apply_composition_libbers(text: str, libbers: list, delimiter: str, manager
             return _resolve_value(loaded[idx], raw_key) or m.group(0)
         return m.group(0)
 
-    indexed_pat = esc + r'((?:[a-z0-9_]+|\*):[0-9]+)' + esc
+    # Accept "%*.N%" as a spelling of "%*:N%" (a common typo that otherwise never resolves).
+    indexed_pat = esc + r'((?:[a-z0-9_]+:|\*[:.])[0-9]+)' + esc
     text = re.sub(indexed_pat, _replace_indexed, text)
 
     # ── Pass 2: plain unindexed refs — chain through libbers in order ─────────
@@ -19465,6 +19468,15 @@ class PromptCompositionLoader(io.ComfyNode):
                     tooltip="Optional cast from SceneCastLoad or SceneCastBuild. Resolves reference media (video path and images) from bundles.",
                     optional=True,
                 ),
+                CompositionIOType.Input(
+                    "prompt_composition",
+                    display_name="Prompt Composition",
+                    tooltip=(
+                        "Optional composition from CompositionLoad (or SceneCastBuild's pass-through). "
+                        "When connected it drives this node and the Composition dropdown is ignored."
+                    ),
+                    optional=True,
+                ),
             ],
             outputs=[
                 io.String.Output("prompt", display_name="Prompt"),
@@ -19519,7 +19531,7 @@ class PromptCompositionLoader(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, composition_name: str = "", model_type: str = "composition default", filename_prefix: str = "", scene_cast=None, **_):
+    def fingerprint_inputs(cls, composition_name: str = "", model_type: str = "composition default", filename_prefix: str = "", scene_cast=None, prompt_composition=None, **_):
         comps_dir = os.path.join(user_data_dir(), "prompt_compositions")
         try:
             dir_mtime = os.path.getmtime(comps_dir)
@@ -19538,6 +19550,10 @@ class PromptCompositionLoader(io.ComfyNode):
                     file_mtime = os.path.getmtime(cpath)
                 except OSError:
                     pass
+        # A wired composition replaces the dropdown; key off its full content so any edit re-runs.
+        pc_digest = ""
+        if isinstance(prompt_composition, dict) and prompt_composition:
+            pc_digest = hashlib.md5(json.dumps(prompt_composition, sort_keys=True, default=str).encode("utf-8")).hexdigest()
         cast_id = scene_cast.get("id", "") if scene_cast else ""
         cast_modified = scene_cast.get("modified", "") if scene_cast else ""
         try:
@@ -19549,7 +19565,7 @@ class PromptCompositionLoader(io.ComfyNode):
         except OSError:
             settings_mtime = 0
         return (comps_dir, composition_name, model_type, dir_mtime, file_mtime,
-                _composition_reload_counter, cast_id, cast_modified, bundle_mtime, settings_mtime)
+                _composition_reload_counter, cast_id, cast_modified, bundle_mtime, settings_mtime, pc_digest)
 
     @classmethod
     def execute(
@@ -19558,17 +19574,24 @@ class PromptCompositionLoader(io.ComfyNode):
         model_type: str = "composition default",
         filename_prefix: str = "",
         scene_cast=None,
+        prompt_composition=None,
     ) -> io.NodeOutput:
-        filename_prefix_out = f"{filename_prefix}{composition_name}"
+        if isinstance(prompt_composition, dict) and prompt_composition:
+            # Wired composition (CompositionLoad): drives everything; the dropdown is ignored.
+            composition = copy.deepcopy(prompt_composition)
+            composition_name = composition.get("name") or composition_name
+            filename_prefix_out = f"{filename_prefix}{composition_name}"
+        else:
+            filename_prefix_out = f"{filename_prefix}{composition_name}"
 
-        items = _list_compositions(user_data_dir())
-        matched = next((c for c in items if c["name"] == composition_name), None)
-        if matched is None:
-            logger.warning("PromptCompositionLoader: composition %r not found", composition_name)
-            return io.NodeOutput("", "", "", composition_name, filename_prefix_out, "", None,
-                                 "none", "", 0.0, 0.0, None, None)
+            items = _list_compositions(user_data_dir())
+            matched = next((c for c in items if c["name"] == composition_name), None)
+            if matched is None:
+                logger.warning("PromptCompositionLoader: composition %r not found", composition_name)
+                return io.NodeOutput("", "", "", composition_name, filename_prefix_out, "", None,
+                                     "none", "", 0.0, 0.0, None, None)
 
-        composition = _load_composition(user_data_dir(), matched["id"])
+            composition = _load_composition(user_data_dir(), matched["id"])
 
         model_type_used = (
             composition.get("model_type", "h3_ref2va")
@@ -19974,6 +19997,15 @@ def _track_format_prompt_composition_loader(kwargs: dict):
         bundle_reg = _load_bundle_registry(default_bundle_registry_path())
         rows.update(summarize_scene_cast(scene_cast, bundle_reg.get))
         consumed.add("scene_cast")
+    wired = kwargs.get("prompt_composition")
+    if isinstance(wired, dict) and wired:
+        # The wired composition drives the node; the dropdown value is stale/ignored.
+        consumed.add("prompt_composition")
+        rows["Composition (wired)"] = str(wired.get("name") or wired.get("id") or "?")
+        loras = summarize_loras(wired.get("loras", []))
+        if loras:
+            rows["LoRAs"] = loras
+        return consumed, rows
     name = kwargs.get("composition_name")
     if name:
         matched = next((c for c in _list_compositions(user_data_dir()) if c["name"] == name), None)

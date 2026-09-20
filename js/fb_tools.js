@@ -393,6 +393,7 @@ import { setupConceptDefine, setupConceptRegistryLoad } from "./nodes/concepts.j
 import { setupSceneCastBuild } from "./nodes/scene_cast_build.js";
 import { setupSourceProfileLoad } from "./nodes/source_profile_load.js";
 import { setupCompositionLoad } from "./nodes/composition_load.js";
+import { setupPromptCompositionLoader } from "./nodes/prompt_composition_loader.js";
 import { setupSourceProfileClipPrompt } from "./nodes/source_profile_clip_prompt.js";
 import { renderFbtPanel } from "./ui/fbt_panel.js";
 import { patchNodeForTracking } from "./utils/run_tracker.js";
@@ -537,6 +538,9 @@ app.registerExtension({
         }
         else if (isNode("CompositionLoad")) {
             setupCompositionLoad(nodeType, nodeData, app);
+        }
+        else if (isNode("PromptCompositionLoader")) {
+            setupPromptCompositionLoader(nodeType, nodeData, app);
         }
         else if (isNode("SourceProfileClipPrompt")) {
             setupSourceProfileClipPrompt(nodeType, nodeData, app);
