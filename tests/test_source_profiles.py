@@ -669,6 +669,7 @@ def test_clip_load_params_duration_clamped_to_zero():
 
 resolved_pronoun_style   = sp.resolved_pronoun_style
 resolve_ordinal_subject  = sp.resolve_ordinal_subject
+resolve_ordinal_from_list = sp.resolve_ordinal_from_list
 
 
 def test_resolved_pronoun_style_prefers_explicit():
@@ -761,3 +762,51 @@ def test_resolve_ordinal_subject_ignores_subjects_not_in_clip():
         clip_subject_ids=["s1"],
     )
     assert resolve_ordinal_subject(profile, "c1", "feminine", 1) == ""
+
+
+# ── resolve_ordinal_from_list (any ordered subject roster) ──────────────────────
+
+def _roster():
+    return [
+        {"id": "amy",  "entity_type": "person",   "pronoun_style": "feminine"},
+        {"id": "bob",  "entity_type": "person",   "pronoun_style": "masculine"},
+        {"id": "cara", "entity_type": "person",   "pronoun_style": "feminine"},
+        {"id": "loft", "entity_type": "location", "pronoun_style": ""},
+    ]
+
+
+def test_from_list_picks_nth_match_in_given_order():
+    assert resolve_ordinal_from_list(_roster(), "feminine", 1) == "amy"
+    assert resolve_ordinal_from_list(_roster(), "feminine", 2) == "cara"
+    assert resolve_ordinal_from_list(_roster(), "masculine", 1) == "bob"
+
+
+def test_from_list_order_matters():
+    assert resolve_ordinal_from_list(list(reversed(_roster())), "feminine", 1) == "cara"
+
+
+def test_from_list_past_the_end_and_bad_ordinals_return_empty():
+    assert resolve_ordinal_from_list(_roster(), "feminine", 3) == ""
+    assert resolve_ordinal_from_list(_roster(), "feminine", 0) == ""
+    assert resolve_ordinal_from_list(_roster(), "feminine", -1) == ""
+    assert resolve_ordinal_from_list([], "feminine", 1) == ""
+
+
+def test_from_list_uses_entity_type_default_pronoun():
+    assert resolve_ordinal_from_list(_roster(), "location", 1) == "loft"
+
+
+def test_from_list_custom_id_key_for_composition_subjects():
+    roster = [{"subject_id": "s_a", "pronoun_style": "feminine"}, {"subject_id": "s_b", "pronoun_style": "feminine"}]
+    assert resolve_ordinal_from_list(roster, "feminine", 2, id_key="subject_id") == "s_b"
+    # Default id_key ("id") is absent on these dicts -> empty, not an exception.
+    assert resolve_ordinal_from_list(roster, "feminine", 1) == ""
+
+
+def test_wrapper_matches_from_list_over_the_clips_subjects():
+    profile = _profile_with_clip_subjects(
+        subjects=_roster(), clip_subject_ids=["cara", "bob", "amy", "missing"],
+    )
+    ordered = [s for sid in ["cara", "bob", "amy"] for s in _roster() if s["id"] == sid]
+    for pronoun, n in (("feminine", 1), ("feminine", 2), ("masculine", 1), ("feminine", 3)):
+        assert resolve_ordinal_subject(profile, "c1", pronoun, n) == resolve_ordinal_from_list(ordered, pronoun, n)

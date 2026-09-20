@@ -1213,7 +1213,7 @@ function _buildCastBuildUI(node, app) {
     wrap.appendChild(conflictWarningEl);
 
     // Mirrors utils/source_profiles.py's resolved_pronoun_style() /
-    // resolve_ordinal_subject() so the preview reflects ordinal-match entries
+    // resolve_ordinal_from_list() so the preview reflects ordinal-match entries
     // too, not just explicit ones. This is a display aid — the backend
     // resolution at execution time is the authoritative one.
     const _ENTITY_PRONOUN_DEFAULTS = { location: "location", object: "object", soundscape: "object" };
@@ -1234,19 +1234,26 @@ function _buildCastBuildUI(node, app) {
         return _resolvedPronounStyle(bun.entity_type, explicit);
     }
 
-    function _resolveOrdinalSubjectId(clip, subjects, wantPronoun, ordinal) {
-        if (!clip || ordinal < 1) return "";
-        const byId = new Map(subjects.map(s => [s.id, s]));
+    // Mirrors utils/source_profiles.py::resolve_ordinal_from_list(): `ordered` is
+    // any ordered list of {id, entity_type, pronoun_style} (a clip's subjects, a
+    // composition's roster, ...).
+    function _resolveOrdinalFromList(ordered, wantPronoun, ordinal) {
+        if (ordinal < 1) return "";
         let matches = 0;
-        for (const sid of (clip.subjects || [])) {
-            const subj = byId.get(sid);
-            if (!subj) continue;
+        for (const subj of ordered) {
             if (_resolvedPronounStyle(subj.entity_type, subj.pronoun_style) === wantPronoun) {
                 matches++;
-                if (matches === ordinal) return sid;
+                if (matches === ordinal) return subj.id;
             }
         }
         return "";
+    }
+
+    function _resolveOrdinalSubjectId(clip, subjects, wantPronoun, ordinal) {
+        if (!clip) return "";
+        const byId = new Map(subjects.map(s => [s.id, s]));
+        const ordered = (clip.subjects || []).map(sid => byId.get(sid)).filter(Boolean);
+        return _resolveOrdinalFromList(ordered, wantPronoun, ordinal);
     }
 
     function _buildActionPreview() {

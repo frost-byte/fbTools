@@ -471,25 +471,36 @@ def resolved_pronoun_style(entity_type: str, explicit: str) -> str:
     return explicit or ENTITY_PRONOUN_DEFAULTS.get((entity_type or "person").lower(), "neutral")
 
 
-def resolve_ordinal_subject(profile: dict, clip_id: str, want_pronoun: str, ordinal: int) -> str:
-    """Return the id of the `ordinal`-th (1-indexed) subject in the given clip
-    whose resolved pronoun_style matches `want_pronoun`, in the clip's own
-    subject order. Empty string if the clip is missing or fewer matches exist.
+def resolve_ordinal_from_list(subjects: list[dict], want_pronoun: str, ordinal: int, id_key: str = "id") -> str:
+    """Return the id of the `ordinal`-th (1-indexed) subject in `subjects`, in
+    the given order, whose resolved pronoun_style matches `want_pronoun`.
+
+    `subjects` is any ordered list of dicts carrying `entity_type` and
+    `pronoun_style` (both optional) plus an id under `id_key` — a Source
+    Profile clip's subjects, a Composition's subject roster, etc. Empty string
+    if `ordinal` < 1 or fewer than `ordinal` subjects match.
     """
     if ordinal < 1:
         return ""
-    clip = next((c for c in profile.get("clips", []) if c.get("id") == clip_id), None)
-    if clip is None:
-        return ""
-    by_id = {s.get("id"): s for s in profile.get("subjects", [])}
     matches = 0
-    for sid in clip.get("subjects", []):
-        subj = by_id.get(sid)
-        if subj is None:
-            continue
+    for subj in subjects:
         pronoun = resolved_pronoun_style(subj.get("entity_type", "person"), subj.get("pronoun_style", ""))
         if pronoun == want_pronoun:
             matches += 1
             if matches == ordinal:
-                return sid
+                return subj.get(id_key, "")
     return ""
+
+
+def resolve_ordinal_subject(profile: dict, clip_id: str, want_pronoun: str, ordinal: int) -> str:
+    """Source Profile wrapper around resolve_ordinal_from_list: the `ordinal`-th
+    subject in the given clip (in the clip's own subject order) whose resolved
+    pronoun_style matches `want_pronoun`. Empty string if the clip is missing
+    or fewer matches exist.
+    """
+    clip = next((c for c in profile.get("clips", []) if c.get("id") == clip_id), None)
+    if clip is None:
+        return ""
+    by_id = {s.get("id"): s for s in profile.get("subjects", [])}
+    ordered = [by_id[sid] for sid in clip.get("subjects", []) if sid in by_id]
+    return resolve_ordinal_from_list(ordered, want_pronoun, ordinal)
