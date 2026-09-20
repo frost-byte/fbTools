@@ -11,8 +11,9 @@ Rewrites, per composition JSON file:
     and scene_synopsis
 
 A composition whose subject keys are already letter-shaped (or has no
-subjects at all) is skipped. A .bak copy is made before any file is
-overwritten (skipped if a .bak already exists from a prior run).
+subjects at all) is skipped. Before a file is overwritten, its current content
+is copied to <name>.json.pre-slot-migration (kept if one already exists). This
+is separate from the editor's own <name>.json.bak, which is left alone.
 
 DATA_DIR is required (no guessed default) — this machine has more than one
 ComfyUI install tree, and this package's own user-data root does not live
@@ -130,9 +131,9 @@ def migrate_file(path: Path, dry_run: bool) -> str:
         print(f"[WARN]    {path.name}  ({w})")
 
     if not dry_run:
-        bak = path.with_suffix(path.suffix + ".bak")
+        bak = path.with_suffix(path.suffix + ".pre-slot-migration")
         if bak.exists():
-            print(f"[SKIP-BACKUP] {path.name}  (.bak already exists)")
+            print(f"[SKIP-BACKUP] {path.name}  (.pre-slot-migration already exists)")
         else:
             shutil.copy2(path, bak)
         with open(path, "w", encoding="utf-8") as fh:
