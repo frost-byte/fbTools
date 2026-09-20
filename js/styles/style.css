@@ -3216,6 +3216,7 @@ body.fbt-llm-loaded
 .fbt-rh-val {
     padding: 2px 0;
     color: var(--fg-color, #ddd);
+    white-space: pre-wrap;
     word-break: break-all;
     font-family: monospace;
     font-size: 10px;

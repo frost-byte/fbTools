@@ -11,7 +11,8 @@ import comfy.model_management as model_management
 from typing_extensions import override
 from nodes import ImageScaleBy
 from .nodes.shared import prefixed_node_id
-from .nodes.run_tracking import RunMetaCapture, JobCompleteNotifier
+from .nodes.run_tracking import RunMetaCapture, JobCompleteNotifier, register_track_formatter
+from .utils.composition_track_summary import summarize_scene_cast, summarize_loras
 from .nodes import kdenlive_archive as _kdenlive_archive_routes  # noqa: F401  (registers /fbtools/kdenlive/* routes on import)
 from .utils.util import (
     draw_pose_json,
@@ -19795,6 +19796,30 @@ def _h3_load_audio(path: str, start_time: float = 0.0, duration: float = 0.0):
     audio = torch.frombuffer(bytearray(res.stdout), dtype=torch.float32)
     audio = audio.reshape((-1, ac)).transpose(0, 1).unsqueeze(0)
     return {"waveform": audio, "sample_rate": ar}
+
+
+def _track_format_prompt_composition_loader(kwargs: dict):
+    """Run History rows for a tracked Prompt Composition Loader: readable cast
+    details (subject/bundle, reference images/video, audio) and the composition's
+    LoRAs instead of the raw scene_cast dict. See utils/composition_track_summary.py."""
+    rows: dict = {}
+    consumed: set = set()
+    scene_cast = kwargs.get("scene_cast")
+    if isinstance(scene_cast, dict):
+        bundle_reg = _load_bundle_registry(default_bundle_registry_path())
+        rows.update(summarize_scene_cast(scene_cast, bundle_reg.get))
+        consumed.add("scene_cast")
+    name = kwargs.get("composition_name")
+    if name:
+        matched = next((c for c in _list_compositions(user_data_dir()) if c["name"] == name), None)
+        if matched:
+            loras = summarize_loras(_load_composition(user_data_dir(), matched["id"]).get("loras", []))
+            if loras:
+                rows["LoRAs"] = loras
+    return consumed, rows
+
+
+register_track_formatter(prefixed_node_id("PromptCompositionLoader"), _track_format_prompt_composition_loader)
 
 
 class CompositionToH3Conditioning(io.ComfyNode):

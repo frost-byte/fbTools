@@ -117,6 +117,34 @@ except Exception:
     _NODE_OUTPUT_TRACKER_AVAILABLE = False
 
 
+# Per-node display formatters for the auto-tracker: {class_type: fn}. A formatter
+# receives the node's resolved (capturable) input kwargs and returns
+# (consumed_keys, rows): the raw kwargs named in consumed_keys are not
+# stringified generically, and rows (label -> already-readable string) are
+# recorded in their place. A formatter failure falls back to the generic path,
+# so tracking can never break a run.
+_TRACK_FORMATTERS: dict = {}
+
+
+def register_track_formatter(class_type: str, fn) -> None:
+    _TRACK_FORMATTERS[class_type] = fn
+
+
+def _format_tracked_values(class_type: str, kwargs: dict) -> dict:
+    consumed: set = set()
+    rows: dict = {}
+    fmt = _TRACK_FORMATTERS.get(class_type)
+    if fmt is not None:
+        try:
+            consumed, rows = fmt(kwargs)
+        except Exception:
+            logger.debug("node-output-tracker: formatter for %s failed", class_type, exc_info=True)
+            consumed, rows = set(), {}
+    values = stringify_capture_values({k: v for k, v in kwargs.items() if k not in consumed})
+    values.update({k: v for k, v in rows.items() if isinstance(v, str) and v.strip()})
+    return values
+
+
 def _fbtools_is_capturable_value(v) -> bool:
     """Reject values that will never be human-readable once stringified —
     tensors, wrapped LATENT/AUDIO dicts, and other comfy/torch-internal
@@ -163,7 +191,7 @@ def _fbtools_capture_for_node(prompt_id, unique_id, dynprompt, execution_list, e
             value = wrapped[0]
             if _fbtools_is_capturable_value(value):
                 kwargs[key] = value
-        values = stringify_capture_values(kwargs)
+        values = _format_tracked_values(class_type, kwargs)
         if not values:
             # Every input got filtered out (e.g. a pure model-patch node whose
             # only input is a MODEL/ModelPatcher) — record a placeholder so
