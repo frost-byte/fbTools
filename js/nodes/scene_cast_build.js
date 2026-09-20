@@ -11,6 +11,7 @@
 
 import { setWidgetVisible } from "../utils/widgets.js";
 import { bundlesApi }       from "../api/bundles.js";
+import { shotsToSegments, substituteSlotPlaceholders } from "../utils/composition_timeline.js";
 import { app }               from "../../../scripts/app.js";
 import { api }               from "../../../scripts/api.js";
 
@@ -37,10 +38,11 @@ export function setupSceneCastBuild(nodeType, _nodeData, app) {
     // calls may still run first with inconsistent intermediate state, but
     // this always corrects it once both have actually settled.
     async function _refreshProfileDependentState(node) {
+        // Composition first: its shots feed the clip timeline when no profile is wired.
+        await node._refreshCompositionSubjects?.();
         await Promise.all([
             node._refreshClipSelects?.(),
             node._refreshSourceSubjects?.(),
-            node._refreshCompositionSubjects?.(),
         ]);
         node._updateActionPreview?.();
     }
@@ -975,6 +977,7 @@ function _buildCastBuildUI(node, app) {
                             result = {
                                 id:   comp.id || match.id,
                                 name: comp.name || name,
+                                shots: comp.shots ?? [],
                                 roster: Object.entries(comp.subjects ?? {})
                                     .filter(([, sid]) => sid)
                                     .map(([slot, sid]) => {
@@ -999,7 +1002,7 @@ function _buildCastBuildUI(node, app) {
     }
 
     node._refreshCompositionSubjects = _refreshCompositionSubjects;
-    requestAnimationFrame(() => _refreshCompositionSubjects());
+    requestAnimationFrame(() => _refreshCompositionSubjects().then(() => _refreshClipSelects()));
 
     // ── 15. Clip timeline ─────────────────────────────────────────────────────
 
@@ -1379,6 +1382,35 @@ function _buildCastBuildUI(node, app) {
         const action = clip?.action;
         if (!action) return { text: null, conflicts: [] };
 
+        if (_compositionActive()) {
+            // Composition shot: slots are the composition's explicit letters, and a cast
+            // entry applies to a slot when it targets that slot's subject (ordinal
+            // entries resolve against the composition roster).
+            const byId = new Map();
+            const compConflicts = [];
+            for (const e of _entries) {
+                if (!e.bundle_id) continue;
+                const sid = e.match_mode === "ordinal" ? _resolveCompositionOrdinal(e) : e.subject_id;
+                if (!sid) continue;
+                const prior = byId.get(sid);
+                if (prior) {
+                    compConflicts.push({
+                        subjectLabel: _connectedComposition.roster.find(r => r.id === sid)?.label || sid,
+                        bundleNames: [prior, e].map(x => _bundles.find(b => b.id === x.bundle_id)?.name || x.bundle_id),
+                    });
+                }
+                byId.set(sid, e);
+            }
+            const compSlotLabel = {};
+            for (const r of _connectedComposition.roster) {
+                const entry = byId.get(r.id);
+                compSlotLabel[r.slot] = entry?.bundle_id
+                    ? (_bundles.find(b => b.id === entry.bundle_id)?.name || entry.bundle_id)
+                    : r.label;
+            }
+            return { text: substituteSlotPlaceholders(action, compSlotLabel), conflicts: compConflicts };
+        }
+
         const clipSubjectIds  = new Set(clip.subjects ?? []);
         const spData          = _connectedSPSubjects[0];
         const orderedSubjects = spData
@@ -1428,9 +1460,7 @@ function _buildCastBuildUI(node, app) {
             }
         });
 
-        const text = action.replace(/\{([A-J])\}/g, (match, letter) =>
-            slotLabel[letter] != null ? `[${slotLabel[letter]}]` : match
-        );
+        const text = substituteSlotPlaceholders(action, slotLabel);
         return { text, conflicts };
     }
 
@@ -1463,12 +1493,31 @@ function _buildCastBuildUI(node, app) {
         _applyDlgState();
     }
 
+    // Composition shots as timeline segments (used when no Source Profile is wired).
+    function _useCompositionSegments(savedVal) {
+        const segs = _connectedComposition ? shotsToSegments(_connectedComposition.shots) : [];
+        if (!segs.length) return false;
+        clipsSection.style.display = "";
+        durRow.style.display       = "none";   // no duration multiplier: a composition is one generation
+        _clips     = segs;
+        _zoomStart = 0;
+        _clipMap   = new Map(segs.map(c => [c.id, c]));
+        const savedIdx = savedVal ? segs.findIndex(c => c.id === savedVal) : -1;
+        _selectClipIdx(savedIdx >= 0 ? savedIdx : 0);
+        if (displayWidget) {
+            displayWidget.computeSize = () => [0, _widgetHeight() + 80];
+            node.setSize?.([node.size[0], node.size[1]]);
+        }
+        return true;
+    }
+
     async function _refreshClipSelects() {
         const savedVal = clipWidget?.value ?? "";
         const inp      = node.inputs?.find(i => i.name === "source_profile");
         const linkId   = inp?.link;
 
         if (!linkId) {
+            if (_useCompositionSegments(savedVal)) return;
             clipsSection.style.display = "none";
             _clips = [];
             _clipMap.clear();
@@ -1487,6 +1536,7 @@ function _buildCastBuildUI(node, app) {
         const isName     = profileWidget?.name === "profile_name";
 
         if (!profileVal || profileVal === "(none)") {
+            if (_useCompositionSegments(savedVal)) return;
             clipsSection.style.display = "none";
             _clips = [];
             _clipMap.clear();
@@ -1498,6 +1548,7 @@ function _buildCastBuildUI(node, app) {
         }
 
         clipsSection.style.display = "";
+        durRow.style.display       = "";
 
         let clips = [];
         try {
@@ -1563,7 +1614,7 @@ function _buildCastBuildUI(node, app) {
         _subjects = subjRes.value?.subjects ?? [];
         _bundles  = bundRes.value?.bundles  ?? [];
         _rebuildTabs();
-        _refreshCompositionSubjects();
+        _refreshCompositionSubjects().then(() => _refreshClipSelects());
     }).catch(() => {
         _rebuildTabs();
     });
