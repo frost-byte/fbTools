@@ -38,16 +38,6 @@ textarea.prompt-value-input {
 
 /* ── Sidebar ───────────────────────────────────────────────────────────────── */
 
-.fbt-ce-sidebar {
-    width: 200px;
-    min-width: 160px;
-    flex-shrink: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
-    border-right: 1px solid var(--border-color, #333);
-    padding: 4px 0;
-}
-
 .fbt-ce-sb-section {
     border-bottom: 1px solid var(--border-color, #333);
 }
@@ -3596,3 +3586,105 @@ body.fbt-llm-loaded
 /* Assets tab: six sub-tabs — allow wrapping on a narrow sidebar */
 .fbt-be-tab-row { flex-wrap: wrap; }
 .fbt-be-tab-row .fbt-be-tab { flex: 1 1 auto; }
+
+/* ── Compose: saved-compositions list (default view) and editor view ─────────── */
+
+.fbt-ce-list-view,
+.fbt-ce-editor-view {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.fbt-ce-list-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-color, #333);
+    flex-shrink: 0;
+}
+
+.fbt-ce-list-search { flex: 1 1 60px; min-width: 0; }
+
+.fbt-ce-list-cards {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.fbt-ce-list-card {
+    padding: 7px 10px;
+    border: 1px solid var(--border-color, #333);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.fbt-ce-list-card:hover {
+    border-color: var(--p-primary-400, #4af);
+    background: color-mix(in srgb, var(--p-primary-400, #4af) 8%, transparent);
+}
+
+.fbt-ce-list-card-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.fbt-ce-list-card-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fbt-ce-list-card-meta {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--p-surface-400, #888);
+}
+
+.fbt-ce-editor-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-color, #333);
+    flex-shrink: 0;
+}
+
+.fbt-ce-editor-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fbt-ce-inline {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.fbt-ce-inline > input,
+.fbt-ce-inline > textarea { flex: 1 1 auto; min-width: 0; }
+
+.fbt-ce-preset-sel { flex: 0 0 auto; max-width: 110px; }
+
+.fbt-ce-slot-add-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}

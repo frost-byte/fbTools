@@ -77,7 +77,11 @@ def _composition_path(data_dir: str, composition_id: str) -> str:
 # ── CRUD ───────────────────────────────────────────────────────────────────────
 
 def list_compositions(data_dir: str) -> list[dict]:
-    """Return summary dicts [{id, name, model_type, updated_at}] sorted by name."""
+    """Return summary dicts sorted by name.
+
+    Each is {id, name, model_type, updated_at, subject_count, shot_count, background}; the
+    counts and background id let list views show a useful card without loading every file.
+    """
     d = _compositions_dir(data_dir)
     results = []
     for fname in os.listdir(d):
@@ -92,6 +96,9 @@ def list_compositions(data_dir: str) -> list[dict]:
                 "name":        data.get("name", ""),
                 "model_type":  data.get("model_type", ""),
                 "updated_at":  data.get("updated_at", ""),
+                "subject_count": sum(1 for v in (data.get("subjects") or {}).values() if v),
+                "shot_count":    len(data.get("shots") or []),
+                "background":    data.get("background", "") or "",
             })
         except Exception:
             continue

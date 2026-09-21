@@ -20,14 +20,10 @@ import { buildFileTree } from "./file_tree.js";
 import { makeEntry, buildHistorySection } from "../utils/llm_history.js";
 import { lib, LIBRARY_CHANGED } from "./library_store.js";
 import { mk as _mk, toast as _toast } from "./library_common.js";
-import { openBackgroundEditor } from "./background_editor.js";
-import { openOutfitEditor } from "./outfit_editor.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const SAVED_PAGE_SIZE   = 10;
-const SUBJECT_PAGE_SIZE = 10;
-const BG_PAGE_SIZE      = 10;
 
 const MODEL_TYPES = [
     { id: "h3_ref2va", label: "MiniMax H3 Ref2VA" },
@@ -128,8 +124,7 @@ const _S = {
     savedComps:     [],
     savedPage:      0,
     savedQuery:     "",
-    subjectPage:    0,
-    bgPage:         0,
+    view:           "list",   // "list" (saved compositions) | "editor"
     dirty:          false,
     shotSeq:        0,
     // Libber state
@@ -520,12 +515,6 @@ async function _loadResources() {
         if (settingsRes.value) {
             _S.settings = settingsRes.value;
             const st = _S.settings;
-            if (_dom.delimInput)              _dom.delimInput.value            = st.libber_delimiter           ?? "%";
-            if (_dom.settingsPaceSel)         _dom.settingsPaceSel.value       = st.default_speech_pace        ?? "normal";
-            if (_dom.settingsNoiseRemovalCb)  _dom.settingsNoiseRemovalCb.checked  = !!st.default_audio_noise_removal;
-            if (_dom.settingsNormalizeLufsCb) _dom.settingsNormalizeLufsCb.checked = st.default_audio_normalize_lufs !== false;
-            if (_dom.settingsTargetLufsInp)   _dom.settingsTargetLufsInp.value = st.default_audio_target_lufs  ?? -14.0;
-            if (_dom.settingsMelbandInp)      _dom.settingsMelbandInp.value    = st.melband_model_path         ?? "";
         }
         _S.libbers    = libbersRes.value?.files    ?? [];
         _S.lorasList  = lorasRes.value?.loras     ?? [];
@@ -542,211 +531,7 @@ async function _loadResources() {
 
 // ── Sidebar ────────────────────────────────────────────────────────────────────
 
-function _buildSidebarSection(title, listEl) {
-    const header = _mk("div", { cls: "fbt-ce-sb-header", textContent: title });
-    const body   = _mk("div", { cls: "fbt-ce-sb-body" }, [listEl]);
-    _sectionToggle(header, body);
-    return _mk("div", { cls: "fbt-ce-sb-section" }, [header, body]);
-}
-
-function _populateSavedList() {
-    const list       = _dom.savedList;
-    const pagination = _dom.savedPagination;
-    if (!list) return;
-
-    const query    = _S.savedQuery.toLowerCase().trim();
-    const filtered = query
-        ? _S.savedComps.filter(c =>
-              (c.name || "").toLowerCase().includes(query) ||
-              (c.id   || "").toLowerCase().includes(query))
-        : _S.savedComps;
-
-    const total      = filtered.length;
-    const totalPages = Math.max(1, Math.ceil(total / SAVED_PAGE_SIZE));
-    _S.savedPage     = Math.max(0, Math.min(_S.savedPage, totalPages - 1));
-
-    const start     = _S.savedPage * SAVED_PAGE_SIZE;
-    const pageItems = filtered.slice(start, start + SAVED_PAGE_SIZE);
-
-    list.innerHTML = "";
-    if (!filtered.length) {
-        list.appendChild(_mk("div", {
-            cls: "fbt-ce-empty",
-            textContent: query ? "No matches" : "No saved compositions",
-        }));
-    } else {
-        const activeId = _S.composition?.id || "";
-        pageItems.forEach(comp => {
-            const isActive = comp.id && comp.id === activeId;
-            const row = _mk("div", {
-                cls: "fbt-ce-sb-item fbt-ce-clickable" + (isActive ? " fbt-ce-sb-item-active" : ""),
-                title: "Load composition",
-                onclick: () => _onLoad(comp.id),
-            });
-            row.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: comp.name || comp.id }));
-            const actions = _mk("span", { cls: "fbt-ce-sb-actions" });
-            actions.appendChild(_mk("button", {
-                cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Delete",
-                textContent: "✕",
-                onclick: (e) => { e.stopPropagation(); _onDeleteComp(comp.id, comp.name); },
-            }));
-            row.appendChild(actions);
-            list.appendChild(row);
-        });
-    }
-
-    // Pagination controls — only shown when more than one page exists
-    if (pagination) {
-        pagination.innerHTML = "";
-        if (totalPages > 1) {
-            const prevBtn = _mk("button", {
-                cls: "fbt-ce-pg-btn",
-                textContent: "‹",
-                title: "Previous page",
-                onclick: () => { _S.savedPage--; _populateSavedList(); },
-            });
-            prevBtn.disabled = _S.savedPage === 0;
-
-            const info = _mk("span", {
-                cls: "fbt-ce-pg-info",
-                textContent: `${_S.savedPage + 1} / ${totalPages}`,
-            });
-
-            const nextBtn = _mk("button", {
-                cls: "fbt-ce-pg-btn",
-                textContent: "›",
-                title: "Next page",
-                onclick: () => { _S.savedPage++; _populateSavedList(); },
-            });
-            nextBtn.disabled = _S.savedPage >= totalPages - 1;
-
-            pagination.appendChild(prevBtn);
-            pagination.appendChild(info);
-            pagination.appendChild(nextBtn);
-        }
-    }
-}
-
-function _populateSubjectList() {
-    const list       = _dom.subjectList;
-    const pagination = _dom.subjectPagination;
-    if (!list) return;
-    list.innerHTML = "";
-
-    // "New Subject" quick-add button — always shown, not paginated
-    list.appendChild(_mk("div", {
-        cls: "fbt-ce-sb-item fbt-ce-sb-new",
-        textContent: "+ New Subject…",
-        onclick: () => _showNewSubjectForm(),
-    }));
-
-    if (!lib.subjects.length) {
-        list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No subjects defined" }));
-        if (pagination) pagination.innerHTML = "";
-        return;
-    }
-
-    const assignedIds = new Set(Object.values(_S.composition?.subjects || {}));
-    const total       = lib.subjects.length;
-    const totalPages  = Math.max(1, Math.ceil(total / SUBJECT_PAGE_SIZE));
-    _S.subjectPage    = Math.max(0, Math.min(_S.subjectPage, totalPages - 1));
-    const start       = _S.subjectPage * SUBJECT_PAGE_SIZE;
-    const pageItems   = lib.subjects.slice(start, start + SUBJECT_PAGE_SIZE);
-
-    pageItems.forEach(s => {
-        const isActive = assignedIds.has(s.id);
-        const item = _mk("div", {
-            cls: "fbt-ce-sb-item fbt-ce-clickable" + (isActive ? " fbt-ce-sb-item-active" : ""),
-        });
-        const nameEl = _mk("span", { cls: "fbt-ce-sb-name", textContent: s.name || s.id });
-        const hint   = _mk("span", {
-            cls: "fbt-ce-sb-hint",
-            title: s.appearance_summary || "",
-            textContent: s.appearance_summary ? "…" : "",
-        });
-        item.title = s.appearance_summary || "";
-        item.appendChild(nameEl);
-        item.appendChild(hint);
-        item.addEventListener("click", () => _assignNextSlot(s.id));
-        list.appendChild(item);
-    });
-
-    if (pagination) {
-        pagination.innerHTML = "";
-        if (totalPages > 1) {
-            const prevBtn = _mk("button", {
-                cls: "fbt-ce-pg-btn", textContent: "‹", title: "Previous page",
-                onclick: () => { _S.subjectPage--; _populateSubjectList(); },
-            });
-            prevBtn.disabled = _S.subjectPage === 0;
-            const info = _mk("span", {
-                cls: "fbt-ce-pg-info",
-                textContent: `${_S.subjectPage + 1} / ${totalPages}`,
-            });
-            const nextBtn = _mk("button", {
-                cls: "fbt-ce-pg-btn", textContent: "›", title: "Next page",
-                onclick: () => { _S.subjectPage++; _populateSubjectList(); },
-            });
-            nextBtn.disabled = _S.subjectPage >= totalPages - 1;
-            pagination.appendChild(prevBtn);
-            pagination.appendChild(info);
-            pagination.appendChild(nextBtn);
-        }
-    }
-}
-
-function _showNewSubjectForm() {
-    const list = _dom.subjectList;
-    if (!list) return;
-    list.innerHTML = "";
-
-    const nameEl    = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Name*" });
-    const summaryEl = _mk("textarea", { cls: "fbt-ce-textarea", placeholder: "Appearance summary…", rows: 2 });
-    const conceptEl = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Concept ID (optional)" });
-
-    const form = _mk("div", { cls: "fbt-ce-inline-form" }, [
-        _mk("div", { cls: "fbt-ce-form-label", textContent: "New Subject" }),
-        nameEl, summaryEl, conceptEl,
-    ]);
-
-    const btnRow = _mk("div", { cls: "fbt-ce-form-btns" });
-    btnRow.appendChild(_mk("button", {
-        cls: "fbt-ce-btn fbt-ce-btn-primary",
-        textContent: "Add",
-        onclick: async () => {
-            const name = nameEl.value.trim();
-            if (!name) { nameEl.focus(); return; }
-            const id = name.toLowerCase().replace(/\s+/g, "_").replace(/[^\w]/g, "");
-            try {
-                await compositionsApi.saveSubject({
-                    id,
-                    name,
-                    appearance: { summary: summaryEl.value.trim() },
-                    concept_id: conceptEl.value.trim(),
-                });
-                const res = await compositionsApi.listSubjects();
-                lib.subjects = res.subjects ?? [];
-                _populateSubjectList();
-                _rebuildSlots();
-                _toast(`Subject "${name}" added`, "success");
-            } catch (e) {
-                _toast("Failed: " + e.message, "error");
-            }
-        },
-    }));
-    btnRow.appendChild(_mk("button", {
-        cls: "fbt-ce-btn",
-        textContent: "Cancel",
-        onclick: () => _populateSubjectList(),
-    }));
-    form.appendChild(btnRow);
-
-    list.appendChild(form);
-    nameEl.focus();
-}
-
 function _syncBgDropdown(selectId) {
-    _populateBgList();
     if (_dom.bgSel) {
         _dom.bgSel.innerHTML = "";
         _bgOptions().forEach(o => {
@@ -767,457 +552,24 @@ function _onLibraryChanged(e) {
             _markDirty();
         }
         _syncBgDropdown(_S.composition?.background || "");
-    } else if (kind === "outfits") {
-        _rebuildOutfitList();
+    } else if (kind === "outfits" || kind === "subjects") {
+        _dom.fillAddSubject?.();
         _rebuildSlots();
-    } else if (kind === "subjects") {
-        _populateSubjectList();
-        _rebuildSlots();
-    } else if (kind === "cameraPresets") {
-        _rebuildPresetList("camera");
-    } else if (kind === "soundPresets") {
-        _rebuildPresetList("sound");
+    } else if (kind === "cameraPresets" || kind === "soundPresets") {
+        _rebuildShots();   // preset pickers live in the shot cards
     }
-}
-
-function _populateBgList() {
-    const list       = _dom.bgList;
-    const pagination = _dom.bgPagination;
-    if (!list) return;
-    list.innerHTML = "";
-
-    // "New Background" quick-add button — always shown, not paginated
-    list.appendChild(_mk("div", {
-        cls: "fbt-ce-sb-item fbt-ce-sb-new",
-        textContent: "+ New Background…",
-        onclick: () => openBackgroundEditor(null),
-    }));
-
-    if (!lib.backgrounds.length) {
-        list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No backgrounds defined" }));
-        if (pagination) pagination.innerHTML = "";
-        return;
-    }
-
-    const activeBgId = _S.composition?.background || "";
-    const total      = lib.backgrounds.length;
-    const totalPages = Math.max(1, Math.ceil(total / BG_PAGE_SIZE));
-    _S.bgPage        = Math.max(0, Math.min(_S.bgPage, totalPages - 1));
-    const start      = _S.bgPage * BG_PAGE_SIZE;
-    const pageItems  = lib.backgrounds.slice(start, start + BG_PAGE_SIZE);
-
-    pageItems.forEach(b => {
-        const isActive = b.id === activeBgId;
-        const row = _mk("div", { cls: "fbt-ce-sb-item-row" });
-
-        const nameEl = _mk("div", {
-            cls: "fbt-ce-sb-item fbt-ce-clickable fbt-ce-sb-item-flex" + (isActive ? " fbt-ce-sb-item-active" : ""),
-            title: b.description || "",
-            onclick: () => _assignBg(b.id),
-        });
-        nameEl.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: b.name || b.id }));
-
-        const editBtn = _mk("button", {
-            cls: "fbt-ce-sb-edit-btn",
-            textContent: "✎",
-            title: "Edit background",
-        });
-        editBtn.addEventListener("click", e => { e.stopPropagation(); openBackgroundEditor(b); });
-
-        row.appendChild(nameEl);
-        row.appendChild(editBtn);
-        list.appendChild(row);
-    });
-
-    if (pagination) {
-        pagination.innerHTML = "";
-        if (totalPages > 1) {
-            const prevBtn = _mk("button", {
-                cls: "fbt-ce-pg-btn", textContent: "‹", title: "Previous page",
-                onclick: () => { _S.bgPage--; _populateBgList(); },
-            });
-            prevBtn.disabled = _S.bgPage === 0;
-            const info = _mk("span", {
-                cls: "fbt-ce-pg-info",
-                textContent: `${_S.bgPage + 1} / ${totalPages}`,
-            });
-            const nextBtn = _mk("button", {
-                cls: "fbt-ce-pg-btn", textContent: "›", title: "Next page",
-                onclick: () => { _S.bgPage++; _populateBgList(); },
-            });
-            nextBtn.disabled = _S.bgPage >= totalPages - 1;
-            pagination.appendChild(prevBtn);
-            pagination.appendChild(info);
-            pagination.appendChild(nextBtn);
-        }
-    }
-}
-
-function _populatePresetList(list, presets, insertFn) {
-    if (!list) return;
-    list.innerHTML = "";
-    if (!presets.length) {
-        list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No presets defined" }));
-        return;
-    }
-    presets.forEach(p => {
-        const item = _mk("div", {
-            cls: "fbt-ce-sb-item fbt-ce-clickable",
-            title: p.description || "",
-            onclick: () => {
-                if (insertFn) {
-                    insertFn(p.description || "");
-                } else {
-                    navigator.clipboard?.writeText(p.description || "").catch(() => {});
-                    _toast(`Copied: ${p.name}`, "success");
-                }
-            },
-        });
-        item.appendChild(_mk("span", { cls: "fbt-ce-sb-name", textContent: p.name || p.id }));
-        list.appendChild(item);
-    });
-}
-
-function _refreshSidebar() {
-    _populateSavedList();
-    _populateSubjectList();
-    _populateBgList();
-    _rebuildPresetList("camera");
-    _rebuildPresetList("sound");
-    _rebuildOutfitList();
 }
 
 // ── Camera / Sound preset sidebar sections ────────────────────────────────────
-
-function _rebuildPresetList(kind) {
-    const listEl  = kind === "camera" ? _dom.camList : _dom.sndList;
-    const presets = kind === "camera" ? lib.cameraPresets : lib.soundPresets;
-    const insertFn = kind === "camera" ? _insertCameraPreset : _insertSoundPreset;
-    if (!listEl) return;
-    listEl.innerHTML = "";
-    if (!presets.length) {
-        listEl.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No presets saved" }));
-        return;
-    }
-    presets.forEach(p => {
-        const row     = _mk("div", { cls: "fbt-ce-sb-item" });
-        const nameEl  = _mk("span", { cls: "fbt-ce-sb-name fbt-ce-clickable",
-            textContent: p.name || p.id, title: p.description || "",
-            onclick: () => insertFn(p.description || "") });
-        const actions = _mk("span", { cls: "fbt-ce-sb-actions" });
-        const delBtn  = _mk("button", { cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Delete preset", textContent: "✕",
-            onclick: async () => {
-                if (!confirm(`Delete preset "${p.name || p.id}"?`)) return;
-                try {
-                    if (kind === "camera") await compositionsApi.deleteCameraPreset(p.id);
-                    else                  await compositionsApi.deleteSoundPreset(p.id);
-                    const r = kind === "camera"
-                        ? await compositionsApi.listCameraPresets()
-                        : await compositionsApi.listSoundPresets();
-                    if (kind === "camera") lib.cameraPresets = r.camera_presets ?? [];
-                    else                   lib.soundPresets  = r.sound_presets  ?? [];
-                    _rebuildPresetList(kind);
-                    _toast("Preset deleted", "success");
-                } catch (e) { _toast(`Delete failed: ${e.message}`, "error"); }
-            }});
-        actions.appendChild(delBtn);
-        row.appendChild(nameEl);
-        row.appendChild(actions);
-        listEl.appendChild(row);
-    });
-}
-
-function _buildPresetSection(parent, kind) {
-    const title   = kind === "camera" ? "Camera Presets (click to apply)" : "Sound Presets (click to apply)";
-    const body    = _mk("div", { cls: "fbt-ce-sb-body" });
-    const listEl  = _mk("div", { cls: "fbt-ce-sb-list" });
-    if (kind === "camera") _dom.camList = listEl;
-    else                   _dom.sndList = listEl;
-
-    const nameIn  = _mk("input",    { cls: "fbt-ce-input",    placeholder: "Preset name" });
-    const textEl  = _mk("textarea", { cls: "fbt-ce-textarea", rows: 3,
-        placeholder: kind === "camera" ? "Camera movement / framing…" : "Sound / ambience description…" });
-    const saveBtn = _mk("button",   { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "Save",
-        onclick: async () => {
-            const name        = nameIn.value.trim();
-            const description = textEl.value.trim();
-            if (!name || !description) { _toast("Name and text are required", "warn"); return; }
-            try {
-                if (kind === "camera") await compositionsApi.saveCameraPreset({ name, description });
-                else                   await compositionsApi.saveSoundPreset({ name, description });
-                const r = kind === "camera"
-                    ? await compositionsApi.listCameraPresets()
-                    : await compositionsApi.listSoundPresets();
-                if (kind === "camera") lib.cameraPresets = r.camera_presets ?? [];
-                else                   lib.soundPresets  = r.sound_presets  ?? [];
-                _rebuildPresetList(kind);
-                nameIn.value = "";
-                textEl.value = "";
-                _toast("Preset saved", "success");
-            } catch (e) { _toast(`Save failed: ${e.message}`, "error"); }
-        }});
-
-    const form = _mk("div", { cls: "fbt-ce-preset-form" }, [nameIn, textEl, saveBtn]);
-    body.appendChild(listEl);
-    body.appendChild(form);
-    _rebuildPresetList(kind);
-    parent.appendChild(_buildSidebarSection(title, body));
-}
 
 // ── Outfit media helpers ───────────────────────────────────────────────────────
 
 // ── Outfit Registry sidebar section ───────────────────────────────────────────
 
-function _outfitIdFromRow(row) { return row?.dataset.outfitId ?? ""; }
-
-function _rebuildOutfitList() {
-    const list = _dom.outfitList;
-    if (!list) return;
-    list.innerHTML = "";
-    const entries = Object.entries(lib.outfits).sort(([, a], [, b]) =>
-        (a.name || "").localeCompare(b.name || ""));
-    if (!entries.length) {
-        list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No outfits defined." }));
-        return;
-    }
-    entries.forEach(([id, entry]) => {
-        const row = _mk("div", { cls: "fbt-ce-outfit-row" });
-        row.dataset.outfitId = id;
-        const nameEl = _mk("div", { cls: "fbt-ce-outfit-name", textContent: entry.name || id });
-        const idEl   = _mk("div", { cls: "fbt-ce-outfit-id",   textContent: id });
-        const editBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "Edit",
-            onclick: () => openOutfitEditor(id) });
-        const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-danger", textContent: "✕",
-            onclick: async () => {
-                if (!confirm(`Delete outfit '${id}'?`)) return;
-                try {
-                    await compositionsApi.deleteOutfit(id);
-                    delete lib.outfits[id];
-                    _rebuildOutfitList();
-                    _rebuildSlots();
-                } catch (e) { alert(`Delete failed: ${e.message}`); }
-            }});
-        const ctrl = _mk("div", { cls: "fbt-ce-outfit-ctrl" }, [editBtn, delBtn]);
-        row.appendChild(_mk("div", { cls: "fbt-ce-outfit-info" }, [nameEl, idEl]));
-        row.appendChild(ctrl);
-        list.appendChild(row);
-    });
-}
-
-function _buildOutfitsSection(parent) {
-    const body = _mk("div", { cls: "fbt-ce-sb-body" });
-    _dom.outfitList = _mk("div", { cls: "fbt-ce-sb-list" });
-
-    const addBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
-        textContent: "+ New Outfit",
-        onclick: () => openOutfitEditor(null) });
-    const reloadBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
-        textContent: "↺",
-        title: "Reload outfit registry from disk",
-        onclick: async () => {
-            try {
-                const r = await compositionsApi.getOutfitRegistry();
-                lib.outfits = r?.outfits ?? {};
-                _rebuildOutfitList();
-            } catch (e) { console.error("Outfit reload error", e); }
-        }});
-
-    const ctrl = _mk("div", { cls: "fbt-ce-outfit-section-ctrl" }, [addBtn, reloadBtn]);
-    body.appendChild(ctrl);
-    body.appendChild(_dom.outfitList);
-    _rebuildOutfitList();
-    parent.appendChild(_buildSidebarSection("Outfits", body));
-}
-
 // ── LLM status (the Compose sidebar no longer has an LLM section) ──────────────
 
 function _llmSyncBadge() {
     document.body.classList.toggle("fbt-llm-loaded", !!lib.llmLoaded);
-}
-
-function _buildSettingsSection(parent) {
-    const body = _mk("div", { cls: "fbt-ce-sb-body" });
-    const s    = _S.settings ?? {};
-
-    const _saveSettings = async () => {
-        try { await compositionsApi.saveSettings(_S.settings); } catch (_) {}
-    };
-
-    // ── Libber delimiter ─────────────────────────────────────────────────────
-    const delimRow = _mk("div", { cls: "fbt-ce-settings-row" });
-    delimRow.appendChild(_mk("span", { cls: "fbt-ce-settings-label", textContent: "Libber delimiter" }));
-    _dom.delimInput = _mk("input", {
-        cls: "fbt-ce-delimiter-input",
-        type: "text",
-        maxLength: 1,
-        value: s.libber_delimiter ?? "%",
-        title: "Single character used to wrap libber keys (e.g. %key%)",
-    });
-    _dom.delimInput.addEventListener("change", async () => {
-        const d = _dom.delimInput.value;
-        if (!d.length) { _dom.delimInput.value = _S.settings.libber_delimiter; return; }
-        _S.settings.libber_delimiter = d;
-        await _saveSettings();
-        _rebuildLibbers();
-    });
-    delimRow.appendChild(_dom.delimInput);
-    body.appendChild(delimRow);
-
-    // ── Default speech pace ──────────────────────────────────────────────────
-    const paceRow = _mk("div", { cls: "fbt-ce-settings-row" });
-    paceRow.appendChild(_mk("span", {
-        cls: "fbt-ce-settings-label",
-        textContent: "Default speech pace",
-        title: "Pre-selected pace for new shots' dialogue. Affects how much voice audio is trimmed.",
-    }));
-    _dom.settingsPaceSel = document.createElement("select");
-    _dom.settingsPaceSel.className = "fbt-ce-select fbt-ce-settings-sel";
-    [
-        { id: "slow",   label: "Slow (~2 words/sec)" },
-        { id: "normal", label: "Normal (~2.5 words/sec)" },
-        { id: "fast",   label: "Fast (~3 words/sec)" },
-    ].forEach(({ id, label }) => {
-        const o = document.createElement("option");
-        o.value = id; o.textContent = label;
-        if (id === (s.default_speech_pace ?? "normal")) o.selected = true;
-        _dom.settingsPaceSel.appendChild(o);
-    });
-    _dom.settingsPaceSel.addEventListener("change", async () => {
-        _S.settings.default_speech_pace = _dom.settingsPaceSel.value;
-        await _saveSettings();
-    });
-    paceRow.appendChild(_dom.settingsPaceSel);
-    body.appendChild(paceRow);
-
-    // ── Default audio processing ─────────────────────────────────────────────
-    body.appendChild(_mk("div", { cls: "fbt-ce-settings-group-label", textContent: "Default audio processing" }));
-
-    const _cb = (label, domKey, settingsKey, hint) => {
-        const row = _mk("div", { cls: "fbt-ce-settings-row" });
-        row.appendChild(_mk("span", { cls: "fbt-ce-settings-label", textContent: label, title: hint || "" }));
-        const cb = _mk("input", { type: "checkbox" });
-        cb.checked = !!(s[settingsKey] ?? false);
-        cb.addEventListener("change", async () => {
-            _S.settings[settingsKey] = cb.checked;
-            await _saveSettings();
-        });
-        _dom[domKey] = cb;
-        row.appendChild(cb);
-        return row;
-    };
-
-    body.appendChild(_cb("Noise removal", "settingsNoiseRemovalCb", "default_audio_noise_removal",
-        "Spectral subtraction applied to new bundles by default"));
-    body.appendChild(_cb("LUFS normalize", "settingsNormalizeLufsCb", "default_audio_normalize_lufs",
-        "Normalize to target loudness for new bundles by default"));
-
-    const lufsRow = _mk("div", { cls: "fbt-ce-settings-row" });
-    lufsRow.appendChild(_mk("span", { cls: "fbt-ce-settings-label", textContent: "Target LUFS" }));
-    _dom.settingsTargetLufsInp = _mk("input", {
-        cls: "fbt-ce-input fbt-ce-settings-lufs",
-        type: "number", min: "-36", max: "-6", step: "0.5",
-        value: s.default_audio_target_lufs ?? -14.0,
-        title: "Target integrated loudness in LUFS (−14 = streaming standard)",
-    });
-    _dom.settingsTargetLufsInp.addEventListener("change", async () => {
-        const v = parseFloat(_dom.settingsTargetLufsInp.value);
-        if (!isNaN(v)) {
-            _S.settings.default_audio_target_lufs = Math.max(-36, Math.min(-6, v));
-            _dom.settingsTargetLufsInp.value = _S.settings.default_audio_target_lufs;
-            await _saveSettings();
-        }
-    });
-    lufsRow.appendChild(_dom.settingsTargetLufsInp);
-    lufsRow.appendChild(_mk("span", { cls: "fbt-be-proc-unit", textContent: "LUFS" }));
-    body.appendChild(lufsRow);
-
-    // ── Melband model path ───────────────────────────────────────────────────
-    body.appendChild(_mk("div", { cls: "fbt-ce-settings-group-label", textContent: "Vocal isolation" }));
-    const mbRow = _mk("div", { cls: "fbt-ce-settings-row fbt-ce-settings-row--wide" });
-    mbRow.appendChild(_mk("span", {
-        cls: "fbt-ce-settings-label",
-        textContent: "MelBand model path",
-        title: "Path to a MelBand Roformer .safetensors checkpoint — used for vocal isolation (future feature). Kijai/MelBandRoFormer_comfy on HuggingFace has fp16 (456 MB) and fp32 (913 MB) builds.",
-    }));
-    _dom.settingsMelbandInp = _mk("input", {
-        cls: "fbt-ce-input",
-        type: "text",
-        placeholder: "MelBandRoformer_fp16.safetensors",
-        value: s.melband_model_path ?? "",
-        title: "Filename or path to a MelBand Roformer .safetensors checkpoint (Kijai/MelBandRoFormer_comfy — fp16 or fp32)",
-    });
-    _dom.settingsMelbandInp.addEventListener("change", async () => {
-        _S.settings.melband_model_path = _dom.settingsMelbandInp.value.trim();
-        await _saveSettings();
-    });
-    mbRow.appendChild(_dom.settingsMelbandInp);
-    body.appendChild(mbRow);
-
-    parent.appendChild(_buildSidebarSection("⚙ Settings", body));
-}
-
-function _buildSavedSection(parent) {
-    const body = _mk("div", { cls: "fbt-ce-sb-body" });
-
-    // Search row
-    const searchRow = _mk("div", { cls: "fbt-ce-saved-search-row" });
-    _dom.savedSearchInput = _mk("input", {
-        cls: "fbt-ce-input fbt-ce-saved-search",
-        type: "text",
-        placeholder: "Search…",
-    });
-    _dom.savedSearchInput.addEventListener("input", () => {
-        _S.savedQuery = _dom.savedSearchInput.value;
-        _S.savedPage  = 0;
-        _populateSavedList();
-    });
-    const clearBtn = _mk("button", {
-        cls: "fbt-ce-icon-btn fbt-ce-saved-clear",
-        textContent: "✕",
-        title: "Clear search",
-        onclick: () => {
-            _dom.savedSearchInput.value = "";
-            _S.savedQuery = "";
-            _S.savedPage  = 0;
-            _populateSavedList();
-            _dom.savedSearchInput.focus();
-        },
-    });
-    searchRow.appendChild(_dom.savedSearchInput);
-    searchRow.appendChild(clearBtn);
-    body.appendChild(searchRow);
-
-    _dom.savedList       = _mk("div", { cls: "fbt-ce-sb-list" });
-    _dom.savedPagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
-    body.appendChild(_dom.savedList);
-    body.appendChild(_dom.savedPagination);
-
-    parent.appendChild(_buildSidebarSection("Saved Compositions", body));
-}
-
-function _buildSidebar(parent) {
-    const sidebar = _mk("div", { cls: "fbt-ce-sidebar" });
-
-    _dom.subjectList       = _mk("div", { cls: "fbt-ce-sb-list" });
-    _dom.subjectPagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
-    const subjectBody = _mk("div", { cls: "fbt-ce-sb-body" });
-    subjectBody.appendChild(_dom.subjectList);
-    subjectBody.appendChild(_dom.subjectPagination);
-
-    _dom.bgList       = _mk("div", { cls: "fbt-ce-sb-list" });
-    _dom.bgPagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
-    const bgBody = _mk("div", { cls: "fbt-ce-sb-body" });
-    bgBody.appendChild(_dom.bgList);
-    bgBody.appendChild(_dom.bgPagination);
-
-    _buildSavedSection(sidebar);
-    sidebar.appendChild(_buildSidebarSection("Subjects (click to assign)", subjectBody));
-    sidebar.appendChild(_buildSidebarSection("Backgrounds (click to assign)", bgBody));
-    _buildPresetSection(sidebar, "camera");
-    _buildPresetSection(sidebar, "sound");
-    _buildOutfitsSection(sidebar);
-
-    parent.appendChild(sidebar);
 }
 
 // ── Editor sections ────────────────────────────────────────────────────────────
@@ -1254,8 +606,31 @@ function _buildSubjectSlotsSection(parent) {
             _markDirty();
         },
     });
+    // Add a subject straight from the library: fills the first empty slot, else adds a new one.
+    const addSubjSel = _mk("select", { cls: "fbt-ce-select fbt-ce-add-subject-sel",
+        title: "Add a subject from the library (manage subjects in the Assets tab)" });
+    const fillAddSubject = () => {
+        addSubjSel.innerHTML = "";
+        addSubjSel.appendChild(_mk("option", { value: "", textContent: "+ Add subject…" }));
+        lib.subjects.forEach(s => addSubjSel.appendChild(
+            _mk("option", { value: s.id, textContent: s.name || s.id })));
+    };
+    fillAddSubject();
+    _dom.fillAddSubject = fillAddSubject;
+    addSubjSel.addEventListener("change", () => {
+        const sid = addSubjSel.value;
+        addSubjSel.value = "";
+        if (!sid) return;
+        const emptyKey = _slotKeys().find(k => !_S.composition.subjects[k]);
+        const key = emptyKey || _nextSlotKey();
+        if (!key) return _toast("Could not allocate a new slot", "warn");
+        _S.composition.subjects[key] = sid;
+        _rebuildSlots();
+        _markDirty();
+        _toast(`Assigned ${lib.subjects.find(s => s.id === sid)?.name || sid} to ${key}`, "success");
+    });
     parent.appendChild(_dom.slotsContainer);
-    parent.appendChild(addBtn);
+    parent.appendChild(_mk("div", { cls: "fbt-ce-slot-add-row" }, [addBtn, addSubjSel]));
     _rebuildSlots();
 }
 
@@ -1577,7 +952,7 @@ function _buildShotCard(shot, index) {
     cam.addEventListener("input", () => { shot.camera = cam.value; _markDirty(); });
     _attachCompletion(cam);
     _attachLibberCompletion(cam);
-    card.appendChild(_labeledRow("Camera", cam));
+    card.appendChild(_labeledRow("Camera", _withPresetPicker(cam, "camera")));
 
     // Action — {A}/{B} completion enabled
     const action = _mk("textarea", {
@@ -1681,7 +1056,7 @@ function _buildShotCard(shot, index) {
         value: shot.sound_events || "",
     });
     snd.addEventListener("input", () => { shot.sound_events = snd.value.trim() || null; _markDirty(); });
-    card.appendChild(_labeledRow("Sound", snd));
+    card.appendChild(_labeledRow("Sound", _withPresetPicker(snd, "sound")));
 
     // Store refs so sidebar preset/LLM handlers can insert into the right fields
     card._camInput = cam;
@@ -1689,6 +1064,29 @@ function _buildShotCard(shot, index) {
     card._actInput = action;
 
     return card;
+}
+
+/**
+ * Wrap a shot's camera/sound input with an "Insert preset" dropdown. Picking a preset writes its
+ * text into that input (replacing the current value), like clicking a preset in the old sidebar.
+ * Presets are managed in the Assets tab.
+ */
+function _withPresetPicker(inputEl, kind) {
+    const presets = kind === "camera" ? lib.cameraPresets : lib.soundPresets;
+    const sel = _mk("select", { cls: "fbt-ce-select fbt-ce-preset-sel",
+        title: `Insert a ${kind} preset (manage presets in the Assets tab)` });
+    sel.appendChild(_mk("option", { value: "", textContent: "Preset…" }));
+    presets.forEach((p, i) => sel.appendChild(_mk("option", { value: String(i), textContent: p.name || p.id })));
+    sel.disabled = !presets.length;
+    sel.addEventListener("change", () => {
+        const p = presets[parseInt(sel.value, 10)];
+        sel.value = "";
+        if (!p) return;
+        inputEl.value = p.description || "";
+        inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+        _toast(`${kind === "camera" ? "Camera" : "Sound"} preset applied`, "success");
+    });
+    return _mk("div", { cls: "fbt-ce-inline" }, [inputEl, sel]);
 }
 
 function _rebuildShots() {
@@ -1748,26 +1146,6 @@ function _duplicateShot(idx) {
     _markDirty();
     const cards = _dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card");
     cards?.[_focusedShotIdx]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-function _insertCameraPreset(text) {
-    if (_focusedShotIdx < 0) { _toast("Click inside a shot first", "warn"); return; }
-    const cards = Array.from(_dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card") || []);
-    const card = cards[_focusedShotIdx];
-    if (!card?._camInput) { _toast("Click inside a shot first", "warn"); return; }
-    card._camInput.value = text;
-    card._camInput.dispatchEvent(new Event("input", { bubbles: true }));
-    _toast("Camera preset applied", "success");
-}
-
-function _insertSoundPreset(text) {
-    if (_focusedShotIdx < 0) { _toast("Click inside a shot first", "warn"); return; }
-    const cards = Array.from(_dom.shotsContainer?.querySelectorAll(".fbt-ce-shot-card") || []);
-    const card = cards[_focusedShotIdx];
-    if (!card?._sndInput) { _toast("Click inside a shot first", "warn"); return; }
-    card._sndInput.value = text;
-    card._sndInput.dispatchEvent(new Event("input", { bubbles: true }));
-    _toast("Sound preset applied", "success");
 }
 
 // ── LoRAs section ─────────────────────────────────────────────────────────────
@@ -2010,6 +1388,13 @@ async function _rebuildLibbers() {
 function _buildEditor(parent) {
     const editorWrap = _mk("div", { cls: "fbt-ce-editor" });
 
+    // Header: ← Back to the list, and the composition's name (mirrors the Sources tab)
+    _dom.editorTitle = _mk("h3", { cls: "fbt-ce-editor-title", textContent: "New composition" });
+    editorWrap.appendChild(_mk("div", { cls: "fbt-ce-editor-header" }, [
+        _mk("button", { cls: "fbt-ce-btn", textContent: "← Back", title: "Back to saved compositions", onclick: _onBack }),
+        _dom.editorTitle,
+    ]));
+
     // ─── Scrollable form ────────────────────────────────────────────────────────
     const form = _mk("div", { cls: "fbt-ce-form" });
 
@@ -2022,6 +1407,7 @@ function _buildEditor(parent) {
         });
         _dom.nameInput.addEventListener("input", () => {
             _S.composition.name = _dom.nameInput.value;
+            if (_dom.editorTitle) _dom.editorTitle.textContent = _dom.nameInput.value || "New composition";
             _markDirty();
         });
 
@@ -2286,12 +1672,6 @@ function _buildEditor(parent) {
         title: "Save composition (Ctrl+S)",
         onclick: _onSave,
     }));
-    actionBar.appendChild(_mk("button", {
-        cls: "fbt-ce-btn",
-        textContent: "New",
-        title: "Start a new composition",
-        onclick: _onNew,
-    }));
     const _stwWrap = _mk("div", { cls: "fbt-ce-stw-wrap" });
     _stwWrap.appendChild(_mk("button", {
         cls: "fbt-ce-btn",
@@ -2420,9 +1800,7 @@ async function _onSave() {
         _S.composition.id = saved.id || comp.id;
         _markClean();
         // Refresh saved list
-        const list = await compositionsApi.listCompositions();
-        _S.savedComps = list.compositions ?? [];
-        _populateSavedList();
+        await _refreshSavedComps();
         // Increment server counter so PromptCompositionLoader nodes re-execute
         compositionsApi.reloadCompositions().catch(() => {});
         _setStatus("Saved ✓");
@@ -2432,7 +1810,7 @@ async function _onSave() {
 }
 
 async function _onLoad(id) {
-    if (_S.dirty) {
+    if (_S.dirty && _S.composition?.id !== id) {
         if (!confirm("Discard unsaved changes?")) return;
     }
     try {
@@ -2440,9 +1818,9 @@ async function _onLoad(id) {
         _S.composition = comp;
         _populateEditor();
         _markClean();
-        _populateSavedList(); // refresh active indicator
+        _showView("editor");
     } catch (e) {
-        _setStatus("Load failed: " + e.message, true);
+        _toast("Load failed: " + e.message, "error");
     }
 }
 
@@ -2450,12 +1828,10 @@ async function _onDeleteComp(id, name) {
     if (!confirm(`Delete "${name}"?`)) return;
     try {
         await compositionsApi.deleteComposition(id);
-        const list = await compositionsApi.listCompositions();
-        _S.savedComps = list.compositions ?? [];
-        _populateSavedList();
+        await _refreshSavedComps();
         _toast(`Deleted "${name}"`, "success");
     } catch (e) {
-        _setStatus("Delete failed: " + e.message, true);
+        _toast("Delete failed: " + e.message, "error");
     }
 }
 
@@ -2464,6 +1840,117 @@ function _onNew() {
     _S.composition = _newComp();
     _populateEditor();
     _markClean();
+    _showView("editor");
+}
+
+/** Back from the editor to the saved-compositions list (asks first when there are unsaved edits). */
+function _onBack() {
+    if (_S.dirty && !confirm("Discard unsaved changes?")) return;
+    _markClean();
+    _showView("list");
+}
+
+function _showView(view) {
+    _S.view = view;
+    if (_dom.listView)   _dom.listView.style.display   = view === "list" ? "" : "none";
+    if (_dom.editorView) _dom.editorView.style.display = view === "editor" ? "" : "none";
+    if (view === "list") _populateSavedList();
+    else if (_dom.editorTitle) _dom.editorTitle.textContent = _S.composition?.name || "New composition";
+}
+
+// ── Saved compositions list (the default view) ─────────────────────────────────
+
+function _fmtUpdated(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString();
+}
+
+function _bgName(id) {
+    return id ? (lib.backgrounds.find(b => b.id === id)?.name || id) : "";
+}
+
+function _populateSavedList() {
+    const list = _dom.savedList;
+    const pagination = _dom.savedPagination;
+    if (!list) return;
+
+    const query = _S.savedQuery.toLowerCase().trim();
+    const filtered = query
+        ? _S.savedComps.filter(c =>
+              (c.name || "").toLowerCase().includes(query) || (c.id || "").toLowerCase().includes(query))
+        : _S.savedComps;
+    const total      = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / SAVED_PAGE_SIZE));
+    _S.savedPage     = Math.max(0, Math.min(_S.savedPage, totalPages - 1));
+    const pageItems  = filtered.slice(_S.savedPage * SAVED_PAGE_SIZE, (_S.savedPage + 1) * SAVED_PAGE_SIZE);
+
+    list.innerHTML = "";
+    if (!pageItems.length) {
+        list.appendChild(_mk("div", { cls: "fbt-ce-empty",
+            textContent: query ? "No compositions match the search."
+                               : "No saved compositions yet. Click + New to create one." }));
+    }
+    pageItems.forEach(comp => {
+        const meta = [
+            comp.model_type,
+            comp.subject_count != null ? `${comp.subject_count} subj` : "",
+            comp.shot_count != null ? `${comp.shot_count} shot${comp.shot_count === 1 ? "" : "s"}` : "",
+            _bgName(comp.background),
+            _fmtUpdated(comp.updated_at) ? `edited ${_fmtUpdated(comp.updated_at)}` : "",
+        ].filter(Boolean).join(" · ");
+        const card = _mk("div", { cls: "fbt-ce-list-card", title: "Open composition",
+            onclick: () => _onLoad(comp.id) }, [
+            _mk("div", { cls: "fbt-ce-list-card-top" }, [
+                _mk("i", { cls: "pi pi-file-edit" }),
+                _mk("span", { cls: "fbt-ce-list-card-name", textContent: comp.name || comp.id }),
+                _mk("button", { cls: "fbt-ce-icon-btn fbt-ce-danger", title: "Delete", textContent: "✕",
+                    onclick: e => { e.stopPropagation(); _onDeleteComp(comp.id, comp.name); } }),
+            ]),
+            _mk("div", { cls: "fbt-ce-list-card-meta", textContent: meta }),
+        ]);
+        list.appendChild(card);
+    });
+
+    if (pagination) {
+        pagination.innerHTML = "";
+        if (totalPages > 1) {
+            const prev = _mk("button", { cls: "fbt-ce-pg-btn", textContent: "‹", title: "Previous page",
+                onclick: () => { _S.savedPage--; _populateSavedList(); } });
+            prev.disabled = _S.savedPage === 0;
+            const next = _mk("button", { cls: "fbt-ce-pg-btn", textContent: "›", title: "Next page",
+                onclick: () => { _S.savedPage++; _populateSavedList(); } });
+            next.disabled = _S.savedPage >= totalPages - 1;
+            pagination.append(prev,
+                _mk("span", { cls: "fbt-ce-pg-info", textContent: `${_S.savedPage + 1} / ${totalPages}` }), next);
+        }
+    }
+}
+
+async function _refreshSavedComps() {
+    try {
+        _S.savedComps = (await compositionsApi.listCompositions()).compositions ?? [];
+    } catch (_) { /* keep the previous list */ }
+    _populateSavedList();
+}
+
+function _buildListView() {
+    const view = _mk("div", { cls: "fbt-ce-list-view" });
+    _dom.savedSearchInput = _mk("input", { cls: "fbt-ce-input fbt-ce-list-search", type: "text",
+        placeholder: "Search compositions…" });
+    _dom.savedSearchInput.addEventListener("input", () => {
+        _S.savedQuery = _dom.savedSearchInput.value;
+        _S.savedPage = 0;
+        _populateSavedList();
+    });
+    const newBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "+ New", onclick: _onNew });
+    const refreshBtn = _mk("button", { cls: "fbt-ce-icon-btn", textContent: "↺", title: "Refresh",
+        onclick: async () => { await _loadResources(); await _refreshSavedComps(); } });
+    view.appendChild(_mk("div", { cls: "fbt-ce-list-toolbar" }, [_dom.savedSearchInput, newBtn, refreshBtn]));
+    _dom.savedList       = _mk("div", { cls: "fbt-ce-list-cards" });
+    _dom.savedPagination = _mk("div", { cls: "fbt-ce-saved-pagination" });
+    view.append(_dom.savedList, _dom.savedPagination);
+    return view;
 }
 
 function _onSendToWorkflow(wrapEl) {
@@ -2561,47 +2048,13 @@ function _onSendToWorkflow(wrapEl) {
 
 // ── Sidebar click actions ──────────────────────────────────────────────────────
 
-function _assignNextSlot(subjectId) {
-    const slots = _slotKeys();
-    // Find first empty slot or add a new one
-    const emptyKey = slots.find(k => !_S.composition.subjects[k]);
-    if (emptyKey) {
-        _S.composition.subjects[emptyKey] = subjectId;
-    } else {
-        const key = _nextSlotKey();
-        if (!key) { _toast("Maximum 9 slots reached", "warn"); return; }
-        _S.composition.subjects[key] = subjectId;
-    }
-    _rebuildSlots();
-    _markDirty();
-    const name = lib.subjects.find(s => s.id === subjectId)?.name || subjectId;
-    _toast(`Assigned ${name}`, "success");
-}
-
-function _assignBg(bgId) {
-    _S.composition.background = bgId;
-    if (_dom.bgSel) {
-        // rebuild background select options to reflect current list
-        _dom.bgSel.innerHTML = "";
-        _bgOptions().forEach(o => {
-            const opt = document.createElement("option");
-            opt.value = o.id;
-            opt.textContent = o.label;
-            if (o.id === bgId) opt.selected = true;
-            _dom.bgSel.appendChild(opt);
-        });
-    }
-    _markDirty();
-    const name = lib.backgrounds.find(b => b.id === bgId)?.name || bgId;
-    _toast(`Background: ${name}`, "success");
-}
-
 // ── Populate editor from state ─────────────────────────────────────────────────
 
 function _populateEditor() {
     const comp = _S.composition;
     if (!comp) return;
     if (_dom.nameInput) _dom.nameInput.value = comp.name || "";
+    if (_dom.editorTitle) _dom.editorTitle.textContent = comp.name || "New composition";
     if (_dom.modelSel) {
         _dom.modelSel.value = comp.model_type || "h3_ref2va";
         if (_dom.taskFlagsRow) {
@@ -2651,9 +2104,12 @@ function _buildPanel(el) {
     el.appendChild(_dom.panel);
 
     const body = _mk("div", { cls: "fbt-ce-body" });
-    _buildSidebar(body);
-    _buildEditor(body);
+    _dom.listView = _buildListView();
+    _dom.editorView = _mk("div", { cls: "fbt-ce-editor-view" });
+    _buildEditor(_dom.editorView);
+    body.append(_dom.listView, _dom.editorView);
     _dom.panel.appendChild(body);
+    _showView("list");
 
     // Keyboard shortcuts — stopPropagation prevents ComfyUI's document-level handlers from also firing
     el.addEventListener("keydown", e => {
@@ -2670,7 +2126,9 @@ export async function renderCompositionEditor(el) {
     if (el.dataset.fbtceBuilt) {
         // Re-shown: refresh resource lists only
         await _loadResources();
-        _refreshSidebar();
+        _dom.fillAddSubject?.();
+        await _refreshSavedComps();
+        if (_S.view === "editor") { _rebuildSlots(); _rebuildShots(); }
         return;
     }
     el.dataset.fbtceBuilt = "1";
@@ -2686,7 +2144,8 @@ export async function renderCompositionEditor(el) {
     document.addEventListener(LIBRARY_CHANGED, _onLibraryChanged);
     _buildPanel(el);
     await _loadResources();
-    _refreshSidebar();
+    _dom.fillAddSubject?.();
+    _populateSavedList();
     _populateEditor();
     _markClean();
 
