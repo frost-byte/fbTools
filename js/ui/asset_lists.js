@@ -10,7 +10,7 @@
 import { compositionsApi } from "../api/compositions.js";
 import { llmApi } from "../api/llm.js";
 import { lib, notifyLibraryChanged } from "./library_store.js";
-import { mk as _mk, toast as _toast } from "./library_common.js";
+import { mk as _mk, toast as _toast, ceViewUrl, isVideoFile } from "./library_common.js";
 import { openBackgroundEditor } from "./background_editor.js";
 import { openOutfitEditor } from "./outfit_editor.js";
 
@@ -111,11 +111,20 @@ const _snippet = (s, n = 140) => {
     return s.length > n ? s.slice(0, n) + "…" : s;
 };
 
-/** Normalised rows: {id, name, meta, summary, open, remove}. */
+/** Thumbnail URL for the first still-image reference, or "" (videos are skipped). */
+function _thumbUrl(refs) {
+    for (const r of refs || []) {
+        const file = typeof r === "string" ? r : r?.file;
+        if (file && !isVideoFile(file)) return ceViewUrl(file, (typeof r === "object" && r.folder) || "input");
+    }
+    return "";
+}
+
+/** Normalised rows: {id, name, meta, summary, thumb, open, remove}. */
 function _items(kind) {
     if (kind === "backgrounds") {
         return lib.backgrounds.map(b => ({
-            id: b.id, name: b.name || b.id, summary: _snippet(b.description),
+            id: b.id, name: b.name || b.id, summary: _snippet(b.description), thumb: _thumbUrl(b.reference_images),
             meta: (b.reference_images?.length ? `${b.reference_images.length} ref img` : ""),
             open: () => openBackgroundEditor(b),
             remove: async () => {
@@ -129,7 +138,7 @@ function _items(kind) {
         return Object.entries(lib.outfits)
             .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
             .map(([id, o]) => ({
-                id, name: o.name || id, summary: _snippet(o.description),
+                id, name: o.name || id, summary: _snippet(o.description), thumb: _thumbUrl(o.reference_images),
                 meta: (o.reference_images?.length ? `${o.reference_images.length} ref img · ` : "") + id,
                 open: () => openOutfitEditor(id),
                 remove: async () => {
@@ -174,6 +183,7 @@ export function renderAssetList(kind, container, query = "", rerender = () => {}
     items.forEach(it => {
         const card = _mk("div", { cls: "fbt-be-card fbt-be-card-clickable", onclick: it.open });
         const top = _mk("div", { cls: "fbt-be-card-top" }, [
+            it.thumb ? _mk("img", { cls: "fbt-be-thumb", src: it.thumb, alt: "", loading: "lazy" }) : null,
             _mk("span", { cls: "fbt-be-card-name", textContent: it.name }),
             it.meta ? _mk("span", { cls: "fbt-be-card-meta", textContent: it.meta }) : null,
         ]);

@@ -3688,3 +3688,14 @@ body.fbt-llm-loaded
     gap: 6px;
     flex-wrap: wrap;
 }
+
+/* Assets tab: reference-image thumbnail on background/outfit cards */
+.fbt-be-thumb {
+    width: 34px;
+    height: 34px;
+    object-fit: cover;
+    border-radius: 4px;
+    flex-shrink: 0;
+    margin-right: 6px;
+    border: 1px solid var(--border-color, #333);
+}

@@ -166,6 +166,7 @@ The `WEB_DIRECTORY = "./js"` tells ComfyUI to serve everything in `js/` as stati
 | `js/index.js` | Re-exports all API clients and utilities |
 | `js/api/*.js` | REST API client classes (one per domain: libber, prompt_collection, scene, story, dataset_caption) |
 | `js/nodes/*.js` | Node-specific UI handlers imported by `fb_tools.js` |
+| `js/ui/fbt_panel.js` | Sidebar panel host; `TABS` lists Compose, Assets, Casts, Sources, Libbers, LLM, History, Inspect, Archive, Settings. Compose and Assets are described in `docs/assets_tab.md` (shared state in `js/ui/library_store.js`, `fbt:library-changed` event). |
 | `js/utils/api_base.js` | `BaseAPI` class with fetch + error handling |
 | `js/utils/debug_config.js` | Bitwise debug flag system (`debugLog`, `DEBUG_FLAGS`) |
 | `js/utils/widgets.js` | Widget update helpers (`updateWidgetFromText`, `scheduleNodeRefresh`, `setWidgetVisible`) |
