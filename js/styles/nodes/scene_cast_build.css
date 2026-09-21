@@ -444,3 +444,13 @@
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+/* Composition options (background override) — shown when a Prompt Composition drives the node */
+.fbt-scb-comp-opts {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 2px 0 4px;
+    border-bottom: 1px solid var(--border-color, #333);
+}
+.fbt-scb-comp-opts .fbt-scb-sel { flex: 1 1 auto; min-width: 0; }

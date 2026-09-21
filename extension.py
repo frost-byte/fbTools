@@ -17030,6 +17030,18 @@ class SceneCastBuild(io.ComfyNode):
                     ),
                 ),
                 io.String.Input(
+                    "composition_overrides_json",
+                    display_name="Composition Overrides",
+                    default="{}",
+                    optional=True,
+                    tooltip=(
+                        "JSON object managed by the on-node Composition options block: "
+                        "background id and background-as-reference overrides applied on top "
+                        "of the connected Prompt Composition. Empty = use the composition's "
+                        "own values. Do not edit by hand."
+                    ),
+                ),
+                io.String.Input(
                     "action_preview",
                     display_name="Action Preview",
                     default="",
@@ -17089,6 +17101,7 @@ class SceneCastBuild(io.ComfyNode):
         clip_id: str = "",
         clip_duration_multiplier: int = 1,
         prompt_composition=None,
+        composition_overrides_json: str = "{}",
         **_,
     ):
         bundle_mtime = subject_mtime = source_mtime = 0
@@ -17110,7 +17123,7 @@ class SceneCastBuild(io.ComfyNode):
         pc_id = prompt_composition.get("id", "") if isinstance(prompt_composition, dict) else ""
         pc_subjects = json.dumps(prompt_composition.get("subjects", {}), sort_keys=True) if isinstance(prompt_composition, dict) else ""
         return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json, clip_id, sp_id,
-                clip_duration_multiplier, pc_id, pc_subjects)
+                clip_duration_multiplier, pc_id, pc_subjects, composition_overrides_json)
 
     @classmethod
     def execute(
@@ -17120,6 +17133,7 @@ class SceneCastBuild(io.ComfyNode):
         clip_id: str = "",
         clip_duration_multiplier: int = 1,
         prompt_composition=None,
+        composition_overrides_json: str = "{}",
         **_,
     ) -> io.NodeOutput:
         try:
@@ -17342,6 +17356,15 @@ class SceneCastBuild(io.ComfyNode):
             "source_profiles": connected_profiles,
             "clip_ids":        clip_ids,
         }
+        # Per-run overrides for the connected composition (background etc.).
+        # Ignored in Source Profile mode, where the composition is not the driver.
+        if isinstance(prompt_composition, dict) and prompt_composition and not connected_profiles:
+            try:
+                ov = json.loads(composition_overrides_json or "{}")
+            except Exception:
+                ov = {}
+            if isinstance(ov, dict) and ov:
+                cast["composition_overrides"] = ov
 
         n = len(entries)
         has_sp = bool(connected_profiles)
@@ -17403,6 +17426,7 @@ from .utils.prompt_compositions import (
     resolve_background as _resolve_composition_background,
     validate_composition as _validate_composition,
     apply_cast_to_subjects as _apply_cast_to_subjects,
+    apply_composition_overrides as _apply_composition_overrides,
 )
 from .utils.composition_resources import (
     list_backgrounds as _list_backgrounds,
@@ -19592,6 +19616,12 @@ class PromptCompositionLoader(io.ComfyNode):
         registry = _load_subject_registry(default_subject_profiles_path())
         backgrounds = _load_backgrounds_dict(user_data_dir())
         outfit_reg = _load_outfit_registry(default_outfit_registry_path())
+        # Per-run overrides from SceneCastBuild (background, background-as-reference)
+        _cast_overrides = scene_cast.get("composition_overrides") if isinstance(scene_cast, dict) else None
+        if _cast_overrides:
+            composition, _ov_warnings = _apply_composition_overrides(composition, _cast_overrides, backgrounds)
+            for _w in _ov_warnings:
+                logger.warning("PromptCompositionLoader: %s", _w)
         resolved_subjects = _resolve_composition_subjects(composition, registry)
         resolved_background = _resolve_composition_background(composition, backgrounds)
 
@@ -19985,6 +20015,22 @@ def _track_format_prompt_composition_loader(kwargs: dict):
         rows.update(summarize_composition_meta(composition, kwargs.get("model_type", ""), subject_lookup))
 
     scene_cast = kwargs.get("scene_cast")
+    if composition is not None:
+        # Effective background (after any SceneCastBuild override) so a run's setting is recoverable.
+        overrides = scene_cast.get("composition_overrides") if isinstance(scene_cast, dict) else None
+        bgs = _load_backgrounds_dict(user_data_dir())
+        eff, _ = _apply_composition_overrides(composition, overrides, bgs)
+        bg = _resolve_composition_background(eff, bgs)
+        rows["Background"] = (
+            (bg.get("name") or eff.get("background") or "?") if bg else "(none)"
+        ) + (" (override)" if overrides and "background" in overrides else "")
+        as_ref = bool(eff.get("background_as_reference"))
+        has_refs = bool(bg and bg.get("reference_images"))
+        rows["Background as reference"] = (
+            ("yes" if as_ref else "no")
+            + ("" if not as_ref or has_refs else " (no reference images, text only)")
+            + (" (override)" if overrides and "background_as_reference" in overrides else "")
+        )
     if isinstance(scene_cast, dict):
         bundle_reg = _load_bundle_registry(default_bundle_registry_path())
         rows.update(summarize_scene_cast(scene_cast, bundle_reg.get))

@@ -227,6 +227,42 @@ def resolve_background(composition: dict, backgrounds: dict | None = None) -> di
     return snap if snap else None
 
 
+def apply_composition_overrides(
+    composition: dict, overrides: dict | None, backgrounds: dict | None = None
+) -> tuple[dict, list[str]]:
+    """Return (modified copy, warnings) with per-run overrides applied.
+
+    Supported keys (each present only when it differs from the composition):
+      background               - background id, or "none" to drop the background
+      background_as_reference  - bool
+    An unknown background id keeps the composition's own and adds a warning.
+    The input dict is never mutated.
+    """
+    import copy
+
+    out = copy.deepcopy(composition)
+    warnings: list[str] = []
+    if not isinstance(overrides, dict) or not overrides:
+        return out, warnings
+
+    if "background" in overrides:
+        bg_id = str(overrides.get("background") or "").strip()
+        if bg_id in ("", "none"):
+            out["background"] = ""
+            out.pop("_background_snapshot", None)
+        elif backgrounds and bg_id in backgrounds:
+            if bg_id != out.get("background"):
+                out["background"] = bg_id
+                out["_background_snapshot"] = backgrounds[bg_id]
+        else:
+            warnings.append(f"background override '{bg_id}' not found; using the composition's own")
+
+    if "background_as_reference" in overrides:
+        out["background_as_reference"] = bool(overrides["background_as_reference"])
+
+    return out, warnings
+
+
 def validate_composition(composition: dict) -> list[str]:
     """Return a list of warning strings.  Empty list means no issues."""
     warnings = []

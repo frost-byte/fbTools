@@ -45,6 +45,24 @@ links keep their slot indexes.
   (punctuation, pacing phrases, dialogue formatting and `<Subject N>` labels come from the assembler
   at run time).
 
+## Composition options: background override
+
+While a composition drives the node, a "Composition options" block appears above the cast
+tabs: a **Background** dropdown (first option `Default: <the composition's background>`, then
+`(none)` and every other background) and a **Use background as reference images** checkbox
+that shows the effective value (disabled when the effective background has no reference images,
+because the assembler then only uses its text).
+
+The choices are stored as a small JSON object in the hidden `composition_overrides_json` input,
+and only keys that differ from the composition are present (`background`: id or `"none"`,
+`background_as_reference`: bool), so an empty object means "use the composition as saved". They
+travel on the cast dict as `scene_cast["composition_overrides"]` and are applied by
+`PromptCompositionLoader` right after the composition is loaded
+(`apply_composition_overrides` in `utils/prompt_compositions.py`), before the background is
+resolved and the prompt assembled. An unknown background id logs a warning and keeps the
+composition's own. The block and the overrides are ignored in Source Profile mode. Run History
+shows the effective `Background` / `Background as reference` rows, marked `(override)`.
+
 ## The per-entry Dialogue field is Source-Profile-only
 
 Only `SourceProfileClipPrompt` reads a cast entry's `dialogue`: it matches the entry to a source

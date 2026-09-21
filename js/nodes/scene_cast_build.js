@@ -11,11 +11,13 @@
 
 import { setWidgetVisible } from "../utils/widgets.js";
 import { bundlesApi }       from "../api/bundles.js";
+import { compositionsApi }  from "../api/compositions.js";
 import { shotsToSegments, substituteSlotPlaceholders } from "../utils/composition_timeline.js";
 import { app }               from "../../../scripts/app.js";
 import { api }               from "../../../scripts/api.js";
 
 const JSON_WIDGET = "cast_entries_json";
+const OVERRIDES_WIDGET = "composition_overrides_json";
 const MAX_ENTRIES = 8;
 
 
@@ -95,6 +97,9 @@ function _buildCastBuildUI(node, app) {
     // it exists purely so the frontend-computed preview rides along in the
     // submitted prompt as a literal value, making it visible to Run History's
     // [track:] scan without any runtime-capture plumbing.
+    const overridesWidget = node.widgets?.find(w => w.name === OVERRIDES_WIDGET);
+    if (overridesWidget) setWidgetVisible(overridesWidget, false, node);
+
     const actionPreviewWidget = node.widgets?.find(w => w.name === "action_preview");
     if (actionPreviewWidget) setWidgetVisible(actionPreviewWidget, false, node);
 
@@ -107,6 +112,14 @@ function _buildCastBuildUI(node, app) {
     // Source Profile takes precedence (mirrors the backend), so the composition is
     // only "active" when no profile is connected.
     let _connectedComposition = null;
+    // Per-run overrides applied on top of the connected composition; a key exists only when it
+    // differs from the composition's own value: {background?: id|"none", background_as_reference?: bool}
+    let _overrides = {};
+    try {
+        const parsed = JSON.parse(overridesWidget?.value || "{}");
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) _overrides = parsed;
+    } catch { /* keep empty */ }
+    let _backgrounds = [];   // [{id, name, reference_images}] from the backgrounds store
     let _clipAllowsDialogue  = true;
     let _activeClipId        = "";
     let _multiplier          = 1;
@@ -155,6 +168,12 @@ function _buildCastBuildUI(node, app) {
     const tabContent = document.createElement("div");
     tabContent.className = "fbt-scb-tab-content";
 
+    // Composition options (background override) — shown only while a composition drives the node.
+    const optsSection = document.createElement("div");
+    optsSection.className = "fbt-scb-comp-opts";
+    optsSection.style.display = "none";
+
+    wrap.appendChild(optsSection);
     wrap.appendChild(tabStrip);
     wrap.appendChild(tabContent);
 
@@ -869,7 +888,8 @@ function _buildCastBuildUI(node, app) {
     function _widgetHeight() {
         // Tab strip + 3 form rows (subject/mode/dlg) + preview toggle + preview area
         const base = 30 + 26 + 26 + 26 + 24;  // ≈ 132px
-        return base + (_previewOpen ? 140 : 0);
+        const opts = optsSection.style.display === "none" ? 0 : 58;
+        return base + opts + (_previewOpen ? 140 : 0);
     }
 
     function _updateHeight() {
@@ -880,6 +900,92 @@ function _buildCastBuildUI(node, app) {
     }
 
     // ── 12. Sync entries → hidden widget ─────────────────────────────────────
+
+    function _syncOverrides() {
+        if (overridesWidget) overridesWidget.value = JSON.stringify(_overrides);
+        app?.graph?.setDirtyCanvas?.(true, false);
+    }
+
+    function _compBackgroundRefs(bgId) {
+        return (_backgrounds.find(b => b.id === bgId)?.reference_images ?? []).length > 0;
+    }
+
+    function _renderCompositionOptions() {
+        optsSection.innerHTML = "";
+        const show = _compositionActive();
+        optsSection.style.display = show ? "" : "none";
+        if (!show) { _updateHeight(); return; }
+
+        const comp = _connectedComposition;
+        const defaultBg = comp.background || "";
+        // Drop overrides that point at a background that no longer exists.
+        if (_overrides.background && _overrides.background !== "none"
+            && _backgrounds.length && !_backgrounds.some(b => b.id === _overrides.background)) {
+            delete _overrides.background;
+        }
+        const effBg = "background" in _overrides ? (_overrides.background === "none" ? "" : _overrides.background) : defaultBg;
+        const defaultRef = !!comp.background_as_reference;
+        const effRef = "background_as_reference" in _overrides ? !!_overrides.background_as_reference : defaultRef;
+
+        const nameOf = id => _backgrounds.find(b => b.id === id)?.name || id;
+        const bgSel = document.createElement("select");
+        bgSel.className = "fbt-scb-sel";
+        const addOpt = (value, label) => {
+            const o = document.createElement("option");
+            o.value = value; o.textContent = label; bgSel.appendChild(o);
+        };
+        addOpt("__default__", defaultBg ? `Default: ${nameOf(defaultBg)}` : "Default: (none)");
+        if (defaultBg) addOpt("none", "(none)");
+        _backgrounds.filter(b => b.id !== defaultBg).forEach(b => addOpt(b.id, b.name || b.id));
+        bgSel.value = !("background" in _overrides) ? "__default__" : (_overrides.background || "none");
+        if (bgSel.value === "") bgSel.value = "__default__";
+        bgSel.addEventListener("change", () => {
+            if (bgSel.value === "__default__") delete _overrides.background;
+            else _overrides.background = bgSel.value;
+            _syncOverrides();
+            _renderCompositionOptions();
+        });
+
+        const bgRow = document.createElement("div");
+        bgRow.className = "fbt-scb-form-row";
+        const bgLbl = document.createElement("span");
+        bgLbl.className = "fbt-scb-field-label";
+        bgLbl.textContent = "Background";
+        bgRow.append(bgLbl, bgSel);
+
+        const hasRefs = _compBackgroundRefs(effBg);
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = effRef;
+        cb.disabled = !effBg || !hasRefs;
+        cb.addEventListener("change", () => {
+            if (cb.checked === defaultRef) delete _overrides.background_as_reference;
+            else _overrides.background_as_reference = cb.checked;
+            _syncOverrides();
+            _renderCompositionOptions();
+        });
+        const cbLbl = document.createElement("label");
+        cbLbl.className = "fbt-scb-field-label";
+        cbLbl.style.cursor = cb.disabled ? "default" : "pointer";
+        cbLbl.append(cb, document.createTextNode(" Use background as reference images"));
+        if (!effBg) cbLbl.title = "No background selected";
+        else if (!hasRefs) cbLbl.title = "This background has no reference images (text description only)";
+        else cbLbl.title = `Composition default: ${defaultRef ? "on" : "off"}`;
+        const refRow = document.createElement("div");
+        refRow.className = "fbt-scb-form-row";
+        refRow.appendChild(cbLbl);
+
+        optsSection.append(bgRow, refRow);
+        _updateHeight();
+    }
+
+    async function _loadBackgrounds() {
+        try {
+            const res = await compositionsApi.listBackgrounds();
+            _backgrounds = res.backgrounds ?? [];
+        } catch { _backgrounds = []; }
+        _renderCompositionOptions();
+    }
 
     function _syncWidget() {
         if (jsonWidget) jsonWidget.value = JSON.stringify(_entries);
@@ -981,6 +1087,8 @@ function _buildCastBuildUI(node, app) {
                             result = {
                                 id:   comp.id || match.id,
                                 name: comp.name || name,
+                                background:              comp.background || "",
+                                background_as_reference: !!comp.background_as_reference,
                                 shots: comp.shots ?? [],
                                 roster: Object.entries(comp.subjects ?? {})
                                     .filter(([, sid]) => sid)
@@ -1002,10 +1110,12 @@ function _buildCastBuildUI(node, app) {
         }
         _connectedComposition = result;
         _reresolveCompositionOrdinals();
+        _renderCompositionOptions();
         if (_entries.length) _renderActiveTab();
     }
 
     node._refreshCompositionSubjects = _refreshCompositionSubjects;
+    _loadBackgrounds();
     requestAnimationFrame(() => _refreshCompositionSubjects().then(() => _refreshClipSelects()));
 
     // ── 15. Clip timeline ─────────────────────────────────────────────────────
