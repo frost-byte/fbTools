@@ -37,7 +37,7 @@ function _firstWords(text, n = 5) {
  */
 export function shotDisplayText(shot) {
     const lines = [];
-    if (shot.camera && String(shot.camera).trim()) lines.push(`Camera: ${String(shot.camera).trim()}`);
+    if (shot.camera && String(shot.camera).trim()) lines.push(String(shot.camera).trim());
     if (shot.action && String(shot.action).trim()) lines.push(String(shot.action).trim());
     const dlg = shot.dialogue;
     if (dlg && dlg.text && String(dlg.text).trim()) {

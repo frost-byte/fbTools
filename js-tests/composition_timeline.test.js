@@ -74,7 +74,7 @@ describe("shotDisplayText", () => {
             camera: "Close-up of {A}", action: "{A} turns to {B}.",
             dialogue: { speaker: "A", text: "Hello." },
         });
-        expect(text).toBe('Camera: Close-up of {A}\n{A} turns to {B}.\n{A}: "Hello."');
+        expect(text).toBe('Close-up of {A}\n{A} turns to {B}.\n{A}: "Hello."');
     });
 
     test("skips empty parts", () => {
