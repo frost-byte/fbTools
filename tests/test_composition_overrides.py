@@ -91,3 +91,28 @@ def test_assembly_follows_override_with_reference_images():
     assert "sunlit beach" in without_ref["prompt"]
     # The reference variant mints an extra subject slot for the background images.
     assert with_ref["prompt"] != without_ref["prompt"]
+
+
+def test_ref_plan_from_assembled_scene_includes_background_images():
+    """The H3 ref plan must be built from assemble_composition's own scene_instance so the
+    background-reference slot (minted during assembly) is present and ordinals match."""
+    bgs = _bgs()
+    comp, _ = apply_overrides(_comp(), {"background": "beach", "background_as_reference": True}, bgs)
+    bg = pc.resolve_background(comp, bgs)
+    alice = _alice()
+    alice["character_sheet_images"] = [{"file": "alice1.png", "role": "portrait"}]
+    result = pa.assemble_composition(comp, {"A": alice}, bg, "h3_ref2va")
+
+    plan = pa._build_h3_refplan(result["scene_instance"])
+    paths = [r["path"] for r in plan["references"] if r["modality"] == "image"]
+    assert paths == ["alice1.png", "beach1.png"]
+    ordinals = [r["picture_ordinal"] for r in plan["references"] if r["modality"] == "image"]
+    assert ordinals == [1, 2]
+    # The prompt references both pictures too (subject + background).
+    assert result["reference_image_order"] == [("A", "alice1.png"), ("B", "beach1.png")]
+
+    # Flag off -> the background image is not in the plan.
+    comp_off, _ = apply_overrides(_comp(), {"background": "beach", "background_as_reference": False}, bgs)
+    result_off = pa.assemble_composition(comp_off, {"A": alice}, pc.resolve_background(comp_off, bgs), "h3_ref2va")
+    plan_off = pa._build_h3_refplan(result_off["scene_instance"])
+    assert [r["path"] for r in plan_off["references"] if r["modality"] == "image"] == ["alice1.png"]

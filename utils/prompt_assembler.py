@@ -1973,7 +1973,13 @@ def assemble_composition(
     if composition_flags:
         scene_instance["task_flags"] = composition_flags
 
-    return assemble_prompt(scene_instance, model_type, video_entries)
+    result = assemble_prompt(scene_instance, model_type, video_entries)
+    # Hand back the exact scene_instance the prompt was assembled from. It is the only
+    # place the minted extra slots (background reference, outfit references, bundle
+    # replacements) exist, so the H3 ref plan must be built from it — building it from
+    # the raw resolved subjects would drop those images and misalign picture ordinals.
+    result["scene_instance"] = scene_instance
+    return result
 
 
 def _remap_slots(text: str, slot_map: dict[str, str]) -> str:

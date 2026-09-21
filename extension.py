@@ -19713,7 +19713,10 @@ class PromptCompositionLoader(io.ComfyNode):
                 slot_trim_to[_letter] = slot_trim_to.get(_letter, 0.0) + _dur
 
         # Build FBTOOLS_H3_REFPLAN from enriched subjects + full video descriptors
-        scene_instance_for_plan = {
+        # Use the scene_instance the prompt was assembled from: it carries the minted
+        # background / outfit-reference / bundle slots, so ref-plan picture ordinals match
+        # the <Subject N> labels in the prompt. (Fallback keeps older assemblers working.)
+        scene_instance_for_plan = result.get("scene_instance") or {
             "slot_assignments": resolved_subjects,
             "outfit_overrides": composition.get("outfit_overrides", {}),
         }

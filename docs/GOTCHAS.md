@@ -84,3 +84,13 @@ packages/entry points and import from `utils/*.py` normally via `.utils.x`
 (extension.py) or a `sys.path` insert (standalone scripts).
 
 ---
+
+## H3 ref plan must come from the assembled scene_instance, not the raw subjects
+
+`assemble_composition()` mints extra slots (background reference, `Fit_N` outfit references,
+bundle replacements) that exist only inside the `scene_instance` it builds. The prompt refers to
+them as `<Subject N>`, so anything that builds the H3 ref plan from `resolved_subjects` alone
+silently drops those images and shifts picture ordinals. `PromptCompositionLoader` therefore builds
+the plan from `result["scene_instance"]`. Symptom when it regresses: the prompt mentions a
+background/outfit picture but the conditioning node shows no image for it.
+
