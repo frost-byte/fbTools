@@ -15918,10 +15918,25 @@ async def _outfits_extract_outfit(request):
         if not filename:
             return web.json_response({"error": "filename required"}, status=400)
 
-        image_dir  = folder_paths.get_input_directory()
-        image_path = os.path.join(image_dir, os.path.basename(filename))
+        # The picker offers files from input/ and output/ (including subfolders),
+        # so resolve `filename` (a relative path) inside the requested folder.
+        folder = (body.get("folder") or "input").strip()
+        if folder == "output":
+            base_dir = folder_paths.get_output_directory()
+        elif folder == "input":
+            base_dir = folder_paths.get_input_directory()
+        else:
+            return web.json_response({"error": f"Unknown folder: {folder}"}, status=400)
+        base_real  = os.path.realpath(base_dir)
+        image_path = os.path.realpath(os.path.join(base_real, filename))
+        if os.path.commonpath([base_real, image_path]) != base_real:
+            return web.json_response({"error": "Invalid path"}, status=400)
         if not os.path.isfile(image_path):
-            return web.json_response({"error": f"File not found: {filename}"}, status=404)
+            return web.json_response({"error": f"File not found: {folder}/{filename}"}, status=404)
+        # Result always lands in the input dir root so the UI can load it via /view?type=input.
+        out_path_target = os.path.join(
+            folder_paths.get_input_directory(), f"_outfit_seg_{uuid.uuid4().hex[:12]}.png"
+        )
 
         from .utils.sam2_segmenter import (
             SAM2Segmenter,
@@ -15958,7 +15973,7 @@ async def _outfits_extract_outfit(request):
         import asyncio
         out_path = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: _sam2_segmenter.segment(image_path, point_x, point_y, point_label),
+            lambda: _sam2_segmenter.segment(image_path, point_x, point_y, point_label, output_path=out_path_target),
         )
         return web.json_response({"result_file": os.path.basename(out_path)})
 

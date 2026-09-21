@@ -261,6 +261,7 @@ export function openOutfitEditor(existingId) {
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                             filename:    selFile.path,
+                            folder:      selFile.folder || "input",
                             point_x:     extractPoint.x,
                             point_y:     extractPoint.y,
                             point_label: 1,
