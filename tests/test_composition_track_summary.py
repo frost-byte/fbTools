@@ -120,3 +120,26 @@ def test_loras_style_matches_enabled_summary():
 
 def test_loras_empty():
     assert summarize_loras([]) == "" and summarize_loras(None) == ""
+
+
+# ── summarize_composition_meta (values the loader no longer outputs) ────────────
+
+summarize_composition_meta = cts.summarize_composition_meta
+
+
+def test_meta_composition_default_resolves_to_the_compositions_model_type():
+    comp = {"model_type": "h3_ref2va", "subjects": {}}
+    assert summarize_composition_meta(comp, "composition default", lambda s: None)["Model Type Used"] == "h3_ref2va"
+    assert summarize_composition_meta(comp, "", lambda s: None)["Model Type Used"] == "h3_ref2va"
+    assert summarize_composition_meta(comp, "wan22", lambda s: None)["Model Type Used"] == "wan22"
+
+
+def test_meta_concept_ids_in_slot_order_deduped_with_composition_last():
+    comp = {"subjects": {"A": "amy", "B": "", "C": "bob", "D": "cara"}, "concept_id": "scene_cid"}
+    lookup = {"amy": {"concept_id": "c_amy"}, "bob": {"concept_id": "c_amy"}, "cara": {"concept_id": "c_cara"}}.get
+    assert summarize_composition_meta(comp, "x", lookup)["Concept IDs"] == "c_amy, c_cara, scene_cid"
+
+
+def test_meta_no_concept_ids_row_when_none():
+    rows = summarize_composition_meta({"subjects": {"A": "amy"}}, "x", lambda s: {})
+    assert "Concept IDs" not in rows

@@ -124,3 +124,25 @@ def summarize_loras(loras) -> str:
             line += f" ({e['target']})"
         lines.append(line)
     return "\n".join(lines)
+
+
+def summarize_composition_meta(composition: dict, model_type, subject_lookup) -> dict[str, str]:
+    """Rows for values the loader no longer exposes as outputs: the model type actually
+    used ("composition default" resolves to the composition's own) and the concept IDs
+    (each subject's concept_id in slot order, then the composition-level one)."""
+    rows: dict[str, str] = {}
+    used = composition.get("model_type", "h3_ref2va") if model_type in ("", None, "composition default") else model_type
+    rows["Model Type Used"] = str(used)
+    cids: list[str] = []
+    for sid in (composition.get("subjects") or {}).values():
+        if not sid:
+            continue
+        cid = str((subject_lookup(sid) or {}).get("concept_id") or "").strip()
+        if cid and cid not in cids:
+            cids.append(cid)
+    comp_cid = str(composition.get("concept_id") or "").strip()
+    if comp_cid and comp_cid not in cids:
+        cids.append(comp_cid)
+    if cids:
+        rows["Concept IDs"] = ", ".join(cids)
+    return rows

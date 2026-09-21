@@ -12,7 +12,7 @@ from typing_extensions import override
 from nodes import ImageScaleBy
 from .nodes.shared import prefixed_node_id
 from .nodes.run_tracking import RunMetaCapture, JobCompleteNotifier, register_track_formatter
-from .utils.composition_track_summary import summarize_scene_cast, summarize_loras
+from .utils.composition_track_summary import summarize_scene_cast, summarize_loras, summarize_composition_meta
 from .nodes import kdenlive_archive as _kdenlive_archive_routes  # noqa: F401  (registers /fbtools/kdenlive/* routes on import)
 from .utils.util import (
     draw_pose_json,
@@ -19480,36 +19480,12 @@ class PromptCompositionLoader(io.ComfyNode):
             ],
             outputs=[
                 io.String.Output("prompt", display_name="Prompt"),
-                io.String.Output(
-                    "concept_ids",
-                    display_name="Concept IDs",
-                    tooltip="Comma-separated concept IDs — wire into ConceptResolve.",
-                ),
-                io.String.Output("model_type_used", display_name="Model Type Used"),
                 io.String.Output("composition_name", display_name="Composition Name"),
                 io.String.Output(
                     "filename_prefix",
                     display_name="Filename Prefix",
                     tooltip="prefix + composition name (e.g. 'video/bbc_ride'). Wire into VHS_VideoCombine filename_prefix.",
                 ),
-                io.String.Output(
-                    "reference_video",
-                    display_name="Reference Video",
-                    tooltip="Absolute path to the first video-mode reference from the cast. Empty if no cast or no video entry.",
-                ),
-                io.Image.Output(
-                    "reference_images",
-                    display_name="Reference Images",
-                    tooltip="Image batch from image-mode cast entries in cast order. None if no cast or no image entries.",
-                ),
-                io.String.Output("audio_source", display_name="Audio Source",
-                                 tooltip="'extract_from_visual' | 'file' | 'none'. Determines which audio output pins are populated."),
-                io.String.Output("audio_file", display_name="Audio File",
-                                 tooltip="Absolute path to audio file when audio_source is 'file'. Empty otherwise."),
-                io.Float.Output("audio_start_time", display_name="Aud Start (s)",
-                                tooltip="Start time in seconds for Load Audio node (source='file')."),
-                io.Float.Output("audio_duration",   display_name="Aud Duration (s)",
-                                tooltip="Duration in seconds for Load Audio node; 0 = to end (source='file')."),
                 LoraStackData.Output(
                     "lora_stack_data",
                     display_name="LoRA Stack",
@@ -19588,8 +19564,7 @@ class PromptCompositionLoader(io.ComfyNode):
             matched = next((c for c in items if c["name"] == composition_name), None)
             if matched is None:
                 logger.warning("PromptCompositionLoader: composition %r not found", composition_name)
-                return io.NodeOutput("", "", "", composition_name, filename_prefix_out, "", None,
-                                     "none", "", 0.0, 0.0, None, None)
+                return io.NodeOutput("", composition_name, filename_prefix_out, None, None)
 
             composition = _load_composition(user_data_dir(), matched["id"])
 
@@ -19650,12 +19625,6 @@ class PromptCompositionLoader(io.ComfyNode):
                 prompt, libbers_list, cs.get("libber_delimiter", "%"), LibberStateManager.instance()
             )
 
-        # Merge per-subject concept_ids with the composition-level concept_id
-        all_cids = result.get("concept_ids", [])
-        comp_cid = composition.get("concept_id", "").strip()
-        if comp_cid and comp_cid not in all_cids:
-            all_cids = all_cids + [comp_cid]
-        concept_ids = ", ".join(all_cids)
 
         # Build LORA_STACK_DATA from composition's attached LoRAs
         lora_stack_data = [
@@ -19722,19 +19691,9 @@ class PromptCompositionLoader(io.ComfyNode):
         comp_name_out = composition.get("name", composition_name)
         filename_prefix_out = f"{filename_prefix}{comp_name_out}"
 
-        return io.NodeOutput(
-            prompt, concept_ids, model_type_used,
-            comp_name_out,
-            filename_prefix_out,
-            cast_media["reference_video"],
-            cast_media["reference_images"],
-            cast_media["audio_source"],
-            cast_media["audio_file"],
-            cast_media["audio_start_time"],
-            cast_media["audio_duration"],
-            lora_stack_data,
-            h3_refplan,
-        )
+        # Reference media, audio timing, model type and concept IDs are no longer separate
+        # outputs: the media travels in h3_refplan, and Run History shows the rest.
+        return io.NodeOutput(prompt, comp_name_out, filename_prefix_out, lora_stack_data, h3_refplan)
 
 
 # =============================================================================
@@ -19987,32 +19946,39 @@ def _h3_load_audio(path: str, start_time: float = 0.0, duration: float = 0.0):
 
 
 def _track_format_prompt_composition_loader(kwargs: dict):
-    """Run History rows for a tracked Prompt Composition Loader: readable cast
-    details (subject/bundle, reference images/video, audio) and the composition's
-    LoRAs instead of the raw scene_cast dict. See utils/composition_track_summary.py."""
+    """Run History rows for a tracked Prompt Composition Loader. Covers what the node no
+    longer exposes as outputs (model type used, concept IDs, reference media and audio,
+    via the cast rows) plus its LoRAs. See utils/composition_track_summary.py."""
     rows: dict = {}
     consumed: set = set()
+    composition = None
+    wired = kwargs.get("prompt_composition")
+    if isinstance(wired, dict) and wired:
+        # The wired composition drives the node; the dropdown value is stale/ignored.
+        consumed.add("prompt_composition")
+        composition = wired
+        rows["Composition (wired)"] = str(wired.get("name") or wired.get("id") or "?")
+    else:
+        name = kwargs.get("composition_name")
+        if name:
+            matched = next((c for c in _list_compositions(user_data_dir()) if c["name"] == name), None)
+            if matched:
+                composition = _load_composition(user_data_dir(), matched["id"])
+
+    if composition is not None:
+        subject_lookup = _load_subject_registry(default_subject_profiles_path()).get_subject
+        rows.update(summarize_composition_meta(composition, kwargs.get("model_type", ""), subject_lookup))
+
     scene_cast = kwargs.get("scene_cast")
     if isinstance(scene_cast, dict):
         bundle_reg = _load_bundle_registry(default_bundle_registry_path())
         rows.update(summarize_scene_cast(scene_cast, bundle_reg.get))
         consumed.add("scene_cast")
-    wired = kwargs.get("prompt_composition")
-    if isinstance(wired, dict) and wired:
-        # The wired composition drives the node; the dropdown value is stale/ignored.
-        consumed.add("prompt_composition")
-        rows["Composition (wired)"] = str(wired.get("name") or wired.get("id") or "?")
-        loras = summarize_loras(wired.get("loras", []))
+
+    if composition is not None:
+        loras = summarize_loras(composition.get("loras", []))
         if loras:
             rows["LoRAs"] = loras
-        return consumed, rows
-    name = kwargs.get("composition_name")
-    if name:
-        matched = next((c for c in _list_compositions(user_data_dir()) if c["name"] == name), None)
-        if matched:
-            loras = summarize_loras(_load_composition(user_data_dir(), matched["id"]).get("loras", []))
-            if loras:
-                rows["LoRAs"] = loras
     return consumed, rows
 
 
