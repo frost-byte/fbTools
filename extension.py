@@ -33,6 +33,12 @@ from .nodes.media import _audio_get_list
 from .nodes.run_tracking import RunMetaCapture, JobCompleteNotifier, register_track_formatter
 from .utils.composition_track_summary import summarize_scene_cast, summarize_loras, summarize_composition_meta
 from .nodes import kdenlive_archive as _kdenlive_archive_routes  # noqa: F401  (registers /fbtools/kdenlive/* routes on import)
+# Route-only modules: importing them registers their /fbtools/* handlers on the PromptServer routes.
+from .nodes import backgrounds_presets as _backgrounds_presets_routes  # noqa: F401
+from .nodes import registry_api as _registry_api_routes  # noqa: F401
+from .nodes import outfits as _outfits_routes  # noqa: F401
+from .nodes import lora_info as _lora_info_routes  # noqa: F401
+from .nodes import prompt_collections as _prompt_collections_routes  # noqa: F401
 from .utils.util import (
     draw_pose_json,
     draw_pose,
@@ -7990,60 +7996,9 @@ class PromptComposer(io.ComfyNode):
 
 from aiohttp import web
 import time
-from datetime import datetime, timedelta
 
 
 
-class PromptCollectionStateManager:
-    """
-    Manages server-side PromptCollection instances for REST API operations.
-    Sessions expire after 30 minutes of inactivity.
-    """
-    _instance = None
-    
-    def __init__(self):
-        self.sessions = {}  # session_id -> {"collection": PromptCollection, "last_access": datetime}
-        self.ttl_minutes = 30
-    
-    @classmethod
-    def instance(cls):
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
-    
-    def cleanup_expired(self):
-        """Remove sessions older than TTL."""
-        now = datetime.now()
-        expired = [
-            sid for sid, data in self.sessions.items()
-            if now - data["last_access"] > timedelta(minutes=self.ttl_minutes)
-        ]
-        for sid in expired:
-            del self.sessions[sid]
-            logger.info("PromptCollectionStateManager: Expired session %s", sid)
-    
-    def create_session(self, session_id: str, collection: PromptCollection):
-        """Create or update a session with a PromptCollection."""
-        self.cleanup_expired()
-        self.sessions[session_id] = {
-            "collection": collection,
-            "last_access": datetime.now()
-        }
-        logger.info("PromptCollectionStateManager: Created session %s", session_id)
-    
-    def get_collection(self, session_id: str) -> Optional[PromptCollection]:
-        """Get PromptCollection for a session, updating last access time."""
-        self.cleanup_expired()
-        if session_id in self.sessions:
-            self.sessions[session_id]["last_access"] = datetime.now()
-            return self.sessions[session_id]["collection"]
-        return None
-    
-    def update_collection(self, session_id: str, collection: PromptCollection):
-        """Update the PromptCollection for a session."""
-        if session_id in self.sessions:
-            self.sessions[session_id]["collection"] = collection
-            self.sessions[session_id]["last_access"] = datetime.now()
 
 
 class LibberStateManager:
@@ -8136,149 +8091,12 @@ class LibberStateManager:
         return None
 
 
-# Register REST API endpoints
-@routes.post("/fbtools/prompts/create")
-async def create_prompt_collection(request):
-    """Create a new PromptCollection session."""
-    try:
-        data = await request.json()
-        session_id = data.get("session_id", f"prompt_{int(time.time()*1000)}")
-        
-        # Create new empty collection or from legacy data
-        legacy_data = data.get("legacy_data")
-        if legacy_data:
-            collection = PromptCollection.from_legacy_dict(legacy_data)
-        else:
-            collection = PromptCollection()
-        
-        manager = PromptCollectionStateManager.instance()
-        manager.create_session(session_id, collection)
-        
-        return web.json_response({
-            "success": True,
-            "session_id": session_id,
-            "collection": collection.to_dict()
-        })
-    except Exception as e:
-        return web.json_response({
-            "success": False,
-            "error": str(e)
-        }, status=500)
 
 
-@routes.post("/fbtools/prompts/add")
-async def add_prompt(request):
-    """Add or update a prompt in a PromptCollection."""
-    try:
-        data = await request.json()
-        session_id = data.get("session_id")
-        prompt_name = data.get("prompt_name")
-        prompt_value = data.get("prompt_value")
-        category = data.get("category")
-        description = data.get("description")
-        tags = data.get("tags")
-        
-        if not session_id or not prompt_name:
-            return web.json_response({
-                "success": False,
-                "error": "session_id and prompt_name required"
-            }, status=400)
-        
-        manager = PromptCollectionStateManager.instance()
-        collection = manager.get_collection(session_id)
-        
-        if not collection:
-            return web.json_response({
-                "success": False,
-                "error": f"Session {session_id} not found"
-            }, status=404)
-        
-        collection.add_prompt(prompt_name, prompt_value, category, description, tags)
-        manager.update_collection(session_id, collection)
-        
-        return web.json_response({
-            "success": True,
-            "collection": collection.to_dict(),
-            "prompt_names": collection.list_prompt_names()
-        })
-    except Exception as e:
-        return web.json_response({
-            "success": False,
-            "error": str(e)
-        }, status=500)
 
 
-@routes.post("/fbtools/prompts/remove")
-async def remove_prompt(request):
-    """Remove a prompt from a PromptCollection."""
-    try:
-        data = await request.json()
-        session_id = data.get("session_id")
-        prompt_name = data.get("prompt_name")
-        
-        if not session_id or not prompt_name:
-            return web.json_response({
-                "success": False,
-                "error": "session_id and prompt_name required"
-            }, status=400)
-        
-        manager = PromptCollectionStateManager.instance()
-        collection = manager.get_collection(session_id)
-        
-        if not collection:
-            return web.json_response({
-                "success": False,
-                "error": f"Session {session_id} not found"
-            }, status=404)
-        
-        removed = collection.remove_prompt(prompt_name)
-        if removed:
-            manager.update_collection(session_id, collection)
-        
-        return web.json_response({
-            "success": True,
-            "removed": removed,
-            "collection": collection.to_dict(),
-            "prompt_names": collection.list_prompt_names()
-        })
-    except Exception as e:
-        return web.json_response({
-            "success": False,
-            "error": str(e)
-        }, status=500)
 
 
-@routes.get("/fbtools/prompts/list_names")
-async def list_prompt_names(request):
-    """Get list of all prompt names in a PromptCollection."""
-    try:
-        session_id = request.query.get("session_id")
-        
-        if not session_id:
-            return web.json_response({
-                "success": False,
-                "error": "session_id required"
-            }, status=400)
-        
-        manager = PromptCollectionStateManager.instance()
-        collection = manager.get_collection(session_id)
-        
-        if not collection:
-            return web.json_response({
-                "success": False,
-                "error": f"Session {session_id} not found"
-            }, status=404)
-        
-        return web.json_response({
-            "success": True,
-            "prompt_names": collection.list_prompt_names(),
-            "count": len(collection.prompts)
-        })
-    except Exception as e:
-        return web.json_response({
-            "success": False,
-            "error": str(e)
-        }, status=500)
 
 
 # ============================================================================
@@ -9537,89 +9355,12 @@ async def story_save(request):
 
 # ── LoRA civitai info endpoint ────────────────────────────────────────────────
 
-_lora_info_cache: dict[str, dict] = {}
 
 
-def _compute_lora_hash(path: str) -> str:
-    """Full-file SHA256 — matches the hash CivitAI indexes in its by-hash API."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
-@routes.get("/fbtools/loras/list")
-async def _loras_list(request):
-    """Return sorted list of LoRA filenames from all registered loras folders."""
-    try:
-        names = sorted(folder_paths.get_filename_list("loras"))
-        return web.json_response({"loras": names})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.get("/fbtools/lora/civitai_info")
-async def get_lora_civitai_info(request):
-    """Fetch model version info from civitai by lora filename.
-
-    Query params: lora=<filename relative to loras folder>
-    Returns civitai model-version JSON or {"error": "..."}.
-    Results are cached in memory and a .civitai.info sidecar is checked first
-    (compatible with rgthree-comfy sidecar files).
-    """
-    import aiohttp as _aiohttp
-
-    lora_name = request.rel_url.query.get("lora", "").strip()
-    if not lora_name or lora_name == "None":
-        return web.json_response({"error": "lora parameter required"}, status=400)
-
-    lora_path = folder_paths.get_full_path("loras", lora_name)
-    if not lora_path:
-        return web.json_response({"error": f"LoRA not found: {lora_name}"}, status=404)
-
-    if lora_path in _lora_info_cache:
-        return web.json_response(_lora_info_cache[lora_path])
-
-    # Honour existing rgthree-style sidecar without re-fetching.
-    # rgthree names sidecars "<filename>.civitai.info" (full filename preserved),
-    # e.g. "my_lora.safetensors.civitai.info".
-    sidecar = Path(lora_path).parent / (Path(lora_path).name + ".civitai.info")
-    if sidecar.exists():
-        try:
-            data = json.loads(sidecar.read_text(encoding="utf-8"))
-            _lora_info_cache[lora_path] = data
-            return web.json_response(data)
-        except Exception:
-            pass
-
-    try:
-        sha256 = _compute_lora_hash(lora_path)
-    except Exception as e:
-        return web.json_response({"error": f"Hash computation failed: {e}"}, status=500)
-
-    civitai_url = f"https://civitai.com/api/v1/model-versions/by-hash/{sha256}"
-    try:
-        async with _aiohttp.ClientSession() as session:
-            async with session.get(
-                civitai_url,
-                headers={"User-Agent": "comfyui-fbTools/1.0"},
-                timeout=_aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    _lora_info_cache[lora_path] = data
-                    return web.json_response(data)
-                elif resp.status == 404:
-                    return web.json_response(
-                        {"error": "LoRA not found on Civitai"}, status=404
-                    )
-                else:
-                    return web.json_response(
-                        {"error": f"Civitai returned HTTP {resp.status}"}, status=502
-                    )
-    except Exception as e:
-        return web.json_response({"error": f"Civitai request failed: {e}"}, status=502)
 
 
 # ============================================================================
@@ -13138,22 +12879,8 @@ class SourceProfileClipPrompt(io.ComfyNode):
 
 # ── Subject REST API endpoints ────────────────────────────────────────────────
 
-@routes.post("/fbtools/subjects/reload")
-async def _subjects_reload(request):
-    """Increment reload counter so SubjectProfileLoad/List nodes re-execute."""
-    _subject_reload_counter = bump_reload("subject")
-    logger.info("Subject profiles reload requested (counter=%d)", _subject_reload_counter)
-    return web.json_response({"success": True, "counter": _subject_reload_counter})
 
 
-@routes.get("/fbtools/subjects/profiles")
-async def _subjects_get_profiles(request):
-    """Return the current subject profiles as JSON for the frontend."""
-    try:
-        registry = _load_subject_registry(default_subject_profiles_path())
-        return web.json_response(registry.to_dict())
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
 # ── Source Profile REST API endpoints ─────────────────────────────────────────
@@ -14658,23 +14385,8 @@ class SceneTemplateList(io.ComfyNode):
 
 # ── Scene Template REST API endpoints ─────────────────────────────────────────
 
-@routes.post("/fbtools/scene_templates/reload")
-async def _scene_templates_reload(request):
-    """Increment reload counter so SceneTemplate nodes re-execute."""
-    _scene_template_reload_counter = bump_reload("scene_template")
-    logger.info("Scene templates reload requested (counter=%d)", _scene_template_reload_counter)
-    return web.json_response({"success": True, "counter": _scene_template_reload_counter})
 
 
-@routes.get("/fbtools/scene_templates/list")
-async def _scene_templates_list(request):
-    """Return the list of available template metadata as JSON."""
-    try:
-        templates_dir = default_scene_templates_dir()
-        templates = _scan_scene_templates(templates_dir)
-        return web.json_response({"templates": templates})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
 # ── Custom type: OUTFIT_REGISTRY ─────────────────────────────────────────────
@@ -15356,368 +15068,36 @@ class PromptAssemble(io.ComfyNode):
 
 # ── Outfit REST API endpoints ─────────────────────────────────────────────────
 
-@routes.post("/fbtools/outfits/reload")
-async def _outfits_reload(request):
-    """Increment reload counter so OutfitRegistryLoad nodes re-execute."""
-    _outfit_reload_counter = bump_reload("outfit")
-    logger.info("Outfit registry reload requested (counter=%d)", _outfit_reload_counter)
-    return web.json_response({"success": True, "counter": _outfit_reload_counter})
 
 
-@routes.get("/fbtools/outfits/registry")
-async def _outfits_get_registry(request):
-    """Return the outfit registry as JSON for the frontend."""
-    try:
-        registry = _load_outfit_registry(default_outfit_registry_path())
-        return web.json_response(registry.to_dict())
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/outfits/save")
-async def _outfits_save(request):
-    """Create or update one outfit entry.
-
-    Body: { id, name, description, tags?: [], reference_images?: [{file, role}] }
-    reference_images replaces the stored list when present; omit to preserve existing.
-    """
-    try:
-        data = await request.json()
-        outfit_id = data.get("id", "").strip()
-        if not outfit_id:
-            return web.json_response({"error": "id is required"}, status=400)
-        path = default_outfit_registry_path()
-        registry = _load_outfit_registry(path)
-        tags = data.get("tags", [])
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",") if t.strip()]
-        ref_images = data.get("reference_images")  # None → preserve existing
-        updated = registry.define(
-            outfit_id,
-            data.get("name", ""),
-            data.get("description", ""),
-            tags,
-            reference_images=ref_images,
-        )
-        _save_outfit_registry(updated, path, backup=True)
-        return web.json_response({"success": True, "id": outfit_id})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/outfits/analyze_media")
-async def _outfits_analyze_media(request):
-    """Analyze an image or video for outfit description using the loaded LLM.
-
-    For images: runs LLM directly on the image.
-    For videos: extracts a frame at frame_time seconds (default 1.0) and runs LLM
-    on that frame.  The extracted frame is saved permanently to the ComfyUI input
-    directory as _outfit_ref_<uuid>.jpg so the caller can add it to reference_images.
-
-    Body: { filename, query?, max_tokens?, frame_time? }
-    Returns: { description, frame_file }  (frame_file is null for images)
-    """
-    _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv"}
-    try:
-        body = await request.json()
-        filename = (body.get("filename") or "").strip()
-        if not filename:
-            return web.json_response({"error": "filename is required"}, status=400)
-        query = body.get("query") or (
-            "Describe the outfit in this image for use in video generation prompts. "
-            "Focus on garment types, colors, materials, textures, patterns, and accessories. "
-            "Do not describe the person's face, hair, or pose."
-        )
-        max_tokens = int(body.get("max_tokens", 400))
-        frame_time  = float(body.get("frame_time", 1.0))
-
-        import folder_paths
-        input_dir = folder_paths.get_input_directory()
-        src_path = os.path.join(input_dir, filename)
-        if not os.path.exists(src_path):
-            return web.json_response({"error": f"File not found: {filename}"}, status=404)
-
-        ext = os.path.splitext(filename)[1].lower()
-        frame_file: str | None = None
-        pil_image = None
-
-        def _prepare():
-            nonlocal frame_file, pil_image
-            from PIL import Image as _PILImage
-            if ext in _VIDEO_EXTS:
-                import cv2
-                cap = cv2.VideoCapture(src_path)
-                try:
-                    fps         = cap.get(cv2.CAP_PROP_FPS) or 24.0
-                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    target      = min(int(frame_time * fps), max(0, frame_count - 1))
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, target)
-                    ok, frame = cap.read()
-                    if not ok:
-                        raise RuntimeError(f"Could not read frame {target} from {filename}")
-                    ref_name  = f"_outfit_ref_{uuid.uuid4().hex[:12]}.jpg"
-                    ref_path  = os.path.join(input_dir, ref_name)
-                    cv2.imwrite(ref_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-                    frame_file = ref_name
-                    pil_image  = _PILImage.open(ref_path).convert("RGB")
-                finally:
-                    cap.release()
-            else:
-                pil_image = _PILImage.open(src_path).convert("RGB")
-
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _prepare)
-
-        result = await _route_llm(query, images=[pil_image], max_tokens=max_tokens, temperature=0.5)
-        if not result.get("success"):
-            return web.json_response(
-                {"error": result.get("message", "LLM generate failed")}, status=503
-            )
-        return web.json_response({
-            "description": result.get("text", "").strip(),
-            "frame_file": frame_file,
-        })
-    except Exception as exc:
-        logger.error("outfit analyze_media error: %s", exc)
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-_sam2_segmenter = None  # lazy singleton; reset if model_path changes
 
 
-@routes.get("/fbtools/outfits/sam2_status")
-async def _outfits_sam2_status(request):
-    """Return SAM2 availability: packages present and model file found."""
-    try:
-        from .utils.sam2_segmenter import check_dependencies, find_sam2_model
-        def _gfp(name):
-            try: return folder_paths.get_folder_paths(name)
-            except KeyError: return []
-        sams_dirs = (_gfp("sams") + _gfp("sam2")) or [
-            os.path.join(folder_paths.models_dir, "sams"),
-            os.path.join(folder_paths.models_dir, "sam2"),
-        ]
-        deps = check_dependencies()
-        model_file = find_sam2_model(sams_dirs) if deps["available"] else None
-        install_hint = (
-            "pip install git+https://github.com/facebookresearch/sam2.git"
-            if not deps["available"] else None
-        )
-        model_hint = (
-            "Download sam2_hiera_tiny.safetensors from "
-            "https://huggingface.co/Kijai/sam2-safetensors "
-            f"and place in {sams_dirs[0]}"
-            if not model_file else None
-        )
-        return web.json_response({
-            "available":        deps["available"] and model_file is not None,
-            "packages_ok":      deps["available"],
-            "missing_packages": deps["missing"],
-            "model_file":       model_file,
-            "model_dirs":       sams_dirs,
-            "install_hint":     install_hint,
-            "model_hint":       model_hint,
-        })
-    except Exception as exc:
-        logger.error("sam2_status error: %s", exc)
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/outfits/extract_outfit")
-async def _outfits_extract_outfit(request):
-    """Run SAM2 point-prompt segmentation on an input image.
-
-    Body: {filename, point_x, point_y, point_label}
-    Returns: {result_file} — basename of the saved RGBA PNG in the input dir.
-    """
-    global _sam2_segmenter
-    try:
-        body = await request.json()
-        filename    = (body.get("filename") or "").strip()
-        point_x     = float(body.get("point_x", 0.5))
-        point_y     = float(body.get("point_y", 0.5))
-        point_label = int(body.get("point_label", 1))
-
-        if not filename:
-            return web.json_response({"error": "filename required"}, status=400)
-
-        # The picker offers files from input/ and output/ (including subfolders),
-        # so resolve `filename` (a relative path) inside the requested folder.
-        folder = (body.get("folder") or "input").strip()
-        if folder == "output":
-            base_dir = folder_paths.get_output_directory()
-        elif folder == "input":
-            base_dir = folder_paths.get_input_directory()
-        else:
-            return web.json_response({"error": f"Unknown folder: {folder}"}, status=400)
-        base_real  = os.path.realpath(base_dir)
-        image_path = os.path.realpath(os.path.join(base_real, filename))
-        if os.path.commonpath([base_real, image_path]) != base_real:
-            return web.json_response({"error": "Invalid path"}, status=400)
-        if not os.path.isfile(image_path):
-            return web.json_response({"error": f"File not found: {folder}/{filename}"}, status=404)
-        # Result always lands in the input dir root so the UI can load it via /view?type=input.
-        out_path_target = os.path.join(
-            folder_paths.get_input_directory(), f"_outfit_seg_{uuid.uuid4().hex[:12]}.png"
-        )
-
-        from .utils.sam2_segmenter import (
-            SAM2Segmenter,
-            check_dependencies,
-            find_sam2_model,
-        )
-
-        deps = check_dependencies()
-        if not deps["available"]:
-            return web.json_response(
-                {"error": f"SAM2 packages missing: {', '.join(deps['missing'])}"},
-                status=503,
-            )
-
-        def _gfp(name):
-            try: return folder_paths.get_folder_paths(name)
-            except KeyError: return []
-        sams_dirs = (_gfp("sams") + _gfp("sam2")) or [
-            os.path.join(folder_paths.models_dir, "sams"),
-            os.path.join(folder_paths.models_dir, "sam2"),
-        ]
-        model_file = find_sam2_model(sams_dirs)
-        if not model_file:
-            return web.json_response(
-                {"error": "No SAM2 safetensors model found in models/sams/ or models/sam2/"},
-                status=503,
-            )
-
-        if _sam2_segmenter is None or _sam2_segmenter._model_path != model_file:
-            import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            _sam2_segmenter = SAM2Segmenter(model_file, device=device)
-
-        import asyncio
-        out_path = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: _sam2_segmenter.segment(image_path, point_x, point_y, point_label, output_path=out_path_target),
-        )
-        return web.json_response({"result_file": os.path.basename(out_path)})
-
-    except Exception as exc:
-        logger.error("outfit extract_outfit error: %s", exc)
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.delete("/fbtools/outfits/delete")
-async def _outfits_delete(request):
-    """Delete an outfit entry by ?id=<outfit_id>."""
-    outfit_id = request.rel_url.query.get("id", "")
-    if not outfit_id:
-        return web.json_response({"error": "id parameter required"}, status=400)
-    try:
-        path = default_outfit_registry_path()
-        registry = _load_outfit_registry(path)
-        updated = registry.remove(outfit_id)
-        _save_outfit_registry(updated, path, backup=True)
-        return web.json_response({"success": True})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
 # ── Concept REST API endpoints ─────────────────────────────────────────────────
 
-@routes.post("/fbtools/concepts/reload")
-async def _concepts_reload(request):
-    """Increment reload counter so ConceptRegistryLoad nodes re-execute."""
-    _concept_reload_counter = bump_reload("concept")
-    logger.info("Concept registry reload requested (counter=%d)", _concept_reload_counter)
-    return web.json_response({"success": True, "counter": _concept_reload_counter})
 
 
-@routes.get("/fbtools/concepts/registry")
-async def _concepts_get_registry(request):
-    """Return the current default registry as JSON for the frontend."""
-    try:
-        registry = _load_concept_registry(default_registry_path())
-        return web.json_response(registry.to_dict())
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
 # ── Subject CRUD routes (editor-facing) ───────────────────────────────────────
 
-@routes.get("/fbtools/subjects/list")
-async def _subjects_list(request):
-    """Return [{id, name, appearance_summary, concept_id, pronoun_style}] sorted by name."""
-    try:
-        registry = _load_subject_registry(default_subject_profiles_path())
-        items = []
-        for sid, s in registry.subjects.items():
-            items.append({
-                "id":                 sid,
-                "name":               s.get("name", sid),
-                "appearance_summary": s.get("appearance", {}).get("summary", ""),
-                "concept_id":         s.get("concept_id", ""),
-                "pronoun_style":      s.get("pronoun_style", ""),
-            })
-        items.sort(key=lambda x: x["name"].lower())
-        return web.json_response({"subjects": items})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.get("/fbtools/subjects/get")
-async def _subjects_get_one(request):
-    """Return a single subject profile by ?id=<subject_id>."""
-    sid = request.rel_url.query.get("id", "")
-    if not sid:
-        return web.json_response({"error": "id parameter required"}, status=400)
-    try:
-        registry = _load_subject_registry(default_subject_profiles_path())
-        subject = registry.get_subject(sid)
-        if subject is None:
-            return web.json_response({"error": f"Subject '{sid}' not found"}, status=404)
-        return web.json_response({"id": sid, **subject})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/subjects/save")
-async def _subjects_save(request):
-    """Create or update a subject profile.  Body: full subject dict with 'id'."""
-    try:
-        data = await request.json()
-        sid = data.get("id", "").strip()
-        if not sid:
-            return web.json_response({"error": "Subject 'id' is required"}, status=400)
-        path = default_subject_profiles_path()
-        registry = _load_subject_registry(path)
-        # Merge into registry — preserve character_sheet_images if not provided
-        existing = registry.subjects.get(sid, {})
-        merged = {**existing, **data}
-        merged["id"] = sid  # keep id consistent
-        registry.subjects[sid] = {k: v for k, v in merged.items() if k != "id"}
-        _save_subject_registry(registry, path)
-        bump_reload("subject")
-        return web.json_response({"success": True, "id": sid})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.delete("/fbtools/subjects/delete")
-async def _subjects_delete(request):
-    """Delete a subject by ?id=<subject_id>."""
-    sid = request.rel_url.query.get("id", "")
-    if not sid:
-        return web.json_response({"error": "id parameter required"}, status=400)
-    try:
-        path = default_subject_profiles_path()
-        registry = _load_subject_registry(path)
-        if sid not in registry.subjects:
-            return web.json_response({"error": f"Subject '{sid}' not found"}, status=404)
-        del registry.subjects[sid]
-        _save_subject_registry(registry, path)
-        bump_reload("subject")
-        return web.json_response({"success": True})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
 # ── Reference Bundle routes ───────────────────────────────────────────────────
@@ -15787,65 +15167,12 @@ async def _bundles_delete(request):
 
 # ── Scene Cast routes ─────────────────────────────────────────────────────────
 
-@routes.get("/fbtools/casts/list")
-async def _casts_list(request):
-    """Return all scene casts."""
-    try:
-        registry = _load_cast_registry(default_cast_registry_path())
-        return web.json_response({"casts": registry.list_casts()})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.get("/fbtools/casts/get")
-async def _casts_get(request):
-    """Return a single cast by ?id=<cast_id>."""
-    cast_id = request.rel_url.query.get("id", "")
-    if not cast_id:
-        return web.json_response({"error": "id parameter required"}, status=400)
-    try:
-        registry = _load_cast_registry(default_cast_registry_path())
-        cast = registry.get(cast_id)
-        if cast is None:
-            return web.json_response({"error": f"Cast '{cast_id}' not found"}, status=404)
-        return web.json_response(cast)
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/casts/save")
-async def _casts_save(request):
-    """Create or update a cast.  Body: full cast dict with 'id'."""
-    try:
-        data = await request.json()
-        cast_id = (data.get("id") or "").strip()
-        if not cast_id:
-            return web.json_response({"error": "Cast 'id' is required"}, status=400)
-        path = default_cast_registry_path()
-        registry = _load_cast_registry(path)
-        registry = registry.upsert(data)
-        _save_cast_registry(registry, path)
-        return web.json_response({"success": True, "id": cast_id})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.delete("/fbtools/casts/delete")
-async def _casts_delete(request):
-    """Delete a cast by ?id=<cast_id>."""
-    cast_id = request.rel_url.query.get("id", "")
-    if not cast_id:
-        return web.json_response({"error": "id parameter required"}, status=400)
-    try:
-        path = default_cast_registry_path()
-        registry = _load_cast_registry(path)
-        if registry.get(cast_id) is None:
-            return web.json_response({"error": f"Cast '{cast_id}' not found"}, status=404)
-        registry = registry.delete(cast_id)
-        _save_cast_registry(registry, path)
-        return web.json_response({"success": True})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
 # ── Media file listing ────────────────────────────────────────────────────────
@@ -16754,12 +16081,6 @@ class SceneCastBuild(io.ComfyNode):
 
 # ── Scene Cast reload endpoint ────────────────────────────────────────────────
 
-@routes.post("/fbtools/casts/reload")
-async def _casts_reload(request):
-    """Increment reload counter so SceneCastLoad nodes re-execute."""
-    _cast_reload_counter = bump_reload("cast")
-    logger.info("Scene casts reload requested (counter=%d)", _cast_reload_counter)
-    return web.json_response({"success": True, "counter": _cast_reload_counter})
 
 
 

@@ -19,6 +19,10 @@ EXPECTED = {
     "llm_assistant": 40,
     "backgrounds_presets": 11,
     "media": 6,
+    "registry_api": 15,
+    "outfits": 7,
+    "lora_info": 2,
+    "prompt_collections": 4,
 }
 
 
@@ -74,3 +78,18 @@ def test_route_module_imports_and_registers_its_routes(env, module, count):
     own = [(v, p) for v, p, mod in env.registered if mod == f"{PKG}.nodes.{module}"]
     assert len(own) == count
     assert all(path.startswith("/fbtools/") for _, path in own)
+
+
+def test_extension_imports_every_route_module():
+    """A route module only registers its handlers when something imports it; extension.py must import each one."""
+    ext = (ROOT / "extension.py").read_text(encoding="utf-8")
+    missing = []
+    for path in sorted((ROOT / "nodes").glob("*.py")):
+        if path.stem in ("__init__", "shared"):
+            continue
+        if "@routes." not in path.read_text(encoding="utf-8"):
+            continue
+        stem = path.stem
+        if f"from .nodes.{stem} import" not in ext and f"from .nodes import {stem}" not in ext:
+            missing.append(stem)
+    assert not missing, f"route modules never imported by extension.py: {missing}"
