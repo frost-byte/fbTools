@@ -27,7 +27,7 @@ _RUN_CAPTURE_STORE: dict = {}
 _RUN_CAPTURE_MAX: int = 100
 
 # Node-output auto-tracker (see "on_prompt handler" section below):
-# {prompt_id: {node_id: label}} for every [track: Label]-tagged node seen in
+# {prompt_id: {node_id: label}} for every tracked (🐾 Label) node seen in
 # a submitted prompt; {node_id: {label, class_type, values}} of the last
 # successfully-resolved kwargs per tracked node, kept by node_id (not
 # prompt_id) so a later cache-hit run can re-emit it; and
@@ -287,7 +287,7 @@ _fbtools_install_execute_patch()
 
 def _fbtools_on_prompt_handler(json_data: dict) -> dict:
     """Registered via PromptServer.add_on_prompt_handler — runs on every
-    submission, before execution starts. Discovers [track: Label]-tagged
+    submission, before execution starts. Discovers tracked (🐾 Label)
     nodes for *this* prompt so the wrapped execute() above knows which
     node_ids to capture."""
     try:

@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import re
 
+# A tracked node's title is "<marker> <label>", e.g. "🐾 Video Shift". The legacy
+# "[track: Label]" form is still recognised so old workflows and Run History entries
+# keep working; the frontend rewrites legacy titles to the marker form on load.
+# Keep TRACK_MARKER in sync with js/utils/run_tracker.js and js/ui/run_history.js.
+TRACK_MARKER = "\U0001F43E"  # 🐾
 TRACK_RE = re.compile(r"\[track:\s*([^\]]*)\]")
 
 # Caps a single captured value's length. Without this, tracking a node whose
@@ -20,15 +25,24 @@ MAX_CAPTURE_VALUE_LEN = 300
 
 
 def get_track_label(title: str | None) -> str | None:
-    """Extract the label from a `[track: Label]` tag in a node title, or None."""
+    """Extract a node's track label from its title, or None if it isn't tracked.
+
+    Marker form: the title starts with TRACK_MARKER and the label is the rest,
+    trimmed ("🐾 Video Shift" -> "Video Shift"). Legacy form: `[track: Label]`
+    anywhere in the title.
+    """
     if not title:
         return None
+    stripped = title.strip()
+    if stripped.startswith(TRACK_MARKER):
+        label = stripped[len(TRACK_MARKER):].strip()
+        return label or None
     m = TRACK_RE.search(title)
     return m.group(1).strip() if m else None
 
 
 def extract_tracked_nodes(prompt: dict) -> dict[str, str]:
-    """Scan an API-format prompt dict for `[track: Label]`-tagged nodes.
+    """Scan an API-format prompt dict for tracked nodes (marker or legacy `[track: Label]` titles).
 
     Returns {node_id: label} for every node whose `_meta.title` carries the tag.
     """

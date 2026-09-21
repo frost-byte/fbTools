@@ -19,6 +19,26 @@ def test_get_track_label_strips_whitespace():
     assert tracker.get_track_label("[track:   Audio Shift  ]") == "Audio Shift"
 
 
+def test_get_track_label_marker_form():
+    assert tracker.get_track_label("\U0001F43E Video Shift") == "Video Shift"
+    assert tracker.get_track_label("  \U0001F43E   Audio Shift  ") == "Audio Shift"
+    assert tracker.get_track_label("\U0001F43E") is None
+    assert tracker.get_track_label("\U0001F43E   ") is None
+
+
+def test_get_track_label_marker_must_lead_the_title():
+    assert tracker.get_track_label("KSampler \U0001F43E") is None
+
+
+def test_extract_tracked_nodes_mixes_marker_and_legacy():
+    prompt = {
+        "1": {"class_type": "A", "_meta": {"title": "\U0001F43E New Style"}, "inputs": {}},
+        "2": {"class_type": "B", "_meta": {"title": "Old [track: Old Style]"}, "inputs": {}},
+        "3": {"class_type": "C", "_meta": {"title": "Plain"}, "inputs": {}},
+    }
+    assert tracker.extract_tracked_nodes(prompt) == {"1": "New Style", "2": "Old Style"}
+
+
 def test_get_track_label_no_tag_returns_none():
     assert tracker.get_track_label("ManualSigmas") is None
     assert tracker.get_track_label("") is None

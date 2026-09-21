@@ -2,7 +2,7 @@
  * Run History sidebar panel.
  *
  * Merges three data sources per run:
- *  - /history nodesDict: static widget values from nodes tagged [track: Label]
+ *  - /history nodesDict: static widget values from nodes tracked with a 🐾 title
  *  - /history extra_pnginfo.workflow: widget values from subgraph containers tagged [track: Label]
  *  - /fbtools/run_tracker/runs: runtime values captured by RunMetaCapture nodes
  *
@@ -25,15 +25,14 @@
  * with their widget values intact.
  */
 
-const TRACK_RE = /\[track:\s*([^\]]*)\]/;
+import { parseTrackTitle } from "../utils/run_tracker.js";
+
 const LORA_BUILDER_TYPE = "fbt_LoraStackBuilder";
 const SCENE_CAST_BUILD_TYPE = "fbt_SceneCastBuild";
 const LORA_BUILDER_ROWS = 8;
 
-function getTrackLabel(title) {
-    const m = (title || "").match(TRACK_RE);
-    return m ? m[1].trim() : null;
-}
+// Marker ("🐾 Label") and legacy ("[track: Label]") titles — shared parser in utils/run_tracker.js.
+const getTrackLabel = parseTrackTitle;
 
 // Wired connections are [node_id, output_slot] 2-element arrays.
 function isConnectionRef(value) {
@@ -118,7 +117,7 @@ function extractWidgetValues(inputs, nodesDict) {
 }
 
 /**
- * Scan the workflow JSON (extra_pnginfo.workflow) for nodes tagged [track: Label]
+ * Scan the workflow JSON (extra_pnginfo.workflow) for nodes tracked with a 🐾 title
  * that are NOT already captured from nodesDict.  Subgraph container nodes only
  * exist here — the API-format prompt expands them away.
  *
