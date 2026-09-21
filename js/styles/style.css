@@ -3592,3 +3592,7 @@ body.fbt-llm-loaded
     margin-top: 6px;
     width: 100%;
 }
+
+/* Assets tab: six sub-tabs — allow wrapping on a narrow sidebar */
+.fbt-be-tab-row { flex-wrap: wrap; }
+.fbt-be-tab-row .fbt-be-tab { flex: 1 1 auto; }

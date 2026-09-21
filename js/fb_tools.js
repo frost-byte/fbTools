@@ -399,13 +399,13 @@ import { renderFbtPanel } from "./ui/fbt_panel.js";
 import { patchNodeForTracking } from "./utils/run_tracker.js";
 import { updateNodeInspector } from "./ui/node_inspector.js";
 
-// Single sidebar entry — hosts Compose, Bundles, Casts, Sources, History tabs
+// Single sidebar entry — hosts Compose, Assets, Casts, Sources, History tabs
 // with a persistent LLM status bar and lazy tab mounting.
 app.extensionManager.registerSidebarTab({
     id: "fbt.panel",
     icon: "pi pi-box",
     title: "fbTools",
-    tooltip: "Prompt Compositions · Reference Bundles · Scene Casts · Source Profiles · Run History",
+    tooltip: "Prompt Compositions · Assets (bundles, subjects, backgrounds…) · Scene Casts · Source Profiles · Run History",
     type: "custom",
     render: (el) => {
         window._fbtApp = app;

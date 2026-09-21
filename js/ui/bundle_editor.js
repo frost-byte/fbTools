@@ -12,6 +12,8 @@ import { llmApi }        from "../api/llm.js";
 import { compositionsApi } from "../api/compositions.js";
 import { makeEntry, buildHistorySection } from "../utils/llm_history.js";
 import { buildFileTree, trapKeys } from "./file_tree.js";
+import { lib, notifyLibraryChanged, LIBRARY_CHANGED } from "./library_store.js";
+import { ASSET_TABS, isAssetTab, loadLibrary, renderAssetList, startNewAsset } from "./asset_lists.js";
 
 const BUNDLE_PAGE_SIZE = 10;
 
@@ -46,7 +48,8 @@ const _S = {
     llmVision:      false,  // true when a vision-capable model is loaded
     llmModel:       "",    // display name of currently loaded model
     // Subject editor state
-    viewMode:       "bundles",  // "bundles" | "subjects"
+    viewMode:       "bundles",  // "bundles" | "subjects" | an ASSET_TABS id
+    assetQuery:     {},         // per asset sub-tab search text
     subjectEditing: null,       // full subject dict being edited; null = list view
     subjectIsNew:   false,
     subjectFilter:  "",
@@ -1889,6 +1892,8 @@ function _buildAppearanceAnalyzer(b, appearEl, traitInputs, detailsSec) {
                 _toast("Saved to subject profile", "success");
                 const res = await bundlesApi.listSubjects();
                 _S.subjects = res.subjects ?? [];
+                lib.subjects = _S.subjects;
+                notifyLibraryChanged("subjects");
             } catch (e) {
                 _toast("Save failed: " + e.message, "error");
             }
@@ -2043,6 +2048,8 @@ async function _onDeleteSubject(id, name) {
     try {
         await bundlesApi.deleteSubject(id);
         _S.subjects = _S.subjects.filter(s => s.id !== id);
+        lib.subjects = _S.subjects;
+        notifyLibraryChanged("subjects");
         _repopulateSubjectFilter();
         _S.subjectEditing = null;
         _S.subjectIsNew = false;
@@ -2064,6 +2071,8 @@ async function _onSaveSubject(s, warnEl) {
         await bundlesApi.saveSubject({ ...s, id, name });
         const res = await bundlesApi.listSubjects();
         _S.subjects = res.subjects ?? [];
+        lib.subjects = _S.subjects;
+        notifyLibraryChanged("subjects");
         _repopulateSubjectFilter();
         _S.subjectEditing = null;
         _S.subjectIsNew = false;
@@ -2373,21 +2382,38 @@ function _renderSubjectForm() {
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
+const _VIEW_TABS = [
+    { id: "bundles",  label: "Bundles",  newLabel: "+ New Bundle",  search: "Search bundles…" },
+    { id: "subjects", label: "Subjects", newLabel: "+ New Subject", search: "Search subjects…" },
+    ...ASSET_TABS,
+];
+
+function _viewQuery(mode) {
+    if (mode === "bundles")  return _S.filterText;
+    if (mode === "subjects") return _S.subjectFilter;
+    return _S.assetQuery[mode] || "";
+}
+
 function _switchView(mode) {
     _S.viewMode = mode;
-    if (_dom.tabBundles)  _dom.tabBundles.classList.toggle("active",  mode === "bundles");
-    if (_dom.tabSubjects) _dom.tabSubjects.classList.toggle("active", mode === "subjects");
+    const spec = _VIEW_TABS.find(v => v.id === mode) || _VIEW_TABS[0];
+    _VIEW_TABS.forEach(v => _dom.tabs?.[v.id]?.classList.toggle("active", v.id === mode));
     if (_dom.subjSel) _dom.subjSel.style.display = mode === "bundles" ? "" : "none";
-    if (_dom.newBtn)  _dom.newBtn.textContent = mode === "bundles" ? "+ New Bundle" : "+ New Subject";
+    if (_dom.newBtn)  _dom.newBtn.textContent = spec.newLabel;
     if (_dom.searchEl) {
-        _dom.searchEl.value       = mode === "bundles" ? _S.filterText : _S.subjectFilter;
-        _dom.searchEl.placeholder = mode === "bundles" ? "Search bundles…" : "Search subjects…";
+        _dom.searchEl.value       = _viewQuery(mode);
+        _dom.searchEl.placeholder = spec.search;
     }
     _render();
 }
 
 function _render() {
-    if (_S.viewMode === "subjects") {
+    if (isAssetTab(_S.viewMode)) {
+        if (_dom.pagination) _dom.pagination.innerHTML = "";
+        if (_dom.content) {
+            renderAssetList(_S.viewMode, _dom.content, _S.assetQuery[_S.viewMode] || "", _render);
+        }
+    } else if (_S.viewMode === "subjects") {
         if (_S.subjectEditing !== null) _renderSubjectForm();
         else                            _renderSubjectList();
     } else {
@@ -2400,13 +2426,14 @@ function _buildTopBar() {
     const bar = _mk("div", { cls: "fbt-be-top-bar" });
 
     // Tab switcher
-    const tabBundles  = _mk("button", { cls: "fbt-be-tab active", textContent: "Bundles",
-        onclick: () => _switchView("bundles") });
-    const tabSubjects = _mk("button", { cls: "fbt-be-tab", textContent: "Subjects",
-        onclick: () => _switchView("subjects") });
-    _dom.tabBundles  = tabBundles;
-    _dom.tabSubjects = tabSubjects;
-    bar.appendChild(_mk("div", { cls: "fbt-be-tab-row" }, [tabBundles, tabSubjects]));
+    _dom.tabs = {};
+    const tabBtns = _VIEW_TABS.map(v => {
+        const b = _mk("button", { cls: "fbt-be-tab" + (v.id === _S.viewMode ? " active" : ""),
+            textContent: v.label, onclick: () => _switchView(v.id) });
+        _dom.tabs[v.id] = b;
+        return b;
+    });
+    bar.appendChild(_mk("div", { cls: "fbt-be-tab-row" }, tabBtns));
 
     // Subject filter (bundles view only)
     const subjSel = document.createElement("select");
@@ -2436,7 +2463,9 @@ function _buildTopBar() {
         value: _S.filterText,
     });
     searchEl.addEventListener("input", () => {
-        if (_S.viewMode === "subjects") {
+        if (isAssetTab(_S.viewMode)) {
+            _S.assetQuery[_S.viewMode] = searchEl.value;
+        } else if (_S.viewMode === "subjects") {
             _S.subjectFilter = searchEl.value;
         } else {
             _S.filterText = searchEl.value;
@@ -2451,7 +2480,8 @@ function _buildTopBar() {
         cls: "fbt-ce-btn fbt-ce-btn-primary fbt-be-new-btn",
         textContent: "+ New Bundle",
         onclick: () => {
-            if (_S.viewMode === "subjects") _startNewSubject();
+            if (isAssetTab(_S.viewMode)) startNewAsset(_S.viewMode);
+            else if (_S.viewMode === "subjects") _startNewSubject();
             else _startNew(_S.filterSubject);
         },
     });
@@ -2463,7 +2493,7 @@ function _buildTopBar() {
         textContent: "↺", title: "Refresh",
         onclick: async () => {
             try {
-                await _loadAll();
+                await Promise.all([_loadAll(), loadLibrary()]);
                 _repopulateSubjectFilter();
                 if (!_S.editing && !_S.subjectEditing) _render();
                 _toast("Refreshed", "success");
@@ -2522,10 +2552,15 @@ export async function renderBundleEditor(el) {
     el.appendChild(panel);
 
     try {
-        await _loadAll();
+        await Promise.all([_loadAll(), loadLibrary()]);
     } catch (e) {
         console.error("fbt BundleEditor: load error", e);
     }
+
+    // Asset lists redraw when a modal (here or in Compose) saves/deletes something.
+    document.addEventListener(LIBRARY_CHANGED, () => {
+        if (isAssetTab(_S.viewMode) && _dom.content?.isConnected) _render();
+    });
 
     // Keep LLM vision state in sync when a model is loaded/unloaded from the
     // LLM tab after this editor was already mounted.

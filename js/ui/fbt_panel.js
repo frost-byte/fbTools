@@ -2,7 +2,7 @@
  * fbTools unified sidebar panel.
  *
  * Single ComfyUI sidebar entry hosting all fbTools tabs:
- *   Compose · Bundles · Casts · Sources · LLM · History
+ *   Compose · Assets · Casts · Sources · LLM · History
  *
  * Features:
  * - Persistent LLM status bar in the header (read-only indicator)
@@ -91,7 +91,7 @@ async function _fetchLlmStatus() {
 
 const TABS = [
     { id: "compositions", label: "Compose",  icon: "pi pi-file-edit",   render: renderCompositionEditor },
-    { id: "bundles",      label: "Bundles",  icon: "pi pi-images",      render: renderBundleEditor },
+    { id: "assets",       label: "Assets",   icon: "pi pi-th-large",    render: renderBundleEditor },
     { id: "casts",        label: "Casts",    icon: "pi pi-users",       render: renderCastEditor },
     { id: "sources",      label: "Sources",  icon: "pi pi-video",       render: renderSourceProfileEditor },
     { id: "libbers",      label: "Libbers",  icon: "pi pi-book",        render: renderLibberEditor },
