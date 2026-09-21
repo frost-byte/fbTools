@@ -707,6 +707,10 @@ function _buildCastBuildUI(node, app) {
         dlgInput.placeholder = "dialogue / %libber:key%";
         dlgInput.title       = "Dialogue for this cast entry.\n[silent] = no audio contribution\n[sounds] desc = sound event\n%libber:key% or %libber:*% = libber lookup";
         row3.append(_lbl("Dialogue"), dlgInput);
+        // Cast-entry dialogue only applies to Source Profile clips (SourceProfileClipPrompt reads
+        // it); PromptCompositionLoader ignores it, and composition shots carry their own dialogue.
+        // Hide it while a composition drives the node so nothing is typed that has no effect.
+        row3.style.display = _compositionActive() ? "none" : "";
         _applyDlgToInput(dlgInput);
 
         // ── Preview section ──────────────────────────────────────────────────────

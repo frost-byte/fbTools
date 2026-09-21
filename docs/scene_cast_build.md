@@ -1,0 +1,75 @@
+# Scene Cast Build — developer notes
+
+`SceneCastBuild` (extension.py) builds a `SCENE_CAST` dict from a JSON list of cast entries
+(`cast_entries_json`, edited by the on-node widget in `js/nodes/scene_cast_build.js`). The cast
+pool comes from **one** upstream source, either a Source Profile or a Prompt Composition.
+
+## Two modes
+
+| | Source Profile | Prompt Composition |
+|---|---|---|
+| Input | `source_profile` (from `SourceProfileLoad`) | `prompt_composition` (from `CompositionLoad`) |
+| Cast pool | the profile's subjects (per clip) | the composition's subjects (slot letters `A`, `B`, ...) |
+| Segments on the timeline | the profile's clips | the composition's shots |
+| Consumer | `SourceProfileClipPrompt` | `PromptCompositionLoader` |
+
+If both are wired, **the Source Profile wins** and the composition is ignored (the backend logs a
+warning; the widget does the same). Both wire inputs are looked up through `node.inputs`, not
+`node.widgets`, so the widget-name contract test is unaffected.
+
+New outputs are always **appended** (the `prompt_composition` pass-through is last) so existing
+links keep their slot indexes.
+
+## Refresh when the loader's selection changes
+
+`SourceProfileLoad` and `CompositionLoad` wrap their combo widget's callback
+(`js/nodes/source_profile_load.js`, `js/nodes/composition_load.js`) and re-fire
+`onConnectionsChange` on every node wired to output slot 0. `SceneCastBuild` reacts in
+`onConnectionsChange` for either input name and runs `_refreshProfileDependentState`
+(composition first, then the profile refreshes). **Keep the loader's dict output at slot 0.**
+
+## Composition mode details
+
+- **Matching**: a cast entry applies to the composition slot whose `subject_id` equals the entry's
+  `subject_id` (`apply_cast_to_subjects`). Array order and slot letters do not matter.
+- **Ordinal (`#`)**: "the Nth subject in the composition sharing this bundle's pronoun_style".
+  Resolved authoritatively in `SceneCastBuild.execute()` via
+  `resolve_ordinal_from_list` (`utils/source_profiles.py`) over `composition_ordinal_roster`
+  (`utils/prompt_compositions.py`); the JS mirror is a display aid. An entry that matches nothing is
+  skipped with a warning.
+- **Timeline / preview**: shots become segments via `shotsToSegments`
+  (`js/utils/composition_timeline.js`): proportional bands when every shot has a strictly increasing
+  timestamp, equal-width bands otherwise. The selected shot id is stored in the existing `clip_id`
+  widget (harmless: only the Source Profile paths read it). There is no duration multiplier. The
+  preview only substitutes `{A}`/`{B}`/... with bundle names; it is **not** the assembled prompt
+  (punctuation, pacing phrases, dialogue formatting and `<Subject N>` labels come from the assembler
+  at run time).
+
+## The per-entry Dialogue field is Source-Profile-only
+
+Only `SourceProfileClipPrompt` reads a cast entry's `dialogue`: it matches the entry to a source
+subject and uses the text as that slot's line in the clip's single shot. `PromptCompositionLoader`
+never reads it, and composition shots already carry their own per-shot dialogue (speaker + text). So
+in composition mode the field would be silently ignored, and it does **not** override the shot's
+dialogue.
+
+Decision: the field is **hidden** while a composition drives the node (the stored value is left
+untouched if you switch back to a Source Profile). If a per-subject line is ever wanted for
+compositions ("this subject's line in any shot where they are the speaker", as a default or an
+override) it needs a design first: composition dialogue is per shot with a speaker slot, cast
+dialogue is per subject, and it must cooperate with libber tokens and the `[silent]` / `[sounds]`
+markers.
+
+## Libber tokens in composition dialogue
+
+Composition shot text can contain libber tokens (`%*:N%`, `%*%`, `%key:N%`, `%key%`). They are
+resolved only when `PromptCompositionLoader` runs (`_apply_composition_libbers`, unseeded random
+draws), so the node's preview shows them raw. `%*.N%` is accepted as a spelling of `%*:N%`. A seeded,
+preview-accurate scheme has been designed but not built.
+
+## Related: PromptCompositionLoader
+
+It takes the same composition through an optional `prompt_composition` input, which then overrides
+its own Composition dropdown (greyed out in the UI), so one selector can drive both nodes. Its
+outputs are Prompt, Composition Name, Filename Prefix, LoRA Stack and H3 Ref Plan; everything else it
+used to expose is shown in Run History (`utils/composition_track_summary.py`).

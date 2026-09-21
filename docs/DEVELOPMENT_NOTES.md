@@ -115,6 +115,10 @@ When creating a new ComfyUI node, **always** complete these steps:
 - Dropdowns: Populate in `onConfigure` hook
 - Drag-and-drop: HTML5 API with visual feedback
 
+## Node-Specific Notes
+
+- Scene Cast Build (Source Profile vs Prompt Composition modes, ordinal matching, why the per-entry Dialogue field is hidden for compositions): [scene_cast_build.md](scene_cast_build.md)
+
 ## Testing Workflow
 
 ### After Code Changes
