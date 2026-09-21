@@ -18,6 +18,10 @@ import { llmApi } from "../api/llm.js";
 import { libberAPI } from "../api/libber.js";
 import { buildFileTree } from "./file_tree.js";
 import { makeEntry, buildHistorySection } from "../utils/llm_history.js";
+import { lib, LIBRARY_CHANGED } from "./library_store.js";
+import { mk as _mk, toast as _toast } from "./library_common.js";
+import { openBackgroundEditor } from "./background_editor.js";
+import { openOutfitEditor } from "./outfit_editor.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -121,10 +125,6 @@ const LORA_MODEL_TARGETS = [
 
 const _S = {
     composition:    null,
-    subjects:       [],
-    backgrounds:    [],
-    cameraPresets:  [],
-    soundPresets:   [],
     savedComps:     [],
     savedPage:      0,
     savedQuery:     "",
@@ -139,19 +139,10 @@ const _S = {
     // LoRA state
     lorasList:      [],    // LoRA filenames from /fbtools/loras/list
     // Outfit registry state
-    outfits:        {},    // id → {name, description, tags} from /fbtools/outfits/registry
     // LLM assistant state
-    llmLoaded:      null,  // currently loaded model name (string) or null
-    llmVision:      false, // does loaded model support vision?
-    llmNativeVideo: false, // does loaded model support native temporal video?
     llmBusy:        false, // in-flight load or generate
     // SAM2 segmentation state
-    sam2:           null,  // null=unchecked; {available, packages_ok, model_file, install_hint, model_hint}
     // Media file lists for outfit LLM browser
-    mediaInImages:  [],   // input dir images (recursive)
-    mediaOutImages: [],   // output dir images (recursive)
-    mediaInVideos:  [],   // input dir videos
-    mediaOutVideos: [],   // output dir videos
 };
 
 // Key DOM refs rebuilt on each panel render
@@ -164,18 +155,6 @@ let _completionEl = null;
 let _focusedShotIdx = -1;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-
-function _mk(tag, props = {}, children = []) {
-    const el = document.createElement(tag);
-    Object.entries(props).forEach(([k, v]) => {
-        if (k === "cls") el.className = v;
-        else if (k === "style") Object.assign(el.style, v);
-        else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-        else el[k] = v;
-    });
-    children.forEach(c => c && el.appendChild(c));
-    return el;
-}
 
 function _sel(options, val) {
     const el = document.createElement("select");
@@ -191,14 +170,14 @@ function _sel(options, val) {
 
 function _subjectOptions(includeNone = true) {
     const opts = includeNone ? [{ id: "", label: "— none —" }] : [];
-    _S.subjects.forEach(s => opts.push({ id: s.id, label: s.name || s.id }));
+    lib.subjects.forEach(s => opts.push({ id: s.id, label: s.name || s.id }));
     return opts;
 }
 
 function _bgOptions() {
     return [
         { id: "", label: "— none —" },
-        ..._S.backgrounds.map(b => ({ id: b.id, label: b.name || b.id })),
+        ...lib.backgrounds.map(b => ({ id: b.id, label: b.name || b.id })),
     ];
 }
 
@@ -267,15 +246,6 @@ function _markClean() {
     if (_dom.dirtyDot) _dom.dirtyDot.style.display = "none";
 }
 
-function _toast(msg, severity = "info") {
-    try {
-        const app = window._fbtApp;
-        if (app?.extensionManager?.toast) {
-            app.extensionManager.toast.add({ severity, summary: msg, life: 2500 });
-        }
-    } catch (_) {}
-}
-
 function _sectionToggle(headerEl, bodyEl) {
     let open = true;
     const icon = _mk("span", { cls: "fbt-ce-chevron", textContent: "▾" });
@@ -302,7 +272,7 @@ function _showCompletion(textEl, matches, bracePos) {
 
     matches.forEach((key, i) => {
         const subId  = _S.composition?.subjects?.[key] || "";
-        const subName = _S.subjects.find(s => s.id === subId)?.name || "";
+        const subName = lib.subjects.find(s => s.id === subId)?.name || "";
         const item = document.createElement("div");
         item.className = "fbt-ce-comp-item" + (i === 0 ? " active" : "");
         item.innerHTML = `<strong>${key}</strong>${subName ? ` <span class="fbt-ce-comp-name">${subName}</span>` : ""}`;
@@ -537,15 +507,15 @@ async function _loadResources() {
             compositionsApi.listMedia("video", true),
             compositionsApi.listMedia("video", true, "output"),
         ]);
-        _S.subjects      = subj.value?.subjects      ?? [];
-        _S.backgrounds   = bg.value?.backgrounds     ?? [];
-        _S.cameraPresets = cam.value?.camera_presets ?? [];
-        _S.soundPresets  = snd.value?.sound_presets  ?? [];
+        lib.subjects      = subj.value?.subjects      ?? [];
+        lib.backgrounds   = bg.value?.backgrounds     ?? [];
+        lib.cameraPresets = cam.value?.camera_presets ?? [];
+        lib.soundPresets  = snd.value?.sound_presets  ?? [];
         _S.savedComps    = comps.value?.compositions ?? [];
         const st = llmStatus.value;
-        _S.llmLoaded      = st?.loaded_model   ?? null;
-        _S.llmVision      = st?.supports_vision ?? false;
-        _S.llmNativeVideo = st?.native_video    ?? false;
+        lib.llmLoaded      = st?.loaded_model   ?? null;
+        lib.llmVision      = st?.supports_vision ?? false;
+        lib.llmNativeVideo = st?.native_video    ?? false;
         _llmSyncBadge();
         if (settingsRes.value) {
             _S.settings = settingsRes.value;
@@ -559,12 +529,12 @@ async function _loadResources() {
         }
         _S.libbers    = libbersRes.value?.files    ?? [];
         _S.lorasList  = lorasRes.value?.loras     ?? [];
-        _S.outfits    = outfitsRes.value?.outfits ?? {};
-        _S.sam2          = sam2Res.status === "fulfilled" ? sam2Res.value : null;
-        _S.mediaInImages  = mediaInImg.value?.files  ?? [];
-        _S.mediaOutImages = mediaOutImg.value?.files ?? [];
-        _S.mediaInVideos  = mediaInVid.value?.files  ?? [];
-        _S.mediaOutVideos = mediaOutVid.value?.files ?? [];
+        lib.outfits    = outfitsRes.value?.outfits ?? {};
+        lib.sam2          = sam2Res.status === "fulfilled" ? sam2Res.value : null;
+        lib.mediaInImages  = mediaInImg.value?.files  ?? [];
+        lib.mediaOutImages = mediaOutImg.value?.files ?? [];
+        lib.mediaInVideos  = mediaInVid.value?.files  ?? [];
+        lib.mediaOutVideos = mediaOutVid.value?.files ?? [];
     } catch (e) {
         console.error("fbt CompositionEditor: resource load error", e);
     }
@@ -670,18 +640,18 @@ function _populateSubjectList() {
         onclick: () => _showNewSubjectForm(),
     }));
 
-    if (!_S.subjects.length) {
+    if (!lib.subjects.length) {
         list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No subjects defined" }));
         if (pagination) pagination.innerHTML = "";
         return;
     }
 
     const assignedIds = new Set(Object.values(_S.composition?.subjects || {}));
-    const total       = _S.subjects.length;
+    const total       = lib.subjects.length;
     const totalPages  = Math.max(1, Math.ceil(total / SUBJECT_PAGE_SIZE));
     _S.subjectPage    = Math.max(0, Math.min(_S.subjectPage, totalPages - 1));
     const start       = _S.subjectPage * SUBJECT_PAGE_SIZE;
-    const pageItems   = _S.subjects.slice(start, start + SUBJECT_PAGE_SIZE);
+    const pageItems   = lib.subjects.slice(start, start + SUBJECT_PAGE_SIZE);
 
     pageItems.forEach(s => {
         const isActive = assignedIds.has(s.id);
@@ -755,7 +725,7 @@ function _showNewSubjectForm() {
                     concept_id: conceptEl.value.trim(),
                 });
                 const res = await compositionsApi.listSubjects();
-                _S.subjects = res.subjects ?? [];
+                lib.subjects = res.subjects ?? [];
                 _populateSubjectList();
                 _rebuildSlots();
                 _toast(`Subject "${name}" added`, "success");
@@ -775,9 +745,7 @@ function _showNewSubjectForm() {
     nameEl.focus();
 }
 
-async function _refreshBgDropdown(selectId) {
-    const res = await compositionsApi.listBackgrounds();
-    _S.backgrounds = res.backgrounds ?? [];
+function _syncBgDropdown(selectId) {
     _populateBgList();
     if (_dom.bgSel) {
         _dom.bgSel.innerHTML = "";
@@ -787,6 +755,28 @@ async function _refreshBgDropdown(selectId) {
             if (o.id === selectId) opt.selected = true;
             _dom.bgSel.appendChild(opt);
         });
+    }
+}
+
+/** React to asset edits made in a modal here or in the Assets tab. */
+function _onLibraryChanged(e) {
+    const { kind, deletedId } = e.detail ?? {};
+    if (kind === "backgrounds") {
+        if (deletedId && _S.composition?.background === deletedId) {
+            _S.composition.background = "";
+            _markDirty();
+        }
+        _syncBgDropdown(_S.composition?.background || "");
+    } else if (kind === "outfits") {
+        _rebuildOutfitList();
+        _rebuildSlots();
+    } else if (kind === "subjects") {
+        _populateSubjectList();
+        _rebuildSlots();
+    } else if (kind === "cameraPresets") {
+        _rebuildPresetList("camera");
+    } else if (kind === "soundPresets") {
+        _rebuildPresetList("sound");
     }
 }
 
@@ -800,21 +790,21 @@ function _populateBgList() {
     list.appendChild(_mk("div", {
         cls: "fbt-ce-sb-item fbt-ce-sb-new",
         textContent: "+ New Background…",
-        onclick: () => _openBgEditor(null),
+        onclick: () => openBackgroundEditor(null),
     }));
 
-    if (!_S.backgrounds.length) {
+    if (!lib.backgrounds.length) {
         list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No backgrounds defined" }));
         if (pagination) pagination.innerHTML = "";
         return;
     }
 
     const activeBgId = _S.composition?.background || "";
-    const total      = _S.backgrounds.length;
+    const total      = lib.backgrounds.length;
     const totalPages = Math.max(1, Math.ceil(total / BG_PAGE_SIZE));
     _S.bgPage        = Math.max(0, Math.min(_S.bgPage, totalPages - 1));
     const start      = _S.bgPage * BG_PAGE_SIZE;
-    const pageItems  = _S.backgrounds.slice(start, start + BG_PAGE_SIZE);
+    const pageItems  = lib.backgrounds.slice(start, start + BG_PAGE_SIZE);
 
     pageItems.forEach(b => {
         const isActive = b.id === activeBgId;
@@ -832,7 +822,7 @@ function _populateBgList() {
             textContent: "✎",
             title: "Edit background",
         });
-        editBtn.addEventListener("click", e => { e.stopPropagation(); _openBgEditor(b); });
+        editBtn.addEventListener("click", e => { e.stopPropagation(); openBackgroundEditor(b); });
 
         row.appendChild(nameEl);
         row.appendChild(editBtn);
@@ -861,269 +851,6 @@ function _populateBgList() {
             pagination.appendChild(nextBtn);
         }
     }
-}
-
-function _openBgEditor(existing) {
-    const isNew = !existing;
-
-    let refImages = (existing?.reference_images || []).map(r =>
-        typeof r === "string"
-            ? { file: r, role: "scene reference", folder: "input" }
-            : { folder: "input", ...r }
-    );
-
-    // ── Fields ─────────────────────────────────────────────────────────────────
-    const nameEl  = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Name*" });
-    const descEl  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-desc",
-        placeholder: "Environment description…" });
-    const lightEl = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Lighting conditions…" });
-    const sndEl   = _mk("input",    { cls: "fbt-ce-input", type: "text", placeholder: "Ambient soundscape…" });
-
-    if (!isNew) {
-        nameEl.value  = existing.name        || "";
-        descEl.value  = existing.description  || "";
-        lightEl.value = existing.lighting     || "";
-        sndEl.value   = existing.soundscape   || "";
-    }
-
-    // ── Reference images ───────────────────────────────────────────────────────
-    const refListEl = _mk("div", { cls: "fbt-ce-outfit-ref-list" });
-
-    function _renderRefList() {
-        refListEl.innerHTML = "";
-        if (!refImages.length) {
-            refListEl.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No reference images." }));
-            return;
-        }
-        refImages.forEach((img, i) => {
-            const row    = _mk("div", { cls: "fbt-ce-outfit-ref-row" });
-            const thumb  = _mk("img", { cls: "fbt-ce-outfit-ref-thumb fbt-ce-clickable" });
-            thumb.src    = _ceViewUrl(img.file, img.folder || "input");
-            thumb.title  = `${img.file}\nClick to load into browser`;
-            thumb.onclick = () => _applySelection(img.file, img.folder || "input");
-            const info   = _mk("span", { cls: "fbt-ce-outfit-ref-info", textContent: img.file });
-            const roleEl = _mk("select", { cls: "fbt-ce-select fbt-ce-outfit-ref-role" });
-            ["scene reference", "lighting reference", "mood reference", "location reference", "color palette"].forEach(r => {
-                const opt = _mk("option", { value: r, textContent: r });
-                if (r === img.role) opt.selected = true;
-                roleEl.appendChild(opt);
-            });
-            roleEl.onchange = () => { refImages[i].role = roleEl.value; };
-            const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-danger",
-                textContent: "✕", onclick: () => { refImages.splice(i, 1); _renderRefList(); } });
-            row.append(thumb, info, roleEl, delBtn);
-            refListEl.appendChild(row);
-        });
-    }
-
-    function _addFileToRefs(filePath, folder = "input") {
-        if (!filePath) return;
-        if (!refImages.some(r => r.file === filePath)) {
-            refImages.push({ file: filePath, role: "scene reference", folder });
-            _renderRefList();
-        }
-    }
-
-    // ── File browser ───────────────────────────────────────────────────────────
-    let selFile   = null;
-    let frameTime = 1.0;
-
-    const browserSection = _mk("div", { cls: "fbt-ce-outfit-browser" });
-    browserSection.appendChild(_mk("div", { cls: "fbt-ce-label", textContent: "File Browser" }));
-
-    const previewWrap = _mk("div", { cls: "fbt-ce-outfit-preview-wrap" });
-    const previewImg  = _mk("img",   { cls: "fbt-be-img-preview fbt-ce-outfit-preview", alt: "" });
-    const previewVid  = _mk("video", { cls: "fbt-ce-outfit-video-preview" });
-    previewVid.controls = true;
-    previewVid.preload  = "metadata";
-    previewImg.style.display = "none";
-    previewVid.style.display = "none";
-    previewWrap.append(previewImg, previewVid);
-
-    const frameRow   = _mk("div", { cls: "fbt-ce-outfit-frame-row" });
-    const frameLabel = _mk("label", { cls: "fbt-ce-outfit-frame-label", textContent: "Frame (s):" });
-    const frameInput = _mk("input", { type: "number", cls: "fbt-ce-input fbt-ce-outfit-frame-input",
-        min: "0", step: "0.1", value: String(frameTime) });
-    const syncBtn    = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-secondary",
-        title: "Capture current video position", textContent: "↺ Use current",
-        onclick: () => {
-            frameTime = Math.max(0, previewVid.currentTime);
-            frameInput.value = frameTime.toFixed(2);
-        } });
-    frameInput.addEventListener("change", () => {
-        frameTime = Math.max(0, parseFloat(frameInput.value) || 0);
-        frameInput.value = frameTime.toFixed(2);
-        if (previewVid.readyState >= 1) previewVid.currentTime = frameTime;
-    });
-    previewVid.addEventListener("loadedmetadata", () => { previewVid.currentTime = frameTime; });
-    frameRow.append(frameLabel, frameInput, syncBtn);
-    frameRow.style.display = "none";
-
-    const selFileEl = _mk("div", { cls: "fbt-ce-outfit-sel-file", textContent: "— no file selected —" });
-
-    const _applySelection = (path, folder) => {
-        const isVideo = _isVideoFile(path);
-        selFile = { path, folder, isVideo };
-        selFileEl.textContent = path.split("/").pop();
-        selFileEl.title = path;
-        if (isVideo) {
-            previewImg.style.display = "none";
-            previewVid.style.display = "";
-            previewVid.src = _ceViewUrl(path, folder);
-            frameRow.style.display   = "";
-        } else {
-            previewVid.style.display = "none";
-            previewImg.style.display = "";
-            previewImg.src = _ceViewUrl(path, folder);
-            frameRow.style.display   = "none";
-        }
-        addRefBtn.disabled = isVideo;
-        addRefBtn.title    = isVideo ? "Videos cannot be added directly — use Analyze with LLM" : "";
-        if (analyzeBtn) analyzeBtn.disabled = false;
-    };
-
-    // ── File tree ──────────────────────────────────────────────────────────────
-    const _isImgOrVid = f => /\.(png|jpg|jpeg|webp|gif|bmp|tiff?|mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
-    const bgTree = buildFileTree({
-        inputFiles:  [...(_S.mediaInImages || []), ...(_S.mediaInVideos || [])],
-        outputFiles: [...(_S.mediaOutImages || []), ...(_S.mediaOutVideos || [])],
-        filter:      _isImgOrVid,
-        isSelected:  (p, d) => selFile?.path === p && selFile?.folder === d,
-        onSelect:    (p, d) => _applySelection(p, d),
-        emptyText:   "No images or videos in {dir}/",
-        initialDir:  "input",
-    });
-
-    const addRefBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "+ Add as Reference",
-        disabled: true,
-        onclick: () => { if (selFile && !selFile.isVideo) _addFileToRefs(selFile.path, selFile.folder); } });
-
-    let analyzeBtn = null;
-    let bgHistRefresh = null;
-    if (_S.llmLoaded && _S.llmVision) {
-        analyzeBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "🔍 Analyze with LLM",
-            disabled: true,
-            onclick: async () => {
-                if (!selFile) { alert("Select a file from the browser first."); return; }
-                analyzeBtn.disabled    = true;
-                analyzeBtn.textContent = "Analyzing…";
-                try {
-                    const bgParams = { filename: selFile.path, folder: selFile.folder || "input", frameTime };
-                    const data = await compositionsApi.analyzeBackground(selFile.path, bgParams);
-                    if (data.description) descEl.value  = data.description;
-                    if (data.lighting)    lightEl.value = data.lighting;
-                    if (data.soundscape)  sndEl.value   = data.soundscape;
-                    _addFileToRefs(data.frame_file || selFile.path, selFile.folder || "input");
-                    llmApi.historyAdd(makeEntry({
-                        kind: "bg_analyze",
-                        compositionName: _S.composition?.name || "",
-                        modelId: _S.llmLoaded || "",
-                        params: bgParams,
-                        result: { description: data.description, lighting: data.lighting,
-                                  soundscape: data.soundscape, frameFile: data.frame_file || null },
-                    })).catch(() => {});
-                    bgHistRefresh?.();
-                } catch (e) { alert(`Analyze failed: ${e.message}`); }
-                finally {
-                    analyzeBtn.disabled    = false;
-                    analyzeBtn.textContent = "🔍 Analyze with LLM";
-                }
-            } });
-    }
-
-    const actionRow = _mk("div", { cls: "fbt-ce-outfit-action-row" });
-    actionRow.appendChild(addRefBtn);
-    if (analyzeBtn) actionRow.appendChild(analyzeBtn);
-
-    browserSection.append(bgTree.el, selFileEl, previewWrap, frameRow, actionRow);
-
-    _renderRefList();
-
-    // ── Buttons ────────────────────────────────────────────────────────────────
-    const saveBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-primary",
-        textContent: isNew ? "Add" : "Save",
-        onclick: async () => {
-            const name = nameEl.value.trim();
-            if (!name) { nameEl.focus(); alert("Name is required."); return; }
-            const bg = {
-                name,
-                description:      descEl.value.trim(),
-                lighting:         lightEl.value.trim(),
-                soundscape:       sndEl.value.trim(),
-                reference_images: refImages,
-            };
-            if (!isNew) bg.id = existing.id;
-            try {
-                await compositionsApi.saveBackground(bg);
-                await _refreshBgDropdown(_dom.bgSel?.value || "");
-                _toast(`Background "${name}" ${isNew ? "added" : "updated"}`, "success");
-                overlay.remove();
-            } catch (e) { alert(`Save failed: ${e.message}`); }
-        }});
-
-    const cancelBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "Cancel",
-        onclick: () => overlay.remove() });
-
-    const footerBtns = [cancelBtn, saveBtn];
-    if (!isNew) {
-        const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-danger", textContent: "Delete",
-            onclick: async () => {
-                if (!confirm(`Delete background "${existing.name}"?`)) return;
-                try {
-                    await compositionsApi.deleteBackground(existing.id);
-                    if (_S.composition?.background === existing.id) {
-                        _S.composition.background = "";
-                        _markDirty();
-                    }
-                    await _refreshBgDropdown(_S.composition?.background || "");
-                    _toast(`Deleted "${existing.name}"`, "success");
-                    overlay.remove();
-                } catch (e) { alert(`Delete failed: ${e.message}`); }
-            }});
-        footerBtns.unshift(delBtn);
-    }
-
-    // ── Modal assembly ─────────────────────────────────────────────────────────
-    const overlay = _mk("div", { cls: "fbt-ce-modal-overlay",
-        onclick: e => { if (e.target === overlay) overlay.remove(); } });
-    const modal   = _mk("div", { cls: "fbt-ce-modal" });
-    overlay.appendChild(modal);
-
-    modal.appendChild(_mk("div", { cls: "fbt-ce-modal-title",
-        textContent: isNew ? "New Background" : `Edit: ${existing.name}` }));
-
-    const _row = (label, el) => _mk("div", { cls: "fbt-ce-row" }, [
-        _mk("label", { cls: "fbt-ce-label", textContent: label }),
-        _mk("div",   { cls: "fbt-ce-input-wrap" }, [el]),
-    ]);
-    modal.appendChild(_row("Name",        nameEl));
-    modal.appendChild(_row("Description", descEl));
-    modal.appendChild(_row("Lighting",    lightEl));
-    modal.appendChild(_row("Soundscape",  sndEl));
-    modal.appendChild(browserSection);
-    modal.appendChild(_mk("div", { cls: "fbt-ce-row" }, [
-        _mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }),
-    ]));
-    modal.appendChild(refListEl);
-
-    if (_S.llmLoaded && _S.llmVision) {
-        const { el: histEl, refresh } = buildHistorySection({
-            kind: "bg_analyze",
-            onRestore: entry => {
-                const r = entry.result || {};
-                if (r.description) descEl.value  = r.description;
-                if (r.lighting)    lightEl.value = r.lighting;
-                if (r.soundscape)  sndEl.value   = r.soundscape;
-            },
-        });
-        bgHistRefresh = refresh;
-        modal.appendChild(histEl);
-    }
-
-    modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, footerBtns));
-
-    document.body.appendChild(overlay);
-    nameEl.focus();
 }
 
 function _populatePresetList(list, presets, insertFn) {
@@ -1164,7 +891,7 @@ function _refreshSidebar() {
 
 function _rebuildPresetList(kind) {
     const listEl  = kind === "camera" ? _dom.camList : _dom.sndList;
-    const presets = kind === "camera" ? _S.cameraPresets : _S.soundPresets;
+    const presets = kind === "camera" ? lib.cameraPresets : lib.soundPresets;
     const insertFn = kind === "camera" ? _insertCameraPreset : _insertSoundPreset;
     if (!listEl) return;
     listEl.innerHTML = "";
@@ -1187,8 +914,8 @@ function _rebuildPresetList(kind) {
                     const r = kind === "camera"
                         ? await compositionsApi.listCameraPresets()
                         : await compositionsApi.listSoundPresets();
-                    if (kind === "camera") _S.cameraPresets = r.camera_presets ?? [];
-                    else                   _S.soundPresets  = r.sound_presets  ?? [];
+                    if (kind === "camera") lib.cameraPresets = r.camera_presets ?? [];
+                    else                   lib.soundPresets  = r.sound_presets  ?? [];
                     _rebuildPresetList(kind);
                     _toast("Preset deleted", "success");
                 } catch (e) { _toast(`Delete failed: ${e.message}`, "error"); }
@@ -1221,8 +948,8 @@ function _buildPresetSection(parent, kind) {
                 const r = kind === "camera"
                     ? await compositionsApi.listCameraPresets()
                     : await compositionsApi.listSoundPresets();
-                if (kind === "camera") _S.cameraPresets = r.camera_presets ?? [];
-                else                   _S.soundPresets  = r.sound_presets  ?? [];
+                if (kind === "camera") lib.cameraPresets = r.camera_presets ?? [];
+                else                   lib.soundPresets  = r.sound_presets  ?? [];
                 _rebuildPresetList(kind);
                 nameIn.value = "";
                 textEl.value = "";
@@ -1239,25 +966,7 @@ function _buildPresetSection(parent, kind) {
 
 // ── Outfit media helpers ───────────────────────────────────────────────────────
 
-function _ceViewUrl(relPath, folder = "input") {
-    const slash = relPath.lastIndexOf("/");
-    const name  = slash === -1 ? relPath             : relPath.slice(slash + 1);
-    const sub   = slash === -1 ? ""                  : relPath.slice(0, slash);
-    return `/view?filename=${encodeURIComponent(name)}&type=${folder}&subfolder=${encodeURIComponent(sub)}`;
-}
-
 // ── Outfit Registry sidebar section ───────────────────────────────────────────
-
-const DEFAULT_OUTFIT_QUERY =
-    "Describe the outfit in detail for video generation prompts. " +
-    "Focus on garment types, colors, materials, textures, patterns, and accessories. " +
-    "Do not describe the person's face, hair, or pose.";
-
-const _OUTFIT_VIDEO_EXTS = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv"]);
-function _isVideoFile(name) {
-    const dot = name.lastIndexOf(".");
-    return dot >= 0 && _OUTFIT_VIDEO_EXTS.has(name.slice(dot).toLowerCase());
-}
 
 function _outfitIdFromRow(row) { return row?.dataset.outfitId ?? ""; }
 
@@ -1265,7 +974,7 @@ function _rebuildOutfitList() {
     const list = _dom.outfitList;
     if (!list) return;
     list.innerHTML = "";
-    const entries = Object.entries(_S.outfits).sort(([, a], [, b]) =>
+    const entries = Object.entries(lib.outfits).sort(([, a], [, b]) =>
         (a.name || "").localeCompare(b.name || ""));
     if (!entries.length) {
         list.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No outfits defined." }));
@@ -1277,13 +986,13 @@ function _rebuildOutfitList() {
         const nameEl = _mk("div", { cls: "fbt-ce-outfit-name", textContent: entry.name || id });
         const idEl   = _mk("div", { cls: "fbt-ce-outfit-id",   textContent: id });
         const editBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "Edit",
-            onclick: () => _openOutfitEditor(id) });
+            onclick: () => openOutfitEditor(id) });
         const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-danger", textContent: "✕",
             onclick: async () => {
                 if (!confirm(`Delete outfit '${id}'?`)) return;
                 try {
                     await compositionsApi.deleteOutfit(id);
-                    delete _S.outfits[id];
+                    delete lib.outfits[id];
                     _rebuildOutfitList();
                     _rebuildSlots();
                 } catch (e) { alert(`Delete failed: ${e.message}`); }
@@ -1295,417 +1004,20 @@ function _rebuildOutfitList() {
     });
 }
 
-function _openOutfitEditor(existingId) {
-    const isNew = !existingId;
-    const entry = existingId ? (_S.outfits[existingId] || {}) : {};
-
-    let refImages = (entry.reference_images || []).map(r =>
-        typeof r === "string"
-            ? { file: r, role: "costume detail", folder: "input" }
-            : { folder: "input", ...r }
-    );
-
-    const overlay = _mk("div", { cls: "fbt-ce-modal-overlay",
-        onclick: e => { if (e.target === overlay) overlay.remove(); } });
-    const modal = _mk("div", { cls: "fbt-ce-modal" });
-    overlay.appendChild(modal);
-
-    modal.appendChild(_mk("div", { cls: "fbt-ce-modal-title",
-        textContent: isNew ? "New Outfit" : `Edit Outfit: ${existingId}` }));
-
-    const idInput   = _mk("input", { cls: "fbt-ce-input", placeholder: "outfit_id (snake_case)",
-        value: existingId || "", disabled: !isNew });
-    const nameInput = _mk("input", { cls: "fbt-ce-input", placeholder: "Display name",
-        value: entry.name || "" });
-    const tagsInput = _mk("input", { cls: "fbt-ce-input", placeholder: "Tags (comma-separated, optional)",
-        value: (entry.tags || []).join(", ") });
-    const descArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-desc",
-        placeholder: "Outfit description…", value: entry.description || "" });
-
-    // ── Shared browser state ────────────────────────────────────────────────────
-    let selFile   = null;   // {path, folder, isVideo}
-    let frameTime = 1.0;
-    let _onSelectionForSam2 = null;  // set by SAM2 section once built
-
-    function _addFileToRefs(filePath, folder = "input") {
-        if (!filePath) return;
-        if (!refImages.some(r => r.file === filePath)) {
-            refImages.push({ file: filePath, role: "costume detail", folder, use_as_reference: false });
-            _renderRefList();
-        }
-    }
-
-    // ── File Browser section ────────────────────────────────────────────────────
-    const browserSection = _mk("div", { cls: "fbt-ce-outfit-browser" });
-    browserSection.appendChild(_mk("div", { cls: "fbt-ce-label", textContent: "File Browser" }));
-
-    // preview
-    const previewWrap = _mk("div", { cls: "fbt-ce-outfit-preview-wrap" });
-    const previewImg  = _mk("img",   { cls: "fbt-be-img-preview fbt-ce-outfit-preview", alt: "" });
-    const previewVid  = _mk("video", { cls: "fbt-ce-outfit-video-preview" });
-    previewVid.controls = true;
-    previewVid.preload  = "metadata";
-    previewImg.style.display = "none";
-    previewVid.style.display = "none";
-    previewWrap.append(previewImg, previewVid);
-
-    // frame-time row (video only)
-    const frameRow   = _mk("div", { cls: "fbt-ce-outfit-frame-row" });
-    const frameLabel = _mk("label", { cls: "fbt-ce-outfit-frame-label", textContent: "Frame (s):" });
-    const frameInput = _mk("input", { type: "number", cls: "fbt-ce-input fbt-ce-outfit-frame-input",
-        min: "0", step: "0.1", value: String(frameTime) });
-    const syncBtn    = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-secondary",
-        title: "Capture current video position", textContent: "↺ Use current",
-        onclick: () => {
-            frameTime = Math.max(0, previewVid.currentTime);
-            frameInput.value = frameTime.toFixed(2);
-        } });
-    frameInput.addEventListener("change", () => {
-        frameTime = Math.max(0, parseFloat(frameInput.value) || 0);
-        frameInput.value = frameTime.toFixed(2);
-        if (previewVid.readyState >= 1) previewVid.currentTime = frameTime;
-    });
-    previewVid.addEventListener("loadedmetadata", () => { previewVid.currentTime = frameTime; });
-    frameRow.append(frameLabel, frameInput, syncBtn);
-    frameRow.style.display = "none";
-
-    // selected-file label
-    const selFileEl = _mk("div", { cls: "fbt-ce-outfit-sel-file", textContent: "— no file selected —" });
-
-    const _applySelection = (path, folder) => {
-        const isVideo = _isVideoFile(path);
-        selFile = { path, folder, isVideo };
-        selFileEl.textContent = path.split("/").pop();
-        selFileEl.title = path;
-        if (isVideo) {
-            previewImg.style.display = "none";
-            previewVid.style.display = "";
-            previewVid.src = _ceViewUrl(path, folder);
-            frameRow.style.display   = "";
-        } else {
-            previewVid.style.display = "none";
-            previewImg.style.display = "";
-            previewImg.src = _ceViewUrl(path, folder);
-            frameRow.style.display   = "none";
-        }
-        addRefBtn.disabled = isVideo;
-        addRefBtn.title    = isVideo ? "Videos cannot be added directly — use Analyze with LLM" : "";
-        if (analyzeBtn) analyzeBtn.disabled = false;
-        if (_onSelectionForSam2) _onSelectionForSam2(selFile);
-    };
-
-    // ── File tree ──────────────────────────────────────────────────────────────
-    const _isImgOrVid = f => /\.(png|jpg|jpeg|webp|gif|bmp|tiff?|mp4|mov|avi|mkv|webm|m4v|wmv)$/i.test(f);
-    const outfitTree = buildFileTree({
-        inputFiles:  [...(_S.mediaInImages || []), ...(_S.mediaInVideos || [])],
-        outputFiles: [...(_S.mediaOutImages || []), ...(_S.mediaOutVideos || [])],
-        filter:      _isImgOrVid,
-        isSelected:  (p, d) => selFile?.path === p && selFile?.folder === d,
-        onSelect:    (p, d) => _applySelection(p, d),
-        emptyText:   "No images or videos in {dir}/",
-        initialDir:  "input",
-    });
-
-    // action buttons
-    const addRefBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "+ Add as Reference",
-        disabled: true,
-        onclick: () => { if (selFile && !selFile.isVideo) _addFileToRefs(selFile.path, selFile.folder); } });
-
-    let analyzeBtn   = null;
-    let queryArea    = null;
-    let outfitHistRefresh = null;
-    if (_S.llmVision) {
-        queryArea  = _mk("textarea", { cls: "fbt-ce-textarea fbt-ce-outfit-query",
-            placeholder: "Describe what you want from the analysis…",
-            value: DEFAULT_OUTFIT_QUERY });
-        analyzeBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "🔍 Analyze with LLM",
-            disabled: true,
-            onclick: async () => {
-                if (!selFile) { alert("Select a file from the browser first."); return; }
-                analyzeBtn.disabled    = true;
-                analyzeBtn.textContent = "Analyzing…";
-                try {
-                    const query = queryArea.value.trim() || DEFAULT_OUTFIT_QUERY;
-                    const reqBody = { filename: selFile.path, query, max_tokens: 400 };
-                    if (selFile.isVideo) reqBody.frame_time = frameTime;
-                    const res  = await fetch("/fbtools/outfits/analyze_media", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(reqBody),
-                    });
-                    const data = await res.json();
-                    if (!res.ok) throw new Error(data.error || res.statusText);
-                    if (data.description) descArea.value = data.description;
-                    _addFileToRefs(data.frame_file || selFile.path, selFile.folder || "input");
-                    llmApi.historyAdd(makeEntry({
-                        kind: "outfit_analyze",
-                        compositionName: _S.composition?.name || "",
-                        modelId: _S.llmLoaded || "",
-                        params: { filename: selFile.path, folder: selFile.folder || "input",
-                                  frameTime: selFile.isVideo ? frameTime : null, query },
-                        result: { description: data.description, frameFile: data.frame_file || null },
-                    })).catch(() => {});
-                    outfitHistRefresh?.();
-                } catch (e) { alert(`Analyze failed: ${e.message}`); }
-                finally {
-                    analyzeBtn.disabled    = false;
-                    analyzeBtn.textContent = "🔍 Analyze with LLM";
-                }
-            } });
-    }
-
-    const actionRow = _mk("div", { cls: "fbt-ce-outfit-action-row" });
-    actionRow.appendChild(addRefBtn);
-    if (analyzeBtn) actionRow.appendChild(analyzeBtn);
-
-    browserSection.append(outfitTree.el, selFileEl, previewWrap, frameRow, actionRow);
-    if (queryArea) browserSection.appendChild(queryArea);
-
-    // ── SAM2 section (source driven by browser selection above) ────────────────
-    const sam2Section = _mk("div", { cls: "fbt-ce-outfit-sam2" });
-    fetch("/fbtools/outfits/sam2_status").then(r => r.json()).then(fresh => {
-        _S.sam2 = fresh;
-    }).catch(() => {}).finally(() => { sam2Section.innerHTML = ""; _buildSam2Section(); });
-
-    function _buildSam2Section() {
-        const s = _S.sam2;
-        sam2Section.appendChild(_mk("div", { cls: "fbt-ce-label", textContent: "SAM2 Outfit Extraction" }));
-        if (!s) return;
-
-        if (!s.packages_ok) {
-            sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint fbt-ce-hint-warn",
-                textContent: "SAM2 packages not installed." }));
-            sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint",
-                textContent: `To enable: ${s.install_hint}` }));
-            return;
-        }
-        if (!s.available) {
-            sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint",
-                textContent: "SAM2 model not found." }));
-            sam2Section.appendChild(_mk("div", { cls: "fbt-ce-hint fbt-ce-hint-warn",
-                textContent: s.model_hint || "Download a SAM2 safetensors model and place in models/sams/" }));
-            return;
-        }
-
-        // Full extraction UI — image source comes from shared browser selection
-        let extractPoint   = { x: 0.5, y: 0.5 };
-        let lastResultFile = null;
-
-        const noSelHint = _mk("div", { cls: "fbt-ce-hint",
-            textContent: "Select an image from the browser above to begin extraction." });
-
-        const sam2PreviewWrap = _mk("div", { cls: "fbt-ce-sam2-preview-wrap" });
-        const sam2PreviewImg  = _mk("img",  { cls: "fbt-ce-sam2-preview-img", alt: "" });
-        const pointDot        = _mk("div",  { cls: "fbt-ce-sam2-point-dot" });
-        sam2PreviewWrap.append(sam2PreviewImg, pointDot);
-        sam2PreviewImg.style.display = "none";
-        pointDot.style.display       = "none";
-
-        const pointLabel = _mk("div", { cls: "fbt-ce-hint fbt-ce-sam2-coords",
-            textContent: "Point: (0.50, 0.50)" });
-
-        function _updateDot() {
-            pointDot.style.left    = `${extractPoint.x * 100}%`;
-            pointDot.style.top     = `${extractPoint.y * 100}%`;
-            pointLabel.textContent = `Point: (${extractPoint.x.toFixed(2)}, ${extractPoint.y.toFixed(2)})`;
-        }
-        _updateDot();
-
-        sam2PreviewWrap.addEventListener("click", e => {
-            if (!sam2PreviewImg.naturalWidth) return;
-            const rect = sam2PreviewWrap.getBoundingClientRect();
-            extractPoint = {
-                x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-                y: Math.max(0, Math.min(1, (e.clientY - rect.top)  / rect.height)),
-            };
-            _updateDot();
-        });
-
-        const resultWrap   = _mk("div", { cls: "fbt-ce-sam2-result-wrap" });
-        const resultImg    = _mk("img", { cls: "fbt-ce-sam2-result-img", alt: "Extracted outfit" });
-        resultWrap.style.display = "none";
-        resultWrap.appendChild(resultImg);
-
-        const addResultBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
-            textContent: "Add to References",
-            onclick: () => { if (lastResultFile) _addFileToRefs(lastResultFile, "input"); } });
-        addResultBtn.style.display = "none";
-
-        const extractBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "✂ Extract Outfit",
-            disabled: true,
-            onclick: async () => {
-                if (!selFile || selFile.isVideo) { alert("Select an image first."); return; }
-                extractBtn.disabled    = true;
-                extractBtn.textContent = "Extracting…";
-                resultWrap.style.display   = "none";
-                addResultBtn.style.display = "none";
-                try {
-                    const res = await fetch("/fbtools/outfits/extract_outfit", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            filename:    selFile.path,
-                            point_x:     extractPoint.x,
-                            point_y:     extractPoint.y,
-                            point_label: 1,
-                        }),
-                    });
-                    const data = await res.json();
-                    if (!res.ok) throw new Error(data.error || res.statusText);
-                    lastResultFile       = data.result_file;
-                    resultImg.src        = `/view?filename=${encodeURIComponent(lastResultFile)}&type=input`;
-                    resultWrap.style.display   = "";
-                    addResultBtn.style.display = "";
-                } catch (e) { alert(`Extraction failed: ${e.message}`); }
-                finally {
-                    extractBtn.disabled    = false;
-                    extractBtn.textContent = "✂ Extract Outfit";
-                }
-            } });
-
-        // Wire browser selection → SAM2 preview
-        _onSelectionForSam2 = (sf) => {
-            if (sf && !sf.isVideo) {
-                noSelHint.style.display      = "none";
-                sam2PreviewImg.src           = _ceViewUrl(sf.path, sf.folder);
-                sam2PreviewImg.style.display = "";
-                pointDot.style.display       = "";
-                extractBtn.disabled          = false;
-                resultWrap.style.display     = "none";
-                addResultBtn.style.display   = "none";
-                lastResultFile               = null;
-                extractPoint                 = { x: 0.5, y: 0.5 };
-                _updateDot();
-            } else {
-                noSelHint.style.display      = "";
-                sam2PreviewImg.src           = "";
-                sam2PreviewImg.style.display = "none";
-                pointDot.style.display       = "none";
-                extractBtn.disabled          = true;
-            }
-        };
-        if (selFile) _onSelectionForSam2(selFile);
-
-        sam2Section.append(noSelHint, sam2PreviewWrap, pointLabel, extractBtn, resultWrap, addResultBtn);
-    }
-
-    // ── Reference images list ──────────────────────────────────────────────────
-    const refListEl = _mk("div", { cls: "fbt-ce-outfit-ref-list" });
-
-    function _renderRefList() {
-        refListEl.innerHTML = "";
-        if (!refImages.length) {
-            refListEl.appendChild(_mk("div", { cls: "fbt-ce-empty", textContent: "No reference images." }));
-            return;
-        }
-        refImages.forEach((img, i) => {
-            const row    = _mk("div", { cls: "fbt-ce-outfit-ref-row" });
-            const thumb  = _mk("img", { cls: "fbt-ce-outfit-ref-thumb fbt-ce-clickable" });
-            thumb.src    = _ceViewUrl(img.file, img.folder || "input");
-            thumb.title  = `${img.file}\nClick to load into browser & SAM2`;
-            thumb.onclick = () => _applySelection(img.file, img.folder || "input");
-            const info   = _mk("span", { cls: "fbt-ce-outfit-ref-info", textContent: img.file });
-            const roleEl = _mk("select", { cls: "fbt-ce-select fbt-ce-outfit-ref-role" });
-            ["costume detail", "character sheet", "full body", "portrait", "side profile", "reference"].forEach(r => {
-                const opt = _mk("option", { value: r, textContent: r });
-                if (r === img.role) opt.selected = true;
-                roleEl.appendChild(opt);
-            });
-            roleEl.onchange = () => { refImages[i].role = roleEl.value; };
-            // "Use as <Subject N> reference" toggle
-            const refCb = _mk("input", { type: "checkbox" });
-            refCb.checked = !!img.use_as_reference;
-            refCb.onchange = () => { refImages[i].use_as_reference = refCb.checked; };
-            const refCbWrap = _mk("label", { cls: "fbt-ce-outfit-ref-use-label",
-                title: "Include as <Subject N> visual reference in assembled prompt" });
-            refCbWrap.appendChild(refCb);
-            refCbWrap.appendChild(document.createTextNode(" Ref"));
-            const delBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm fbt-ce-btn-danger",
-                textContent: "✕",
-                onclick: () => { refImages.splice(i, 1); _renderRefList(); }
-            });
-            row.append(thumb, info, roleEl, refCbWrap, delBtn);
-            refListEl.appendChild(row);
-        });
-    }
-    _renderRefList();
-
-    // ── Buttons ────────────────────────────────────────────────────────────────
-    const saveBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-primary", textContent: "Save",
-        onclick: async () => {
-            const id = isNew ? idInput.value.trim() : existingId;
-            if (!id) { alert("Outfit ID is required."); return; }
-            if (!/^[a-z0-9_]+$/.test(id)) { alert("ID must be lowercase letters, digits, or underscores."); return; }
-            const outfit = {
-                id,
-                name:             nameInput.value.trim(),
-                description:      descArea.value.trim(),
-                tags:             tagsInput.value.split(",").map(t => t.trim()).filter(Boolean),
-                reference_images: refImages,
-            };
-            try {
-                await compositionsApi.saveOutfit(outfit);
-                _S.outfits[id] = {
-                    name: outfit.name, description: outfit.description,
-                    tags: outfit.tags, reference_images: refImages,
-                };
-                _rebuildOutfitList();
-                _rebuildSlots();
-                overlay.remove();
-            } catch (e) { alert(`Save failed: ${e.message}`); }
-        }});
-    const cancelBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "Cancel",
-        onclick: () => overlay.remove() });
-
-    // ── Modal assembly ─────────────────────────────────────────────────────────
-    const _row = (label, el) => _mk("div", { cls: "fbt-ce-row" }, [
-        _mk("label", { cls: "fbt-ce-label", textContent: label }),
-        _mk("div",   { cls: "fbt-ce-input-wrap" }, [el]),
-    ]);
-    modal.appendChild(_row("ID",          idInput));
-    modal.appendChild(_row("Name",        nameInput));
-    modal.appendChild(_row("Tags",        tagsInput));
-    modal.appendChild(_row("Description", descArea));
-    modal.appendChild(browserSection);
-    modal.appendChild(sam2Section);
-    modal.appendChild(_mk("div", { cls: "fbt-ce-row" }, [
-        _mk("label", { cls: "fbt-ce-label", textContent: "Reference Images" }),
-    ]));
-    modal.appendChild(refListEl);
-
-    if (_S.llmVision) {
-        const { el: histEl, refresh } = buildHistorySection({
-            kind: "outfit_analyze",
-            onRestore: entry => {
-                const r = entry.result || {};
-                if (r.description) descArea.value = r.description;
-                if (entry.params?.query && queryArea) queryArea.value = entry.params.query;
-            },
-        });
-        outfitHistRefresh = refresh;
-        modal.appendChild(histEl);
-    }
-
-    modal.appendChild(_mk("div", { cls: "fbt-ce-modal-btns" }, [cancelBtn, saveBtn]));
-
-    document.body.appendChild(overlay);
-    (isNew ? idInput : nameInput).focus();
-}
-
 function _buildOutfitsSection(parent) {
     const body = _mk("div", { cls: "fbt-ce-sb-body" });
     _dom.outfitList = _mk("div", { cls: "fbt-ce-sb-list" });
 
     const addBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
         textContent: "+ New Outfit",
-        onclick: () => _openOutfitEditor(null) });
+        onclick: () => openOutfitEditor(null) });
     const reloadBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm",
         textContent: "↺",
         title: "Reload outfit registry from disk",
         onclick: async () => {
             try {
                 const r = await compositionsApi.getOutfitRegistry();
-                _S.outfits = r?.outfits ?? {};
+                lib.outfits = r?.outfits ?? {};
                 _rebuildOutfitList();
             } catch (e) { console.error("Outfit reload error", e); }
         }});
@@ -1720,7 +1032,7 @@ function _buildOutfitsSection(parent) {
 // ── LLM status (the Compose sidebar no longer has an LLM section) ──────────────
 
 function _llmSyncBadge() {
-    document.body.classList.toggle("fbt-llm-loaded", !!_S.llmLoaded);
+    document.body.classList.toggle("fbt-llm-loaded", !!lib.llmLoaded);
 }
 
 function _buildSettingsSection(parent) {
@@ -1965,7 +1277,7 @@ function _rebuildSlots() {
         // Appearance info line below the row
         const infoEl = _mk("div", { cls: "fbt-ce-slot-info" });
         const updateInfo = (sid) => {
-            const s = _S.subjects.find(x => x.id === sid);
+            const s = lib.subjects.find(x => x.id === sid);
             infoEl.textContent = s?.appearance_summary || "";
         };
         updateInfo(comp.subjects[key] || "");
@@ -1977,10 +1289,10 @@ function _rebuildSlots() {
             cls: "fbt-ce-input fbt-ce-slot-concept-input",
             type: "text",
             placeholder: "concept ID…",
-            value: _S.subjects.find(s => s.id === (comp.subjects[key] || ""))?.concept_id || "",
+            value: lib.subjects.find(s => s.id === (comp.subjects[key] || ""))?.concept_id || "",
         });
         const updateConceptId = (sid) => {
-            conceptInput.value = _S.subjects.find(s => s.id === sid)?.concept_id || "";
+            conceptInput.value = lib.subjects.find(s => s.id === sid)?.concept_id || "";
         };
         conceptInput.addEventListener("change", async () => {
             const sid = comp.subjects[key];
@@ -1988,7 +1300,7 @@ function _rebuildSlots() {
             const newCid = conceptInput.value.trim();
             try {
                 await compositionsApi.saveSubject({ id: sid, concept_id: newCid });
-                const sub = _S.subjects.find(s => s.id === sid);
+                const sub = lib.subjects.find(s => s.id === sid);
                 if (sub) sub.concept_id = newCid;
             } catch (_) { _toast("Failed to update concept ID", "error"); }
         });
@@ -2009,7 +1321,7 @@ function _rebuildSlots() {
         noneOpt.textContent = "— no outfit —";
         outfitSel.appendChild(noneOpt);
         const currentOutfitId = comp.outfit_ids?.[key] || "";
-        Object.entries(_S.outfits)
+        Object.entries(lib.outfits)
             .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
             .forEach(([id, entry]) => {
                 const opt = document.createElement("option");
@@ -2021,7 +1333,7 @@ function _rebuildSlots() {
         // Info line: shows outfit description + reference image count
         const outfitInfoEl = _mk("div", { cls: "fbt-ce-slot-outfit-info" });
         const _updateOutfitInfo = (oid) => {
-            const entry = _S.outfits[oid];
+            const entry = lib.outfits[oid];
             if (!entry) { outfitInfoEl.textContent = ""; return; }
             const refCount = (entry.reference_images || []).filter(r => r?.use_as_reference).length;
             const hint = refCount ? ` · ${refCount} ref${refCount > 1 ? "s" : ""} → {Fit_N}` : "";
@@ -2299,7 +1611,7 @@ function _buildShotCard(shot, index) {
         const speakerOpts = slots.length
             ? slots.map(k => ({
                 id: k,
-                label: `${k} — ${_S.subjects.find(s => s.id === _S.composition.subjects[k])?.name || _S.composition.subjects[k] || k}`,
+                label: `${k} — ${lib.subjects.find(s => s.id === _S.composition.subjects[k])?.name || _S.composition.subjects[k] || k}`,
               }))
             : [{ id: "A", label: "A" }];
 
@@ -2833,7 +2145,7 @@ function _buildEditor(parent) {
             _markDirty();
 
             // Auto-fill or offer to fill soundscape from background
-            const bg = _S.backgrounds.find(b => b.id === bgId);
+            const bg = lib.backgrounds.find(b => b.id === bgId);
             if (bg?.soundscape) {
                 if (!_S.composition.overall_soundscape?.trim()) {
                     // Field is empty — auto-fill silently
@@ -3262,7 +2574,7 @@ function _assignNextSlot(subjectId) {
     }
     _rebuildSlots();
     _markDirty();
-    const name = _S.subjects.find(s => s.id === subjectId)?.name || subjectId;
+    const name = lib.subjects.find(s => s.id === subjectId)?.name || subjectId;
     _toast(`Assigned ${name}`, "success");
 }
 
@@ -3280,7 +2592,7 @@ function _assignBg(bgId) {
         });
     }
     _markDirty();
-    const name = _S.backgrounds.find(b => b.id === bgId)?.name || bgId;
+    const name = lib.backgrounds.find(b => b.id === bgId)?.name || bgId;
     _toast(`Background: ${name}`, "success");
 }
 
@@ -3370,6 +2682,8 @@ export async function renderCompositionEditor(el) {
     });
 
     _S.composition = _newComp();
+    lib.getCompositionName = () => _S.composition?.name || "";
+    document.addEventListener(LIBRARY_CHANGED, _onLibraryChanged);
     _buildPanel(el);
     await _loadResources();
     _refreshSidebar();
