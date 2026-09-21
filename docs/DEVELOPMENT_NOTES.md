@@ -117,6 +117,7 @@ When creating a new ComfyUI node, **always** complete these steps:
 
 ## Node-Specific Notes
 
+- Merging subjects and moving bundles (`scripts/merge_subjects.py`): [merge_subjects.md](merge_subjects.md)
 - Scene Cast Build (Source Profile vs Prompt Composition modes, ordinal matching, why the per-entry Dialogue field is hidden for compositions): [scene_cast_build.md](scene_cast_build.md)
 
 ## Testing Workflow
