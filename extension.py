@@ -17711,7 +17711,9 @@ class CompositionToH3Conditioning(io.ComfyNode):
             )
 
         # ── Turbo LoRA warning ──────────────────────────────────────────────────
-        if h3_refplan.get("has_turbo_lora") and standalone_audio_refs:
+        # Any audio reference counts, whether it is a video's soundtrack or a standalone clip.
+        audio_refs = [r for r in references if r.get("modality") in ("audio", "soundtrack_audio")]
+        if h3_refplan.get("has_turbo_lora") and audio_refs:
             _turbo_msg = (
                 "Turbo LoRA detected with audio references. "
                 "Turbo LoRA is known to degrade audio quality badly — "
