@@ -29,6 +29,7 @@ from .nodes.shared import (
     bump_reload,
 )
 from .nodes.llm_assistant import _SPA_STATUS_ID, _route_llm, _run_text_inference, _run_vision_inference, _run_vision_inference_clip
+from .nodes.media import _audio_get_list
 from .nodes.run_tracking import RunMetaCapture, JobCompleteNotifier, register_track_formatter
 from .utils.composition_track_summary import summarize_scene_cast, summarize_loras, summarize_composition_meta
 from .nodes import kdenlive_archive as _kdenlive_archive_routes  # noqa: F401  (registers /fbtools/kdenlive/* routes on import)
@@ -11605,23 +11606,8 @@ def _subject_get_ids() -> list[str]:
         return ["(none)"]
 
 
-_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".aac", ".m4a", ".opus"}
-_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
 
 
-def _audio_get_list() -> list[str]:
-    """Return audio filenames from the ComfyUI input directory for combo widgets."""
-    try:
-        input_dir = get_input_directory()
-        files = [
-            f for f in os.listdir(input_dir)
-            if os.path.splitext(f)[1].lower() in _AUDIO_EXTENSIONS
-        ]
-        files.sort(key=str.lower)
-        return ["None"] + files
-    except Exception:
-        return ["None"]
 
 
 def _load_subject_images(filenames: "list[str | dict]") -> "torch.Tensor | None":
@@ -15864,290 +15850,20 @@ async def _casts_delete(request):
 
 # ── Media file listing ────────────────────────────────────────────────────────
 
-_TMP_FRAME_PREFIX = "_fbt_tmp_"
 
 
-def _purge_old_tmp_frames(input_dir: str, max_age_s: int = 1800) -> None:
-    """Delete _fbt_tmp_* files older than max_age_s seconds."""
-    now = time.time()
-    for f in os.listdir(input_dir):
-        if f.startswith(_TMP_FRAME_PREFIX):
-            fpath = os.path.join(input_dir, f)
-            try:
-                if now - os.path.getmtime(fpath) > max_age_s:
-                    os.remove(fpath)
-            except OSError:
-                pass
 
 
-@routes.post("/fbtools/media/extract_frame")
-async def _media_extract_frame(request):
-    """Extract a single frame from a video in the ComfyUI input directory.
-
-    Body: {filename: str, frame_index: int}
-    Response: {tmp_filename: str, frame_count: int, width: int, height: int}
-    The caller is responsible for deleting the temp file via DELETE /fbtools/media/extract_frame.
-    """
-    try:
-        body = await request.json()
-        filename = body.get("filename", "").strip()
-        frame_index = int(body.get("frame_index", 0))
-        dir_hint = (body.get("dir") or "input").strip()
-        if not filename:
-            return web.json_response({"error": "filename is required"}, status=400)
-
-        base_dir = get_output_directory() if dir_hint == "output" else get_input_directory()
-        video_path = os.path.join(base_dir, filename)
-        if not os.path.exists(video_path):
-            return web.json_response({"error": f"File not found: {filename}"}, status=404)
-
-        # Temp frames always land in the input directory so ComfyUI's /view endpoint
-        # can serve them directly (it only serves from input/output roots).
-        input_dir = get_input_directory()
-
-        def _extract():
-            import cv2
-            cap = cv2.VideoCapture(video_path)
-            try:
-                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                idx = max(0, min(frame_index, frame_count - 1))
-                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-                ok, frame = cap.read()
-                if not ok:
-                    raise RuntimeError(f"Could not read frame {idx}")
-                _purge_old_tmp_frames(input_dir)
-                tmp_name = f"{_TMP_FRAME_PREFIX}{uuid.uuid4().hex[:12]}.jpg"
-                tmp_path = os.path.join(input_dir, tmp_name)
-                cv2.imwrite(tmp_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-                return {"tmp_filename": tmp_name, "frame_count": frame_count,
-                        "width": width, "height": height, "frame_index": idx}
-            finally:
-                cap.release()
-
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _extract)
-        return web.json_response(result)
-    except Exception as exc:
-        logger.error("extract_frame error: %s", exc)
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.delete("/fbtools/media/extract_frame")
-async def _media_delete_tmp_frame(request):
-    """Delete a temp frame file created by extract_frame. ?filename=<tmp_filename>"""
-    fname = request.rel_url.query.get("filename", "").strip()
-    if not fname or not fname.startswith(_TMP_FRAME_PREFIX):
-        return web.json_response({"error": "Invalid or missing filename"}, status=400)
-    try:
-        fpath = os.path.join(get_input_directory(), fname)
-        if os.path.exists(fpath):
-            os.remove(fpath)
-        return web.json_response({"success": True})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.get("/fbtools/media/info")
-async def _media_info(request):
-    """Return metadata for a video or audio file.
-
-    ?filename=<name>&dir=input|output  (dir defaults to "input")
-    Response: {duration, fps, frame_count, width, height}
-    """
-    filename = request.rel_url.query.get("filename", "").strip()
-    src_dir  = request.rel_url.query.get("dir", "input")
-    if not filename:
-        return web.json_response({"error": "filename required"}, status=400)
-    base = get_output_directory() if src_dir == "output" else get_input_directory()
-    path = os.path.realpath(os.path.join(base, filename))
-    if not path.startswith(os.path.realpath(base)):
-        return web.json_response({"error": "Forbidden"}, status=403)
-    if not os.path.isfile(path):
-        return web.json_response({"error": f"Not found: {filename}"}, status=404)
-
-    def _get_info():
-        import cv2
-        cap = cv2.VideoCapture(path)
-        try:
-            fps         = cap.get(cv2.CAP_PROP_FPS) or 0.0
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            width       = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height      = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            duration    = (frame_count / fps) if fps > 0 else 0.0
-            fourcc_int  = int(cap.get(cv2.CAP_PROP_FOURCC))
-            codec       = "".join(chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4)).strip("\x00").strip()
-            return {"duration": round(duration, 4), "fps": round(fps, 4),
-                    "frame_count": frame_count, "width": width, "height": height,
-                    "codec": codec or "unknown"}
-        finally:
-            cap.release()
-
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _get_info)
-    return web.json_response(result)
 
 
-@routes.get("/fbtools/media/stream")
-async def _media_stream(request):
-    """Stream a media file from input or output directory.
-
-    ?filename=<name>&dir=input|output  (dir defaults to "input")
-    Supports HTTP Range requests so browsers can seek into video/audio.
-    """
-    filename = request.rel_url.query.get("filename", "").strip()
-    src_dir  = request.rel_url.query.get("dir", "input")
-    if not filename:
-        return web.Response(status=400, text="filename required")
-    base = get_output_directory() if src_dir == "output" else get_input_directory()
-    path = os.path.realpath(os.path.join(base, filename))
-    if not path.startswith(os.path.realpath(base)):
-        return web.Response(status=403, text="Forbidden")
-    if not os.path.isfile(path):
-        return web.Response(status=404, text="Not found")
-    return web.FileResponse(path)
 
 
-@routes.get("/fbtools/media/list")
-async def _media_list(request):
-    """Return filenames from the ComfyUI input directory filtered by ?type=.
-
-    type: image | video | audio | all  (default: all)
-    Response: {"files": ["fname.mp4", ...]}
-    """
-    try:
-        media_type = request.rel_url.query.get("type", "all").lower()
-        if media_type == "image":
-            exts = _IMAGE_EXTENSIONS
-        elif media_type == "video":
-            exts = _VIDEO_EXTENSIONS
-        elif media_type == "audio":
-            exts = _AUDIO_EXTENSIONS
-        elif media_type == "all":
-            exts = _IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS
-        else:
-            return web.json_response(
-                {"error": f"Invalid type {media_type!r}. Use image, video, audio, or all."},
-                status=400,
-            )
-        folder_param = request.rel_url.query.get("folder", "input").lower()
-        if folder_param == "output":
-            base_dir = get_output_directory()
-        elif folder_param == "input":
-            base_dir = get_input_directory()
-        else:
-            return web.json_response({"error": f"Invalid folder {folder_param!r}. Use input or output."}, status=400)
-
-        recursive = request.rel_url.query.get("recursive", "false").lower() == "true"
-
-        if recursive:
-            files = []
-            for dirpath, dirnames, filenames in os.walk(base_dir):
-                # skip hidden dirs (e.g. .cache, .tmp)
-                dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
-                for f in filenames:
-                    if os.path.splitext(f)[1].lower() in exts:
-                        rel = os.path.relpath(os.path.join(dirpath, f), base_dir)
-                        files.append(rel.replace(os.sep, "/"))
-        else:
-            files = [
-                f for f in os.listdir(base_dir)
-                if os.path.splitext(f)[1].lower() in exts
-            ]
-
-        files.sort(key=str.lower)
-        return web.json_response({"files": files})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/media/sample_frames")
-async def _media_sample_frames(request):
-    """Extract thumbnail frames from a video clip for the filmstrip UI.
-
-    Body: {filename, dir: "input"|"output", start_time, duration, every_nth, cap}
-    Returns: {frames: [{index, timestamp, data_url}], fps, duration, frame_count}
-
-    Thumbnails are 160×90 JPEG at quality 72 — small enough for fast transport.
-    """
-    try:
-        body       = await request.json()
-        filename   = body.get("filename", "").strip()
-        src_dir    = body.get("dir", "input")
-        start_time = float(body.get("start_time", 0.0))
-        duration   = float(body.get("duration",   0.0))
-        every_nth  = max(1, int(body.get("every_nth", 1)))
-        cap        = max(1, min(60, int(body.get("cap", 24))))
-
-        if not filename:
-            return web.json_response({"error": "filename required"}, status=400)
-
-        base = get_output_directory() if src_dir == "output" else get_input_directory()
-        path = os.path.realpath(os.path.join(base, filename))
-        if not path.startswith(os.path.realpath(base)):
-            return web.json_response({"error": "Forbidden"}, status=403)
-        if not os.path.isfile(path):
-            return web.json_response({"error": f"Not found: {filename}"}, status=404)
-
-        def _sample():
-            import cv2
-            import base64 as _b64
-            THUMB_W, THUMB_H = 160, 90
-            cap_ = cv2.VideoCapture(path)
-            try:
-                fps   = cap_.get(cv2.CAP_PROP_FPS) or 24.0
-                total = int(cap_.get(cv2.CAP_PROP_FRAME_COUNT))
-                native_dur = total / fps
-
-                start_f = int(start_time * fps)
-                end_f   = min(total, start_f + int(duration * fps)) if duration > 0 else total
-                start_f = max(0, min(start_f, end_f - 1))
-
-                # Build candidate list respecting every_nth, then thin to cap
-                candidates = list(range(start_f, end_f, every_nth))
-                if len(candidates) > cap:
-                    step = len(candidates) / cap
-                    candidates = [candidates[int(i * step)] for i in range(cap)]
-
-                frames_out = []
-                for idx in candidates:
-                    cap_.set(cv2.CAP_PROP_POS_FRAMES, idx)
-                    ok, bgr = cap_.read()
-                    if not ok:
-                        continue
-                    h, w = bgr.shape[:2]
-                    scale = min(THUMB_W / w, THUMB_H / h)
-                    nw, nh = int(w * scale), int(h * scale)
-                    resized = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_AREA)
-                    canvas = np.zeros((THUMB_H, THUMB_W, 3), dtype=np.uint8)
-                    yo, xo = (THUMB_H - nh) // 2, (THUMB_W - nw) // 2
-                    canvas[yo:yo + nh, xo:xo + nw] = resized
-                    ok2, buf = cv2.imencode(".jpg", canvas, [cv2.IMWRITE_JPEG_QUALITY, 72])
-                    if not ok2:
-                        continue
-                    b64 = _b64.b64encode(buf.tobytes()).decode()
-                    frames_out.append({
-                        "index":     idx,
-                        "timestamp": round(idx / fps, 2),
-                        "data_url":  f"data:image/jpeg;base64,{b64}",
-                    })
-
-                return {
-                    "frames":      frames_out,
-                    "fps":         round(fps, 4),
-                    "duration":    round(native_dur, 4),
-                    "frame_count": total,
-                }
-            finally:
-                cap_.release()
-
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _sample)
-        return web.json_response(result)
-    except Exception as exc:
-        logger.error("sample_frames error: %s", exc)
-        return web.json_response({"error": str(exc)}, status=500)
 
 
 @routes.post("/fbtools/bundles/preview_sampled")
@@ -17401,228 +17117,28 @@ except Exception as _exc:
 
 # ── Background routes ─────────────────────────────────────────────────────────
 
-@routes.get("/fbtools/backgrounds/list")
-async def _backgrounds_list(request):
-    try:
-        return web.json_response({"backgrounds": _list_backgrounds(user_data_dir())})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.get("/fbtools/backgrounds/get")
-async def _backgrounds_get(request):
-    bg_id = request.rel_url.query.get("id", "")
-    if not bg_id:
-        return web.json_response({"error": "id parameter required"}, status=400)
-    try:
-        bg = _get_background(user_data_dir(), bg_id)
-        if bg is None:
-            return web.json_response({"error": f"Background '{bg_id}' not found"}, status=404)
-        return web.json_response(bg)
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/backgrounds/save")
-async def _backgrounds_save(request):
-    try:
-        bg = await request.json()
-        saved = _save_background(user_data_dir(), bg)
-        return web.json_response({"success": True, "id": saved["id"]})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.delete("/fbtools/backgrounds/delete")
-async def _backgrounds_delete(request):
-    bg_id = request.rel_url.query.get("id", "")
-    if not bg_id:
-        return web.json_response({"error": "id parameter required"}, status=400)
-    try:
-        _delete_background(user_data_dir(), bg_id)
-        return web.json_response({"success": True})
-    except KeyError:
-        return web.json_response({"error": f"Background '{bg_id}' not found"}, status=404)
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/backgrounds/analyze_media")
-async def _backgrounds_analyze_media(request):
-    """Analyze an image or video for background scene description.
-
-    Asks the loaded LLM to return structured JSON with three fields:
-      description — environment / setting, no people
-      lighting    — lighting conditions and quality
-      soundscape  — expected ambient audio
-
-    For videos, extracts a frame at frame_time seconds and saves it to the
-    ComfyUI input directory as _bg_ref_<uuid>.jpg.
-
-    Body: { filename, folder?, frame_time?, max_tokens? }
-    Returns: { description, lighting, soundscape, frame_file }
-    """
-    _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv"}
-    _DEFAULT_QUERY = (
-        "Analyze this scene for use in video production. "
-        "Return ONLY a JSON object with exactly these three keys — no other text:\n"
-        '{\n'
-        '  "description": "2-3 sentences describing the environment, setting, and atmosphere. '
-        'Do not mention any people or characters.",\n'
-        '  "lighting": "1 sentence describing the lighting quality, direction, and mood.",\n'
-        '  "soundscape": "1-2 sentences describing what you would expect to hear in this scene."\n'
-        '}'
-    )
-    try:
-        body = await request.json()
-        filename = (body.get("filename") or "").strip()
-        if not filename:
-            return web.json_response({"error": "filename is required"}, status=400)
-        folder     = (body.get("folder") or "input").strip()
-        max_tokens = int(body.get("max_tokens", 500))
-        frame_time = float(body.get("frame_time", 1.0))
-
-        import folder_paths
-        if folder == "output":
-            src_dir = folder_paths.get_output_directory()
-        else:
-            src_dir = folder_paths.get_input_directory()
-        src_path = os.path.join(src_dir, filename)
-        if not os.path.exists(src_path):
-            return web.json_response({"error": f"File not found: {filename}"}, status=404)
-
-        ext = os.path.splitext(filename)[1].lower()
-        frame_file: str | None = None
-        pil_image = None
-
-        def _prepare():
-            nonlocal frame_file, pil_image
-            from PIL import Image as _PILImage
-            input_dir = folder_paths.get_input_directory()
-            if ext in _VIDEO_EXTS:
-                import cv2
-                cap = cv2.VideoCapture(src_path)
-                try:
-                    fps         = cap.get(cv2.CAP_PROP_FPS) or 24.0
-                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    target      = min(int(frame_time * fps), max(0, frame_count - 1))
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, target)
-                    ok, frame = cap.read()
-                    if not ok:
-                        raise RuntimeError(f"Could not read frame {target} from {filename}")
-                    ref_name  = f"_bg_ref_{uuid.uuid4().hex[:12]}.jpg"
-                    ref_path  = os.path.join(input_dir, ref_name)
-                    cv2.imwrite(ref_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-                    frame_file = ref_name
-                    pil_image  = _PILImage.open(ref_path).convert("RGB")
-                finally:
-                    cap.release()
-            else:
-                pil_image = _PILImage.open(src_path).convert("RGB")
-
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _prepare)
-
-        result = await _route_llm(_DEFAULT_QUERY, images=[pil_image], max_tokens=max_tokens, temperature=0.4)
-        if not result.get("success"):
-            return web.json_response(
-                {"error": result.get("message", "LLM generate failed")}, status=503
-            )
-
-        raw = result.get("text", "").strip()
-
-        # Parse structured JSON from LLM response; strip markdown fences if present
-        import re as _re
-        json_text = raw
-        fence_match = _re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
-        if fence_match:
-            json_text = fence_match.group(1).strip()
-        try:
-            parsed = json.loads(json_text)
-            description = str(parsed.get("description", "")).strip()
-            lighting    = str(parsed.get("lighting",    "")).strip()
-            soundscape  = str(parsed.get("soundscape",  "")).strip()
-        except (json.JSONDecodeError, AttributeError):
-            # Fall back: use raw text as description
-            description = raw
-            lighting    = ""
-            soundscape  = ""
-
-        return web.json_response({
-            "description": description,
-            "lighting":    lighting,
-            "soundscape":  soundscape,
-            "frame_file":  frame_file,
-        })
-    except Exception as exc:
-        logger.error("background analyze_media error: %s", exc)
-        return web.json_response({"error": str(exc)}, status=500)
 
 
 # ── Preset routes ─────────────────────────────────────────────────────────────
 
-@routes.get("/fbtools/presets/cameras")
-async def _presets_cameras_list(request):
-    try:
-        return web.json_response({"camera_presets": _list_camera_presets(user_data_dir())})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/presets/cameras/save")
-async def _presets_cameras_save(request):
-    try:
-        preset = await request.json()
-        saved = _save_camera_preset(user_data_dir(), preset)
-        return web.json_response({"success": True, "id": saved["id"]})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.delete("/fbtools/presets/cameras/delete")
-async def _presets_cameras_delete(request):
-    pid = request.rel_url.query.get("id", "")
-    if not pid:
-        return web.json_response({"error": "id parameter required"}, status=400)
-    try:
-        _delete_camera_preset(user_data_dir(), pid)
-        return web.json_response({"success": True})
-    except KeyError:
-        return web.json_response({"error": f"Camera preset '{pid}' not found"}, status=404)
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.get("/fbtools/presets/sounds")
-async def _presets_sounds_list(request):
-    try:
-        return web.json_response({"sound_presets": _list_sound_presets(user_data_dir())})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.post("/fbtools/presets/sounds/save")
-async def _presets_sounds_save(request):
-    try:
-        preset = await request.json()
-        saved = _save_sound_preset(user_data_dir(), preset)
-        return web.json_response({"success": True, "id": saved["id"]})
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
-@routes.delete("/fbtools/presets/sounds/delete")
-async def _presets_sounds_delete(request):
-    pid = request.rel_url.query.get("id", "")
-    if not pid:
-        return web.json_response({"error": "id parameter required"}, status=400)
-    try:
-        _delete_sound_preset(user_data_dir(), pid)
-        return web.json_response({"success": True})
-    except KeyError:
-        return web.json_response({"error": f"Sound preset '{pid}' not found"}, status=404)
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
 
 
 # ── Node: PromptCompositionLoader ─────────────────────────────────────────────

@@ -17,6 +17,8 @@ PKG = "fbt_route_test_pkg"
 # module -> number of @routes.* handlers it must register
 EXPECTED = {
     "llm_assistant": 40,
+    "backgrounds_presets": 11,
+    "media": 6,
 }
 
 
@@ -27,7 +29,7 @@ class _Routes:
     def _decorator(self, verb):
         def deco(path):
             def wrap(fn):
-                self.registered.append((verb, path))
+                self.registered.append((verb, path, fn.__module__))
                 return fn
             return wrap
         return deco
@@ -68,5 +70,7 @@ def env(tmp_path, monkeypatch):
 @pytest.mark.parametrize("module,count", sorted(EXPECTED.items()))
 def test_route_module_imports_and_registers_its_routes(env, module, count):
     importlib.import_module(f"{PKG}.nodes.{module}")
-    assert len(env.registered) == count
-    assert all(path.startswith("/fbtools/") for _, path in env.registered)
+    # Importing a module can pull in sibling route modules (e.g. backgrounds -> llm_assistant); count only its own.
+    own = [(v, p) for v, p, mod in env.registered if mod == f"{PKG}.nodes.{module}"]
+    assert len(own) == count
+    assert all(path.startswith("/fbtools/") for _, path in own)
