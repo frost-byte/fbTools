@@ -20034,6 +20034,8 @@ def _track_format_prompt_composition_loader(kwargs: dict):
             + ("" if not as_ref or has_refs else " (no reference images, text only)")
             + (" (override)" if overrides and "background_as_reference" in overrides else "")
         )
+        if overrides and overrides.get("background_soundscape"):
+            rows["Soundscape"] = "from the background (override)"
     if isinstance(scene_cast, dict):
         bundle_reg = _load_bundle_registry(default_bundle_registry_path())
         rows.update(summarize_scene_cast(scene_cast, bundle_reg.get))

@@ -175,3 +175,31 @@ def test_authored_bg_token_is_not_duplicated():
 
 def test_environment_sentence_has_no_double_period():
     assert ".." not in _edit_prompt(as_ref=False)
+
+
+# ── Background soundscape override ───────────────────────────────────────────────
+
+def test_soundscape_override_replaces_composition_soundscape():
+    comp = _comp(overall_soundscape="hotel hum")
+    out, _ = apply_overrides(comp, {"background": "beach", "background_soundscape": True}, _bgs())
+    assert out["overall_soundscape"] == "waves"
+
+
+def test_soundscape_override_off_or_absent_keeps_composition_text():
+    comp = _comp(overall_soundscape="hotel hum")
+    out, _ = apply_overrides(comp, {"background": "beach"}, _bgs())
+    assert out["overall_soundscape"] == "hotel hum"
+
+
+def test_soundscape_override_ignored_when_background_has_none():
+    bgs = _bgs()
+    bgs["cafe"]["soundscape"] = ""
+    comp = _comp(overall_soundscape="hotel hum")
+    out, _ = apply_overrides(comp, {"background_soundscape": True}, bgs)
+    assert out["overall_soundscape"] == "hotel hum"
+
+
+def test_soundscape_override_uses_default_background_when_not_swapped():
+    comp = _comp(overall_soundscape="hotel hum")
+    out, _ = apply_overrides(comp, {"background_soundscape": True}, _bgs())
+    assert out["overall_soundscape"] == "murmur"   # the composition's own (cafe) background

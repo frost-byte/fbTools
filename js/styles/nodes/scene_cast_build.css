@@ -454,3 +454,11 @@
     border-bottom: 1px solid var(--border-color, #333);
 }
 .fbt-scb-comp-opts .fbt-scb-sel { flex: 1 1 auto; min-width: 0; }
+.fbt-scb-comp-opts-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--p-surface-400, #888);
+}
+.fbt-scb-comp-check { display: inline-flex; align-items: center; gap: 2px; margin-right: 10px; }

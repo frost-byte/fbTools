@@ -888,7 +888,7 @@ function _buildCastBuildUI(node, app) {
     function _widgetHeight() {
         // Tab strip + 3 form rows (subject/mode/dlg) + preview toggle + preview area
         const base = 30 + 26 + 26 + 26 + 24;  // ≈ 132px
-        const opts = optsSection.style.display === "none" ? 0 : 58;
+        const opts = optsSection.style.display === "none" ? 0 : 76;
         return base + opts + (_previewOpen ? 140 : 0);
     }
 
@@ -924,9 +924,16 @@ function _buildCastBuildUI(node, app) {
             delete _overrides.background;
         }
         const effBg = "background" in _overrides ? (_overrides.background === "none" ? "" : _overrides.background) : defaultBg;
+        const effBgObj = _backgrounds.find(b => b.id === effBg);
         const defaultRef = !!comp.background_as_reference;
         const effRef = "background_as_reference" in _overrides ? !!_overrides.background_as_reference : defaultRef;
+        const effSound = !!_overrides.background_soundscape;
 
+        const title = document.createElement("div");
+        title.className = "fbt-scb-comp-opts-title";
+        title.textContent = "Background";
+
+        // Dropdown: the composition's background first ("Default: …"), then (none) and the rest.
         const nameOf = id => _backgrounds.find(b => b.id === id)?.name || id;
         const bgSel = document.createElement("select");
         bgSel.className = "fbt-scb-sel";
@@ -945,37 +952,61 @@ function _buildCastBuildUI(node, app) {
             _syncOverrides();
             _renderCompositionOptions();
         });
-
         const bgRow = document.createElement("div");
         bgRow.className = "fbt-scb-form-row";
-        const bgLbl = document.createElement("span");
-        bgLbl.className = "fbt-scb-field-label";
-        bgLbl.textContent = "Background";
-        bgRow.append(bgLbl, bgSel);
+        bgRow.appendChild(bgSel);
 
-        const hasRefs = _compBackgroundRefs(effBg);
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = effRef;
-        cb.disabled = !effBg || !hasRefs;
-        cb.addEventListener("change", () => {
-            if (cb.checked === defaultRef) delete _overrides.background_as_reference;
-            else _overrides.background_as_reference = cb.checked;
-            _syncOverrides();
-            _renderCompositionOptions();
-        });
-        const cbLbl = document.createElement("label");
-        cbLbl.className = "fbt-scb-field-label";
-        cbLbl.style.cursor = cb.disabled ? "default" : "pointer";
-        cbLbl.append(cb, document.createTextNode(" Use background as reference images"));
-        if (!effBg) cbLbl.title = "No background selected";
-        else if (!hasRefs) cbLbl.title = "This background has no reference images (text description only)";
-        else cbLbl.title = `Composition default: ${defaultRef ? "on" : "off"}`;
-        const refRow = document.createElement("div");
-        refRow.className = "fbt-scb-form-row";
-        refRow.appendChild(cbLbl);
+        // A labelled checkbox with a tooltip; `disabledReason` greys it out and explains why.
+        const makeCheck = (label, checked, tip, disabledReason, onChange) => {
+            const cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.checked = checked;
+            cb.disabled = !!disabledReason;
+            cb.addEventListener("change", () => onChange(cb.checked));
+            const lbl = document.createElement("label");
+            lbl.className = "fbt-scb-field-label fbt-scb-comp-check";
+            lbl.style.cursor = cb.disabled ? "default" : "pointer";
+            lbl.title = disabledReason ? `${disabledReason}\n\n${tip}` : tip;
+            lbl.append(cb, document.createTextNode(` ${label}`));
+            return lbl;
+        };
 
-        optsSection.append(bgRow, refRow);
+        const imgReason = !effBg ? "No background selected."
+            : (!(effBgObj?.reference_images ?? []).length ? "This background has no reference images." : "");
+        const imgCheck = makeCheck(
+            "image", effRef,
+            "Use the background's reference image(s) as a subject the scene is set in, and open the "
+            + "first shot in it. When off, only the background's text description is used. "
+            + `Composition default: ${defaultRef ? "on" : "off"}.`,
+            imgReason,
+            checked => {
+                if (checked === defaultRef) delete _overrides.background_as_reference;
+                else _overrides.background_as_reference = checked;
+                _syncOverrides();
+                _renderCompositionOptions();
+            },
+        );
+
+        const sndReason = !effBg ? "No background selected."
+            : (!String(effBgObj?.soundscape || "").trim() ? "This background has no soundscape." : "");
+        const sndCheck = makeCheck(
+            "soundscape", effSound && !sndReason,
+            "Use this background's soundscape as the overall soundscape, replacing the composition's "
+            + "own. When off, the composition's soundscape is used (or the background's if the "
+            + "composition has none).",
+            sndReason,
+            checked => {
+                if (checked) _overrides.background_soundscape = true;
+                else delete _overrides.background_soundscape;
+                _syncOverrides();
+                _renderCompositionOptions();
+            },
+        );
+        const checkRow = document.createElement("div");
+        checkRow.className = "fbt-scb-form-row";
+        checkRow.append(imgCheck, sndCheck);
+
+        optsSection.append(title, bgRow, checkRow);
         _updateHeight();
     }
 

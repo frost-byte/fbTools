@@ -242,6 +242,7 @@ def apply_composition_overrides(
     Supported keys (each present only when it differs from the composition):
       background               - background id, or "none" to drop the background
       background_as_reference  - bool
+      background_soundscape    - True = use the background's soundscape as the overall soundscape
     An unknown background id keeps the composition's own and adds a warning.
     The input dict is never mutated.
     """
@@ -266,6 +267,15 @@ def apply_composition_overrides(
 
     if "background_as_reference" in overrides:
         out["background_as_reference"] = bool(overrides["background_as_reference"])
+
+    if overrides.get("background_soundscape"):
+        # Use the (effective) background's soundscape in place of the composition's own.
+        # A background without a soundscape leaves the composition's text alone.
+        bg_id = out.get("background") or ""
+        bg = (backgrounds or {}).get(bg_id) or out.get("_background_snapshot") or {}
+        sound = str(bg.get("soundscape") or "").strip()
+        if sound:
+            out["overall_soundscape"] = sound
 
     return out, warnings
 

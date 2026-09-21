@@ -45,23 +45,30 @@ links keep their slot indexes.
   (punctuation, pacing phrases, dialogue formatting and `<Subject N>` labels come from the assembler
   at run time).
 
-## Composition options: background override
+## Composition options: Background section
 
-While a composition drives the node, a "Composition options" block appears above the cast
-tabs: a **Background** dropdown (first option `Default: <the composition's background>`, then
-`(none)` and every other background) and a **Use background as reference images** checkbox
-that shows the effective value (disabled when the effective background has no reference images,
-because the assembler then only uses its text).
+While a composition drives the node, a **Background** section appears above the cast tabs:
 
-The choices are stored as a small JSON object in the hidden `composition_overrides_json` input,
-and only keys that differ from the composition are present (`background`: id or `"none"`,
-`background_as_reference`: bool), so an empty object means "use the composition as saved". They
-travel on the cast dict as `scene_cast["composition_overrides"]` and are applied by
-`PromptCompositionLoader` right after the composition is loaded
-(`apply_composition_overrides` in `utils/prompt_compositions.py`), before the background is
-resolved and the prompt assembled. An unknown background id logs a warning and keeps the
-composition's own. The block and the overrides are ignored in Source Profile mode. Run History
-shows the effective `Background` / `Background as reference` rows, marked `(override)`.
+- a dropdown whose first option is `Default: <the composition's background>`, then `(none)` and every
+  other background;
+- an **image** checkbox: use the background's reference image(s) as a subject the scene is set in
+  (the composition's `background_as_reference` is its default; disabled when the background has no
+  images);
+- a **soundscape** checkbox: use the background's soundscape as the overall soundscape, replacing the
+  composition's own (off by default; disabled when the background has no soundscape).
+
+The choices are stored as a small JSON object in the hidden `composition_overrides_json` input, and only
+keys that differ from the composition are present (`background`: id or `"none"`, `background_as_reference`:
+bool, `background_soundscape`: true), so an empty object means "use the composition as saved". They travel
+on the cast dict as `scene_cast["composition_overrides"]` and are applied by `PromptCompositionLoader` right
+after the composition is loaded (`apply_composition_overrides` in `utils/prompt_compositions.py`), before the
+background is resolved and the prompt assembled. An unknown background id logs a warning and keeps the
+composition's own. The section and the overrides are ignored in Source Profile mode. Run History shows the
+effective `Background` / `Background as reference` rows (and `Soundscape` when taken from the background),
+marked `(override)`.
+
+Without the soundscape checkbox the assembler's rule applies: the composition's Overall Soundscape wins, and
+the background's soundscape is only a fallback when the composition's is empty.
 
 ## The per-entry Dialogue field is Source-Profile-only
 
