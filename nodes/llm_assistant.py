@@ -52,7 +52,7 @@ def _run_vision_inference(
     Every call is recorded in the VLM activity log.
     """
     from pathlib import Path as _Path
-    from .captioner import caption_image_gemini as _cap_gemini, clean_caption_text as _cap_clean
+    from ..captioner import caption_image_gemini as _cap_gemini, clean_caption_text as _cap_clean
 
     if captioner_type == "gemini_flash":
         api_key = os.environ.get("GEMINI_API_KEY", "")
@@ -81,7 +81,7 @@ def _run_vision_inference(
             raise RuntimeError(result.get("message") or "Unsloth generate returned no text")
         text = result.get("text", "")
         _vlm_log.record(user_data_dir(), "unsloth", _unsloth_client.backend_status()["model"], operation, profile_id)
-        from .captioner import clean_caption_text as _cc
+        from ..captioner import clean_caption_text as _cc
         return _cc(text) if clean else text
 
     if backend == "modal":
@@ -92,7 +92,7 @@ def _run_vision_inference(
             raise RuntimeError(result.get("message") or "Modal generate returned no text")
         text = result.get("text", "")
         _vlm_log.record(user_data_dir(), "modal", _modal_client.backend_status()["model_key"], operation, profile_id)
-        from .captioner import clean_caption_text as _cc
+        from ..captioner import clean_caption_text as _cc
         return _cc(text) if clean else text
 
     # local

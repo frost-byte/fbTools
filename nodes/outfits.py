@@ -149,7 +149,7 @@ _sam2_segmenter = None  # lazy singleton; reset if model_path changes
 async def _outfits_sam2_status(request):
     """Return SAM2 availability: packages present and model file found."""
     try:
-        from .utils.sam2_segmenter import check_dependencies, find_sam2_model
+        from ..utils.sam2_segmenter import check_dependencies, find_sam2_model
         def _gfp(name):
             try: return folder_paths.get_folder_paths(name)
             except KeyError: return []
@@ -221,7 +221,7 @@ async def _outfits_extract_outfit(request):
             folder_paths.get_input_directory(), f"_outfit_seg_{uuid.uuid4().hex[:12]}.png"
         )
 
-        from .utils.sam2_segmenter import (
+        from ..utils.sam2_segmenter import (
             SAM2Segmenter,
             check_dependencies,
             find_sam2_model,

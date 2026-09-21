@@ -93,3 +93,29 @@ def test_extension_imports_every_route_module():
         if f"from .nodes.{stem} import" not in ext and f"from .nodes import {stem}" not in ext:
             missing.append(stem)
     assert not missing, f"route modules never imported by extension.py: {missing}"
+
+
+def _resolves(level: int, module: str | None, names: list[str]) -> bool:
+    """Does `from <dots><module> import <names>` point at something that exists (level 1 = nodes/, 2 = package root)?"""
+    base = ROOT / "nodes" if level == 1 else ROOT
+    parts = (module or "").split(".") if module else []
+    target = base.joinpath(*parts)
+    if module:
+        return target.with_suffix(".py").is_file() or target.is_dir()
+    # "from . import x" / "from .. import x": each name must be a module or package there
+    return all((base / f"{n}.py").is_file() or (base / n).is_dir() for n in names)
+
+
+def test_relative_imports_in_nodes_modules_resolve():
+    """Code moved from extension.py (package root) into nodes/ needs one more dot on every relative import,
+    including imports inside function bodies that only run when a route is called."""
+    import ast
+
+    problems = []
+    for path in sorted((ROOT / "nodes").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                if node.level > 2 or not _resolves(node.level, node.module, [a.name for a in node.names]):
+                    problems.append(f"{path.name}:{node.lineno}: {'.' * node.level}{node.module or ''}")
+    assert not problems, "unresolvable relative imports: " + "; ".join(problems)
