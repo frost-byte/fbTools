@@ -26,6 +26,7 @@
  */
 
 import { parseTrackTitle } from "../utils/run_tracker.js";
+import { findRunEndTs, formatRunTime } from "../utils/run_time.js";
 
 const LORA_BUILDER_TYPE = "fbt_LoraStackBuilder";
 const SCENE_CAST_BUILD_TYPE = "fbt_SceneCastBuild";
@@ -289,12 +290,6 @@ function toMs(ts) {
     return ts > 1e12 ? ts : ts * 1000;
 }
 
-function formatTs(ts) {
-    const ms = toMs(ts);
-    if (!ms) return "";
-    try { return new Date(ms).toLocaleString(); } catch { return ""; }
-}
-
 function shortId(guid) {
     // Show last 8 chars of the GUID so it's recognisable but compact
     return guid ? guid.slice(-8) : "";
@@ -337,6 +332,7 @@ function parseRuns(historyData, captureMap) {
         const msgs = run.status?.messages ?? [];
         const startMsg = msgs.find(m => Array.isArray(m) && m[0] === "execution_start");
         const ts = startMsg?.[1]?.timestamp ?? null;
+        const endTs = findRunEndTs(msgs);
 
         // Static tracked nodes — scan the API-format prompt (nodesDict).
         // Regular nodes appear here with named widget values.
@@ -415,7 +411,7 @@ function parseRuns(historyData, captureMap) {
 
         if (!resolvedTrackedNodes.length && !captures.length) continue;
 
-        runs.push({ promptId, queueNum, ts, workflowName, trackedNodes: resolvedTrackedNodes, captures });
+        runs.push({ promptId, queueNum, ts, endTs, workflowName, trackedNodes: resolvedTrackedNodes, captures });
     }
 
     runs.sort((a, b) => b.queueNum - a.queueNum);
@@ -464,7 +460,7 @@ function renderRun(run) {
     header.appendChild(numEl);
 
     if (run.ts) {
-        header.appendChild(txt("span", "fbt-rh-run-ts", formatTs(run.ts)));
+        header.appendChild(txt("span", "fbt-rh-run-ts", formatRunTime(toMs(run.ts), toMs(run.endTs))));
     }
 
     // Workflow name (if known)
