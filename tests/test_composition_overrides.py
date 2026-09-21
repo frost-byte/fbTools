@@ -116,3 +116,62 @@ def test_ref_plan_from_assembled_scene_includes_background_images():
     result_off = pa.assemble_composition(comp_off, {"A": alice}, pc.resolve_background(comp_off, bgs), "h3_ref2va")
     plan_off = pa._build_h3_refplan(result_off["scene_instance"])
     assert [r["path"] for r in plan_off["references"] if r["modality"] == "image"] == ["alice1.png"]
+
+
+# ── Background as a reference subject: setting wording / establishment ──────────
+
+def _edit_comp(as_ref=True):
+    comp = _comp(background="beach", background_as_reference=as_ref,
+                 task_flags=["video editing", "reference generation"],
+                 shots=[{"id": "s1", "camera": "wide", "action": "{A} walks along the shore.",
+                         "dialogue": None, "sound_events": None}])
+    return comp
+
+
+def _edit_prompt(as_ref=True):
+    bgs = _bgs()
+    comp = _edit_comp(as_ref)
+    alice = _alice()
+    ventries = [{"subject_id": "alice", "video_file": "src.mp4", "audio_source": "none",
+                 "load_params": {}, "audio_path": "", "audio_start_time": 0.0, "audio_duration": 0.0}]
+    return pa.assemble_composition(comp, {"A": alice}, pc.resolve_background(comp, bgs), "h3_ref2va", ventries)["prompt"]
+
+
+def test_background_subject_is_established_in_first_shot():
+    prompt = _edit_prompt()
+    shot1 = prompt.split("[Shot 1]", 1)[1]
+    assert "The scene takes place in <Subject 2>" in shot1
+    assert "sunlit beach" in shot1  # first mention expands to the setting's description
+
+
+def test_setting_uses_location_wording_and_no_person_picture_line():
+    prompt = _edit_prompt()
+    ra = prompt.split("retention_analysis:", 1)[1].split("detailed_description:", 1)[0]
+    setting_line = ra.split("<Subject 2>", 1)[1].split("\n", 1)[0]
+    assert "retain the beach's appearance" in setting_line
+    assert "their" not in setting_line
+    assert "facial features, hair, and clothing" not in ra.split("<Subject 2>", 1)[1]
+
+
+def test_video_editing_replaces_source_setting_with_background_subject():
+    ra = _edit_prompt().split("retention_analysis:", 1)[1].split("detailed_description:", 1)[0]
+    assert "replaced by <Subject 2>" in ra
+    assert "preserve setting details" not in ra
+
+
+def test_video_editing_keeps_source_setting_when_background_is_text_only():
+    ra = _edit_prompt(as_ref=False).split("retention_analysis:", 1)[1].split("detailed_description:", 1)[0]
+    assert "preserve setting details" in ra
+    assert "replaced by <Subject" not in ra
+
+
+def test_authored_bg_token_is_not_duplicated():
+    bgs = _bgs()
+    comp = _edit_comp()
+    comp["shots"][0]["action"] = "{A} walks in {BG}."
+    prompt = pa.assemble_composition(comp, {"A": _alice()}, pc.resolve_background(comp, bgs), "h3_ref2va")["prompt"]
+    assert "The scene takes place in" not in prompt
+
+
+def test_environment_sentence_has_no_double_period():
+    assert ".." not in _edit_prompt(as_ref=False)

@@ -1205,10 +1205,24 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                             replacement_pairs.append((_src_inf["name"], _inf["subject_label"]))
                     elif _inf.get("video_num") == vnum and _inf.get("retention_marker") != "replaced":
                         retained_originals.append(_inf["subject_label"])
-                preserve_desc = (
-                    f"preserve setting details, scene composition, lighting, "
-                    f"camera motion, timing and framing"
-                )
+                # A composition whose background is a reference subject replaces the source
+                # video's setting; only Source Profile / plain edits keep it.
+                _bg_slots = [
+                    s for s in ordered_slots
+                    if (template.get("slots", {}).get(s) or {}).get("role") == "background"
+                    and ref_map[s].get("subject_label")
+                ]
+                if _bg_slots:
+                    preserve_desc = (
+                        f"preserve scene composition, camera motion, timing and framing; "
+                        f"the original setting and lighting of <Video {vnum}> are replaced by "
+                        f"{ref_map[_bg_slots[0]]['subject_label']}"
+                    )
+                else:
+                    preserve_desc = (
+                        f"preserve setting details, scene composition, lighting, "
+                        f"camera motion, timing and framing"
+                    )
                 if replacement_pairs:
                     originals_str = _join_labels([o for o, _ in replacement_pairs])
                     preserve_desc += f"; discard the original appearance of {originals_str}"
@@ -1239,6 +1253,10 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         if not pnums:
             continue
         _ra_pic_emitted.update(pnums)
+        # A background reference's picture is already cited in its Subject definition, and
+        # "facial features, hair, and clothing" is meaningless for a setting.
+        if (template.get("slots", {}).get(slot_id) or {}).get("role") == "background":
+            continue
         subj_label = info["subject_label"]
         pic_tags = _join_labels([f"<Picture {p}>" for p in pnums])
         ra.append(
@@ -1303,7 +1321,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     if style:
         opening.append(style[0].upper() + style[1:] if style else style)
     if env_summary:
-        opening.append(f"Set in {env_summary}")
+        opening.append(f"Set in {env_summary.rstrip('. ')}")
     if opening:
         dd.append(". ".join(opening) + ".")
 
@@ -1866,6 +1884,13 @@ def assemble_composition(
                 ],
                 "concept_id": "",
                 "subject_id": "",
+                # A setting, not a person: gives the retention line "the <name>'s" wording
+                # instead of the neutral-person "their" default.
+                "entity_type": "location",
+                "pronoun_style": "location",
+                # Reads as "retain the beach's appearance" in retention_analysis.
+                "short_name": "the " + (str(resolved_background.get("name", "") or "setting")
+                                        .replace("_", " ").strip().lower() or "setting"),
             }
 
     # Outfit reference subjects: each assigned outfit whose reference_images contain
@@ -1949,7 +1974,7 @@ def assemble_composition(
             "lighting": background.get("lighting", ""),
         },
         "style": style,
-        "shots": _composition_shots_to_template(composition.get("shots", []), slot_map),
+        "shots": _composition_shots_to_template(_shots_with_setting(composition.get("shots", []), bg_letter), slot_map),
         "overall_soundscape": (
             composition.get("overall_soundscape")
             or background.get("soundscape", "")
@@ -1989,6 +2014,21 @@ def _remap_slots(text: str, slot_map: dict[str, str]) -> str:
     for sk, letter in slot_map.items():
         text = text.replace(f"{{{sk}}}", f"{{{letter}}}")
     return text
+
+
+def _shots_with_setting(shots: list[dict], bg_letter: str | None) -> list[dict]:
+    """When the background is a reference subject but no shot names it ({BG}), open the first
+    shot with "The scene takes place in {BG}." so the setting is established in the timeline
+    (the {BG} then expands like any subject at its first mention). Returns a copy; the input
+    is untouched."""
+    if not bg_letter or not shots:
+        return shots
+    if any("{BG}" in (s.get("action", "") or "") or "{BG}" in (s.get("camera", "") or "") for s in shots):
+        return shots
+    out = [dict(s) for s in shots]
+    action = (out[0].get("action", "") or "").strip()
+    out[0]["action"] = "The scene takes place in {BG}." + (f" {action}" if action else "")
+    return out
 
 
 def _composition_shots_to_template(shots: list[dict], slot_map: dict[str, str]) -> list[dict]:
