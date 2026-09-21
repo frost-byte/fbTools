@@ -10,7 +10,24 @@ import comfy.model_management as model_management
 
 from typing_extensions import override
 from nodes import ImageScaleBy
-from .nodes.shared import prefixed_node_id
+from .nodes.shared import (
+    prefixed_node_id,
+    routes,
+    send_status_update,
+    user_data_dir,
+    default_registry_path,
+    default_subject_profiles_path,
+    default_source_profiles_path,
+    default_bundle_registry_path,
+    default_cast_registry_path,
+    default_outfit_registry_path,
+    default_scene_templates_dir,
+    default_libber_dir,
+    default_scenes_dir,
+    default_stories_dir,
+    reload_counter,
+    bump_reload,
+)
 from .nodes.run_tracking import RunMetaCapture, JobCompleteNotifier, register_track_formatter
 from .utils.composition_track_summary import summarize_scene_cast, summarize_loras, summarize_composition_meta
 from .nodes import kdenlive_archive as _kdenlive_archive_routes  # noqa: F401  (registers /fbtools/kdenlive/* routes on import)
@@ -167,37 +184,6 @@ from .utils.subject_compositor import (
 
 logger = get_logger(__name__)
 
-# Status update helper for real-time node feedback
-def send_status_update(
-    node_id: str,
-    status_text: str,
-    source: str | None = None,
-    level: str = "info",
-    extra: dict | None = None,
-):
-    """Send status update to frontend via websocket.
-
-    `extra` merges additional structured fields into the payload (e.g. progress
-    machine-readable fields alongside the human-readable `status_text`) — used
-    by long-running multi-step operations like Detect boundaries so the UI can
-    render real progress instead of just echoing the latest message string.
-    """
-    try:
-        from server import PromptServer
-        server = PromptServer.instance
-        payload = {
-            "node": node_id,
-            "status": status_text,
-            "level": level,
-        }
-        if source:
-            payload["source"] = source
-        if extra:
-            payload.update(extra)
-        server.send_sync("fbtools.status", payload)
-    except Exception as e:
-        logger.debug(f"Failed to send status update: {e}")
-
 try:
     from westNeighbor_comfyui_ultimate_openpose_editor.openpose_editor_nodes import OpenposeEditorNode  # type: ignore
 except Exception:
@@ -206,20 +192,6 @@ except Exception:
 
 OpenposeJSON = dict
 
-# Incremented by POST /fbtools/concepts/reload so ConceptRegistryLoad re-executes
-_concept_reload_counter: int = 0
-# Incremented by POST /fbtools/subjects/reload so SubjectProfileLoad re-executes
-_subject_reload_counter: int = 0
-# Incremented by POST /fbtools/source_profiles/reload so SourceProfileLoad re-executes
-_source_profile_reload_counter: int = 0
-# Incremented by POST /fbtools/scene_templates/reload so SceneTemplate nodes re-execute
-_scene_template_reload_counter: int = 0
-# Incremented by POST /fbtools/compositions/reload so PromptCompositionLoader nodes re-execute
-_composition_reload_counter: int = 0
-# Incremented by POST /fbtools/outfits/reload so OutfitRegistryLoad nodes re-execute
-_outfit_reload_counter: int = 0
-# Incremented by POST /fbtools/casts/reload so SceneCastLoad nodes re-execute
-_cast_reload_counter: int = 0
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -1458,102 +1430,26 @@ class Libber:
         return f"Libber(libs={len(self.libs)}, delimiter='{self.delimiter}', max_depth={self.max_depth})"
 
 
-def user_data_dir() -> str:
-    """Return the package-specific persistent data dir under ComfyUI's user dir.
-
-    Falls back to ComfyUI/user/default/<package> if get_user_directory() is unavailable.
-    """
-    package_name = os.path.basename(os.path.dirname(os.path.realpath(__file__)))
-    try:
-        base = folder_paths.get_user_directory()
-    except AttributeError:
-        try:
-            base = os.path.join(folder_paths.base_path, "user", "default")
-        except AttributeError:
-            base = get_output_directory()
-    data_dir = os.path.join(base, package_name)
-    os.makedirs(data_dir, exist_ok=True)
-    return data_dir
 
 
-def _user_subdir(name: str) -> str:
-    """Create and return a named subdirectory under the package user-data dir."""
-    path = os.path.join(user_data_dir(), name)
-    os.makedirs(path, exist_ok=True)
-    return path
 
 
-def default_registry_path() -> str:
-    """Default path for the concept registry JSON file."""
-    return os.path.join(user_data_dir(), "concept_registry.json")
 
 
-def default_subject_profiles_path() -> str:
-    """Default path for the subject profiles JSON file."""
-    return os.path.join(user_data_dir(), "subject_profiles.json")
 
 
-def default_source_profiles_path() -> str:
-    """Default path for the source profile registry JSON file."""
-    return os.path.join(user_data_dir(), "source_profiles.json")
 
 
-def default_bundle_registry_path() -> str:
-    """Default path for the reference bundles JSON file."""
-    return os.path.join(user_data_dir(), "reference_bundles.json")
 
 
-def default_cast_registry_path() -> str:
-    """Default path for the scene casts JSON file."""
-    return os.path.join(user_data_dir(), "scene_casts.json")
 
 
-def default_outfit_registry_path() -> str:
-    """Default path for the outfit registry JSON file."""
-    return os.path.join(user_data_dir(), "outfit_registry.json")
 
 
-def default_scene_templates_dir() -> str:
-    """Return (and create) the user scene_templates directory.
-
-    Seeds bundled example templates on first use when the directory is empty.
-    """
-    path = _user_subdir("scene_templates")
-    if not any(f.endswith(".json") for f in os.listdir(path)):
-        _seed_bundled_templates(path)
-    return path
 
 
-def _seed_bundled_templates(dest_dir: str) -> None:
-    """Copy bundled example templates into dest_dir (one-time initialisation)."""
-    import shutil as _shutil
-    src_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "scene_templates")
-    if not os.path.isdir(src_dir):
-        return
-    for fname in os.listdir(src_dir):
-        if fname.endswith(".json"):
-            dst = os.path.join(dest_dir, fname)
-            if not os.path.exists(dst):
-                _shutil.copy2(os.path.join(src_dir, fname), dst)
-    logger.info("Seeded %s with bundled scene templates from %s", dest_dir, src_dir)
 
 
-def default_libber_dir():
-    """Get default directory for storing libber files.
-
-    Prefers user data dir; falls back to legacy output/libbers if that
-    directory already has content (non-migrated setups).
-    """
-    new_dir = os.path.join(user_data_dir(), "libbers")
-    if os.path.isdir(new_dir) and any(
-        f.endswith(".json") for f in os.listdir(new_dir) if os.path.isfile(os.path.join(new_dir, f))
-    ):
-        return new_dir
-    # Legacy fallback so existing libber files are not lost
-    legacy_dir = os.path.join(get_output_directory(), "libbers")
-    if not os.path.exists(legacy_dir):
-        os.makedirs(legacy_dir, exist_ok=True)
-    return legacy_dir
 
 
 
@@ -2301,19 +2197,6 @@ class SubdirLister(io.ComfyNode):
             "dir_names": list(subdir_dict.keys()) if subdir_dict else []
         })
 
-def default_scenes_dir():
-    """Scenes directory: prefers user data dir; falls back to legacy output/scenes."""
-    new_dir = os.path.join(user_data_dir(), "scenes")
-    if os.path.isdir(new_dir) and any(
-        os.path.isdir(os.path.join(new_dir, x)) for x in os.listdir(new_dir)
-    ):
-        return new_dir
-    # Legacy location (keeps existing scenes accessible without migration)
-    legacy_dir = os.path.join(get_output_directory(), "scenes")
-    if not os.path.exists(legacy_dir):
-        os.makedirs(legacy_dir, exist_ok=True)
-        os.makedirs(os.path.join(legacy_dir, "default_scene"), exist_ok=True)
-    return legacy_dir
 
 class QwenAspectRatio(io.ComfyNode):
     """
@@ -3493,12 +3376,6 @@ def get_available_stories():
             story_names.append(entry)
     return story_names if story_names else ["default_story"]
 
-def default_stories_dir():
-    output_dir = get_output_directory()
-    default_dir = os.path.join(output_dir, "stories")
-    if not os.path.exists(default_dir):
-        os.makedirs(default_dir, exist_ok=True)
-    return default_dir
 
 class NodeInputSelect(io.ComfyNode):
     """
@@ -8109,12 +7986,10 @@ class PromptComposer(io.ComfyNode):
 # REST API STATE MANAGERS
 # ============================================================================
 
-from server import PromptServer
 from aiohttp import web
 import time
 from datetime import datetime, timedelta
 
-routes = PromptServer.instance.routes
 
 
 class PromptCollectionStateManager:
@@ -11336,7 +11211,7 @@ class ConceptRegistryLoad(io.ComfyNode):
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        return (path, mtime, _concept_reload_counter)
+        return (path, mtime, reload_counter("concept"))
 
     @classmethod
     def execute(cls, registry_file: str = ""):
@@ -11885,7 +11760,7 @@ class SubjectProfileLoad(io.ComfyNode):
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        return (path, subject_id, mtime, _subject_reload_counter)
+        return (path, subject_id, mtime, reload_counter("subject"))
 
     @classmethod
     def execute(cls, subject_id: str = "") -> io.NodeOutput:
@@ -12118,7 +11993,7 @@ class SubjectProfileList(io.ComfyNode):
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        return (path, mtime, _subject_reload_counter)
+        return (path, mtime, reload_counter("subject"))
 
     @classmethod
     def execute(cls) -> io.NodeOutput:
@@ -12214,7 +12089,7 @@ class SourceProfileLoad(io.ComfyNode):
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        return (path, profile_name, mtime, _source_profile_reload_counter)
+        return (path, profile_name, mtime, reload_counter("source_profile"))
 
     @classmethod
     def execute(cls, profile_name: str = "") -> io.NodeOutput:
@@ -12419,7 +12294,7 @@ class SourceProfileList(io.ComfyNode):
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        return (path, filter_type, mtime, _source_profile_reload_counter)
+        return (path, filter_type, mtime, reload_counter("source_profile"))
 
     @classmethod
     def execute(cls, filter_type: str = "all") -> io.NodeOutput:
@@ -13279,8 +13154,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
 @routes.post("/fbtools/subjects/reload")
 async def _subjects_reload(request):
     """Increment reload counter so SubjectProfileLoad/List nodes re-execute."""
-    global _subject_reload_counter
-    _subject_reload_counter += 1
+    _subject_reload_counter = bump_reload("subject")
     logger.info("Subject profiles reload requested (counter=%d)", _subject_reload_counter)
     return web.json_response({"success": True, "counter": _subject_reload_counter})
 
@@ -13300,8 +13174,7 @@ async def _subjects_get_profiles(request):
 @routes.post("/fbtools/source_profiles/reload")
 async def _source_profiles_reload(request):
     """Increment reload counter so SourceProfileLoad/List nodes re-execute."""
-    global _source_profile_reload_counter
-    _source_profile_reload_counter += 1
+    _source_profile_reload_counter = bump_reload("source_profile")
     logger.info("Source profiles reload requested (counter=%d)", _source_profile_reload_counter)
     return web.json_response({"success": True, "counter": _source_profile_reload_counter})
 
@@ -13372,8 +13245,7 @@ async def _source_profiles_save(request):
         if "clips" in data:
             registry = registry.set_clips(pid, data["clips"])
         _save_source_registry(registry, path)
-        global _source_profile_reload_counter
-        _source_profile_reload_counter += 1
+        bump_reload("source_profile")
         return web.json_response({"success": True, "id": pid})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -13392,8 +13264,7 @@ async def _source_profiles_delete(request):
             return web.json_response({"error": f"Source profile '{pid}' not found"}, status=404)
         registry = registry.remove_profile(pid)
         _save_source_registry(registry, path)
-        global _source_profile_reload_counter
-        _source_profile_reload_counter += 1
+        bump_reload("source_profile")
         return web.json_response({"success": True})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -14557,8 +14428,7 @@ async def _source_profiles_auto_partition(request: web.Request) -> web.Response:
             profile_id, video_duration, segment_duration=segment_duration
         )
         _save_source_registry(registry, path)
-        global _source_profile_reload_counter
-        _source_profile_reload_counter += 1
+        bump_reload("source_profile")
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("auto_partition failed for profile %r", profile_id)
@@ -14596,8 +14466,7 @@ async def _source_profiles_set_clips(request: web.Request) -> web.Response:
             return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
         registry = registry.set_clips(profile_id, clips)
         _save_source_registry(registry, path)
-        global _source_profile_reload_counter
-        _source_profile_reload_counter += 1
+        bump_reload("source_profile")
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("set_clips failed for profile %r", profile_id)
@@ -14662,8 +14531,7 @@ async def _source_profiles_merge_subjects(request: web.Request) -> web.Response:
             added += 1
 
         _save_source_registry(registry, path)
-        global _source_profile_reload_counter
-        _source_profile_reload_counter += 1
+        bump_reload("source_profile")
         return web.json_response({"profile": registry.get_profile(profile_id), "added": added})
     except Exception as exc:
         logger.exception("merge_subjects failed for profile %r", profile_id)
@@ -14700,8 +14568,7 @@ async def _source_profiles_upsert_clip(request: web.Request) -> web.Response:
             return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
         registry = registry.upsert_clip(profile_id, clip)
         _save_source_registry(registry, path)
-        global _source_profile_reload_counter
-        _source_profile_reload_counter += 1
+        bump_reload("source_profile")
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("upsert_clip failed for profile %r", profile_id)
@@ -14737,8 +14604,7 @@ async def _source_profiles_remove_clip(request: web.Request) -> web.Response:
             return web.json_response({"error": f"Profile '{profile_id}' not found"}, status=404)
         registry = registry.remove_clip(profile_id, clip_id)
         _save_source_registry(registry, path)
-        global _source_profile_reload_counter
-        _source_profile_reload_counter += 1
+        bump_reload("source_profile")
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("remove_clip failed for profile %r", profile_id)
@@ -14962,7 +14828,7 @@ class SceneTemplateLoad(io.ComfyNode):
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        return (path, mtime, _scene_template_reload_counter)
+        return (path, mtime, reload_counter("scene_template"))
 
     @classmethod
     def execute(cls, template_id: str = "") -> io.NodeOutput:
@@ -15021,7 +14887,7 @@ class SceneTemplateList(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, **_):
         templates_dir = default_scene_templates_dir()
-        return (_templates_dir_fingerprint(templates_dir), _scene_template_reload_counter)
+        return (_templates_dir_fingerprint(templates_dir), reload_counter("scene_template"))
 
     @classmethod
     def execute(cls) -> io.NodeOutput:
@@ -15036,8 +14902,7 @@ class SceneTemplateList(io.ComfyNode):
 @routes.post("/fbtools/scene_templates/reload")
 async def _scene_templates_reload(request):
     """Increment reload counter so SceneTemplate nodes re-execute."""
-    global _scene_template_reload_counter
-    _scene_template_reload_counter += 1
+    _scene_template_reload_counter = bump_reload("scene_template")
     logger.info("Scene templates reload requested (counter=%d)", _scene_template_reload_counter)
     return web.json_response({"success": True, "counter": _scene_template_reload_counter})
 
@@ -15137,7 +15002,7 @@ class OutfitRegistryLoad(io.ComfyNode):
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        return (path, mtime, _outfit_reload_counter)
+        return (path, mtime, reload_counter("outfit"))
 
     @classmethod
     def execute(cls, registry_file: str = ""):
@@ -15735,8 +15600,7 @@ class PromptAssemble(io.ComfyNode):
 @routes.post("/fbtools/outfits/reload")
 async def _outfits_reload(request):
     """Increment reload counter so OutfitRegistryLoad nodes re-execute."""
-    global _outfit_reload_counter
-    _outfit_reload_counter += 1
+    _outfit_reload_counter = bump_reload("outfit")
     logger.info("Outfit registry reload requested (counter=%d)", _outfit_reload_counter)
     return web.json_response({"success": True, "counter": _outfit_reload_counter})
 
@@ -16003,8 +15867,7 @@ async def _outfits_delete(request):
 @routes.post("/fbtools/concepts/reload")
 async def _concepts_reload(request):
     """Increment reload counter so ConceptRegistryLoad nodes re-execute."""
-    global _concept_reload_counter
-    _concept_reload_counter += 1
+    _concept_reload_counter = bump_reload("concept")
     logger.info("Concept registry reload requested (counter=%d)", _concept_reload_counter)
     return web.json_response({"success": True, "counter": _concept_reload_counter})
 
@@ -16073,8 +15936,7 @@ async def _subjects_save(request):
         merged["id"] = sid  # keep id consistent
         registry.subjects[sid] = {k: v for k, v in merged.items() if k != "id"}
         _save_subject_registry(registry, path)
-        global _subject_reload_counter
-        _subject_reload_counter += 1
+        bump_reload("subject")
         return web.json_response({"success": True, "id": sid})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -16093,8 +15955,7 @@ async def _subjects_delete(request):
             return web.json_response({"error": f"Subject '{sid}' not found"}, status=404)
         del registry.subjects[sid]
         _save_subject_registry(registry, path)
-        global _subject_reload_counter
-        _subject_reload_counter += 1
+        bump_reload("subject")
         return web.json_response({"success": True})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -16920,7 +16781,7 @@ class SceneCastLoad(io.ComfyNode):
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        return (path, cast_id, mtime, _cast_reload_counter)
+        return (path, cast_id, mtime, reload_counter("cast"))
 
     @classmethod
     def execute(cls, cast_id: str = "") -> io.NodeOutput:
@@ -17407,8 +17268,7 @@ class SceneCastBuild(io.ComfyNode):
 @routes.post("/fbtools/casts/reload")
 async def _casts_reload(request):
     """Increment reload counter so SceneCastLoad nodes re-execute."""
-    global _cast_reload_counter
-    _cast_reload_counter += 1
+    _cast_reload_counter = bump_reload("cast")
     logger.info("Scene casts reload requested (counter=%d)", _cast_reload_counter)
     return web.json_response({"success": True, "counter": _cast_reload_counter})
 
@@ -17551,8 +17411,7 @@ async def _compositions_assemble(request):
 @routes.post("/fbtools/compositions/reload")
 async def _compositions_reload(request):
     """Increment reload counter so PromptCompositionLoader nodes re-execute."""
-    global _composition_reload_counter
-    _composition_reload_counter += 1
+    _composition_reload_counter = bump_reload("composition")
     logger.info("Composition reload requested (counter=%d)", _composition_reload_counter)
     return web.json_response({"success": True, "counter": _composition_reload_counter})
 
@@ -19019,7 +18878,7 @@ class CompositionLoad(io.ComfyNode):
                     file_mtime = os.path.getmtime(os.path.join(comps_dir, f"{matched['id']}.json"))
                 except OSError:
                     pass
-        return (comps_dir, composition_name, dir_mtime, file_mtime, _composition_reload_counter)
+        return (comps_dir, composition_name, dir_mtime, file_mtime, reload_counter("composition"))
 
     @classmethod
     def execute(cls, composition_name: str = "") -> io.NodeOutput:
@@ -19580,7 +19439,7 @@ class PromptCompositionLoader(io.ComfyNode):
         except OSError:
             settings_mtime = 0
         return (comps_dir, composition_name, model_type, dir_mtime, file_mtime,
-                _composition_reload_counter, cast_id, cast_modified, bundle_mtime, settings_mtime, pc_digest)
+                reload_counter("composition"), cast_id, cast_modified, bundle_mtime, settings_mtime, pc_digest)
 
     @classmethod
     def execute(
