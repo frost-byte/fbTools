@@ -139,6 +139,7 @@ def clean_folder(
     dry_run: bool = False,
     cancel=None,
     progress=None,
+    dest_subdir=None,
 ) -> dict:
     """strip_copy_video() every video file directly under src_dir into dest_dir
     (not recursive — matches a flat "clips to process" staging folder).
@@ -147,6 +148,12 @@ def clean_folder(
     archiver): re-running only cleans what's missing. Duplicate *sources* are
     reported (by content hash) but every one is still cleaned independently —
     nothing is auto-skipped or deleted on your behalf.
+
+    dest_subdir, if given, is called as dest_subdir(filename, src_path) -> str | None for each
+    file; a non-None result nests that file's cleaned copy under dest_dir/<result>/ instead of
+    dest_dir/ directly (subfolders are created as needed). This module stays free of any notion of
+    *why* a file goes in a particular subfolder — see utils/generation_metadata.py for the
+    embedded-metadata lookup a caller can use to decide.
     """
     src_dir = os.path.abspath(src_dir)
     dest_dir = os.path.abspath(dest_dir)
@@ -169,13 +176,18 @@ def clean_folder(
         "bytes_before": 0, "bytes_after": 0,
         "duplicates": duplicates, "errors": [], "results": [],
     }
+    def _dest_for(f, src):
+        sub = dest_subdir(f, src) if dest_subdir else None
+        return (os.path.join(dest_dir, sub, f), sub) if sub else (os.path.join(dest_dir, f), None)
+
     if dry_run or not files:
         for f, p in zip(files, src_paths):
-            dest = os.path.join(dest_dir, f)
-            report["results"].append({
-                "file": f, "status": "exists" if os.path.exists(dest) else "would_clean",
-                "size_before": os.path.getsize(p),
-            })
+            dest, sub = _dest_for(f, p)
+            entry = {"file": f, "status": "exists" if os.path.exists(dest) else "would_clean",
+                     "size_before": os.path.getsize(p)}
+            if sub:
+                entry["subdir"] = sub
+            report["results"].append(entry)
         return report
 
     os.makedirs(dest_dir, exist_ok=True)
@@ -183,21 +195,26 @@ def clean_folder(
         if cancel is not None and cancel.is_set():
             report["cancelled"] = True
             break
-        dest = os.path.join(dest_dir, f)
+        dest, sub = _dest_for(f, src)
+        if sub:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
         if os.path.isfile(dest):
             report["skipped_existing"] += 1
-            report["results"].append({"file": f, "status": "skipped_existing", "size_before": os.path.getsize(src)})
+            entry = {"file": f, "status": "skipped_existing", "size_before": os.path.getsize(src)}
         else:
             try:
                 r = strip_copy_video(src, dest)
                 report["cleaned"] += 1
                 report["bytes_before"] += r["size_before"]
                 report["bytes_after"] += r["size_after"]
-                report["results"].append({"file": f, "status": "cleaned",
-                                          "size_before": r["size_before"], "size_after": r["size_after"]})
+                entry = {"file": f, "status": "cleaned",
+                         "size_before": r["size_before"], "size_after": r["size_after"]}
             except RuntimeError as exc:
                 report["errors"].append({"file": f, "error": str(exc)})
-                report["results"].append({"file": f, "status": "error", "error": str(exc)})
+                entry = {"file": f, "status": "error", "error": str(exc)}
+        if sub:
+            entry["subdir"] = sub
+        report["results"].append(entry)
         if progress:
             progress({"phase": "clean", "done": i, "total": len(files), "current": f})
 

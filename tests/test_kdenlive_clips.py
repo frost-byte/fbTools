@@ -236,3 +236,77 @@ def test_clean_folder_reports_ffmpeg_errors_without_stopping(tmp_path):
     assert report["errors"][0]["file"] == "bad.mp4"
     assert (dest_dir / "good.mp4").is_file()
     assert not (dest_dir / "bad.mp4").exists()
+
+
+# ── clean_folder: dest_subdir ──────────────────────────────────────────────────────
+
+@needs_ffmpeg
+def test_dest_subdir_none_matches_flat_behaviour(tmp_path):
+    src_dir = tmp_path / "src"
+    dest_dir = tmp_path / "dest"
+    src_dir.mkdir()
+    _make_clip(str(src_dir / "a.mp4"))
+
+    report = kc.clean_folder(str(src_dir), str(dest_dir), dest_subdir=lambda f, p: None)
+
+    assert (dest_dir / "a.mp4").is_file()
+    assert "subdir" not in report["results"][0]
+
+
+@needs_ffmpeg
+def test_dest_subdir_nests_the_cleaned_file(tmp_path):
+    src_dir = tmp_path / "src"
+    dest_dir = tmp_path / "dest"
+    src_dir.mkdir()
+    _make_clip(str(src_dir / "a.mp4"))
+
+    report = kc.clean_folder(str(src_dir), str(dest_dir), dest_subdir=lambda f, p: "alex")
+
+    assert (dest_dir / "alex" / "a.mp4").is_file()
+    assert not (dest_dir / "a.mp4").exists()
+    assert report["results"][0]["subdir"] == "alex"
+
+
+@needs_ffmpeg
+def test_dest_subdir_can_differ_per_file(tmp_path):
+    src_dir = tmp_path / "src"
+    dest_dir = tmp_path / "dest"
+    src_dir.mkdir()
+    _make_clip(str(src_dir / "a.mp4"))
+    _make_clip(str(src_dir / "b.mp4"), comment="different")
+
+    def subdir(f, p):
+        return "alex" if f == "a.mp4" else None
+
+    kc.clean_folder(str(src_dir), str(dest_dir), dest_subdir=subdir)
+
+    assert (dest_dir / "alex" / "a.mp4").is_file()
+    assert (dest_dir / "b.mp4").is_file()
+
+
+@needs_ffmpeg
+def test_dest_subdir_dry_run_reports_the_planned_subfolder(tmp_path):
+    src_dir = tmp_path / "src"
+    dest_dir = tmp_path / "dest"
+    src_dir.mkdir()
+    _make_clip(str(src_dir / "a.mp4"))
+
+    report = kc.clean_folder(str(src_dir), str(dest_dir), dry_run=True, dest_subdir=lambda f, p: "alex")
+
+    assert not dest_dir.exists()
+    assert report["results"][0]["subdir"] == "alex"
+    assert report["results"][0]["status"] == "would_clean"
+
+
+@needs_ffmpeg
+def test_dest_subdir_rerun_still_skips_existing(tmp_path):
+    src_dir = tmp_path / "src"
+    dest_dir = tmp_path / "dest"
+    src_dir.mkdir()
+    _make_clip(str(src_dir / "a.mp4"))
+
+    kc.clean_folder(str(src_dir), str(dest_dir), dest_subdir=lambda f, p: "alex")
+    report2 = kc.clean_folder(str(src_dir), str(dest_dir), dest_subdir=lambda f, p: "alex")
+
+    assert report2["skipped_existing"] == 1
+    assert report2["results"][0]["status"] == "skipped_existing"

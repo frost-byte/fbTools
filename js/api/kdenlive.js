@@ -63,7 +63,13 @@ export class KdenliveAPI extends BaseAPI {
      * embedded metadata (a ComfyUI-saved clip's own workflow/prompt JSON) — for cleaning
      * generated clips before adding them to a project's media folder by hand. Never touches
      * a .kdenlive file. Progress/completion arrive the same way as {@link archive}.
-     * @param {{src_dir: string, dest_dir: string, dry_run?: boolean}} opts
+     *
+     * With organize_by_primary, each clip is read for its own embedded generation metadata
+     * (composition-driven clips only) and nested under dest_dir/<primary subject>/ instead of
+     * dest_dir/ directly; the job's report then also carries each clip's `tags` (bundle ids used)
+     * and `primary_subject` (or a `note` explaining why it has neither, e.g. a Source-Profile-driven
+     * clip). Nothing is written into any Kdenlive project by this — see docs on Plan 5.
+     * @param {{src_dir: string, dest_dir: string, dry_run?: boolean, organize_by_primary?: boolean}} opts
      * @returns {Promise<{started: boolean, job_id: string}>}
      */
     async clean(opts) {

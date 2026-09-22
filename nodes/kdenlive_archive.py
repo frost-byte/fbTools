@@ -17,7 +17,10 @@ from server import PromptServer
 
 from ..utils.kdenlive_archive import analyze, archive, strip_metadata
 from ..utils.kdenlive_clips import clean_folder
+from ..utils.generation_metadata import extract_cast_info, read_embedded_prompt
 from ..utils.logging_utils import get_logger
+from ..utils.prompt_compositions import list_compositions, load_composition
+from .shared import user_data_dir
 
 logger = get_logger(__name__)
 
@@ -218,14 +221,49 @@ async def _kdenlive_archive(request: web.Request) -> web.Response:
     return web.json_response({"started": True, "job_id": job["id"]})
 
 
-def _run_clean_job(job: dict, src_dir: str, dest_dir: str, dry_run: bool) -> None:
+def _load_composition_by_name(name: str):
+    matched = next((c for c in list_compositions(user_data_dir()) if c["name"] == name), None)
+    return load_composition(user_data_dir(), matched["id"]) if matched else None
+
+
+def _cast_info_cache():
+    """Cache one extract_cast_info() result per source path — dest_subdir() and the post-run
+    report enrichment below both need it, and ffprobe is not free to call twice per file."""
+    cache: dict[str, dict] = {}
+
+    def get(src_path: str) -> dict:
+        if src_path not in cache:
+            graph = read_embedded_prompt(src_path)
+            cache[src_path] = (
+                extract_cast_info(graph, load_composition=_load_composition_by_name) if graph
+                else {"tags": [], "primary_subject": None, "composition_name": None,
+                      "note": "no embedded generation metadata found on this clip"}
+            )
+        return cache[src_path]
+
+    return get
+
+
+def _run_clean_job(job: dict, src_dir: str, dest_dir: str, dry_run: bool, organize_by_primary: bool) -> None:
     def progress(ev: dict) -> None:
         job["progress"] = ev
         _send(f"Cleaning {ev['done']}/{ev['total']}: {ev.get('current', '')}",
               extra={"job_id": job["id"], "kind": job["kind"], "progress": ev})
 
+    get_cast_info = _cast_info_cache()
+    dest_subdir = (lambda f, src: get_cast_info(src)["primary_subject"]) if organize_by_primary else None
+
     try:
-        report = clean_folder(src_dir, dest_dir, dry_run=dry_run, cancel=job["cancel"], progress=progress)
+        report = clean_folder(src_dir, dest_dir, dry_run=dry_run, cancel=job["cancel"], progress=progress,
+                              dest_subdir=dest_subdir)
+        if organize_by_primary:
+            by_file = {os.path.join(src_dir, r["file"]): r for r in report["results"]}
+            for src_path, entry in by_file.items():
+                info = get_cast_info(src_path)
+                entry["tags"] = info["tags"]
+                entry["primary_subject"] = info["primary_subject"]
+                if info["note"]:
+                    entry["note"] = info["note"]
         job["report"] = report
         job["state"] = "cancelled" if report.get("cancelled") else "done"
         n_err = len(report["errors"])
@@ -271,7 +309,7 @@ async def _kdenlive_clean(request: web.Request) -> web.Response:
 
     threading.Thread(
         target=_run_clean_job,
-        args=(job, src_dir, dest_dir, bool(body.get("dry_run", False))),
+        args=(job, src_dir, dest_dir, bool(body.get("dry_run", False)), bool(body.get("organize_by_primary", False))),
         daemon=True,
     ).start()
     return web.json_response({"started": True, "job_id": job["id"]})

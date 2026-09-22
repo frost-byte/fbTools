@@ -90,6 +90,12 @@ def _print_clean_report(rep: dict) -> None:
                   f"({_fmt_bytes(rep['bytes_saved'])} saved)")
         if rep.get("cancelled"):
             print("CANCELLED.")
+    for r in rep["results"]:
+        if r.get("subdir"):
+            tags = f" [tags: {', '.join(r['tags'])}]" if r.get("tags") else ""
+            print(f"  {r['file']} -> {r['subdir']}/{tags}")
+        elif "primary_subject" in r:
+            print(f"  {r['file']} -> (root — {r.get('note', 'no primary subject found')})")
     for group in rep["duplicates"]:
         print(f"DUPLICATE CONTENT: {', '.join(os.path.basename(p) for p in group)}")
     for e in rep["errors"]:
@@ -156,6 +162,11 @@ def main(argv=None) -> int:
     p_clean.add_argument("src_dir", help="folder of clips to clean (not recursive)")
     p_clean.add_argument("dest_dir", help="destination folder (created if needed; must differ from src_dir)")
     p_clean.add_argument("--dry-run", action="store_true", help="report what would be cleaned; write nothing")
+    p_clean.add_argument("--organize-by-primary", metavar="DATA_DIR",
+                         help="nest each cleaned clip under media/<primary subject>/, read from its own "
+                              "embedded generation metadata (composition-driven clips only); also reports "
+                              "each clip's bundle tags. Takes the fbTools user-data directory (containing "
+                              "prompt_compositions/).")
     p_clean.add_argument("--json", action="store_true")
 
     args = ap.parse_args(argv)
@@ -163,8 +174,40 @@ def main(argv=None) -> int:
     try:
         if args.cmd == "clean":
             clips = _load_module("kdenlive_clips")
+            dest_subdir = None
+            if args.organize_by_primary:
+                data_dir = args.organize_by_primary
+                gm = _load_module("generation_metadata")
+                pc = _load_module("prompt_compositions")
+
+                def _load_comp(name):
+                    matched = next((c for c in pc.list_compositions(data_dir) if c["name"] == name), None)
+                    return pc.load_composition(data_dir, matched["id"]) if matched else None
+
+                cache: dict = {}
+
+                def _cast_info(src_path):
+                    if src_path not in cache:
+                        graph = gm.read_embedded_prompt(src_path)
+                        cache[src_path] = (
+                            gm.extract_cast_info(graph, load_composition=_load_comp) if graph
+                            else {"tags": [], "primary_subject": None, "composition_name": None,
+                                  "note": "no embedded generation metadata found on this clip"}
+                        )
+                    return cache[src_path]
+
+                dest_subdir = lambda f, src: _cast_info(src)["primary_subject"]  # noqa: E731
+
             rep = clips.clean_folder(args.src_dir, args.dest_dir, dry_run=args.dry_run,
-                                     progress=_progress_printer(args.json))
+                                     progress=_progress_printer(args.json), dest_subdir=dest_subdir)
+            if args.organize_by_primary:
+                for r in rep["results"]:
+                    info = cache.get(os.path.join(args.src_dir, r["file"]))
+                    if info:
+                        r["tags"] = info["tags"]
+                        r["primary_subject"] = info["primary_subject"]
+                        if info["note"]:
+                            r["note"] = info["note"]
             if args.json:
                 print(json.dumps(rep, indent=2))
             else:

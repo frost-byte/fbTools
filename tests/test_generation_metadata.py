@@ -1,0 +1,187 @@
+"""Tests for utils/generation_metadata.py::extract_cast_info (pure graph-walk logic; the
+ffprobe-based read_embedded_prompt() is exercised separately, gated on ffprobe availability)."""
+import json
+
+from conftest import import_test_module
+
+gm = import_test_module("utils/generation_metadata.py")
+
+extract_cast_info = gm.extract_cast_info
+read_embedded_prompt = gm.read_embedded_prompt
+
+
+def _cast_node(cast_entries, prompt_composition_link=None):
+    inputs = {"cast_entries_json": json.dumps(cast_entries), "clip_id": "shot_1"}
+    if prompt_composition_link is not None:
+        inputs["prompt_composition"] = prompt_composition_link
+    return {"class_type": "fbt_SceneCastBuild", "inputs": inputs}
+
+
+def _comp_load_node(name):
+    return {"class_type": "fbt_CompositionLoad", "inputs": {"composition_name": name}}
+
+
+def _loader_node(composition_name, scene_cast_link=("1", 0)):
+    return {"class_type": "fbt_PromptCompositionLoader",
+            "inputs": {"composition_name": composition_name, "scene_cast": list(scene_cast_link)}}
+
+
+def _loader(compositions: dict):
+    return lambda name: compositions.get(name)
+
+
+# ── The real shape confirmed against an actual generated clip ──────────────────────
+
+def test_real_shape_composition_wired_via_composition_load():
+    graph = {
+        "3918": _cast_node(
+            [{"subject_id": "alex", "bundle_id": "alex_amd_norsk_dance_flo", "visual_mode": "both"},
+             {"subject_id": "sam", "bundle_id": "sam_bundle_3", "visual_mode": "images"}],
+            prompt_composition_link=["3923", 0],
+        ),
+        "3923": _comp_load_node("wide_shot"),
+        "3924": _loader_node("_pops", scene_cast_link=("3918", 0)),  # stale dropdown value
+    }
+    compositions = {"wide_shot": {"subjects": {"A": "alex", "B": "sam"}}}
+
+    info = extract_cast_info(graph, load_composition=_loader(compositions))
+
+    assert info["tags"] == ["alex_amd_norsk_dance_flo", "sam_bundle_3"]
+    assert info["composition_name"] == "wide_shot"  # not the loader's stale "_pops"
+    assert info["primary_subject"] == "alex"
+    assert info["note"] is None
+
+
+# ── Composition resolution precedence ───────────────────────────────────────────────
+
+def test_falls_back_to_loader_dropdown_when_no_composition_load_link():
+    graph = {
+        "1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a"}]),
+        "2": _loader_node("direct_pick", scene_cast_link=("1", 0)),
+    }
+    compositions = {"direct_pick": {"subjects": {"A": "a"}}}
+    info = extract_cast_info(graph, load_composition=_loader(compositions))
+    assert info["composition_name"] == "direct_pick"
+    assert info["primary_subject"] == "a"
+
+
+def test_wired_to_non_composition_load_node_does_not_guess():
+    graph = {
+        "1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a"}], prompt_composition_link=["9", 0]),
+        "9": {"class_type": "SomethingElse", "inputs": {}},
+    }
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["composition_name"] is None
+    assert info["primary_subject"] is None
+    assert info["note"]
+
+
+def test_no_composition_node_at_all_source_profile_driven():
+    graph = {"1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a"}])}
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["tags"] == ["bun_a"]
+    assert info["composition_name"] is None
+    assert info["primary_subject"] is None
+    assert "Source-Profile" in info["note"]
+
+
+# ── Cast / tags ──────────────────────────────────────────────────────────────────
+
+def test_no_scene_cast_build_node():
+    info = extract_cast_info({"1": {"class_type": "KSampler", "inputs": {}}}, load_composition=_loader({}))
+    assert info == {"tags": [], "primary_subject": None, "composition_name": None,
+                     "note": "no Scene Cast Build node found — not a cast-driven generation"}
+
+
+def test_duplicate_bundle_ids_deduplicated_in_first_seen_order():
+    graph = {"1": _cast_node([
+        {"subject_id": "a", "bundle_id": "bun_a"},
+        {"subject_id": "b", "bundle_id": "bun_b"},
+        {"subject_id": "c", "bundle_id": "bun_a"},
+    ])}
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["tags"] == ["bun_a", "bun_b"]
+
+
+def test_entries_without_bundle_id_are_skipped():
+    graph = {"1": _cast_node([{"subject_id": "a"}, {"subject_id": "b", "bundle_id": "bun_b"}])}
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["tags"] == ["bun_b"]
+
+
+def test_malformed_cast_entries_json_yields_no_tags():
+    graph = {"1": {"class_type": "fbt_SceneCastBuild", "inputs": {"cast_entries_json": "not json"}}}
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["tags"] == []
+
+
+# ── Primary-subject resolution ───────────────────────────────────────────────────
+
+def test_first_slot_uses_insertion_order_not_sorted_order():
+    """Regression guard: slot_letter()'s A..Z, AA.. scheme sorts wrong as plain strings past Z
+    ("AA" < "Z" lexically) — the ordering bug this session already hit once in the frontend."""
+    graph = {
+        "1": _cast_node([{"subject_id": "z_subject", "bundle_id": "bun_z"}],
+                        prompt_composition_link=["2", 0]),
+        "2": _comp_load_node("big_comp"),
+    }
+    # Insertion order: Z (26th letter) comes before AA (27th) even though "AA" < "Z" as strings.
+    compositions = {"big_comp": {"subjects": {"Z": "z_subject", "AA": "aa_subject"}}}
+    info = extract_cast_info(graph, load_composition=_loader(compositions))
+    assert info["primary_subject"] == "z_subject"
+
+
+def test_unassigned_first_slot_falls_through_to_next_assigned():
+    graph = {
+        "1": _cast_node([{"subject_id": "b", "bundle_id": "bun_b"}], prompt_composition_link=["2", 0]),
+        "2": _comp_load_node("comp"),
+    }
+    compositions = {"comp": {"subjects": {"A": "", "B": "b"}}}
+    info = extract_cast_info(graph, load_composition=_loader(compositions))
+    assert info["primary_subject"] == "b"
+
+
+def test_no_subjects_assigned_returns_none_with_note():
+    graph = {
+        "1": _cast_node([], prompt_composition_link=["2", 0]),
+        "2": _comp_load_node("comp"),
+    }
+    compositions = {"comp": {"subjects": {"A": "", "B": ""}}}
+    info = extract_cast_info(graph, load_composition=_loader(compositions))
+    assert info["primary_subject"] is None
+    assert "no subject assigned" in info["note"]
+
+
+def test_composition_not_found_by_loader():
+    graph = {
+        "1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a"}], prompt_composition_link=["2", 0]),
+        "2": _comp_load_node("missing_comp"),
+    }
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["primary_subject"] is None
+    assert info["composition_name"] == "missing_comp"
+    assert "could not be loaded" in info["note"]
+
+
+def test_no_load_composition_callback_supplied():
+    graph = {
+        "1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a"}], prompt_composition_link=["2", 0]),
+        "2": _comp_load_node("comp"),
+    }
+    info = extract_cast_info(graph)  # load_composition omitted entirely
+    assert info["primary_subject"] is None
+    assert info["composition_name"] == "comp"
+
+
+# ── read_embedded_prompt ──────────────────────────────────────────────────────────
+
+def test_read_embedded_prompt_missing_ffprobe_returns_none():
+    assert read_embedded_prompt("/no/such/file.mp4", ffprobe="/definitely/not/a/real/ffprobe") is None
+
+
+def test_read_embedded_prompt_missing_file_returns_none():
+    import shutil
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return  # ffprobe not installed in this environment; nothing to test here
+    assert read_embedded_prompt("/no/such/file.mp4", ffprobe=ffprobe) is None

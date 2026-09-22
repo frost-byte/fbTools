@@ -366,6 +366,7 @@ async function renderCleanClips(parent, browseData) {
     const srcEl  = input(saved.src, "/path/to/output/video/process_me");
     const destEl = input(saved.dest, "/path/to/archive/media/comps");
     const dryEl  = _mk("input", { type: "checkbox", checked: !!saved.dry });
+    const organizeEl = _mk("input", { type: "checkbox", checked: !!saved.organize });
 
     const srcField = field("Source folder", srcEl, "Clips to clean (not searched recursively).");
     const destField = field("Destination folder", destEl, "Created if missing. Files already there are left alone, so re-running only cleans what's new.");
@@ -374,6 +375,11 @@ async function renderCleanClips(parent, browseData) {
     _withBrowse(destField, destEl, "folder", browseData);
     parent.appendChild(_mk("div", { cls: "fbt-ka-checks" }, [
         _mk("label", { cls: "fbt-ka-check" }, [dryEl, "Dry run"]),
+        _mk("label", { cls: "fbt-ka-check", title:
+            "Reads each clip's own embedded generation data (composition-driven clips only) to sort it " +
+            "into a subfolder named after its primary (first-slot) subject, and reports the bundle tags " +
+            "used — nothing is written into any Kdenlive project yet." },
+            [organizeEl, "Organize into folders by primary subject"]),
     ]));
 
     const btn = (label, onclick, cls = "") => _mk("button", { cls: `fbt-ka-btn ${cls}`, textContent: label, onclick });
@@ -391,8 +397,8 @@ async function renderCleanClips(parent, browseData) {
     let jobId = null;
     let pollTimer = null;
 
-    const persist = () => persistClean({ src: srcEl.value, dest: destEl.value, dry: dryEl.checked });
-    [srcEl, destEl, dryEl].forEach(el => el.addEventListener("change", persist));
+    const persist = () => persistClean({ src: srcEl.value, dest: destEl.value, dry: dryEl.checked, organize: organizeEl.checked });
+    [srcEl, destEl, dryEl, organizeEl].forEach(el => el.addEventListener("change", persist));
 
     const say = (msg, isErr = false) => { statusEl.textContent = msg; statusEl.classList.toggle("error", isErr); };
     const busy = (on) => { cleanBtn.disabled = on; cancelBtn.style.display = on && jobId ? "" : "none"; };
@@ -415,6 +421,20 @@ async function renderCleanClips(parent, browseData) {
         rows.forEach(([k, v]) => dl.append(_mk("dt", { textContent: k }), _mk("dd", { textContent: v })));
         reportEl.appendChild(dl);
 
+        // Per-file destination folder + bundle tags, only present when "Organize into folders" was on.
+        const sorted = (rep.results || []).filter(r => r.subdir);
+        const unsorted = (rep.results || []).filter(r => !r.subdir && "primary_subject" in r);
+        if (sorted.length || unsorted.length) {
+            reportEl.appendChild(_mk("div", { cls: "fbt-ka-h", textContent: "Sorted by primary subject" }));
+            reportEl.appendChild(_mk("ul", { cls: "fbt-ka-list" }, sorted.map(r =>
+                _mk("li", { textContent: `${r.file} → ${r.subdir}/` + (r.tags?.length ? `  [tags: ${r.tags.join(", ")}]` : "") }))));
+            if (unsorted.length) {
+                reportEl.appendChild(_mk("div", { cls: "fbt-ka-h", textContent: "Left at the destination root" }));
+                reportEl.appendChild(_mk("ul", { cls: "fbt-ka-list warn" }, unsorted.map(r =>
+                    _mk("li", { textContent: `${r.file} — ${r.note || "no primary subject found"}` }))));
+            }
+        }
+
         const list = (title, items, cls) => {
             if (!items?.length) return;
             reportEl.appendChild(_mk("div", { cls: "fbt-ka-h", textContent: title }));
@@ -434,6 +454,7 @@ async function renderCleanClips(parent, browseData) {
         try {
             const res = await kdenliveApi.clean({
                 src_dir: srcEl.value.trim(), dest_dir: destEl.value.trim(), dry_run: dryEl.checked,
+                organize_by_primary: organizeEl.checked,
             });
             jobId = res.job_id;
             busy(true);
