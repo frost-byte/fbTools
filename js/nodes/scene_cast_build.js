@@ -1037,7 +1037,10 @@ function _buildCastBuildUI(node, app) {
 
     // ── 14. Source subject refresh ────────────────────────────────────────────
 
+    let _srcReqSeq = 0; // discard a stale response if a newer refresh has since started
+
     async function _refreshSourceSubjects() {
+        const seq = ++_srcReqSeq;
         const results = [];
         const inp     = node.inputs?.find(i => i.name === "source_profile");
         const linkId  = inp?.link;
@@ -1071,6 +1074,7 @@ function _buildCastBuildUI(node, app) {
                 } catch { /* skip */ }
             }
         }
+        if (seq !== _srcReqSeq) return; // a newer refresh already started; this result is stale
         _connectedSPSubjects = results;
 
         // Update source select in the currently visible tab in-place
@@ -1099,7 +1103,12 @@ function _buildCastBuildUI(node, app) {
     // value (CompositionLoad re-fires onConnectionsChange when it changes) and
     // fetch the composition to build the cast pool.
 
+    let _compReqSeq = 0; // discard a stale response if a newer refresh has since started (list+get is
+                          // two sequential awaits, so switching the dropdown quickly can otherwise let
+                          // an older request's result land after a newer one and overwrite it)
+
     async function _refreshCompositionSubjects() {
+        const seq = ++_compReqSeq;
         let result = null;
         const inp    = node.inputs?.find(i => i.name === "prompt_composition");
         const linkId = inp?.link;
@@ -1139,6 +1148,7 @@ function _buildCastBuildUI(node, app) {
                 } catch { /* skip */ }
             }
         }
+        if (seq !== _compReqSeq) return; // a newer refresh already started; this result is stale
         _connectedComposition = result;
         _reresolveCompositionOrdinals();
         _renderCompositionOptions();

@@ -45,6 +45,16 @@ links keep their slot indexes.
   (punctuation, pacing phrases, dialogue formatting and `<Subject N>` labels come from the assembler
   at run time).
 
+## A stale preview when switching compositions quickly (fixed)
+
+`_refreshCompositionSubjects()` does two sequential `fetch` calls (list, then get) every time it
+runs. With no guard, switching the connected Composition Load node's dropdown again before the
+first refresh finished could let the OLDER request's response land after the newer one and
+overwrite it — the preview then showed the previous composition's shots, one step behind, worst
+the faster you switched. Fixed with a per-refresh sequence number: a response is only applied if no
+newer refresh has started since. The same fix was applied to `_refreshSourceSubjects()` (same
+shape, single fetch, smaller window but the identical bug).
+
 ## Composition options: Background section
 
 While a composition drives the node, a **Background** section appears above the cast tabs:
