@@ -17392,9 +17392,13 @@ def _h3_load_video_frames(path: str, load_params: dict):
 
         # Time-based duration: convert to an output-frame cap so the accumulator
         # loop can stop without tracking wall-clock time on every frame.
-        # `duration` wins over frame_load_cap when both are set.
+        # `duration` wins over frame_load_cap when both are set. `frame_load_cap` is compared
+        # against `sampled` below (17441-17443), which counts frames *after* the select_every_nth
+        # filter — so the cap must be expressed in post-filter frames too, or it silently reads
+        # select_every_nth times too much of the source (e.g. select_every_nth=2 → exactly 2x the
+        # requested duration is decoded before the cap is hit).
         if duration > 0.0:
-            duration_cap = max(1, int(duration * target_fps))
+            duration_cap = max(1, int(duration * target_fps / select_every_nth))
             frame_load_cap = duration_cap if frame_load_cap == 0 else min(frame_load_cap, duration_cap)
 
         # Time-accumulator resampling — mirrors VHS cv_frame_generator logic:
