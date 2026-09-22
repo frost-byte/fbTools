@@ -3699,3 +3699,6 @@ body.fbt-llm-loaded
     margin-right: 6px;
     border: 1px solid var(--border-color, #333);
 }
+
+/* ── folder_tree.js: a directory row that both selects and expands on click ─── */
+.fbt-ft-dir-row { cursor: pointer; }

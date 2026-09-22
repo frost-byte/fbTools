@@ -69,6 +69,28 @@ describe("KdenliveAPI", () => {
         expect(JSON.parse(call.body)).toEqual({ src_dir: "/in", dest_dir: "/out", dry_run: true });
     });
 
+    test("browseFiles gets /browse_files with the folder query param", async () => {
+        mockFetch.mockResponse({ files: ["/abs/a.kdenlive"] });
+        const result = await new KdenliveAPI().browseFiles("output");
+        expect(result.files).toEqual(["/abs/a.kdenlive"]);
+        const url = String(mockFetch.getCalls()[0].url);
+        expect(url).toContain("/fbtools/kdenlive/browse_files");
+        expect(url).toContain("folder=output");
+    });
+
+    test("browseFiles defaults to input", async () => {
+        mockFetch.mockResponse({ files: [] });
+        await new KdenliveAPI().browseFiles();
+        expect(String(mockFetch.getCalls()[0].url)).toContain("folder=input");
+    });
+
+    test("browseDirs gets /browse_dirs with the folder query param", async () => {
+        mockFetch.mockResponse({ root: "/abs/output", dirs: ["/abs/output/video"] });
+        const result = await new KdenliveAPI().browseDirs("output");
+        expect(result.dirs).toEqual(["/abs/output/video"]);
+        expect(String(mockFetch.getCalls()[0].url)).toContain("/fbtools/kdenlive/browse_dirs");
+    });
+
     test("cancel and strip post to their endpoints", async () => {
         mockFetch.mockResponse({ ok: true });
         mockFetch.mockResponse({ ok: true, report: { removed: 2 } });

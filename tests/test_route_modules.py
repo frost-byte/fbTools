@@ -23,7 +23,7 @@ EXPECTED = {
     "outfits": 7,
     "lora_info": 2,
     "prompt_collections": 4,
-    "kdenlive_archive": 6,
+    "kdenlive_archive": 8,
 }
 
 

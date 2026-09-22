@@ -12,6 +12,7 @@ import time
 import uuid
 
 from aiohttp import web
+from folder_paths import get_input_directory, get_output_directory
 from server import PromptServer
 
 from ..utils.kdenlive_archive import analyze, archive, strip_metadata
@@ -81,6 +82,55 @@ def _error(exc: Exception) -> web.Response:
         return web.json_response({"error": str(exc)}, status=400)
     logger.exception("kdenlive_archive route failed")
     return web.json_response({"error": str(exc)}, status=500)
+
+
+def _folder_base(folder_param: str) -> str:
+    """Resolve the "input"/"output" query param to its absolute directory (same validation as
+    nodes/media.py's _media_list, which this deliberately doesn't import — see its own note on
+    why Kdenlive's browse endpoints return absolute paths instead of that endpoint's relative ones)."""
+    folder_param = (folder_param or "input").lower()
+    if folder_param == "output":
+        return get_output_directory()
+    if folder_param == "input":
+        return get_input_directory()
+    raise ValueError(f"Invalid folder {folder_param!r}. Use input or output.")
+
+
+@routes.get("/fbtools/kdenlive/browse_files")
+async def _kdenlive_browse_files(request: web.Request) -> web.Response:
+    """Every .kdenlive project file under input/ or output/ (recursive), as absolute paths —
+    for the Project field's file-tree browser. Kept separate from /fbtools/media/list, whose
+    relative paths suit its own callers (ComfyUI node widgets) but not Kdenlive's, which take
+    plain OS paths with no notion of ComfyUI's input/output roots."""
+    try:
+        base = _folder_base(request.rel_url.query.get("folder", "input"))
+    except ValueError as exc:
+        return _error(exc)
+    files: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for f in filenames:
+            if f.lower().endswith(".kdenlive"):
+                files.append(os.path.join(dirpath, f))
+    return web.json_response({"files": sorted(files)})
+
+
+@routes.get("/fbtools/kdenlive/browse_dirs")
+async def _kdenlive_browse_dirs(request: web.Request) -> web.Response:
+    """Every subdirectory under input/ or output/ (recursive, including empty ones — the gap
+    /fbtools/media/list can't fill, since it only knows about directories that contain a
+    matching file), as absolute paths, for folder-picking fields (destinations, search folders,
+    clean-clips source/destination)."""
+    try:
+        base = _folder_base(request.rel_url.query.get("folder", "input"))
+    except ValueError as exc:
+        return _error(exc)
+    dirs: list[str] = []
+    for dirpath, dirnames, _filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for d in dirnames:
+            dirs.append(os.path.join(dirpath, d))
+    return web.json_response({"root": base, "dirs": sorted(dirs)})
 
 
 @routes.post("/fbtools/kdenlive/check")

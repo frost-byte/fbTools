@@ -10,6 +10,8 @@
 
 import { kdenliveApi } from "../api/kdenlive.js";
 import { api } from "../../../scripts/api.js";
+import { buildFileTree } from "./file_tree.js";
+import { buildFolderTree } from "./folder_tree.js";
 
 const LS_KEY = "fbt_kdenlive_archive_form";
 const SOURCE = "kdenlive_archive";
@@ -42,10 +44,90 @@ function _saveForm(v) {
     try { localStorage.setItem(LS_KEY, JSON.stringify(v)); } catch {}
 }
 
+/**
+ * Fetch every .kdenlive file and every subdirectory under input/ and output/, once. Both come
+ * back as absolute server paths (browse_files/browse_dirs return absolute paths because Kdenlive's
+ * own functions take plain OS paths, unlike the relative-to-input/output paths the general media
+ * list endpoint returns for ComfyUI node widgets) — this strips each list down to a path relative
+ * to its root for display in file_tree.js/folder_tree.js (both of which use the given path string
+ * as-is for both display and the selected value), keeping a root to re-absolute-ify a selection.
+ */
+async function _loadBrowseData() {
+    const empty = { roots: { input: null, output: null }, kdenliveFiles: { input: [], output: [] }, dirs: { input: [], output: [] } };
+    try {
+        const [dIn, dOut, fIn, fOut] = await Promise.all([
+            kdenliveApi.browseDirs("input"), kdenliveApi.browseDirs("output"),
+            kdenliveApi.browseFiles("input"), kdenliveApi.browseFiles("output"),
+        ]);
+        const rel = (abs, root) => abs.startsWith(root + "/") ? abs.slice(root.length + 1) : abs;
+        return {
+            roots: { input: dIn.root, output: dOut.root },
+            dirs: { input: dIn.dirs.map(d => rel(d, dIn.root)), output: dOut.dirs.map(d => rel(d, dOut.root)) },
+            kdenliveFiles: { input: fIn.files.map(f => rel(f, dIn.root)), output: fOut.files.map(f => rel(f, dOut.root)) },
+        };
+    } catch {
+        return empty; // browse routes unavailable (e.g. before a restart) — fields stay plain text
+    }
+}
+
+/**
+ * Add a "Browse…" toggle next to `fieldEl` that reveals/hides an inline file or folder tree.
+ * Selecting an entry writes the absolute path into `inputEl` (dispatching "input" so existing
+ * persist() listeners still fire); with `appendLine: true` (used for the multi-line search-folders
+ * field) it appends a new line instead of replacing the field's value.
+ *
+ * @param {HTMLElement} fieldEl - the field wrapper (from the `field()` helper) to attach the toggle to
+ * @param {HTMLInputElement|HTMLTextAreaElement} inputEl - the text field to write into
+ * @param {"kdenlive"|"folder"} kind
+ * @param {object} browseData - result of _loadBrowseData()
+ * @param {boolean} [appendLine]
+ */
+function _withBrowse(fieldEl, inputEl, kind, browseData, appendLine = false) {
+    if (!browseData.roots.input && !browseData.roots.output) return; // browse routes unavailable
+
+    const toggleBtn = _mk("button", { cls: "fbt-ka-browse-toggle", type: "button", textContent: "Browse…" });
+    const treeWrap = _mk("div", { cls: "fbt-ka-browse-tree" });
+    treeWrap.style.display = "none";
+    fieldEl.append(toggleBtn, treeWrap);
+
+    const applyPath = (relPath, dir) => {
+        const root = browseData.roots[dir];
+        const abs = relPath ? `${root}/${relPath}` : root;
+        if (appendLine) {
+            const lines = inputEl.value.split("\n").map(s => s.trim()).filter(Boolean);
+            if (!lines.includes(abs)) lines.push(abs);
+            inputEl.value = lines.join("\n");
+        } else {
+            inputEl.value = abs;
+        }
+        inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+
+    let tree = null;
+    toggleBtn.addEventListener("click", () => {
+        const opening = treeWrap.style.display === "none";
+        treeWrap.style.display = opening ? "" : "none";
+        toggleBtn.classList.toggle("active", opening);
+        if (opening && !tree) {
+            tree = kind === "kdenlive"
+                ? buildFileTree({
+                    inputFiles: browseData.kdenliveFiles.input, outputFiles: browseData.kdenliveFiles.output,
+                    onSelect: applyPath, emptyText: "No .kdenlive files in {dir}/",
+                })
+                : buildFolderTree({
+                    inputDirs: browseData.dirs.input, outputDirs: browseData.dirs.output,
+                    onSelect: applyPath, emptyText: "No subfolders in {dir}/",
+                });
+            treeWrap.appendChild(tree.el);
+        }
+    });
+}
+
 export async function renderKdenliveArchive(parent) {
     const saved = _loadForm();
     const wrap = _mk("div", { cls: "fbt-ka-wrap" });
     parent.appendChild(wrap);
+    const browseData = await _loadBrowseData();
 
     wrap.appendChild(_mk("p", { cls: "fbt-ka-intro", textContent:
         "Archive a Kdenlive project into one portable folder (clips in media/, relative paths) " +
@@ -66,12 +148,18 @@ export async function renderKdenliveArchive(parent) {
     const stripEl   = _mk("input", { type: "checkbox", checked: saved.strip !== false });
     const dryEl     = _mk("input", { type: "checkbox", checked: !!saved.dry });
 
-    wrap.appendChild(field("Project (.kdenlive)", projectEl));
-    wrap.appendChild(field("Destination folder", destEl, "Created if missing. Existing identical files are skipped, so re-running resumes."));
-    wrap.appendChild(field("Search folders for missing clips", searchEl,
-        "Looked at by filename when a clip isn't at its recorded path (e.g. you moved clips)."));
-    wrap.appendChild(field("Path maps", mapsEl,
-        "Translate a path prefix from another machine, e.g. a Windows drive letter or network share."));
+    const projectField = field("Project (.kdenlive)", projectEl);
+    const destField = field("Destination folder", destEl, "Created if missing. Existing identical files are skipped, so re-running resumes.");
+    const searchField = field("Search folders for missing clips", searchEl,
+        "Looked at by filename when a clip isn't at its recorded path (e.g. you moved clips).");
+    wrap.append(
+        projectField, destField, searchField,
+        field("Path maps", mapsEl,
+            "Translate a path prefix from another machine, e.g. a Windows drive letter or network share."),
+    );
+    _withBrowse(projectField, projectEl, "kdenlive", browseData);
+    _withBrowse(destField, destEl, "folder", browseData);
+    _withBrowse(searchField, searchEl, "folder", browseData, /* appendLine */ true);
     wrap.appendChild(_mk("div", { cls: "fbt-ka-checks" }, [
         _mk("label", { cls: "fbt-ka-check" }, [stripEl, "Strip embedded workflow metadata"]),
         _mk("label", { cls: "fbt-ka-check" }, [dryEl, "Dry run (archive)"]),
@@ -247,7 +335,7 @@ export async function renderKdenliveArchive(parent) {
         }
     } catch { /* server unreachable; leave idle */ }
 
-    await renderCleanClips(wrap);
+    await renderCleanClips(wrap, browseData);
 }
 
 // ── Clean clips ──────────────────────────────────────────────────────────────────
@@ -258,7 +346,7 @@ export async function renderKdenliveArchive(parent) {
 
 const CLEAN_LS_KEY = "fbt_kdenlive_clean_form";
 
-async function renderCleanClips(parent) {
+async function renderCleanClips(parent, browseData) {
     const saved = (() => { try { return JSON.parse(localStorage.getItem(CLEAN_LS_KEY) || "{}"); } catch { return {}; } })();
     const persistClean = (v) => { try { localStorage.setItem(CLEAN_LS_KEY, JSON.stringify(v)); } catch {} };
 
@@ -279,8 +367,11 @@ async function renderCleanClips(parent) {
     const destEl = input(saved.dest, "/path/to/archive/media/comps");
     const dryEl  = _mk("input", { type: "checkbox", checked: !!saved.dry });
 
-    parent.appendChild(field("Source folder", srcEl, "Clips to clean (not searched recursively)."));
-    parent.appendChild(field("Destination folder", destEl, "Created if missing. Files already there are left alone, so re-running only cleans what's new."));
+    const srcField = field("Source folder", srcEl, "Clips to clean (not searched recursively).");
+    const destField = field("Destination folder", destEl, "Created if missing. Files already there are left alone, so re-running only cleans what's new.");
+    parent.append(srcField, destField);
+    _withBrowse(srcField, srcEl, "folder", browseData);
+    _withBrowse(destField, destEl, "folder", browseData);
     parent.appendChild(_mk("div", { cls: "fbt-ka-checks" }, [
         _mk("label", { cls: "fbt-ka-check" }, [dryEl, "Dry run"]),
     ]));

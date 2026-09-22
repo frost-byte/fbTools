@@ -69,6 +69,28 @@ export class KdenliveAPI extends BaseAPI {
     async clean(opts) {
         return await this.post("/clean", opts);
     }
+
+    /**
+     * Every .kdenlive file under input/ or output/ (recursive), as absolute server paths —
+     * for the Project field's browse tree. Kept separate from the general media-list endpoint,
+     * whose relative paths suit ComfyUI node widgets, not Kdenlive's plain OS paths.
+     * @param {"input"|"output"} folder
+     * @returns {Promise<{files: string[]}>}
+     */
+    async browseFiles(folder = "input") {
+        return await this.get("/browse_files", { folder });
+    }
+
+    /**
+     * Every subdirectory under input/ or output/ (recursive, including empty ones), as
+     * absolute server paths — for folder-picking fields (destinations, search folders,
+     * clean-clips source/destination).
+     * @param {"input"|"output"} folder
+     * @returns {Promise<{root: string, dirs: string[]}>}
+     */
+    async browseDirs(folder = "input") {
+        return await this.get("/browse_dirs", { folder });
+    }
 }
 
 export const kdenliveApi = new KdenliveAPI();
