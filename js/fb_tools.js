@@ -177,6 +177,8 @@ function isDatasetToastMilestone(statusText = "") {
     return isStart || isEnd;
 }
 
+setupLlmQueueWarning(app, api);
+
 api.addEventListener("fbtools.status", (event) => {
     try {
         const detail = event?.detail || {};
@@ -397,6 +399,7 @@ import { setupPromptCompositionLoader } from "./nodes/prompt_composition_loader.
 import { setupSourceProfileClipPrompt } from "./nodes/source_profile_clip_prompt.js";
 import { renderFbtPanel } from "./ui/fbt_panel.js";
 import { patchNodeForTracking } from "./utils/run_tracker.js";
+import { setupLlmQueueWarning } from "./utils/llm_queue_warning.js";
 import { updateNodeInspector } from "./ui/node_inspector.js";
 
 // Single sidebar entry — hosts Compose, Assets, Casts, Sources, History tabs
