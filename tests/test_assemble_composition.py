@@ -387,3 +387,60 @@ def test_music_field_passed_through():
     comp = _comp(subjects={"A": "a"}, music="Epic orchestral score.")
     result = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")
     assert "Epic orchestral score." in result["prompt"]
+
+
+# ── Audio reference with no scripted dialogue (avoid implying speech) ──────────
+
+def test_audio_subject_with_no_dialogue_anywhere_gets_non_speaking_wording():
+    alice = _subject("Alice", audio="alice.wav")
+    comp = _comp(subjects={"A": "a"}, shots=[_shot(dialogue_text=None)])
+    prompt = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")["prompt"]
+
+    sd = prompt.split("subject_definitions:", 1)[1].split("summary:", 1)[0]
+    assert "not scripted dialogue" in sd
+    assert "spoken" not in sd and "vocal layer" not in sd
+    assert "without copying the original signal" in sd  # unrelated-to-speech clause is kept
+
+    ra = prompt.split("retention_analysis:", 1)[1].split("detailed_description:", 1)[0]
+    assert "<Audio 1>" in ra
+    assert "not scripted dialogue" in ra
+    assert "measured delivery" not in ra
+    assert "without copying the original signal" in ra
+
+
+def test_audio_subject_with_a_scripted_line_keeps_original_wording():
+    alice = _subject("Alice", audio="alice.wav")
+    comp = _comp(subjects={"A": "a"}, shots=[_shot(dialogue_text="Hello there.", sid="A")])
+    prompt = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")["prompt"]
+
+    sd = prompt.split("subject_definitions:", 1)[1].split("summary:", 1)[0]
+    assert "containing Alice's voice, without copying the original signal" in sd
+    assert "not scripted dialogue" not in sd
+
+    ra = prompt.split("retention_analysis:", 1)[1].split("detailed_description:", 1)[0]
+    assert "voice timbre and measured delivery" in ra
+    assert "not scripted dialogue" not in ra
+
+
+def test_non_speaking_wording_is_per_subject_not_global():
+    """A has audio and never speaks; B speaks. A gets the soft wording; B's line is untouched."""
+    alice = _subject("Alice", audio="alice.wav")
+    bob = _subject("Bob")
+    comp = _comp(subjects={"A": "a", "B": "b"}, shots=[_shot(dialogue_text="Hi!", sid="B")])
+    prompt = assemble_composition(comp, {"A": alice, "B": bob}, None, "h3_ref2va")["prompt"]
+
+    sd = prompt.split("subject_definitions:", 1)[1].split("summary:", 1)[0]
+    assert "not scripted dialogue" in sd  # Alice (A), who never speaks
+
+    dd = prompt.split("detailed_description:", 1)[1]
+    assert "Hi!" in dd  # Bob's scripted line still comes through normally
+
+
+def test_explicit_audio_role_overrides_non_speaking_wording_in_subject_definitions():
+    alice = _subject("Alice", audio="alice.wav")
+    alice["voice"]["audio_role"] = "a custom timbre note"
+    comp = _comp(subjects={"A": "a"}, shots=[_shot(dialogue_text=None)])
+    prompt = assemble_composition(comp, {"A": alice}, None, "h3_ref2va")["prompt"]
+    sd = prompt.split("subject_definitions:", 1)[1].split("summary:", 1)[0]
+    assert "a custom timbre note for" in sd
+    assert "not scripted dialogue" not in sd

@@ -895,6 +895,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             vnum = info["video_num"]
             voice_desc = info["voice_description"] or f"a spoken {_lang_label(info['language'])} vocal layer"
             spk = f"{label} ({info['speaker_id']})"
+            speaks = slot_id in _dlg_speaking_slots
             if snd_role:
                 desc = f"{snd_role} for {spk}"
             elif snd_ret == "reuse" and vnum is not None:
@@ -902,9 +903,17 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             elif snd_ret == "style":
                 desc = (f"the audio style and rhythm reference for {spk}, "
                         f"containing {voice_desc}")
-            else:
+            elif speaks:
                 desc = (f"the voice-timbre reference for {spk}, "
                         f"containing {voice_desc}, without copying the original signal")
+            else:
+                # No shot ever gives this slot a scripted line — drop the "spoken
+                # ... vocal layer" content descriptor (implies scripted speech) but
+                # keep "without copying the original signal": that clause is about
+                # not reusing the recording verbatim and applies regardless of
+                # whether the subject speaks.
+                desc = (f"the voice-timbre reference for {spk}, retained for "
+                        f"consistency (not scripted dialogue), without copying the original signal")
             audio_sd_lines.append(f"<Audio {snd_num}> is {desc}.")
 
         # Standalone audio line (voice.audio_reference_file)
@@ -914,6 +923,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             aud_role = info["audio_role"]
             voice_desc = info["voice_description"] or f"a spoken {_lang_label(info['language'])} vocal layer"
             spk = f"{label} ({info['speaker_id']})"
+            speaks = slot_id in _dlg_speaking_slots
             if aud_role:
                 desc = f"{aud_role} for {spk}"
             elif aud_ret == "reuse":
@@ -921,9 +931,13 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             elif aud_ret == "style":
                 desc = (f"the audio style and rhythm reference for {spk}, "
                         f"containing {voice_desc}")
-            else:
+            elif speaks:
                 desc = (f"the voice-timbre reference for {spk}, "
                         f"containing {voice_desc}, without copying the original signal")
+            else:
+                # See the matching comment in the soundtrack branch above.
+                desc = (f"the voice-timbre reference for {spk}, retained for "
+                        f"consistency (not scripted dialogue), without copying the original signal")
             audio_sd_lines.append(f"<Audio {aud_num}> is {desc}.")
 
     sd.extend(video_sd_lines)
@@ -1271,6 +1285,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         subj_label: str,
         is_soundtrack: bool = False,
         video_num: int | None = None,
+        speaks: bool = True,
     ) -> str:
         ref_tag = f"<Audio {aud_num}>"
         if retention == "reuse":
@@ -1289,9 +1304,18 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                 f"{ref_tag}: reference - the target audio follows {ref_tag}'s "
                 f"rhythm, pace, and tonal style without copying the original signal."
             )
+        if speaks:
+            return (
+                f"{ref_tag}: reference - the target speaker follows {ref_tag}'s "
+                f"voice timbre and measured delivery without copying the original signal."
+            )
+        # No shot ever gives this slot a scripted line — drop "measured delivery"
+        # (speech-cadence guidance) so the reference doesn't read as an instruction
+        # to actually speak, but keep "without copying the original signal" since
+        # that clause is unrelated to speech (it rules out verbatim reuse).
         return (
-            f"{ref_tag}: reference - the target speaker follows {ref_tag}'s "
-            f"voice timbre and measured delivery without copying the original signal."
+            f"{ref_tag}: reference - {ref_tag}'s voice timbre is retained for "
+            f"consistency (not scripted dialogue), without copying the original signal."
         )
 
     for slot_id in ordered_slots:
@@ -1300,6 +1324,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             ra.append(_audio_ra_line(
                 info["soundtrack_num"], info["soundtrack_retention"], info["subject_label"],
                 is_soundtrack=True, video_num=info["video_num"],
+                speaks=slot_id in _dlg_speaking_slots,
             ))
 
     for slot_id in ordered_slots:
@@ -1307,6 +1332,7 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         if info["audio_num"] is not None:
             ra.append(_audio_ra_line(
                 info["audio_num"], info["audio_retention"], info["subject_label"],
+                speaks=slot_id in _dlg_speaking_slots,
             ))
 
     sections.append("retention_analysis:\n" + "\n".join(ra))

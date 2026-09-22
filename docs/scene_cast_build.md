@@ -85,6 +85,27 @@ override) it needs a design first: composition dialogue is per shot with a speak
 dialogue is per subject, and it must cooperate with libber tokens and the `[silent]` / `[sounds]`
 markers.
 
+## Audio references without scripted dialogue (avoiding invented chatter)
+
+`utils/prompt_assembler.py::_assemble_h3_ref2va` auto-detects, per subject slot, whether that slot
+is ever the speaker of a resolved shot dialogue line anywhere in the composition. A subject with a
+voice/audio reference (bundle audio, standalone or a video's soundtrack) but no scripted line
+anywhere gets softer default wording in both `subject_definitions` and `retention_analysis`: it
+drops the "a spoken … vocal layer" content descriptor and, in `retention_analysis`, the "and
+measured delivery" clause — both read as speech-cadence guidance and were a plausible driver of
+the model inventing dialogue for a subject that was only meant to keep a consistent voice. The
+"without copying the original signal" clause is kept either way; it is about not reusing the
+recording verbatim and is unrelated to whether the subject speaks.
+
+A subject that *does* get a scripted line anywhere keeps the original wording unchanged. An
+explicit audio "role" override (set on the bundle) always takes precedence over the auto-detected
+wording in `subject_definitions`; `retention_analysis` does not yet read the role override (a known
+gap — it always uses the auto-detected/default wording there).
+
+This only softens the *speech-implying* framing; it does not silence the reference. A shot's
+`sound_events` field (non-verbal sound — moaning, gasping, etc.) is unrelated machinery, generated
+independently of the audio reference and not explicitly tied to `<Audio N>` in the prompt text.
+
 ## Libber tokens in composition dialogue
 
 Composition shot text can contain libber tokens (`%*:N%`, `%*%`, `%key:N%`, `%key%`). They are
