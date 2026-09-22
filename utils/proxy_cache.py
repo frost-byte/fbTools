@@ -6,11 +6,18 @@ keyframe, which can be several seconds before the target.  Proxies eliminate
 that cost: each segment is trimmed and downscaled once, then reused on every
 subsequent run.
 
-Proxy layout under {base_dir}/proxies/source_profiles/:
-    {profile_id}__{clip_id}__{start:.2f}-{end:.2f}__h{short_edge}.mp4
+Proxy layout under {base_dir}/proxies/{kind}/ (kind="source_profiles" or "bundles"):
+    {namespace}__{key}__{start:.2f}-{end:.2f}__h{short_edge}.mp4
 
 A sidecar .json records the source path and mtime so stale proxies are
 detected and regenerated when the source file changes.
+
+Reference bundles get the same treatment as source profile clips
+(ensure_bundle_video_proxy) — both share the underlying _build_proxy(); the
+public functions differ only in what namespaces the filename (profile+clip
+vs. bundle id) and which subdirectory ("kind") they write under, so the two
+kinds of proxy never collide even if a profile id and a bundle id happened
+to be identical strings.
 
 Invariant: this module has no ComfyUI dependencies.  base_dir is passed in by
 the caller (typically user_data_dir() in extension.py).
@@ -25,8 +32,8 @@ from pathlib import Path
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _proxy_dir(base_dir: str) -> Path:
-    d = Path(base_dir) / "proxies" / "source_profiles"
+def _proxy_dir(base_dir: str, kind: str = "source_profiles") -> Path:
+    d = Path(base_dir) / "proxies" / kind
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -50,17 +57,20 @@ _PROXY_STEM_VERSION = f"f{_PROXY_FPS}"
 
 
 def _proxy_stem(
-    profile_id: str,
-    clip_id: str,
+    namespace: str,
+    key: str,
     start: float,
     end: float,
     short_edge: int,
 ) -> str:
+    """namespace/key are just whatever the caller uses to keep filenames unique within its own
+    `kind` directory — a source profile passes (profile_id, clip_id); a bundle passes
+    (bundle_id, "video") since a bundle has only one video reference to namespace."""
     def _safe(s: str) -> str:
         return s.replace("/", "_").replace("\\", "_").replace(" ", "_")
 
     return (
-        f"{_safe(profile_id)}__{_safe(clip_id)}"
+        f"{_safe(namespace)}__{_safe(key)}"
         f"__{start:.2f}-{end:.2f}__h{short_edge}_r32_{_PROXY_STEM_VERSION}"
     )
 
@@ -119,38 +129,19 @@ def _video_filter_chain(short_edge: int) -> str:
     return f"fps={_PROXY_FPS},{_scale_filter(short_edge)}"
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def ensure_source_profile_proxy(
+def _build_proxy(
     source_path: str,
-    profile_id: str,
-    clip_id: str,
+    namespace: str,
+    key: str,
     start_time: float,
     end_time: float,
     short_edge: int,
+    kind: str,
     base_dir: str,
 ) -> str | None:
-    """Return the path of a trimmed + downscaled proxy for one clip segment.
-
-    Generates the proxy via ffmpeg on first call; subsequent calls with the
-    same arguments return the cached path immediately (as long as the source
-    file's mtime hasn't changed).
-
-    Returns None if ffmpeg is unavailable, the source is missing, or
-    generation fails.  The caller should fall back to the original source.
-
-    Args:
-        source_path:  Absolute path to the source video.
-        profile_id:   Source profile ID (used to namespace the proxy filename).
-        clip_id:      Clip ID within the profile.
-        start_time:   Segment start in seconds.
-        end_time:     Segment end in seconds.
-        short_edge:   Target shorter-dimension pixel count (e.g. 768).
-        base_dir:     fbTools user data directory (proxy written under
-                      {base_dir}/proxies/source_profiles/).
-    """
+    """Shared implementation behind both public ensure_*_proxy() functions — see those for the
+    documented contract. `kind` picks the proxies/<kind>/ subdirectory (keeps source-profile and
+    bundle proxies from ever colliding even on an identical namespace/key)."""
     if not source_path or not os.path.exists(source_path):
         return None
 
@@ -158,8 +149,8 @@ def ensure_source_profile_proxy(
     if duration <= 0.0:
         return None
 
-    proxy_dir = _proxy_dir(base_dir)
-    stem = _proxy_stem(profile_id, clip_id, start_time, end_time, short_edge)
+    proxy_dir = _proxy_dir(base_dir, kind)
+    stem = _proxy_stem(namespace, key, start_time, end_time, short_edge)
     proxy_path = proxy_dir / f"{stem}.mp4"
 
     if _is_fresh(proxy_path, source_path):
@@ -194,3 +185,66 @@ def ensure_source_profile_proxy(
 
     _write_sidecar(proxy_path, source_path)
     return str(proxy_path)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def ensure_source_profile_proxy(
+    source_path: str,
+    profile_id: str,
+    clip_id: str,
+    start_time: float,
+    end_time: float,
+    short_edge: int,
+    base_dir: str,
+) -> str | None:
+    """Return the path of a trimmed + downscaled proxy for one clip segment.
+
+    Generates the proxy via ffmpeg on first call; subsequent calls with the
+    same arguments return the cached path immediately (as long as the source
+    file's mtime hasn't changed).
+
+    Returns None if ffmpeg is unavailable, the source is missing, or
+    generation fails.  The caller should fall back to the original source.
+
+    Args:
+        source_path:  Absolute path to the source video.
+        profile_id:   Source profile ID (used to namespace the proxy filename).
+        clip_id:      Clip ID within the profile.
+        start_time:   Segment start in seconds.
+        end_time:     Segment end in seconds.
+        short_edge:   Target shorter-dimension pixel count (e.g. 768).
+        base_dir:     fbTools user data directory (proxy written under
+                      {base_dir}/proxies/source_profiles/).
+    """
+    return _build_proxy(source_path, profile_id, clip_id, start_time, end_time, short_edge,
+                         "source_profiles", base_dir)
+
+
+def ensure_bundle_video_proxy(
+    source_path: str,
+    bundle_id: str,
+    start_time: float,
+    end_time: float,
+    short_edge: int,
+    base_dir: str,
+) -> str | None:
+    """Same contract as ensure_source_profile_proxy(), for a reference bundle's video reference.
+
+    A bundle has exactly one video reference (no per-clip id to disambiguate, unlike a source
+    profile), so the namespace is just the bundle id and the key is a constant "video" — written
+    under {base_dir}/proxies/bundles/ instead, so the two proxy kinds never mix.
+
+    Args:
+        source_path:  Absolute path to the bundle's video reference file.
+        bundle_id:    Bundle ID (used to namespace the proxy filename).
+        start_time:   Segment start in seconds (bundle's visual.start_time).
+        end_time:     Segment end in seconds (visual.start_time + visual.duration).
+        short_edge:   Target shorter-dimension pixel count (e.g. 768).
+        base_dir:     fbTools user data directory (proxy written under
+                      {base_dir}/proxies/bundles/).
+    """
+    return _build_proxy(source_path, bundle_id, "video", start_time, end_time, short_edge,
+                         "bundles", base_dir)

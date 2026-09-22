@@ -48,3 +48,51 @@ def test_proxy_stem_sanitizes_path_like_ids():
     assert "/" not in stem
     assert " " not in stem
     assert stem.startswith("a_b__c_d__")
+
+
+# ── _proxy_dir kind separation (Plan 16: bundle video proxies) ────────────────
+
+def test_proxy_dir_defaults_to_source_profiles_unchanged(tmp_path):
+    d = proxy_cache._proxy_dir(str(tmp_path))
+    assert d == tmp_path / "proxies" / "source_profiles"
+    assert d.is_dir()
+
+
+def test_proxy_dir_bundles_kind_is_a_separate_directory(tmp_path):
+    sp_dir = proxy_cache._proxy_dir(str(tmp_path), "source_profiles")
+    bundle_dir = proxy_cache._proxy_dir(str(tmp_path), "bundles")
+    assert bundle_dir == tmp_path / "proxies" / "bundles"
+    assert bundle_dir != sp_dir
+    assert bundle_dir.is_dir()
+
+
+def test_ensure_bundle_video_proxy_and_ensure_source_profile_proxy_never_collide(tmp_path, monkeypatch):
+    # Same namespace string used for both a "profile_id"/"clip_id" pair and a bundle id+"video" —
+    # must land in different directories, not overwrite each other, even though _proxy_stem alone
+    # would produce identical filenames for identical (namespace, key, start, end, short_edge).
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"fake")
+
+    calls = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        # Simulate ffmpeg writing the requested output path.
+        out_path = cmd[-1]
+        with open(out_path, "wb") as f:
+            f.write(b"fake-proxy")
+
+        class _Result:
+            returncode = 0
+        return _Result()
+
+    monkeypatch.setattr(proxy_cache.subprocess, "run", _fake_run)
+
+    sp_path = proxy_cache.ensure_source_profile_proxy(str(src), "shared", "video", 0.0, 2.0, 768, str(tmp_path))
+    bundle_path = proxy_cache.ensure_bundle_video_proxy(str(src), "shared", 0.0, 2.0, 768, str(tmp_path))
+
+    assert sp_path is not None and bundle_path is not None
+    assert sp_path != bundle_path
+    assert "source_profiles" in sp_path
+    assert "bundles" in bundle_path
+    assert len(calls) == 2  # both actually invoked ffmpeg (no accidental cache hit across kinds)

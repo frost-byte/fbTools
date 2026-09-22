@@ -144,6 +144,7 @@ from .utils.source_profile_analysis import (
     PASS_TYPES as _SPA_PASS_TYPES,
 )
 from .utils.proxy_cache import ensure_source_profile_proxy as _ensure_proxy
+from .utils.proxy_cache import ensure_bundle_video_proxy as _ensure_bundle_proxy
 from .utils.scene_templates import (
     SceneTemplate,
     load_template as _load_scene_template,
@@ -15152,6 +15153,67 @@ async def _bundles_get(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+# ── Bundle video proxy cache (Plan 16) ────────────────────────────────────────
+# Extends the Source Profile clip proxy system (utils/proxy_cache.py) to reference bundles'
+# video reference, so generation never has to re-seek/re-decode the original source file. Three
+# trigger points share this eligibility check + fire-and-forget builder: Preview (this file,
+# preview_sampled below), Save (_bundles_save above... below), and the generation-time fallback
+# inside _resolve_cast_media.
+
+# Bundle proxies bake in 24fps unconditionally, same as Source Profile clips' hardcoded
+# "force_rate": 24 (SourceProfileClipPrompt, "H3 requires 24fps reference video") — but a
+# bundle's force_rate, unlike a clip's, is a genuinely per-bundle configurable field. Swapping in
+# a 24fps-baked proxy is only correct when the bundle also targets 24fps; otherwise
+# _h3_load_video_frames would resample an already-24fps file against the wrong target, so this
+# guard must be checked at every trigger point before ever calling _ensure_bundle_proxy.
+_BUNDLE_PROXY_SHORT_EDGE = 768
+
+
+def _bundle_proxy_eligible(force_rate, duration: float) -> bool:
+    try:
+        force_rate = int(force_rate or 0)
+    except (TypeError, ValueError):
+        force_rate = 0
+    return duration > 0.0 and force_rate in (0, 24)
+
+
+def _fire_bundle_proxy_build(bundle_id: str, abs_path: str, start_time: float, duration: float,
+                              force_rate) -> None:
+    """Fire-and-forget: build (or refresh) a bundle's video proxy in a background thread.
+
+    Never awaited by the caller — Preview/Save must stay fast, and a stale/missing proxy is never
+    a hard failure (the generation-time fallback in _resolve_cast_media builds one synchronously,
+    on the spot, if this hasn't finished or was never triggered). Broadcasts over the same
+    fbtools.status/source="proxy_build" channel prebuild_proxies already uses, so
+    js/ui/bundle_editor.js's freshness readout picks it up with the same listener pattern already
+    used for Source Profile clips (source_profile_editor.js) and SceneCastBuild's clip preview.
+    """
+    if not bundle_id or not abs_path or not _bundle_proxy_eligible(force_rate, duration):
+        return
+
+    def _build():
+        label = os.path.basename(abs_path)
+        send_status_update("proxy_build", f"Building bundle proxy: {label}", source="proxy_build")
+        try:
+            result = _ensure_bundle_proxy(
+                source_path=abs_path,
+                bundle_id=bundle_id,
+                start_time=start_time,
+                end_time=start_time + duration,
+                short_edge=_BUNDLE_PROXY_SHORT_EDGE,
+                base_dir=str(user_data_dir()),
+            )
+            status = "ready" if result else "failed"
+        except Exception as exc:
+            status = f"error: {exc}"
+            logger.warning("bundle proxy build failed for %r (%s): %s", bundle_id, label, exc)
+        send_status_update("proxy_build", f"Bundle proxy build complete: {label} ({status})",
+                            source="proxy_build")
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _build)
+
+
 @routes.post("/fbtools/bundles/save")
 async def _bundles_save(request):
     """Create or update a bundle.  Body: full bundle dict with 'id'."""
@@ -15164,6 +15226,20 @@ async def _bundles_save(request):
         registry = _load_bundle_registry(path)
         registry = registry.upsert(data)
         _save_bundle_registry(registry, path)
+
+        visual = data.get("visual") or {}
+        vfile = visual.get("file", "")
+        if vfile:
+            vdir = visual.get("video_dir", "input")
+            abs_vfile = os.path.join(
+                get_output_directory() if vdir == "output" else get_input_directory(), vfile,
+            )
+            _fire_bundle_proxy_build(
+                bundle_id, abs_vfile,
+                float(visual.get("start_time", 0.0)), float(visual.get("duration", 0.0)),
+                visual.get("force_rate", 24),
+            )
+
         return web.json_response({"success": True, "id": bundle_id})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
@@ -15245,6 +15321,13 @@ async def _bundles_preview_sampled(request):
     duration         = float(data.get("duration",          0.0))
     force_rate       = int(data.get("force_rate",          24))  # H3 requires 24fps
     select_every_nth = max(1, int(data.get("select_every_nth", 1)))
+
+    # Plan 16: Preview already pays for equivalent ffmpeg work against these exact settings, so
+    # this is the natural moment to also (re)build the bundle's cached generation-time proxy —
+    # fire-and-forget, its own independent ffmpeg run, never blocks or affects this response.
+    bundle_id = (data.get("bundle_id") or "").strip()
+    if bundle_id:
+        _fire_bundle_proxy_build(bundle_id, path, start_time, duration, force_rate)
 
     try:
         import cv2  # noqa: F401
@@ -15349,6 +15432,56 @@ async def _bundles_preview_sampled(request):
         content_type="video/mp4",
         headers={"Content-Disposition": "inline"},
     )
+
+
+@routes.get("/fbtools/bundles/proxy_status")
+async def _bundles_proxy_status(request: web.Request) -> web.Response:
+    """Return video-proxy freshness for one bundle (Plan 16).
+
+    Query params:
+        bundle_id  str
+
+    Returns: {"fresh": bool, "proxy_path": str|null, "eligible": bool} — "eligible" is false (and
+    "fresh" always false) when the bundle has no video reference, no set duration, or a
+    force_rate other than 24/0, mirroring _bundle_proxy_eligible()'s own check server-side.
+    """
+    bundle_id = request.rel_url.query.get("bundle_id", "").strip()
+    if not bundle_id:
+        return web.json_response({"error": "bundle_id is required"}, status=400)
+
+    try:
+        registry = _load_bundle_registry(default_bundle_registry_path())
+        bundle   = registry.get(bundle_id)
+        if not bundle:
+            return web.json_response({"error": f"Bundle '{bundle_id}' not found"}, status=404)
+
+        visual     = bundle.get("visual", {})
+        vfile      = visual.get("file", "")
+        start_time = float(visual.get("start_time", 0.0))
+        duration   = float(visual.get("duration", 0.0))
+        force_rate = visual.get("force_rate", 24)
+        eligible   = bool(vfile) and _bundle_proxy_eligible(force_rate, duration)
+        if not eligible:
+            return web.json_response({"fresh": False, "proxy_path": None, "eligible": False})
+
+        vdir      = visual.get("video_dir", "input")
+        video_abs = os.path.join(
+            get_output_directory() if vdir == "output" else get_input_directory(), vfile,
+        )
+
+        from .utils.proxy_cache import _proxy_dir, _proxy_stem, _is_fresh
+        stem       = _proxy_stem(bundle_id, "video", start_time, start_time + duration, _BUNDLE_PROXY_SHORT_EDGE)
+        proxy_path = _proxy_dir(str(user_data_dir()), "bundles") / f"{stem}.mp4"
+        fresh      = _is_fresh(proxy_path, video_abs) if os.path.exists(video_abs) else False
+
+        return web.json_response({
+            "fresh":      fresh,
+            "proxy_path": str(proxy_path) if fresh else None,
+            "eligible":   True,
+        })
+    except Exception as exc:
+        logger.exception("bundle proxy_status failed for %r", bundle_id)
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 @routes.post("/fbtools/bundles/preprocess_audio")
@@ -16713,9 +16846,35 @@ def _resolve_cast_media(
                         entry_audio_start  = audio.get("start_time", 0.0)
                         entry_audio_dur    = audio.get("duration", 0.0)
 
+                # Generation-time proxy fallback (Plan 16): if a fresh proxy already exists this
+                # is a near-instant filesystem check; if not, this builds one on the spot. Audio
+                # extraction above always keeps using abs_vfile (the real original) — proxies are
+                # silent (-an), never a valid audio source. Never blocks generation on failure.
+                video_file_for_entry = vfile
+                if _bundle_proxy_eligible(entry_load_params["force_rate"], entry_load_params["duration"]):
+                    try:
+                        proxy_path = _ensure_bundle_proxy(
+                            source_path=abs_vfile,
+                            bundle_id=bundle_id,
+                            start_time=entry_load_params["start_time"],
+                            end_time=entry_load_params["start_time"] + entry_load_params["duration"],
+                            short_edge=_BUNDLE_PROXY_SHORT_EDGE,
+                            base_dir=str(user_data_dir()),
+                        )
+                    except Exception as _proxy_exc:
+                        proxy_path = None
+                        logger.warning(
+                            "_resolve_cast_media: proxy generation failed for bundle %r (%s): %s",
+                            bundle_id, os.path.basename(abs_vfile), _proxy_exc,
+                        )
+                    if proxy_path:
+                        video_file_for_entry = proxy_path
+                        entry_load_params = dict(entry_load_params)
+                        entry_load_params["start_time"] = 0.0  # proxy is already trimmed
+
                 video_entries_full.append({
                     "subject_id":       subject_id,
-                    "video_file":       vfile,
+                    "video_file":       video_file_for_entry,
                     "load_params":      entry_load_params,
                     "audio_source":     entry_audio_source,
                     "audio_path":       entry_audio_path,

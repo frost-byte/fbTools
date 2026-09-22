@@ -121,6 +121,15 @@ export class BundlesAPI extends BaseAPI {
         const blob = await r.blob();
         return { blob, error: null };
     }
+
+    /**
+     * Video-proxy freshness for one bundle (Plan 16). {"fresh", "proxy_path", "eligible"} —
+     * "eligible" is false for a bundle with no video reference, no set duration, or a
+     * force_rate other than 24/native.
+     */
+    proxyStatus(bundle_id) {
+        return this.get("/bundles/proxy_status", { bundle_id });
+    }
 }
 
 export const bundlesApi = new BundlesAPI();

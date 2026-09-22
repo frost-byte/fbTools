@@ -10,6 +10,7 @@
 import { bundlesApi }    from "../api/bundles.js";
 import { llmApi }        from "../api/llm.js";
 import { compositionsApi } from "../api/compositions.js";
+import { api }           from "../../../scripts/api.js";
 import { makeEntry, buildHistorySection } from "../utils/llm_history.js";
 import { buildFileTree, trapKeys } from "./file_tree.js";
 import { lib, notifyLibraryChanged, LIBRARY_CHANGED } from "./library_store.js";
@@ -991,6 +992,34 @@ function _buildVideoPicker(wrap, b) {
     _buildFrameParamSection(wrap, b.visual, { onchange: _updateFrameCount });
     wrap.appendChild(frameCountReadout);
 
+    // ── Video proxy status (Plan 16) ────────────────────────────────────────────
+    // Built automatically on Preview / on Save (or on the spot at generation time if neither
+    // ever ran) — see extension.py's _fire_bundle_proxy_build. This readout just reflects
+    // whatever's already on disk; there's no manual "Build proxy" button here.
+    const proxyReadout = _mk("div", { cls: "fbt-be-frame-count-readout", style: { display: "none" } });
+    wrap.appendChild(proxyReadout);
+
+    async function _refreshBundleProxyStatus() {
+        if (!b.id || !b.visual.file) { proxyReadout.style.display = "none"; return; }
+        try {
+            const info = await bundlesApi.proxyStatus(b.id);
+            if (!info.eligible) { proxyReadout.style.display = "none"; return; }
+            proxyReadout.style.display = "";
+            proxyReadout.textContent = info.fresh
+                ? "✓ proxy cached — generation will use it"
+                : "proxy not built yet — click Preview or Save to build it";
+        } catch { /* informational only */ }
+    }
+
+    function _onBundleProxyBuildStatus(event) {
+        const d = event?.detail || {};
+        if (d.source !== "proxy_build") return;
+        _refreshBundleProxyStatus();
+    }
+    api.addEventListener("fbtools.status", _onBundleProxyBuildStatus);
+
+    if (b.visual.file) _refreshBundleProxyStatus();
+
     // ── Sampled preview ────────────────────────────────────────────────────────
     _previewWrap = _mk("div", { cls: "fbt-be-preview-wrap", style: { display: "none" } });
     _previewVideoEl = document.createElement("video");
@@ -1035,6 +1064,7 @@ function _buildVideoPicker(wrap, b) {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
+                        bundle_id:        b.id,   // namespaces the background proxy build below
                         filename:         b.visual.file,
                         dir:              b.visual.video_dir || "input",
                         start_time:       b.visual.start_time       || 0,
