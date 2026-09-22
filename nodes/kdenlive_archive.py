@@ -262,6 +262,7 @@ def _run_clean_job(job: dict, src_dir: str, dest_dir: str, dry_run: bool, organi
                 info = get_cast_info(src_path)
                 entry["tags"] = info["tags"]
                 entry["primary_subject"] = info["primary_subject"]
+                entry["primary_bundle"] = info["primary_bundle"]
                 if info["note"]:
                     entry["note"] = info["note"]
         job["report"] = report

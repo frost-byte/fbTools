@@ -89,7 +89,7 @@ def test_no_composition_node_at_all_source_profile_driven():
 
 def test_no_scene_cast_build_node():
     info = extract_cast_info({"1": {"class_type": "KSampler", "inputs": {}}}, load_composition=_loader({}))
-    assert info == {"tags": [], "primary_subject": None, "composition_name": None,
+    assert info == {"tags": [], "primary_subject": None, "primary_bundle": None, "composition_name": None,
                      "note": "no Scene Cast Build node found — not a cast-driven generation"}
 
 
@@ -171,6 +171,43 @@ def test_no_load_composition_callback_supplied():
     info = extract_cast_info(graph)  # load_composition omitted entirely
     assert info["primary_subject"] is None
     assert info["composition_name"] == "comp"
+
+
+# ── primary_bundle ───────────────────────────────────────────────────────────────
+
+def test_primary_bundle_is_the_cast_entrys_bundle_for_the_primary_subject():
+    graph = {
+        "1": _cast_node(
+            [{"subject_id": "alex", "bundle_id": "alex_amd_norsk_dance_flo"},
+             {"subject_id": "sam", "bundle_id": "sam_bundle_3"}],
+            prompt_composition_link=["2", 0],
+        ),
+        "2": _comp_load_node("comp"),
+    }
+    compositions = {"comp": {"subjects": {"A": "alex", "B": "sam"}}}
+    info = extract_cast_info(graph, load_composition=_loader(compositions))
+    assert info["primary_bundle"] == "alex_amd_norsk_dance_flo"
+
+
+def test_primary_bundle_none_when_primary_subject_has_no_cast_entry():
+    graph = {
+        "1": _cast_node([{"subject_id": "sam", "bundle_id": "sam_bundle_3"}],
+                        prompt_composition_link=["2", 0]),
+        "2": _comp_load_node("comp"),
+    }
+    # "alex" is slot A (primary) but never appears in the cast entries.
+    compositions = {"comp": {"subjects": {"A": "alex", "B": "sam"}}}
+    info = extract_cast_info(graph, load_composition=_loader(compositions))
+    assert info["primary_subject"] == "alex"
+    assert info["primary_bundle"] is None
+    assert "no bundle" in info["note"]
+
+
+def test_primary_bundle_none_when_primary_subject_itself_is_none():
+    graph = {"1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a"}])}
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["primary_subject"] is None
+    assert info["primary_bundle"] is None
 
 
 # ── read_embedded_prompt ──────────────────────────────────────────────────────────

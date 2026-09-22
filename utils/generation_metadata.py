@@ -89,47 +89,58 @@ def extract_cast_info(prompt_graph: dict, load_composition=None) -> dict:
     in utils.prompt_compositions.load_composition()).
 
     Returns {"tags": [bundle_id, ...], "primary_subject": subject_id | None,
-             "composition_name": str | None, "note": str | None}.
+             "primary_bundle": bundle_id | None, "composition_name": str | None, "note": str | None}.
     tags is every distinct bundle_id from the SceneCastBuild cast entries, in first-seen order.
     primary_subject is the subject in the composition's first slot (dict insertion order — never
-    sorted: slot_letter()'s A..Z, AA.. scheme sorts wrong past Z as plain strings). note explains a
+    sorted: slot_letter()'s A..Z, AA.. scheme sorts wrong past Z as plain strings). primary_bundle is
+    the specific bundle_id the cast used for that subject in this clip (None if that subject has no
+    cast entry / no bundle here, distinct from having no primary_subject at all). note explains a
     None primary (no cast node, no composition, composition not found, or no slot assigned).
     """
     cast_nodes = _find_nodes(prompt_graph, _SCENE_CAST_BUILD)
     if not cast_nodes:
-        return {"tags": [], "primary_subject": None, "composition_name": None,
+        return {"tags": [], "primary_subject": None, "primary_bundle": None, "composition_name": None,
                 "note": "no Scene Cast Build node found — not a cast-driven generation"}
 
     cast_node = cast_nodes[0]
     tags: list[str] = []
+    bundle_by_subject: dict[str, str] = {}
     try:
         entries = json.loads(cast_node.get("inputs", {}).get("cast_entries_json") or "[]")
     except ValueError:
         entries = []
     for entry in entries if isinstance(entries, list) else []:
-        bid = isinstance(entry, dict) and entry.get("bundle_id")
+        if not isinstance(entry, dict):
+            continue
+        bid = entry.get("bundle_id")
         if bid and bid not in tags:
             tags.append(bid)
+        sid = entry.get("subject_id")
+        if sid and bid and sid not in bundle_by_subject:
+            bundle_by_subject[sid] = bid
 
     comp_name = _composition_name(prompt_graph, cast_node)
     if comp_name is None:
-        return {"tags": tags, "primary_subject": None, "composition_name": None,
+        return {"tags": tags, "primary_subject": None, "primary_bundle": None, "composition_name": None,
                 "note": "no Prompt Composition resolved — likely Source-Profile-driven; "
                         "primary subject can't be determined yet for that path"}
 
     if load_composition is None:
-        return {"tags": tags, "primary_subject": None, "composition_name": comp_name,
+        return {"tags": tags, "primary_subject": None, "primary_bundle": None, "composition_name": comp_name,
                 "note": "composition loader not supplied — primary subject not resolved"}
 
     composition = load_composition(comp_name)
     if not isinstance(composition, dict):
-        return {"tags": tags, "primary_subject": None, "composition_name": comp_name,
+        return {"tags": tags, "primary_subject": None, "primary_bundle": None, "composition_name": comp_name,
                 "note": f"composition {comp_name!r} could not be loaded"}
 
     subjects = composition.get("subjects", {})
     primary = next((sid for sid in subjects.values() if sid), None)
     if primary is None:
-        return {"tags": tags, "primary_subject": None, "composition_name": comp_name,
+        return {"tags": tags, "primary_subject": None, "primary_bundle": None, "composition_name": comp_name,
                 "note": f"composition {comp_name!r} has no subject assigned to any slot"}
 
-    return {"tags": tags, "primary_subject": primary, "composition_name": comp_name, "note": None}
+    primary_bundle = bundle_by_subject.get(primary)
+    note = None if primary_bundle else f"primary subject {primary!r} has no bundle in this clip's cast"
+    return {"tags": tags, "primary_subject": primary, "primary_bundle": primary_bundle,
+            "composition_name": comp_name, "note": note}
