@@ -56,4 +56,13 @@ test("list view -> editor -> back", async () => {
     search.value = "cafe";
     search.dispatchEvent(new Event("input"));
     expect(el.querySelectorAll(".fbt-ce-list-card").length).toBe(1);
+
+    // Closing and reopening the panel (a fresh element, no fbtceBuilt flag) rebuilds the DOM from
+    // scratch, but the filter itself lives in module state and survives — the rebuilt search box
+    // must show that surviving text, not come back empty while the list stays filtered underneath it.
+    const el2 = document.createElement("div");
+    document.body.appendChild(el2);
+    await renderCompositionEditor(el2);
+    expect(el2.querySelector(".fbt-ce-list-search").value).toBe("cafe");
+    expect(el2.querySelectorAll(".fbt-ce-list-card").length).toBe(1);
 });

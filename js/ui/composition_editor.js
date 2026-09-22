@@ -1952,8 +1952,11 @@ async function _refreshSavedComps() {
 
 function _buildListView() {
     const view = _mk("div", { cls: "fbt-ce-list-view" });
+    // Seed from _S.savedQuery: closing and reopening the panel rebuilds this input from scratch
+    // (module state survives that rebuild; the DOM doesn't), so without this the list would stay
+    // filtered by the old text while the box that shows it looked empty.
     _dom.savedSearchInput = _mk("input", { cls: "fbt-ce-input fbt-ce-list-search", type: "text",
-        placeholder: "Search compositions…" });
+        placeholder: "Search compositions…", value: _S.savedQuery || "" });
     _dom.savedSearchInput.addEventListener("input", () => {
         _S.savedQuery = _dom.savedSearchInput.value;
         _S.savedPage = 0;
