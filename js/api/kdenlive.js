@@ -31,11 +31,17 @@ export class KdenliveAPI extends BaseAPI {
     }
 
     /**
-     * @param {string} [jobId] - defaults to the most recent job
-     * @returns {Promise<{job: null | {id: string, state: string, progress: object, report: object|null, error: string|null}}>}
+     * @param {string} [jobId] - defaults to the most recent job (of `kind`, if given)
+     * @param {string} [kind] - "archive" | "clean"; only used when jobId is omitted, so a page
+     *   reload can recover an in-progress job of a specific kind instead of whichever is newest
+     * @returns {Promise<{job: null | {id: string, kind: string, state: string, progress: object,
+     *   report: object|null, error: string|null}}>}
      */
-    async status(jobId = "") {
-        return await this.get("/status", jobId ? { job_id: jobId } : {});
+    async status(jobId = "", kind = "") {
+        const params = {};
+        if (jobId) params.job_id = jobId;
+        if (kind) params.kind = kind;
+        return await this.get("/status", params);
     }
 
     /** @param {string} jobId */
@@ -50,6 +56,18 @@ export class KdenliveAPI extends BaseAPI {
      */
     async strip(opts) {
         return await this.post("/strip", opts);
+    }
+
+    /**
+     * Start a job that remuxes every video directly under src_dir into dest_dir without
+     * embedded metadata (a ComfyUI-saved clip's own workflow/prompt JSON) — for cleaning
+     * generated clips before adding them to a project's media folder by hand. Never touches
+     * a .kdenlive file. Progress/completion arrive the same way as {@link archive}.
+     * @param {{src_dir: string, dest_dir: string, dry_run?: boolean}} opts
+     * @returns {Promise<{started: boolean, job_id: string}>}
+     */
+    async clean(opts) {
+        return await this.post("/clean", opts);
     }
 }
 

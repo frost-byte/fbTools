@@ -227,20 +227,186 @@ export async function renderKdenliveArchive(parent) {
     // Live progress between polls.
     api.addEventListener("fbtools.status", (ev) => {
         const d = ev.detail || {};
-        if (d.source !== SOURCE) return;
+        // "kind" disambiguates from the Clean clips section below, which shares this same
+        // websocket event (both are source: "kdenlive_archive") but runs as an independent job.
+        if (d.source !== SOURCE || d.kind !== "archive") return;
         if (d.job_id && jobId && d.job_id !== jobId) return;
         if (d.status) say(d.status, d.level === "error");
         if (d.progress?.total) setProgress(d.progress.done || 0, d.progress.total);
         if (d.finished) pollOnce();
     });
 
-    // Pick up a job already running (page reloaded mid-archive).
+    // Pick up an archive job already running (page reloaded mid-archive).
     try {
-        const { job } = await kdenliveApi.status("");
+        const { job } = await kdenliveApi.status("", "archive");
         if (job?.state === "running") {
             jobId = job.id;
             busy(true);
             say("Archive in progress…");
+            startPolling();
+        }
+    } catch { /* server unreachable; leave idle */ }
+
+    await renderCleanClips(wrap);
+}
+
+// ── Clean clips ──────────────────────────────────────────────────────────────────
+// Remux every video in a folder without embedded metadata (a ComfyUI-saved clip's own
+// workflow/prompt JSON) before adding it to a project's media folder by hand. Never
+// touches a .kdenlive file, so it runs independently of the archive job above — the
+// server only refuses two jobs of the *same* kind at once.
+
+const CLEAN_LS_KEY = "fbt_kdenlive_clean_form";
+
+async function renderCleanClips(parent) {
+    const saved = (() => { try { return JSON.parse(localStorage.getItem(CLEAN_LS_KEY) || "{}"); } catch { return {}; } })();
+    const persistClean = (v) => { try { localStorage.setItem(CLEAN_LS_KEY, JSON.stringify(v)); } catch {} };
+
+    parent.appendChild(_mk("hr", { cls: "fbt-ka-divider" }));
+    parent.appendChild(_mk("p", { cls: "fbt-ka-intro", textContent:
+        "Clean generated clips before adding them to a project's media folder: remux every video " +
+        "directly under a source folder (not recursive) into a destination folder with its embedded " +
+        "workflow/prompt metadata stripped. The originals are never touched." }));
+
+    const field = (label, control, hint) =>
+        _mk("div", { cls: "fbt-ka-field" }, [
+            _mk("span", { cls: "fbt-ka-label", textContent: label }), control,
+            hint ? _mk("span", { cls: "fbt-ka-hint", textContent: hint }) : null,
+        ]);
+    const input = (val, ph) => _mk("input", { cls: "fbt-ka-input", type: "text", value: val || "", placeholder: ph });
+
+    const srcEl  = input(saved.src, "/path/to/output/video/process_me");
+    const destEl = input(saved.dest, "/path/to/archive/media/comps");
+    const dryEl  = _mk("input", { type: "checkbox", checked: !!saved.dry });
+
+    parent.appendChild(field("Source folder", srcEl, "Clips to clean (not searched recursively)."));
+    parent.appendChild(field("Destination folder", destEl, "Created if missing. Files already there are left alone, so re-running only cleans what's new."));
+    parent.appendChild(_mk("div", { cls: "fbt-ka-checks" }, [
+        _mk("label", { cls: "fbt-ka-check" }, [dryEl, "Dry run"]),
+    ]));
+
+    const btn = (label, onclick, cls = "") => _mk("button", { cls: `fbt-ka-btn ${cls}`, textContent: label, onclick });
+    const cleanBtn  = btn("Clean", () => runClean(), "fbt-ka-btn-primary");
+    const cancelBtn = btn("Cancel", () => cancelClean());
+    cancelBtn.style.display = "none";
+    parent.appendChild(_mk("div", { cls: "fbt-ka-actions" }, [cleanBtn, cancelBtn]));
+
+    const barEl    = _mk("div", { cls: "fbt-ka-progress-bar" });
+    const progEl   = _mk("div", { cls: "fbt-ka-progress" }, [barEl]);
+    const statusEl = _mk("div", { cls: "fbt-ka-status" });
+    const reportEl = _mk("div", { cls: "fbt-ka-report" });
+    parent.append(progEl, statusEl, reportEl);
+
+    let jobId = null;
+    let pollTimer = null;
+
+    const persist = () => persistClean({ src: srcEl.value, dest: destEl.value, dry: dryEl.checked });
+    [srcEl, destEl, dryEl].forEach(el => el.addEventListener("change", persist));
+
+    const say = (msg, isErr = false) => { statusEl.textContent = msg; statusEl.classList.toggle("error", isErr); };
+    const busy = (on) => { cleanBtn.disabled = on; cancelBtn.style.display = on && jobId ? "" : "none"; };
+    const setProgress = (done, total) => {
+        progEl.style.display = total ? "block" : "none";
+        barEl.style.width = total ? `${Math.round((100 * done) / total)}%` : "0";
+    };
+
+    function renderCleanReport(rep) {
+        reportEl.innerHTML = "";
+        if (!rep) return;
+        const rows = [["Videos found", String(rep.files_total)]];
+        if (rep.dry_run) {
+            rows.push(["Would clean", String(rep.results.filter(r => r.status === "would_clean").length)]);
+        } else {
+            rows.push(["Cleaned", `${rep.cleaned} (${rep.skipped_existing} already present)`]);
+            if (rep.cleaned) rows.push(["Size", `${_fmtBytes(rep.bytes_before)} → ${_fmtBytes(rep.bytes_after)} (${_fmtBytes(rep.bytes_saved)} saved)`]);
+        }
+        const dl = _mk("dl", { cls: "fbt-ka-summary" });
+        rows.forEach(([k, v]) => dl.append(_mk("dt", { textContent: k }), _mk("dd", { textContent: v })));
+        reportEl.appendChild(dl);
+
+        const list = (title, items, cls) => {
+            if (!items?.length) return;
+            reportEl.appendChild(_mk("div", { cls: "fbt-ka-h", textContent: title }));
+            reportEl.appendChild(_mk("ul", { cls: `fbt-ka-list ${cls}` }, items.map(t => _mk("li", { textContent: t }))));
+        };
+        list("Duplicate content (nothing removed — cleaned independently)",
+            (rep.duplicates || []).map(g => g.map(p => p.split("/").pop()).join(", ")), "warn");
+        list("Errors — left uncleaned", (rep.errors || []).map(e => `${e.file}: ${e.error}`), "missing");
+    }
+
+    async function runClean() {
+        persist();
+        say("Starting…");
+        reportEl.innerHTML = "";
+        setProgress(0, 0);
+        busy(true);
+        try {
+            const res = await kdenliveApi.clean({
+                src_dir: srcEl.value.trim(), dest_dir: destEl.value.trim(), dry_run: dryEl.checked,
+            });
+            jobId = res.job_id;
+            busy(true);
+            startPolling();
+        } catch (e) { say(e?.message || String(e), true); busy(false); }
+    }
+
+    async function cancelClean() {
+        if (!jobId) return;
+        cancelBtn.disabled = true;
+        say("Cancelling…");
+        try { await kdenliveApi.cancel(jobId); } catch (e) { say(e?.message || String(e), true); }
+    }
+
+    function finishClean(job) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        jobId = null;
+        cancelBtn.disabled = false;
+        busy(false);
+        setProgress(0, 0);
+        if (job.state === "error") { say(job.error || "Clean failed", true); return; }
+        renderCleanReport(job.report);
+        const errs = job.report?.errors?.length || 0;
+        say(job.state === "cancelled" ? "Cancelled."
+            : `${job.report?.dry_run ? "Dry run finished" : "Clean complete"}${errs ? ` — ${errs} error(s)` : ""}.`);
+    }
+
+    async function pollOnce() {
+        try {
+            const { job } = await kdenliveApi.status(jobId || "", "clean");
+            if (!job) return;
+            if (job.state === "running") {
+                jobId = job.id;
+                const p = job.progress || {};
+                if (p.total) setProgress(p.done || 0, p.total);
+                busy(true);
+            } else if (jobId === job.id) {
+                finishClean(job);
+            }
+        } catch { /* transient; next tick retries */ }
+    }
+
+    function startPolling() {
+        clearInterval(pollTimer);
+        pollTimer = setInterval(pollOnce, 1500);
+    }
+
+    api.addEventListener("fbtools.status", (ev) => {
+        const d = ev.detail || {};
+        if (d.source !== SOURCE || d.kind !== "clean") return;
+        if (d.job_id && jobId && d.job_id !== jobId) return;
+        if (d.status) say(d.status, d.level === "error");
+        if (d.progress?.total) setProgress(d.progress.done || 0, d.progress.total);
+        if (d.finished) pollOnce();
+    });
+
+    // Pick up a clean job already running (page reloaded mid-clean).
+    try {
+        const { job } = await kdenliveApi.status("", "clean");
+        if (job?.state === "running") {
+            jobId = job.id;
+            busy(true);
+            say("Clean in progress…");
             startPolling();
         }
     } catch { /* server unreachable; leave idle */ }

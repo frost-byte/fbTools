@@ -7,6 +7,10 @@ Subcommands:
            relative paths (root="") that opens on Windows, macOS and Linux
   strip    Remove the embedded ComfyUI workflow/prompt JSON that Kdenlive copies
            from clip metadata into the project (often 95%+ of the file size)
+  clean    Remux every video in a folder into another folder without embedded
+           metadata (a ComfyUI-saved clip's own workflow/prompt JSON) before
+           adding it to a project's media folder by hand. Never touches a
+           .kdenlive file or the source clips.
 
 Missing clips: use --map to translate paths from another machine (e.g. a
 Windows mapped drive) and --search to look for moved clips by filename. Clips
@@ -17,24 +21,30 @@ Examples:
   python scripts/kdenlive_archive.py archive proj.kdenlive /data/proj_archive \\
       --map "Z:/=/mnt/comfy_ssd/ComfyUI/" --search /mnt/comfy_ssd/ComfyUI/output/video
   python scripts/kdenlive_archive.py strip proj.kdenlive --in-place
+  python scripts/kdenlive_archive.py clean output/video/process_me project_archive/media/comps
 
-Exit codes: 0 ok, 2 finished with unresolved clips (or cancelled), 1 error.
+Exit codes: 0 ok, 2 finished with unresolved clips/errors (or cancelled), 1 error.
 """
 from __future__ import annotations
 
 import argparse
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
 
-def _load_lib():
-    path = Path(__file__).resolve().parent.parent / "utils" / "kdenlive_archive.py"
-    spec = importlib.util.spec_from_file_location("fbtools_kdenlive_archive", path)
+def _load_module(name: str):
+    path = Path(__file__).resolve().parent.parent / "utils" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"fbtools_{name}", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _load_lib():
+    return _load_module("kdenlive_archive")
 
 
 def _fmt_bytes(n: float) -> str:
@@ -63,6 +73,27 @@ def _progress_printer(quiet: bool):
             state["last"] = line
 
     return cb
+
+
+def _print_clean_report(rep: dict) -> None:
+    print(f"Source:         {rep['src_dir']}")
+    print(f"Destination:    {rep['dest_dir']}")
+    print(f"Videos found:   {rep['files_total']}")
+    if rep["dry_run"]:
+        for r in rep["results"]:
+            tag = "already present" if r["status"] == "exists" else "would clean"
+            print(f"  {r['file']}  ({tag}, {_fmt_bytes(r['size_before'])})")
+    else:
+        print(f"Cleaned:        {rep['cleaned']} ({rep['skipped_existing']} already present)")
+        if rep["cleaned"]:
+            print(f"Size:           {_fmt_bytes(rep['bytes_before'])} -> {_fmt_bytes(rep['bytes_after'])} "
+                  f"({_fmt_bytes(rep['bytes_saved'])} saved)")
+        if rep.get("cancelled"):
+            print("CANCELLED.")
+    for group in rep["duplicates"]:
+        print(f"DUPLICATE CONTENT: {', '.join(os.path.basename(p) for p in group)}")
+    for e in rep["errors"]:
+        print(f"ERROR: {e['file']}: {e['error']}")
 
 
 def _print_report(rep: dict) -> None:
@@ -121,9 +152,24 @@ def main(argv=None) -> int:
     p_strip.add_argument("--output", help="write to this file instead of <stem>_stripped.kdenlive")
     p_strip.add_argument("--json", action="store_true")
 
+    p_clean = sub.add_parser("clean", help="remux every video in a folder without embedded metadata")
+    p_clean.add_argument("src_dir", help="folder of clips to clean (not recursive)")
+    p_clean.add_argument("dest_dir", help="destination folder (created if needed; must differ from src_dir)")
+    p_clean.add_argument("--dry-run", action="store_true", help="report what would be cleaned; write nothing")
+    p_clean.add_argument("--json", action="store_true")
+
     args = ap.parse_args(argv)
     lib = _load_lib()
     try:
+        if args.cmd == "clean":
+            clips = _load_module("kdenlive_clips")
+            rep = clips.clean_folder(args.src_dir, args.dest_dir, dry_run=args.dry_run,
+                                     progress=_progress_printer(args.json))
+            if args.json:
+                print(json.dumps(rep, indent=2))
+            else:
+                _print_clean_report(rep)
+            return 2 if rep["errors"] else 0
         if args.cmd == "strip":
             out = args.project if args.in_place else args.output
             rep = lib.strip_metadata(args.project, output=out)
@@ -140,7 +186,7 @@ def main(argv=None) -> int:
             rep = lib.archive(args.project, args.dest, path_maps=args.map, search_dirs=args.search,
                               strip_metadata_opt=not args.no_strip, dry_run=args.dry_run,
                               output_name=args.name, progress=progress)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     if args.json:

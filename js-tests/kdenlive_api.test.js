@@ -44,6 +44,31 @@ describe("KdenliveAPI", () => {
         expect(String(mockFetch.getCalls()[0].url)).not.toContain("job_id");
     });
 
+    test("status with a kind but no id passes kind as a query parameter", async () => {
+        mockFetch.mockResponse({ job: null });
+        await new KdenliveAPI().status("", "clean");
+        const url = String(mockFetch.getCalls()[0].url);
+        expect(url).not.toContain("job_id");
+        expect(url).toContain("kind=clean");
+    });
+
+    test("status with both an id and a kind sends both (the server prefers job_id)", async () => {
+        mockFetch.mockResponse({ job: null });
+        await new KdenliveAPI().status("abc123", "clean");
+        const url = String(mockFetch.getCalls()[0].url);
+        expect(url).toContain("job_id=abc123");
+        expect(url).toContain("kind=clean");
+    });
+
+    test("clean posts src_dir, dest_dir and dry_run and returns the job id", async () => {
+        mockFetch.mockResponse({ started: true, job_id: "clean1" });
+        const result = await new KdenliveAPI().clean({ src_dir: "/in", dest_dir: "/out", dry_run: true });
+        expect(result.job_id).toBe("clean1");
+        const call = mockFetch.getCalls()[0];
+        expect(call.url).toContain("/fbtools/kdenlive/clean");
+        expect(JSON.parse(call.body)).toEqual({ src_dir: "/in", dest_dir: "/out", dry_run: true });
+    });
+
     test("cancel and strip post to their endpoints", async () => {
         mockFetch.mockResponse({ ok: true });
         mockFetch.mockResponse({ ok: true, report: { removed: 2 } });

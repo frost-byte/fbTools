@@ -38,3 +38,4 @@
 .fbt-ka-list.warn { border-color:var(--fbt-warn-border); color:var(--fbt-warn-text); }
 .fbt-ka-list li { padding:1px 0; word-break:break-all; }
 .fbt-ka-h { font-size:11px; font-weight:600; color:var(--fbt-muted); margin-top:4px; }
+.fbt-ka-divider { border: none; border-top: 1px solid var(--fbt-border); margin: 6px 0; }

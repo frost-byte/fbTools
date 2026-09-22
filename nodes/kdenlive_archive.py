@@ -15,6 +15,7 @@ from aiohttp import web
 from server import PromptServer
 
 from ..utils.kdenlive_archive import analyze, archive, strip_metadata
+from ..utils.kdenlive_clips import clean_folder
 from ..utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -116,7 +117,7 @@ def _run_job(job: dict, opts: dict, strip: bool, dry_run: bool) -> None:
             text = "Indexing search folders"
         else:
             text = "Writing project"
-        _send(text, extra={"job_id": job["id"], "progress": ev})
+        _send(text, extra={"job_id": job["id"], "kind": job["kind"], "progress": ev})
 
     try:
         report = archive(
@@ -130,12 +131,13 @@ def _run_job(job: dict, opts: dict, strip: bool, dry_run: bool) -> None:
             "Archive cancelled" if report.get("cancelled")
             else f"Archive {'checked' if dry_run else 'complete'}" + (f" ({missing} clip(s) missing)" if missing else ""),
             level="warning" if (missing or report.get("cancelled")) else "info",
-            extra={"job_id": job["id"], "finished": True, "state": job["state"]},
+            extra={"job_id": job["id"], "kind": job["kind"], "finished": True, "state": job["state"]},
         )
     except Exception as exc:
         logger.exception("kdenlive archive job failed")
         job["state"], job["error"] = "error", str(exc)
-        _send(f"Archive failed: {exc}", level="error", extra={"job_id": job["id"], "finished": True, "state": "error"})
+        _send(f"Archive failed: {exc}", level="error",
+              extra={"job_id": job["id"], "kind": job["kind"], "finished": True, "state": "error"})
 
 
 @routes.post("/fbtools/kdenlive/archive")
@@ -149,9 +151,9 @@ async def _kdenlive_archive(request: web.Request) -> web.Response:
         return _error(exc)
 
     with _LOCK:
-        if any(j["state"] == "running" for j in _JOBS.values()):
+        if any(j["state"] == "running" and j["kind"] == "archive" for j in _JOBS.values()):
             return web.json_response({"error": "An archive job is already running"}, status=409)
-        job = {"id": uuid.uuid4().hex[:12], "state": "running", "progress": {}, "report": None,
+        job = {"id": uuid.uuid4().hex[:12], "kind": "archive", "state": "running", "progress": {}, "report": None,
                "error": None, "started": time.time(), "cancel": threading.Event()}
         _JOBS[job["id"]] = job
         _JOB_ORDER.append(job["id"])
@@ -166,15 +168,79 @@ async def _kdenlive_archive(request: web.Request) -> web.Response:
     return web.json_response({"started": True, "job_id": job["id"]})
 
 
+def _run_clean_job(job: dict, src_dir: str, dest_dir: str, dry_run: bool) -> None:
+    def progress(ev: dict) -> None:
+        job["progress"] = ev
+        _send(f"Cleaning {ev['done']}/{ev['total']}: {ev.get('current', '')}",
+              extra={"job_id": job["id"], "kind": job["kind"], "progress": ev})
+
+    try:
+        report = clean_folder(src_dir, dest_dir, dry_run=dry_run, cancel=job["cancel"], progress=progress)
+        job["report"] = report
+        job["state"] = "cancelled" if report.get("cancelled") else "done"
+        n_err = len(report["errors"])
+        _send(
+            "Clean cancelled" if report.get("cancelled")
+            else f"Clean {'checked' if dry_run else 'complete'}" + (f" ({n_err} error(s))" if n_err else ""),
+            level="warning" if (n_err or report.get("cancelled")) else "info",
+            extra={"job_id": job["id"], "kind": job["kind"], "finished": True, "state": job["state"]},
+        )
+    except Exception as exc:
+        logger.exception("kdenlive clean job failed")
+        job["state"], job["error"] = "error", str(exc)
+        _send(f"Clean failed: {exc}", level="error",
+              extra={"job_id": job["id"], "kind": job["kind"], "finished": True, "state": "error"})
+
+
+@routes.post("/fbtools/kdenlive/clean")
+async def _kdenlive_clean(request: web.Request) -> web.Response:
+    try:
+        body = await _body(request)
+        src_dir = str(body.get("src_dir", "")).strip().strip('"')
+        dest_dir = str(body.get("dest_dir", "")).strip().strip('"')
+        if not src_dir:
+            raise ValueError("source folder is required")
+        if not dest_dir:
+            raise ValueError("destination folder is required")
+        if not os.path.isdir(src_dir):
+            raise FileNotFoundError(f"source folder not found: {src_dir}")
+        if os.path.realpath(dest_dir) == os.path.realpath(src_dir):
+            raise ValueError("destination must be a different folder from the source")
+    except Exception as exc:
+        return _error(exc)
+
+    with _LOCK:
+        if any(j["state"] == "running" and j["kind"] == "clean" for j in _JOBS.values()):
+            return web.json_response({"error": "A clean job is already running"}, status=409)
+        job = {"id": uuid.uuid4().hex[:12], "kind": "clean", "state": "running", "progress": {}, "report": None,
+               "error": None, "started": time.time(), "cancel": threading.Event()}
+        _JOBS[job["id"]] = job
+        _JOB_ORDER.append(job["id"])
+        while len(_JOB_ORDER) > _JOBS_MAX:
+            _JOBS.pop(_JOB_ORDER.pop(0), None)
+
+    threading.Thread(
+        target=_run_clean_job,
+        args=(job, src_dir, dest_dir, bool(body.get("dry_run", False))),
+        daemon=True,
+    ).start()
+    return web.json_response({"started": True, "job_id": job["id"]})
+
+
 def _public(job: dict) -> dict:
-    return {k: job[k] for k in ("id", "state", "progress", "report", "error", "started")}
+    return {k: job[k] for k in ("id", "kind", "state", "progress", "report", "error", "started")}
 
 
 @routes.get("/fbtools/kdenlive/status")
 async def _kdenlive_status(request: web.Request) -> web.Response:
     job_id = request.query.get("job_id", "").strip()
+    kind = request.query.get("kind", "").strip()
     with _LOCK:
-        job = _JOBS.get(job_id) if job_id else (_JOBS[_JOB_ORDER[-1]] if _JOB_ORDER else None)
+        if job_id:
+            job = _JOBS.get(job_id)
+        else:
+            ids = [i for i in reversed(_JOB_ORDER) if not kind or _JOBS[i]["kind"] == kind]
+            job = _JOBS[ids[0]] if ids else None
         if job is None:
             return web.json_response({"job": None})
         return web.json_response({"job": _public(job)})
