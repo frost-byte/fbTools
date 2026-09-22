@@ -14147,6 +14147,28 @@ async def _source_profiles_proxy_status(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@routes.get("/fbtools/source_profiles/proxy_stream")
+async def _source_profiles_proxy_stream(request: web.Request) -> web.Response:
+    """Stream a cached source-profile proxy file for playback.
+
+    ?path=<absolute_path> — must be inside user_data_dir()/proxies/source_profiles/.
+    Supports HTTP Range requests so browsers can seek. Mirrors
+    /fbtools/bundles/audio_cache/stream's allow-listed-root pattern. Never generates a proxy
+    (that's prebuild_proxies' job, as a background job — ffmpeg here can take minutes) — this
+    only ever serves one that already exists.
+    """
+    path = request.rel_url.query.get("path", "").strip()
+    if not path:
+        return web.Response(status=400, text="path required")
+    allowed_root = os.path.realpath(os.path.join(str(user_data_dir()), "proxies", "source_profiles"))
+    real_path = os.path.realpath(path)
+    if not real_path.startswith(allowed_root + os.sep):
+        return web.Response(status=403, text="Forbidden")
+    if not os.path.isfile(real_path):
+        return web.Response(status=404, text="Not found")
+    return web.FileResponse(real_path)
+
+
 @routes.post("/fbtools/source_profiles/prebuild_proxies")
 async def _source_profiles_prebuild_proxies(request: web.Request) -> web.Response:
     """Pre-generate proxies for all clips in a profile.

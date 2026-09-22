@@ -12,7 +12,9 @@
 import { setWidgetVisible } from "../utils/widgets.js";
 import { bundlesApi }       from "../api/bundles.js";
 import { compositionsApi }  from "../api/compositions.js";
+import { sourceProfilesApi } from "../api/source_profiles.js";
 import { shotsToSegments, substituteSlotPlaceholders } from "../utils/composition_timeline.js";
+import { resolveClipPreviewSource } from "../utils/clip_preview_source.js";
 import { app }               from "../../../scripts/app.js";
 import { api }               from "../../../scripts/api.js";
 
@@ -125,7 +127,12 @@ function _buildCastBuildUI(node, app) {
     let _multiplier          = 1;
     let _activeTabIdx        = 0;
     let _previewOpen         = false;
+    let _clipPreviewOpen     = false;
     let _clipMap             = new Map();
+    // media_filename/media_dir/id from the connected Source Profile's GET response — the clip
+    // list alone (_clips) doesn't carry the source video's own location.
+    let _connectedProfileMeta = null;
+    let _clipPreviewBuildListener = null;   // active fbtools.status listener while a build is running
 
     let _entries = [];
     try {
@@ -889,7 +896,7 @@ function _buildCastBuildUI(node, app) {
         // Tab strip + 3 form rows (subject/mode/dlg) + preview toggle + preview area
         const base = 30 + 26 + 26 + 26 + 24;  // ≈ 132px
         const opts = optsSection.style.display === "none" ? 0 : 46;
-        return base + opts + (_previewOpen ? 140 : 0);
+        return base + opts + (_previewOpen ? 140 : 0) + (_clipPreviewOpen ? 140 : 0);
     }
 
     function _updateHeight() {
@@ -1483,6 +1490,135 @@ function _buildCastBuildUI(node, app) {
     conflictWarningEl.style.display = "none";
     wrap.appendChild(conflictWarningEl);
 
+    // ── Clip video preview (Source Profile mode only) ──────────────────────────
+    // Mirrors the per-entry bundle "⊙ Preview" toggle above (row1/row2/row3 + previewToggle/
+    // previewArea) but node-level, for the currently selected Source Profile clip rather than a
+    // bundle. Plays the clip's proxy (silent, already trimmed) when one exists, else the full
+    // source video seeked to and looped within the clip's start_time/end_time — see
+    // js/utils/clip_preview_source.js for the pure proxy-vs-fallback decision. Hidden entirely
+    // while a Prompt Composition drives the node (no source video to preview there).
+    const clipPreviewToggle = document.createElement("button");
+    clipPreviewToggle.className = "fbt-scb-preview-btn fbt-scb-preview-toggle";
+    clipPreviewToggle.textContent = "⊙ Clip Preview";
+    clipPreviewToggle.title = "Preview the source footage for the selected clip";
+    clipPreviewToggle.style.display = "none";
+
+    const clipPreviewArea = document.createElement("div");
+    clipPreviewArea.className = "fbt-scb-preview-area";
+    clipPreviewArea.style.display = "none";
+
+    wrap.appendChild(clipPreviewToggle);
+    wrap.appendChild(clipPreviewArea);
+
+    function _clearClipPreviewBuildListener() {
+        if (_clipPreviewBuildListener) {
+            api.removeEventListener("fbtools.status", _clipPreviewBuildListener);
+            _clipPreviewBuildListener = null;
+        }
+    }
+
+    async function _loadClipPreview() {
+        clipPreviewArea.innerHTML = "";
+        _clearClipPreviewBuildListener();
+        const clip = _clipMap.get(_activeClipId);
+        if (!clip) {
+            clipPreviewArea.innerHTML = '<span class="fbt-scb-preview-note">No clip selected.</span>';
+            return;
+        }
+        clipPreviewArea.innerHTML = '<span class="fbt-scb-preview-note">Loading…</span>';
+
+        let status = null;
+        if (_connectedProfileMeta?.id) {
+            try { status = await sourceProfilesApi.proxyStatus(_connectedProfileMeta.id); } catch { /* fall back */ }
+        }
+        // The clip (and possibly the profile connection) may have changed while awaiting the
+        // status fetch above — a stale response landing after the user already moved on would
+        // otherwise overwrite whatever they're now looking at.
+        if (_clipMap.get(_activeClipId) !== clip) return;
+        const src = resolveClipPreviewSource(status, clip, _connectedProfileMeta);
+        clipPreviewArea.innerHTML = "";
+
+        if (src.kind === "unavailable") {
+            const note = document.createElement("span");
+            note.className = "fbt-scb-preview-note";
+            note.textContent = src.caption;
+            clipPreviewArea.appendChild(note);
+            return;
+        }
+
+        const video = document.createElement("video");
+        video.className = "fbt-scb-preview-video";
+        video.controls = true;
+        video.preload  = "none";
+
+        const caption = document.createElement("div");
+        caption.className = "fbt-scb-ref-meta";
+        caption.textContent = src.caption;
+
+        if (src.kind === "proxy") {
+            video.src = sourceProfilesApi.proxyStreamUrl(src.proxyPath);
+            clipPreviewArea.append(video, caption);
+            return;
+        }
+
+        // fallback: seek to the clip's start on load, then loop playback back to start_time
+        // once it reaches end_time — a bounded preview of "this section of the source", since
+        // the browser has no way to trim what it downloads.
+        video.src = bundlesApi.streamUrl(src.filename, src.dir);
+        video.addEventListener("loadedmetadata", () => { video.currentTime = src.startTime; }, { once: true });
+        video.addEventListener("timeupdate", () => {
+            if (video.currentTime >= src.endTime) video.currentTime = src.startTime;
+        });
+        clipPreviewArea.append(video, caption);
+
+        if (_connectedProfileMeta?.id) {
+            const buildBtn = document.createElement("button");
+            buildBtn.className = "fbt-scb-buildproxy-btn";
+            buildBtn.textContent = "Build proxy";
+            buildBtn.title = "Generate a trimmed, silent proxy for this clip in the background";
+            const clipIdAtClick = clip.id;
+            buildBtn.addEventListener("click", async () => {
+                buildBtn.disabled = true;
+                buildBtn.textContent = "Building…";
+                try {
+                    await sourceProfilesApi.prebuildProxies({ profile_id: _connectedProfileMeta.id, clip_id: clipIdAtClick });
+                } catch {
+                    buildBtn.disabled  = false;
+                    buildBtn.textContent = "Build proxy";
+                    return;
+                }
+                // Mirrors js/ui/source_profile_editor.js's _onProxyBuildStatus: the backend has
+                // no per-job id, just a broadcast "...complete" message on this shared channel —
+                // treat that text as the completion signal, the same way the profile editor does.
+                _clearClipPreviewBuildListener();
+                _clipPreviewBuildListener = (ev) => {
+                    const d = ev?.detail || {};
+                    if (d.source !== "proxy_build") return;
+                    if (/complete/i.test(String(d.status || ""))) {
+                        _clearClipPreviewBuildListener();
+                        if (_clipPreviewOpen && _activeClipId === clipIdAtClick) _loadClipPreview();
+                    }
+                };
+                api.addEventListener("fbtools.status", _clipPreviewBuildListener);
+            });
+            clipPreviewArea.appendChild(buildBtn);
+        }
+    }
+
+    clipPreviewToggle.addEventListener("click", () => {
+        _clipPreviewOpen = !_clipPreviewOpen;
+        clipPreviewToggle.classList.toggle("active", _clipPreviewOpen);
+        if (_clipPreviewOpen) {
+            clipPreviewArea.style.display = "";
+            _loadClipPreview();
+        } else {
+            clipPreviewArea.style.display = "none";
+            clipPreviewArea.innerHTML = "";
+            _clearClipPreviewBuildListener();
+        }
+        _updateHeight();
+    });
+
     // Mirrors utils/source_profiles.py's resolved_pronoun_style() /
     // resolve_ordinal_from_list() so the preview reflects ordinal-match entries
     // too, not just explicit ones. This is a display aid — the backend
@@ -1637,6 +1773,22 @@ function _buildCastBuildUI(node, app) {
         // Mirror into the hidden backing widget so this value is part of the
         // submitted prompt, not just the on-canvas display.
         if (actionPreviewWidget) actionPreviewWidget.value = text ?? "";
+
+        // Clip video preview toggle: only meaningful for a Source-Profile-driven clip.
+        const clipPreviewApplicable = !_compositionActive() && _clipMap.has(_activeClipId);
+        clipPreviewToggle.style.display = clipPreviewApplicable ? "" : "none";
+        if (!clipPreviewApplicable) {
+            if (_clipPreviewOpen) {
+                _clipPreviewOpen = false;
+                clipPreviewToggle.classList.remove("active");
+                clipPreviewArea.style.display = "none";
+                clipPreviewArea.innerHTML = "";
+                _clearClipPreviewBuildListener();
+                _updateHeight();
+            }
+        } else if (_clipPreviewOpen) {
+            _loadClipPreview();   // clip may have changed since the section was opened
+        }
     }
 
     function _updateDlgFromClip() {
@@ -1667,6 +1819,7 @@ function _buildCastBuildUI(node, app) {
         const savedVal = clipWidget?.value ?? "";
         const inp      = node.inputs?.find(i => i.name === "source_profile");
         const linkId   = inp?.link;
+        _connectedProfileMeta = null;   // re-set below only once a real profile is fetched
 
         if (!linkId) {
             if (_useCompositionSegments(savedVal)) return;
@@ -1708,7 +1861,15 @@ function _buildCastBuildUI(node, app) {
                 ? `name=${encodeURIComponent(profileVal)}`
                 : `id=${encodeURIComponent(profileVal)}`;
             const resp = await fetch(`/fbtools/source_profiles/get?${param}`);
-            if (resp.ok) clips = (await resp.json()).clips ?? [];
+            if (resp.ok) {
+                const profile = await resp.json();
+                clips = profile.clips ?? [];
+                _connectedProfileMeta = {
+                    id: profile.id,
+                    media_filename: profile.media_filename || "",
+                    media_dir: profile.media_dir || "input",
+                };
+            }
         } catch { /* leave empty */ }
 
         _clips     = clips;

@@ -338,6 +338,19 @@
     margin-top: 4px;
     flex-basis: 100%;
 }
+.fbt-scb-buildproxy-btn {
+    margin-top: 4px;
+    padding: 3px 8px;
+    font-size: 10px;
+    background: var(--fbt-input-bg);
+    border: 1px solid var(--fbt-border);
+    border-radius: var(--fbt-radius);
+    color: var(--fbt-text);
+    cursor: pointer;
+    align-self: center;
+}
+.fbt-scb-buildproxy-btn:hover:not(:disabled) { border-color: var(--fbt-blue); color: var(--fbt-blue); }
+.fbt-scb-buildproxy-btn:disabled { opacity: 0.5; cursor: default; }
 
 /* ── Add entry button (fallback — now via tab-add) ───────────────────────── */
 .fbt-scb-add-btn {

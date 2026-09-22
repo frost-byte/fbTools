@@ -150,6 +150,15 @@ export class SourceProfilesAPI extends BaseAPI {
         return this.get("/source_profiles/proxy_status", { profile_id });
     }
 
+    /**
+     * URL for a cached proxy file — set directly as a <video> src (the endpoint streams raw
+     * bytes with Range support, not JSON). `path` is the absolute proxy_path a proxyStatus()
+     * entry gave you when `fresh` was true; never construct one yourself.
+     */
+    proxyStreamUrl(path) {
+        return `/fbtools/source_profiles/proxy_stream?path=${encodeURIComponent(path)}`;
+    }
+
     /** Start background proxy pre-generation. Returns {started, clip_count}. */
     prebuildProxies({ profile_id, clip_id = null }) {
         return this.post("/source_profiles/prebuild_proxies", { profile_id, clip_id });
