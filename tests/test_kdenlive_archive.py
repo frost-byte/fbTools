@@ -221,3 +221,33 @@ def test_parse_path_map_validation():
     assert ka.parse_path_map("Z:\\=/mnt/x/") == ("Z:", "/mnt/x")
     with pytest.raises(ValueError):
         ka.parse_path_map("no-equals")
+
+
+# ── count_references ────────────────────────────────────────────────────────────
+
+def test_count_references_counts_by_basename_across_resource_kinds(tmp_path):
+    chains = [
+        _chain("media/clip_a.mp4"),
+        _chain("media/clip_a.mp4"),  # referenced twice (e.g. two timeline placements)
+        ' <chain id="c2">\n  <property name="warp_resource">media/clip_b.mp4</property>\n </chain>\n',
+        ' <chain id="c3">\n  <property name="kdenlive:originalurl">/abs/path/clip_c.mp4</property>\n'
+        '  <property name="resource">media/clip_c.mp4</property>\n </chain>\n',
+    ]
+    proj = _project(tmp_path / "p.kdenlive", "", chains)
+    counts = ka.count_references(proj)
+    assert counts["clip_a.mp4"] == 2
+    assert counts["clip_b.mp4"] == 1
+    assert counts["clip_c.mp4"] == 2  # both its resource and originalurl properties count
+    assert "clip_d.mp4" not in counts
+
+
+def test_count_references_ignores_non_file_and_color_values(tmp_path):
+    chains = [_chain("0"), _chain("black"), _chain("color:0xff0000ff"), _chain("media/real.mp4")]
+    proj = _project(tmp_path / "p.kdenlive", "", chains)
+    counts = ka.count_references(proj)
+    assert counts == {"real.mp4": 1}
+
+
+def test_count_references_strips_speed_prefix_before_matching(tmp_path):
+    proj = _project(tmp_path / "p.kdenlive", "", [_chain("-1:media/reversed.mp4")])
+    assert ka.count_references(proj) == {"reversed.mp4": 1}

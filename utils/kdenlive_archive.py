@@ -240,6 +240,27 @@ def analyze(project, path_maps=(), search_dirs=(), progress=None) -> dict:
     return report
 
 
+def count_references(project: str) -> dict[str, int]:
+    """How many times each referenced file's basename appears among this project's resource
+    properties (resource, warp_resource, kdenlive:originalurl) — a quick "is this file still
+    used" check before moving, renaming or deleting it, without analyze()'s full path-resolution
+    (no path maps or search dirs needed; this only counts what the project's XML says by name, it
+    never looks at disk). A name absent from the result was never referenced.
+
+    Matching is by basename only, so two different folders' same-named files are indistinguishable
+    here — resolve that ambiguity with analyze() first if it matters for your case."""
+    text = _read(project)
+    counts: dict[str, int] = defaultdict(int)
+    for m in _PROP_RE.finditer(text):
+        value = html.unescape(m.group(2))
+        _, value = _split_speed(value)
+        value = _norm(value)
+        if value in _NON_FILE or value.lower().startswith(("color:", "#", "0x")):
+            continue
+        counts[os.path.basename(value)] += 1
+    return dict(counts)
+
+
 def strip_metadata_text(text: str, min_bytes: int = 65536) -> tuple[str, dict]:
     """Remove embedded ComfyUI workflow/prompt JSON (and any other huge
     meta.attr.*.markup property) from project XML text."""

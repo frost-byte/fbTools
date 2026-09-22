@@ -94,3 +94,38 @@ silently drops those images and shifts picture ordinals. `PromptCompositionLoade
 the plan from `result["scene_instance"]`. Symptom when it regresses: the prompt mentions a
 background/outfit picture but the conditioning node shows no image for it.
 
+---
+
+## Two clips sharing a filename are not necessarily the same clip
+
+A "skip if a file with this name already exists at the destination" check
+(`utils/kdenlive_clips.py::clean_folder`'s resume behaviour, and any similar populate-a-folder
+script) treats a filename match as "already handled". It isn't safe to assume that: ComfyUI's own
+numbered-suffix output naming (`<prefix>_<00001>.<ext>`) recycles across unrelated generation
+batches, so a file already at the destination can be genuinely different content from the one
+about to be skipped — same name, different clip. This was caught only because a byte-size mismatch
+looked suspicious; a same-size coincidence would have hidden it completely.
+
+**Fix pattern**: when it matters whether two same-named files are really the same clip, compare
+content, not the filename or even the file size — hash the *decoded* audio/video streams (e.g.
+`ffmpeg -i x -map 0:v:0 -f rawvideo - | sha256sum`, and the same for `0:a:0`), not the container
+bytes, since a lossless remux (different metadata, same samples) must still count as a match.
+`scripts/kdenlive_recover_cast_metadata.py::_stream_hash()` is a reusable example. Never treat a
+"file already exists here" check as proof of identical content unless it's backed by this kind of
+comparison.
+
+## Check whether a Kdenlive project still references a file before moving it
+
+A `.kdenlive` project stores plain file paths, not stable ids — moving, renaming or deleting a
+clip that the project's bin/timeline already references silently breaks that reference until the
+project's own XML is updated to match, which none of this repo's Kdenlive tooling does
+automatically (see PLAN 5 in the session's working notes for why that's still future work).
+`utils/kdenlive_archive.py::count_references(project)` answers "is this filename referenced, and
+how many times" from the project's `resource`/`warp_resource`/`kdenlive:originalurl` properties
+alone (no disk access, no path resolution) — check it, or run
+`scripts/kdenlive_check_resource_usage.py`, before reorganizing any file that might already be
+placed in a project you care about. Note a single project can have multiple `.kdenlive` files on
+disk (backups, older snapshots with different root-fixup history) that reference the *same* media
+folder in inconsistent ways — confirm which file is the one actually being edited before trusting
+its reference counts as ground truth.
+
