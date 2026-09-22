@@ -69,7 +69,14 @@ export class KdenliveAPI extends BaseAPI {
      * dest_dir/ directly; the job's report then also carries each clip's `tags` (bundle ids used)
      * and `primary_subject` (or a `note` explaining why it has neither, e.g. a Source-Profile-driven
      * clip). Nothing is written into any Kdenlive project by this — see docs on Plan 5.
-     * @param {{src_dir: string, dest_dir: string, dry_run?: boolean, organize_by_primary?: boolean}} opts
+     *
+     * With embed_cast_metadata (independent of organize_by_primary — either or both), the same
+     * per-clip lookup is used to write a small `fbtools_cast` metadata tag (composition/primary
+     * subject/bundle/tags/generated-at, as JSON) plus a standard `creation_time` tag onto the
+     * cleaned output, so a clip whose original embedded prompt is gone later can still be
+     * identified. Nothing else is kept from the original metadata.
+     * @param {{src_dir: string, dest_dir: string, dry_run?: boolean, organize_by_primary?: boolean,
+     *   embed_cast_metadata?: boolean}} opts
      * @returns {Promise<{started: boolean, job_id: string}>}
      */
     async clean(opts) {

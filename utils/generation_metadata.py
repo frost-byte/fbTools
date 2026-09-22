@@ -9,13 +9,22 @@ used in a clip and which subject is the "primary" one, with no new tracking requ
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+from datetime import datetime, timezone
 
 # Node class_type strings (EXTENSION_PREFIX + display name, see nodes/shared.py::prefixed_node_id).
 _SCENE_CAST_BUILD = "fbt_SceneCastBuild"
 _COMPOSITION_LOAD = "fbt_CompositionLoad"
 _PROMPT_COMPOSITION_LOADER = "fbt_PromptCompositionLoader"
+
+# Custom mp4/mov metadata key a cleaned clip can carry a small extract_cast_info() summary under —
+# written via utils.kdenlive_clips.strip_copy_video(extra_metadata=...), read back here. Outside
+# ffmpeg's mov/mp4 "classic" key whitelist, so writing it requires -movflags use_metadata_tags (see
+# strip_copy_video's own note — confirmed empirically to be the same mechanism ComfyUI's own
+# "workflow"/"prompt" tags rely on).
+CAST_SUMMARY_TAG = "fbtools_cast"
 
 
 def _find_ffprobe() -> str | None:
@@ -41,6 +50,48 @@ def read_embedded_prompt(video_path: str, ffprobe: str | None = None) -> dict | 
             return None
         graph = json.loads(raw)
         return graph if isinstance(graph, dict) else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def generated_at_iso(src_path: str) -> str:
+    """src_path's own mtime as an ISO 8601 UTC string — used as the "generated at" timestamp for a
+    clip, since that's the closest we have to real generation time (not re-derived from anything
+    already lossy, but not authoritative either: it's filesystem mtime at the moment this was
+    computed, which is itself only as reliable as whatever copies produced the file up to here)."""
+    return datetime.fromtimestamp(os.path.getmtime(src_path), tz=timezone.utc).isoformat()
+
+
+def build_cast_summary_tag(info: dict, generated_at: str) -> str:
+    """Compact JSON string for CAST_SUMMARY_TAG, from an extract_cast_info() result plus a
+    generated_at timestamp (see generated_at_iso). Pure — no I/O."""
+    return json.dumps({
+        "composition": info.get("composition_name"),
+        "primary_subject": info.get("primary_subject"),
+        "primary_bundle": info.get("primary_bundle"),
+        "tags": info.get("tags", []),
+        "generated_at": generated_at,
+    }, separators=(",", ":"))
+
+
+def read_cast_summary_tag(video_path: str, ffprobe: str | None = None) -> dict | None:
+    """Read a previously-embedded CAST_SUMMARY_TAG back, e.g. from a clip whose original, richer
+    embedded prompt (read_embedded_prompt) is already gone because it was cleaned earlier. None if
+    the tag is absent, unreadable, or not a JSON object."""
+    exe = ffprobe or _find_ffprobe()
+    if not exe:
+        return None
+    try:
+        out = subprocess.run(
+            [exe, "-v", "error", "-show_entries", f"format_tags={CAST_SUMMARY_TAG}",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        raw = out.stdout.strip()
+        if not raw:
+            return None
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
 

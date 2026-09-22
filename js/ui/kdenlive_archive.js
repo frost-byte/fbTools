@@ -367,6 +367,7 @@ async function renderCleanClips(parent, browseData) {
     const destEl = input(saved.dest, "/path/to/archive/media/comps");
     const dryEl  = _mk("input", { type: "checkbox", checked: !!saved.dry });
     const organizeEl = _mk("input", { type: "checkbox", checked: !!saved.organize });
+    const embedEl = _mk("input", { type: "checkbox", checked: !!saved.embed });
 
     const srcField = field("Source folder", srcEl, "Clips to clean (not searched recursively).");
     const destField = field("Destination folder", destEl, "Created if missing. Files already there are left alone, so re-running only cleans what's new.");
@@ -380,6 +381,12 @@ async function renderCleanClips(parent, browseData) {
             "into a subfolder named after its primary (first-slot) subject, and reports the bundle tags " +
             "used — nothing is written into any Kdenlive project yet." },
             [organizeEl, "Organize into folders by primary subject"]),
+        _mk("label", { cls: "fbt-ka-check", title:
+            "Writes a small fbtools_cast metadata tag (composition, primary subject/bundle, bundle tags, " +
+            "generation time) onto each cleaned clip, read from its own embedded generation data before " +
+            "everything else is stripped — so a clip can still be identified later even after this. " +
+            "Independent of \"Organize into folders\"; use either or both." },
+            [embedEl, "Embed cast/composition metadata"]),
     ]));
 
     const btn = (label, onclick, cls = "") => _mk("button", { cls: `fbt-ka-btn ${cls}`, textContent: label, onclick });
@@ -397,8 +404,16 @@ async function renderCleanClips(parent, browseData) {
     let jobId = null;
     let pollTimer = null;
 
-    const persist = () => persistClean({ src: srcEl.value, dest: destEl.value, dry: dryEl.checked, organize: organizeEl.checked });
-    [srcEl, destEl, dryEl, organizeEl].forEach(el => el.addEventListener("change", persist));
+    const persist = () => persistClean({
+        src: srcEl.value, dest: destEl.value, dry: dryEl.checked,
+        organize: organizeEl.checked, embed: embedEl.checked,
+    });
+    [srcEl, destEl, dryEl, organizeEl, embedEl].forEach(el => el.addEventListener("change", persist));
+
+    // Which flags produced the report currently shown — captured at request time so a checkbox
+    // toggled after a run finishes doesn't relabel results that were actually organized/embedded
+    // under the previous setting.
+    let lastRunFlags = { organize: false, embed: false };
 
     const say = (msg, isErr = false) => { statusEl.textContent = msg; statusEl.classList.toggle("error", isErr); };
     const busy = (on) => { cleanBtn.disabled = on; cancelBtn.style.display = on && jobId ? "" : "none"; };
@@ -421,17 +436,34 @@ async function renderCleanClips(parent, browseData) {
         rows.forEach(([k, v]) => dl.append(_mk("dt", { textContent: k }), _mk("dd", { textContent: v })));
         reportEl.appendChild(dl);
 
-        // Per-file destination folder + bundle tags, only present when "Organize into folders" was on.
-        const sorted = (rep.results || []).filter(r => r.subdir);
-        const unsorted = (rep.results || []).filter(r => !r.subdir && "primary_subject" in r);
-        if (sorted.length || unsorted.length) {
-            reportEl.appendChild(_mk("div", { cls: "fbt-ka-h", textContent: "Sorted by primary subject" }));
-            reportEl.appendChild(_mk("ul", { cls: "fbt-ka-list" }, sorted.map(r =>
-                _mk("li", { textContent: `${r.file} → ${r.subdir}/` + (r.tags?.length ? `  [tags: ${r.tags.join(", ")}]` : "") }))));
-            if (unsorted.length) {
-                reportEl.appendChild(_mk("div", { cls: "fbt-ka-h", textContent: "Left at the destination root" }));
-                reportEl.appendChild(_mk("ul", { cls: "fbt-ka-list warn" }, unsorted.map(r =>
-                    _mk("li", { textContent: `${r.file} — ${r.note || "no primary subject found"}` }))));
+        // Per-file destination folder + bundle tags, only meaningful when "Organize into folders" was on
+        // for this run (gated on lastRunFlags, not the live checkbox, so toggling it after the run doesn't
+        // mislabel results that were actually produced under the previous setting).
+        if (lastRunFlags.organize) {
+            const sorted = (rep.results || []).filter(r => r.subdir);
+            const unsorted = (rep.results || []).filter(r => !r.subdir && "primary_subject" in r);
+            if (sorted.length || unsorted.length) {
+                reportEl.appendChild(_mk("div", { cls: "fbt-ka-h", textContent: "Sorted by primary subject" }));
+                reportEl.appendChild(_mk("ul", { cls: "fbt-ka-list" }, sorted.map(r =>
+                    _mk("li", { textContent: `${r.file} → ${r.subdir}/` + (r.tags?.length ? `  [tags: ${r.tags.join(", ")}]` : "") }))));
+                if (unsorted.length) {
+                    reportEl.appendChild(_mk("div", { cls: "fbt-ka-h", textContent: "Left at the destination root" }));
+                    reportEl.appendChild(_mk("ul", { cls: "fbt-ka-list warn" }, unsorted.map(r =>
+                        _mk("li", { textContent: `${r.file} — ${r.note || "no primary subject found"}` }))));
+                }
+            }
+        }
+        // Cast metadata embedded — only relevant when the file wasn't already listed above.
+        if (lastRunFlags.embed && !lastRunFlags.organize) {
+            const withInfo = (rep.results || []).filter(r => "primary_subject" in r || r.tags);
+            if (withInfo.length) {
+                reportEl.appendChild(_mk("div", { cls: "fbt-ka-h", textContent: "Cast metadata embedded" }));
+                reportEl.appendChild(_mk("ul", { cls: "fbt-ka-list" }, withInfo.map(r => {
+                    const bits = [];
+                    if (r.tags?.length) bits.push(`tags: ${r.tags.join(", ")}`);
+                    if (r.note) bits.push(r.note);
+                    return _mk("li", { textContent: `${r.file}` + (bits.length ? `  [${bits.join("; ")}]` : "") });
+                })));
             }
         }
 
@@ -452,9 +484,10 @@ async function renderCleanClips(parent, browseData) {
         setProgress(0, 0);
         busy(true);
         try {
+            lastRunFlags = { organize: organizeEl.checked, embed: embedEl.checked };
             const res = await kdenliveApi.clean({
                 src_dir: srcEl.value.trim(), dest_dir: destEl.value.trim(), dry_run: dryEl.checked,
-                organize_by_primary: organizeEl.checked,
+                organize_by_primary: organizeEl.checked, embed_cast_metadata: embedEl.checked,
             });
             jobId = res.job_id;
             busy(true);

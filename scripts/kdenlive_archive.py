@@ -167,6 +167,13 @@ def main(argv=None) -> int:
                               "embedded generation metadata (composition-driven clips only); also reports "
                               "each clip's bundle tags. Takes the fbTools user-data directory (containing "
                               "prompt_compositions/).")
+    p_clean.add_argument("--embed-cast-metadata", metavar="DATA_DIR",
+                         help="write a small fbtools_cast metadata tag (composition/subject/bundle/tags/"
+                              "generated-at) onto each cleaned clip, read from its own embedded generation "
+                              "metadata before stripping. Independent of --organize-by-primary (use either "
+                              "or both); takes the fbTools user-data directory the same way. If both flags "
+                              "are given the same DATA_DIR, the embedded-metadata lookup is reused rather "
+                              "than read twice.")
     p_clean.add_argument("--json", action="store_true")
 
     args = ap.parse_args(argv)
@@ -175,8 +182,10 @@ def main(argv=None) -> int:
         if args.cmd == "clean":
             clips = _load_module("kdenlive_clips")
             dest_subdir = None
-            if args.organize_by_primary:
-                data_dir = args.organize_by_primary
+            extra_metadata = None
+            data_dir = args.organize_by_primary or args.embed_cast_metadata
+            cache: dict = {}
+            if data_dir:
                 gm = _load_module("generation_metadata")
                 pc = _load_module("prompt_compositions")
 
@@ -184,28 +193,36 @@ def main(argv=None) -> int:
                     matched = next((c for c in pc.list_compositions(data_dir) if c["name"] == name), None)
                     return pc.load_composition(data_dir, matched["id"]) if matched else None
 
-                cache: dict = {}
-
                 def _cast_info(src_path):
                     if src_path not in cache:
                         graph = gm.read_embedded_prompt(src_path)
                         cache[src_path] = (
                             gm.extract_cast_info(graph, load_composition=_load_comp) if graph
-                            else {"tags": [], "primary_subject": None, "composition_name": None,
+                            else {"tags": [], "primary_subject": None, "primary_bundle": None,
+                                  "composition_name": None,
                                   "note": "no embedded generation metadata found on this clip"}
                         )
                     return cache[src_path]
 
-                dest_subdir = lambda f, src: _cast_info(src)["primary_subject"]  # noqa: E731
+                if args.organize_by_primary:
+                    dest_subdir = lambda f, src: _cast_info(src)["primary_subject"]  # noqa: E731
+                if args.embed_cast_metadata:
+                    def extra_metadata(f, src):  # noqa: F811
+                        info = _cast_info(src)
+                        generated_at = gm.generated_at_iso(src)
+                        return {"fbtools_cast": gm.build_cast_summary_tag(info, generated_at),
+                                "creation_time": generated_at}
 
             rep = clips.clean_folder(args.src_dir, args.dest_dir, dry_run=args.dry_run,
-                                     progress=_progress_printer(args.json), dest_subdir=dest_subdir)
-            if args.organize_by_primary:
+                                     progress=_progress_printer(args.json), dest_subdir=dest_subdir,
+                                     extra_metadata=extra_metadata)
+            if data_dir:
                 for r in rep["results"]:
                     info = cache.get(os.path.join(args.src_dir, r["file"]))
                     if info:
                         r["tags"] = info["tags"]
                         r["primary_subject"] = info["primary_subject"]
+                        r["primary_bundle"] = info["primary_bundle"]
                         if info["note"]:
                             r["note"] = info["note"]
             if args.json:

@@ -222,3 +222,85 @@ def test_read_embedded_prompt_missing_file_returns_none():
     if not ffprobe:
         return  # ffprobe not installed in this environment; nothing to test here
     assert read_embedded_prompt("/no/such/file.mp4", ffprobe=ffprobe) is None
+
+
+# ── build_cast_summary_tag / read_cast_summary_tag ────────────────────────────────
+
+def test_build_cast_summary_tag_shape():
+    info = {"composition_name": "wide_shot", "primary_subject": "alex",
+            "primary_bundle": "alex_amd_norsk_dance_flo",
+            "tags": ["alex_amd_norsk_dance_flo", "sam_bundle_3"], "note": None}
+    raw = gm.build_cast_summary_tag(info, "2026-09-21T14:32:01+00:00")
+    parsed = json.loads(raw)
+    assert parsed == {
+        "composition": "wide_shot", "primary_subject": "alex",
+        "primary_bundle": "alex_amd_norsk_dance_flo",
+        "tags": ["alex_amd_norsk_dance_flo", "sam_bundle_3"],
+        "generated_at": "2026-09-21T14:32:01+00:00",
+    }
+
+
+def test_build_cast_summary_tag_handles_missing_fields():
+    raw = gm.build_cast_summary_tag({}, "2026-09-21T14:32:01+00:00")
+    parsed = json.loads(raw)
+    assert parsed["composition"] is None
+    assert parsed["tags"] == []
+
+
+def test_generated_at_iso_matches_file_mtime(tmp_path):
+    import os
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"x")
+    os.utime(f, (1700000000, 1700000000))
+    iso = gm.generated_at_iso(str(f))
+    assert iso.startswith("2023-11-14")  # 1700000000 UTC
+
+
+def test_read_cast_summary_tag_none_when_ffprobe_missing():
+    assert gm.read_cast_summary_tag("/no/such/file.mp4", ffprobe="/not/real/ffprobe") is None
+
+
+def test_read_cast_summary_tag_none_when_file_missing():
+    import shutil as _sh
+    ffprobe = _sh.which("ffprobe")
+    if not ffprobe:
+        return
+    assert gm.read_cast_summary_tag("/no/such/file.mp4", ffprobe=ffprobe) is None
+
+
+def test_cast_summary_tag_round_trips_through_strip_copy_video(tmp_path):
+    """End-to-end: write via strip_copy_video's extra_metadata, read back via
+    read_cast_summary_tag, get the same structured data build_cast_summary_tag was given."""
+    import shutil as _sh
+    ffmpeg = _sh.which("ffmpeg")
+    ffprobe = _sh.which("ffprobe")
+    if not ffmpeg:
+        try:
+            from imageio_ffmpeg import get_ffmpeg_exe
+            ffmpeg = get_ffmpeg_exe()
+        except Exception:
+            ffmpeg = None
+    if not ffmpeg or not ffprobe:
+        return  # ffmpeg/ffprobe unavailable in this environment; nothing to verify here
+
+    kc = import_test_module("utils/kdenlive_clips.py")
+    src = tmp_path / "clip.mp4"
+    dest = tmp_path / "clean.mp4"
+    import subprocess as sp
+    sp.run([ffmpeg, "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:d=1",
+            str(src)], check=True)
+
+    info = {"composition_name": "wide_shot", "primary_subject": "alex",
+            "primary_bundle": "alex_amd_norsk_dance_flo", "tags": ["alex_amd_norsk_dance_flo"], "note": None}
+    generated_at = gm.generated_at_iso(str(src))
+    tag_json = gm.build_cast_summary_tag(info, generated_at)
+    kc.strip_copy_video(str(src), str(dest), extra_metadata={
+        gm.CAST_SUMMARY_TAG: tag_json, "creation_time": generated_at,
+    })
+
+    read_back = gm.read_cast_summary_tag(str(dest), ffprobe=ffprobe)
+    assert read_back == {
+        "composition": "wide_shot", "primary_subject": "alex",
+        "primary_bundle": "alex_amd_norsk_dance_flo", "tags": ["alex_amd_norsk_dance_flo"],
+        "generated_at": generated_at,
+    }

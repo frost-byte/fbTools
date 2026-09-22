@@ -310,3 +310,78 @@ def test_dest_subdir_rerun_still_skips_existing(tmp_path):
 
     assert report2["skipped_existing"] == 1
     assert report2["results"][0]["status"] == "skipped_existing"
+
+
+# ── strip_copy_video: extra_metadata ────────────────────────────────────────────────
+
+@needs_ffmpeg
+@needs_ffprobe
+def test_strip_copy_video_without_extra_metadata_is_unchanged(tmp_path):
+    """The no-extra_metadata path must stay exactly as it was before this feature existed."""
+    src = str(tmp_path / "clip.mp4")
+    dest = str(tmp_path / "clean.mp4")
+    _make_clip(src)
+    kc.strip_copy_video(src, dest)
+    tags = _tags(dest)
+    assert "fbtools_cast" not in tags
+    assert "creation_time" not in tags
+
+
+@needs_ffmpeg
+@needs_ffprobe
+def test_strip_copy_video_writes_custom_metadata_keys(tmp_path):
+    """A plain custom key (outside ffmpeg's mov/mp4 whitelist) needs the mdta-atom flag to survive
+    at all — this pins down the exact mechanism, not just that *some* key round-trips."""
+    src = str(tmp_path / "clip.mp4")
+    dest = str(tmp_path / "clean.mp4")
+    _make_clip(src)
+    kc.strip_copy_video(src, dest, extra_metadata={
+        "fbtools_cast": '{"composition":"wide_shot"}', "creation_time": "2026-09-21T14:32:01+00:00",
+    })
+    tags = _tags(dest)
+    assert tags["fbtools_cast"] == '{"composition":"wide_shot"}'
+    assert tags["creation_time"].startswith("2026-09-21T14:32:01")
+
+
+@needs_ffmpeg
+@needs_ffprobe
+def test_strip_copy_video_extra_metadata_does_not_change_stream_content(tmp_path):
+    src = str(tmp_path / "clip.mp4")
+    plain = str(tmp_path / "plain.mp4")
+    tagged = str(tmp_path / "tagged.mp4")
+    _make_clip(src, seconds=1.5)
+    kc.strip_copy_video(src, plain)
+    kc.strip_copy_video(src, tagged, extra_metadata={"fbtools_cast": "{}"})
+    d_plain = kc.probe_duration(_FFPROBE, plain)
+    d_tagged = kc.probe_duration(_FFPROBE, tagged)
+    assert abs(d_plain - d_tagged) < 0.05
+    assert os.path.getsize(plain) < os.path.getsize(tagged)  # tagged carries the extra bytes
+
+
+# ── clean_folder: extra_metadata ─────────────────────────────────────────────────────
+
+@needs_ffmpeg
+@needs_ffprobe
+def test_clean_folder_extra_metadata_callback_is_applied_per_file(tmp_path):
+    src_dir = tmp_path / "src"
+    dest_dir = tmp_path / "dest"
+    src_dir.mkdir()
+    _make_clip(str(src_dir / "a.mp4"))
+
+    kc.clean_folder(str(src_dir), str(dest_dir),
+                    extra_metadata=lambda f, p: {"fbtools_cast": f'{{"file":"{f}"}}'})
+
+    tags = _tags(str(dest_dir / "a.mp4"))
+    assert tags["fbtools_cast"] == '{"file":"a.mp4"}'
+
+
+@needs_ffmpeg
+def test_clean_folder_extra_metadata_none_result_writes_no_custom_tags(tmp_path):
+    src_dir = tmp_path / "src"
+    dest_dir = tmp_path / "dest"
+    src_dir.mkdir()
+    _make_clip(str(src_dir / "a.mp4"))
+
+    kc.clean_folder(str(src_dir), str(dest_dir), extra_metadata=lambda f, p: None)
+
+    assert "fbtools_cast" not in _tags(str(dest_dir / "a.mp4"))

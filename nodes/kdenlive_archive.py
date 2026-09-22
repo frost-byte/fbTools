@@ -17,7 +17,12 @@ from server import PromptServer
 
 from ..utils.kdenlive_archive import analyze, archive, strip_metadata
 from ..utils.kdenlive_clips import clean_folder
-from ..utils.generation_metadata import extract_cast_info, read_embedded_prompt
+from ..utils.generation_metadata import (
+    build_cast_summary_tag,
+    extract_cast_info,
+    generated_at_iso,
+    read_embedded_prompt,
+)
 from ..utils.logging_utils import get_logger
 from ..utils.prompt_compositions import list_compositions, load_composition
 from .shared import user_data_dir
@@ -236,7 +241,7 @@ def _cast_info_cache():
             graph = read_embedded_prompt(src_path)
             cache[src_path] = (
                 extract_cast_info(graph, load_composition=_load_composition_by_name) if graph
-                else {"tags": [], "primary_subject": None, "composition_name": None,
+                else {"tags": [], "primary_subject": None, "primary_bundle": None, "composition_name": None,
                       "note": "no embedded generation metadata found on this clip"}
             )
         return cache[src_path]
@@ -244,19 +249,28 @@ def _cast_info_cache():
     return get
 
 
-def _run_clean_job(job: dict, src_dir: str, dest_dir: str, dry_run: bool, organize_by_primary: bool) -> None:
+def _run_clean_job(job: dict, src_dir: str, dest_dir: str, dry_run: bool, organize_by_primary: bool,
+                    embed_cast_metadata: bool = False) -> None:
     def progress(ev: dict) -> None:
         job["progress"] = ev
         _send(f"Cleaning {ev['done']}/{ev['total']}: {ev.get('current', '')}",
               extra={"job_id": job["id"], "kind": job["kind"], "progress": ev})
 
+    # Shared across both flags so turning on organize_by_primary + embed_cast_metadata together
+    # still costs one ffprobe read per file, not two.
     get_cast_info = _cast_info_cache()
     dest_subdir = (lambda f, src: get_cast_info(src)["primary_subject"]) if organize_by_primary else None
 
+    def extra_metadata(f: str, src: str) -> dict[str, str] | None:
+        info = get_cast_info(src)
+        generated_at = generated_at_iso(src)
+        return {"fbtools_cast": build_cast_summary_tag(info, generated_at), "creation_time": generated_at}
+
     try:
         report = clean_folder(src_dir, dest_dir, dry_run=dry_run, cancel=job["cancel"], progress=progress,
-                              dest_subdir=dest_subdir)
-        if organize_by_primary:
+                              dest_subdir=dest_subdir,
+                              extra_metadata=extra_metadata if embed_cast_metadata else None)
+        if organize_by_primary or embed_cast_metadata:
             by_file = {os.path.join(src_dir, r["file"]): r for r in report["results"]}
             for src_path, entry in by_file.items():
                 info = get_cast_info(src_path)
@@ -311,6 +325,7 @@ async def _kdenlive_clean(request: web.Request) -> web.Response:
     threading.Thread(
         target=_run_clean_job,
         args=(job, src_dir, dest_dir, bool(body.get("dry_run", False)), bool(body.get("organize_by_primary", False))),
+        kwargs={"embed_cast_metadata": bool(body.get("embed_cast_metadata", False))},
         daemon=True,
     ).start()
     return web.json_response({"started": True, "job_id": job["id"]})

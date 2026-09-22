@@ -60,10 +60,15 @@ def probe_duration(ffprobe: str, path: str) -> float | None:
         return None
 
 
-def strip_copy_video(src: str, dest: str) -> dict:
+def strip_copy_video(src: str, dest: str, *, extra_metadata: dict[str, str] | None = None) -> dict:
     """Remux src to dest without container metadata (workflow/prompt JSON,
     chapters, encoder tags), copying every stream bit-for-bit — never a re-encode.
     Writes atomically (a .part file renamed on success); src is never touched.
+
+    extra_metadata, if given, is set on the output *after* stripping (each entry becomes one
+    "-metadata key=value") — a deliberate, curated set of tags to keep despite stripping
+    everything else. This module stays free of any opinion on what those tags mean; a caller
+    (see utils/generation_metadata.py) decides what's worth keeping and builds this dict.
 
     Returns {"src", "dest", "size_before", "size_after"}. Raises RuntimeError if
     ffmpeg is missing or the run fails, and — when ffprobe is available — if the
@@ -82,11 +87,21 @@ def strip_copy_video(src: str, dest: str) -> dict:
     root, ext = os.path.splitext(dest)
     tmp = f"{root}.part{ext}"
     os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
+    metadata_args = []
+    for key, value in (extra_metadata or {}).items():
+        metadata_args += ["-metadata", f"{key}={value}"]
+    # mov/mp4's classic -metadata keys are a fixed whitelist (comment, title, creation_time, ...) —
+    # anything outside it (like our own custom "fbtools_cast" key) is silently dropped unless the
+    # muxer is told to use the "mdta" atom instead (confirmed empirically: same mechanism the
+    # ComfyUI-saved source's own "workflow"/"prompt" tags rely on). Only added when there's actually
+    # custom metadata to write, so the no-extra_metadata path's output is unchanged from before.
+    movflags = "+faststart+use_metadata_tags" if metadata_args else "+faststart"
     proc = subprocess.run(
         [ffmpeg, "-nostdin", "-v", "error", "-y", "-i", src,
          "-map", "0", "-c", "copy", "-map_metadata", "-1", "-map_chapters", "-1",
+         *metadata_args,
          "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
-         "-movflags", "+faststart", tmp],
+         "-movflags", movflags, tmp],
         capture_output=True, text=True,
     )
     if proc.returncode != 0 or not os.path.isfile(tmp):
@@ -140,6 +155,7 @@ def clean_folder(
     cancel=None,
     progress=None,
     dest_subdir=None,
+    extra_metadata=None,
 ) -> dict:
     """strip_copy_video() every video file directly under src_dir into dest_dir
     (not recursive — matches a flat "clips to process" staging folder).
@@ -151,9 +167,11 @@ def clean_folder(
 
     dest_subdir, if given, is called as dest_subdir(filename, src_path) -> str | None for each
     file; a non-None result nests that file's cleaned copy under dest_dir/<result>/ instead of
-    dest_dir/ directly (subfolders are created as needed). This module stays free of any notion of
-    *why* a file goes in a particular subfolder — see utils/generation_metadata.py for the
-    embedded-metadata lookup a caller can use to decide.
+    dest_dir/ directly (subfolders are created as needed). extra_metadata, if given, is called as
+    extra_metadata(filename, src_path) -> dict[str, str] | None and passed straight through to
+    strip_copy_video()'s own extra_metadata param. This module stays free of any notion of *why* a
+    file goes in a particular subfolder or what's worth keeping as metadata — see
+    utils/generation_metadata.py for the embedded-metadata lookups a caller can use to decide both.
     """
     src_dir = os.path.abspath(src_dir)
     dest_dir = os.path.abspath(dest_dir)
@@ -203,7 +221,8 @@ def clean_folder(
             entry = {"file": f, "status": "skipped_existing", "size_before": os.path.getsize(src)}
         else:
             try:
-                r = strip_copy_video(src, dest)
+                meta = extra_metadata(f, src) if extra_metadata else None
+                r = strip_copy_video(src, dest, extra_metadata=meta)
                 report["cleaned"] += 1
                 report["bytes_before"] += r["size_before"]
                 report["bytes_after"] += r["size_after"]
