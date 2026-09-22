@@ -888,7 +888,7 @@ function _buildCastBuildUI(node, app) {
     function _widgetHeight() {
         // Tab strip + 3 form rows (subject/mode/dlg) + preview toggle + preview area
         const base = 30 + 26 + 26 + 26 + 24;  // ≈ 132px
-        const opts = optsSection.style.display === "none" ? 0 : 76;
+        const opts = optsSection.style.display === "none" ? 0 : 46;
         return base + opts + (_previewOpen ? 140 : 0);
     }
 
@@ -952,9 +952,6 @@ function _buildCastBuildUI(node, app) {
             _syncOverrides();
             _renderCompositionOptions();
         });
-        const bgRow = document.createElement("div");
-        bgRow.className = "fbt-scb-form-row";
-        bgRow.appendChild(bgSel);
 
         // A labelled checkbox with a tooltip; `disabledReason` greys it out and explains why.
         const makeCheck = (label, checked, tip, disabledReason, onChange) => {
@@ -1002,11 +999,11 @@ function _buildCastBuildUI(node, app) {
                 _renderCompositionOptions();
             },
         );
-        const checkRow = document.createElement("div");
-        checkRow.className = "fbt-scb-form-row";
-        checkRow.append(imgCheck, sndCheck);
+        const row = document.createElement("div");
+        row.className = "fbt-scb-form-row fbt-scb-comp-opts-row";
+        row.append(bgSel, imgCheck, sndCheck);
 
-        optsSection.append(title, bgRow, checkRow);
+        optsSection.append(title, row);
         _updateHeight();
     }
 

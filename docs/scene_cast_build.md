@@ -76,7 +76,7 @@ shape, single fetch, smaller window but the identical bug).
 
 ## Composition options: Background section
 
-While a composition drives the node, a **Background** section appears above the cast tabs:
+While a composition drives the node, a **Background** section appears above the cast tabs, with the dropdown and both checkboxes on one row:
 
 - a dropdown whose first option is `Default: <the composition's background>`, then `(none)` and every
   other background;
