@@ -45,6 +45,25 @@ links keep their slot indexes.
   (punctuation, pacing phrases, dialogue formatting and `<Subject N>` labels come from the assembler
   at run time).
 
+## Duplicate shot ids broke the timeline preview for a specific composition (fixed)
+
+The Compose editor generated shot ids from a session-global counter (`_S.shotSeq`) that started
+at 0 on page load and was never re-synced to a composition's own shots when one was opened. The
+first "+ Add Shot" click after loading a composition could therefore mint an id already used by
+one of that composition's *own* shots. A real composition ("oversize") hit this: it ended up with
+two shots both `id: "shot_1"`. Scene Cast Build's timeline builds a lookup keyed by shot id
+(`_clipMap`), so the two shots collapsed to one entry — clicking between the corresponding timeline
+segments always showed the same (last) shot's action text, looking like the preview wasn't
+updating.
+
+Fixed in `js/ui/composition_editor.js`: shot ids are now derived purely from the composition's own
+shot list (`_nextShotId`, exported and unit-tested) instead of a mutable session counter, which
+removes the whole bug class. `scripts/fix_duplicate_shot_ids.py` renumbers a composition's shots to
+`shot_1..shot_N` in order when it finds duplicates (shot ids have no cross-references elsewhere in
+a composition file — dialogue speakers use subject slot letters, not shot ids); it found and fixed
+8 affected files in this data set, `oversize` among them, each backed up to
+`<name>.json.pre-shot-id-fix`.
+
 ## A stale preview when switching compositions quickly (fixed)
 
 `_refreshCompositionSubjects()` does two sequential `fetch` calls (list, then get) every time it

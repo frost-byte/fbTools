@@ -126,7 +126,6 @@ const _S = {
     savedQuery:     "",
     view:           "list",   // "list" (saved compositions) | "editor"
     dirty:          false,
-    shotSeq:        0,
     // Libber state
     libbers:        [],    // available libber filenames from /fbtools/libber/list
     libberData:     {},    // filename → {keys, lib_dict} cache
@@ -192,9 +191,26 @@ function _newComp() {
     };
 }
 
-function _newShot() {
+/**
+ * Next unique shot id for `shots`, derived from its own contents rather than a session
+ * counter — a counter that started fresh on page load (or on loading a composition whose
+ * own shots already used higher numbers) could mint an id that collided with an existing
+ * shot, silently merging the two in anything keyed by shot id (e.g. Scene Cast Build's
+ * timeline lookup — a real composition hit this: two shots both ended up "shot_1", and
+ * switching between them in the timeline always showed the same (last) shot's action text).
+ */
+export function _nextShotId(shots) {
+    let max = 0;
+    for (const s of shots || []) {
+        const m = /^shot_(\d+)$/.exec(s?.id || "");
+        if (m) max = Math.max(max, parseInt(m[1], 10));
+    }
+    return `shot_${max + 1}`;
+}
+
+function _newShot(shots) {
     return {
-        id: `shot_${++_S.shotSeq}`,
+        id: _nextShotId(shots),
         timestamp: null, camera: "", action: "",
         dialogue: null, sound_events: null,
     };
@@ -1115,7 +1131,7 @@ function _updateShotActive() {
 }
 
 function _addNewShot() {
-    _S.composition.shots.push(_newShot());
+    _S.composition.shots.push(_newShot(_S.composition.shots));
     const newIdx = _S.composition.shots.length - 1;
     _focusedShotIdx = newIdx;
     _rebuildShots();
@@ -1138,7 +1154,7 @@ function _moveShot(fromIdx, direction) {
 
 function _duplicateShot(idx) {
     const dupe = JSON.parse(JSON.stringify(_S.composition.shots[idx]));
-    dupe.id = `shot_${++_S.shotSeq}`;
+    dupe.id = _nextShotId(_S.composition.shots);
     _S.composition.shots.splice(idx + 1, 0, dupe);
     _focusedShotIdx = idx + 1;
     _rebuildShots();
