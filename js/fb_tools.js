@@ -320,14 +320,14 @@ function handleNodes() {
 }
 
 // Small collapsed Get/Set nodes (e.g. from KJNodes) are frequently dropped visually on top of the
-// larger node they route a value into/out of. Draw order (and hit-test priority) is the position
-// of each node in the graph's own `nodes` array -- later entries draw over, and are clicked before,
-// earlier ones -- and that array position is exactly what gets written into the saved workflow
-// JSON. This reorders `graph._nodes` directly (not via canvas.sendToBack/bringToFront, which drive
-// a separate, session-only render z-index that never gets serialized into the workflow at all) so
-// the fix is real and persists across save/reload: every GetNode/SetNode moves to the front of the
-// array, preserving their relative order among themselves and leaving every other node's relative
-// order untouched.
+// larger node they route a value into/out of, which can permanently block clicks to whatever's
+// underneath. This is the LIVE half of the fix: reorder `graph._nodes` directly so the current
+// canvas redraws correctly right away. It does NOT by itself guarantee the fix survives a save --
+// the frontend's actual save/export path (graph.serialize(), confirmed via the bundled frontend
+// source) rebuilds its `nodes` array from a separate internal node registry keyed by insertion
+// order, not from `graph._nodes` -- so mutating `_nodes` alone is real for rendering but incidental
+// for persistence. See patchGraphSerializeOrder() below for the half that actually guarantees the
+// saved file comes out right regardless of live array state.
 function sendGetSetNodesToBack() {
     const graph = app.canvas?.graph || app.graph;
     if (!graph || !Array.isArray(graph._nodes)) return;
@@ -355,6 +355,34 @@ function sendGetSetNodesToBack() {
         detail: `Moved ${targets.length} Get/Set node${targets.length === 1 ? "" : "s"} to the back of the draw order.`,
         life: 2500,
     });
+}
+
+// The actual persistence half of the Get/Set-node z-order fix. graph.serialize() (litegraph's
+// long-standing public export method -- also aliased as toJSON() -- confirmed via the bundled
+// frontend source to be what produces the exact {id, revision, nodes, links, groups, config,
+// extra, version, ...} shape written to a saved workflow file) rebuilds its own `nodes` array
+// every time it runs, from an internal registry that tracks insertion order, not from whatever
+// order graph._nodes happens to be in live. That means no amount of live array reordering (see
+// sendGetSetNodesToBack above) can reliably survive a save on its own. Patching serialize() itself
+// to reorder its *output* is the only point that's guaranteed to run on every save (Ctrl+S, the
+// Save menu, autosave) regardless of what triggered it or what state the live canvas is in.
+function patchGraphSerializeOrder() {
+    const graph = app.graph;
+    const proto = graph && Object.getPrototypeOf(graph);
+    if (!proto || typeof proto.serialize !== "function" || proto.__fbToolsGetSetOrderPatched) return;
+
+    const isGetSet = (n) => n?.type === "GetNode" || n?.type === "SetNode";
+    const originalSerialize = proto.serialize;
+    proto.serialize = function (...args) {
+        const result = originalSerialize.apply(this, args);
+        if (result && Array.isArray(result.nodes) && result.nodes.some(isGetSet)) {
+            const targets = result.nodes.filter(isGetSet);
+            const rest = result.nodes.filter((n) => !isGetSet(n));
+            result.nodes = [...targets, ...rest];
+        }
+        return result;
+    };
+    proto.__fbToolsGetSetOrderPatched = true;
 }
 
 /**
@@ -472,6 +500,7 @@ app.registerExtension({
         }));
     },
     setup() {
+        patchGraphSerializeOrder();
         JSONView.ensureLoaded().then(() => {
             console.log("fb_tools -> JSONView loaded:", JSONView.JSONView);
             _isLoaded = true;
