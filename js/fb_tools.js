@@ -321,19 +321,19 @@ function handleNodes() {
 
 // Small collapsed Get/Set nodes (e.g. from KJNodes) are frequently dropped visually on top of the
 // larger node they route a value into/out of, which can permanently block clicks to whatever's
-// underneath. This is the LIVE half of the fix: reorder `graph._nodes` directly so the current
-// canvas redraws correctly right away. It does NOT by itself guarantee the fix survives a save --
-// the frontend's actual save/export path (graph.serialize(), confirmed via the bundled frontend
-// source) rebuilds its `nodes` array from a separate internal node registry keyed by insertion
-// order, not from `graph._nodes` -- so mutating `_nodes` alone is real for rendering but incidental
-// for persistence. See patchGraphSerializeOrder() below for the half that actually guarantees the
-// saved file comes out right regardless of live array state.
+// underneath. This is the LIVE half of the fix, for the current editing session. Confirmed by
+// testing: canvas.sendToBack(node) (litegraph's own z-index-based mechanism) is what actually
+// drives the live renderer correctly -- an earlier version of this function instead spliced
+// graph._nodes directly, which reliably reported the right count but did not reliably repaint
+// (most likely a stale render-order cache that a raw array reassignment never invalidates). Since
+// persistence is independently guaranteed by patchGraphSerializeOrder() below regardless of live
+// z-index/array state, this only needs to get the *current view* looking right.
 function sendGetSetNodesToBack() {
     const graph = app.canvas?.graph || app.graph;
-    if (!graph || !Array.isArray(graph._nodes)) return;
+    const canvas = app.canvas;
+    if (!graph || !Array.isArray(graph._nodes) || typeof canvas?.sendToBack !== "function") return;
 
-    const isGetSet = (n) => n.type === "GetNode" || n.type === "SetNode";
-    const targets = graph._nodes.filter(isGetSet);
+    const targets = graph._nodes.filter((n) => n.type === "GetNode" || n.type === "SetNode");
     if (!targets.length) {
         showToast({
             severity: "info",
@@ -344,10 +344,10 @@ function sendGetSetNodesToBack() {
         return;
     }
 
-    const rest = graph._nodes.filter((n) => !isGetSet(n));
-    graph._nodes = [...targets, ...rest];
+    for (const node of targets) {
+        canvas.sendToBack(node);
+    }
     graph.setDirtyCanvas(true, true);
-    graph.change?.();
 
     showToast({
         severity: "success",
