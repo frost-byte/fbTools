@@ -154,7 +154,7 @@ class TestSceneInfoNLF(unittest.TestCase):
     def test_scene_info_has_nlf_field(self):
         """Test SceneInfo has pose_nlf_image field"""
         try:
-            from extension import SceneInfo
+            from nodes.narrative.scene import SceneInfo
             
             scene_info = SceneInfo(
                 scene_dir=tempfile.mkdtemp(),
@@ -171,7 +171,7 @@ class TestSceneInfoNLF(unittest.TestCase):
     def test_default_pose_options_includes_nlf(self):
         """Test default_pose_options includes 'nlf' entry"""
         try:
-            from extension import default_pose_options
+            from nodes.narrative.scene import default_pose_options
             
             self.assertIn('nlf', default_pose_options)
             self.assertEqual(default_pose_options['nlf'], 'pose_nlf_image')
@@ -182,7 +182,7 @@ class TestSceneInfoNLF(unittest.TestCase):
     def test_scene_info_load_pose_images_includes_nlf(self):
         """Test SceneInfo.load_pose_images includes pose_nlf.png mapping"""
         try:
-            from extension import SceneInfo
+            from nodes.narrative.scene import SceneInfo
             import inspect
             
             # Check the source code includes pose_nlf.png mapping
@@ -197,7 +197,7 @@ class TestSceneInfoNLF(unittest.TestCase):
     def test_scene_info_save_includes_nlf(self):
         """Test SceneInfo.save_all_images saves pose_nlf.png"""
         try:
-            from extension import SceneInfo
+            from nodes.narrative.scene import SceneInfo
             import inspect
             
             # Check the source code includes pose_nlf_image saving

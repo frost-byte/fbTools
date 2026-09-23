@@ -87,20 +87,29 @@ def test_extension_imports_every_route_module():
     """A route module only registers its handlers when something imports it; extension.py must import each one."""
     ext = (ROOT / "extension.py").read_text(encoding="utf-8")
     missing = []
-    for path in sorted((ROOT / "nodes").glob("*.py")):
+    for path in sorted((ROOT / "nodes").glob("**/*.py")):
         if path.stem in ("__init__", "shared"):
             continue
         if "@routes." not in path.read_text(encoding="utf-8"):
             continue
         stem = path.stem
-        if f"from .nodes.{stem} import" not in ext and f"from .nodes import {stem}" not in ext:
-            missing.append(stem)
+        dotted = ".".join(path.relative_to(ROOT / "nodes").with_suffix("").parts)
+        if f"from .nodes.{dotted} import" not in ext and f"from .nodes import {stem}" not in ext:
+            missing.append(dotted)
     assert not missing, f"route modules never imported by extension.py: {missing}"
 
 
-def _resolves(level: int, module: str | None, names: list[str]) -> bool:
-    """Does `from <dots><module> import <names>` point at something that exists (level 1 = nodes/, 2 = package root)?"""
-    base = ROOT / "nodes" if level == 1 else ROOT
+def _resolves(path: Path, level: int, module: str | None, names: list[str]) -> bool:
+    """Does `from <dots><module> import <names>` (written in `path`) point at something that exists?
+
+    level 1 = the package containing `path` itself (its own directory); each further dot walks up
+    one more directory — this must be computed relative to `path`'s own depth under nodes/, not
+    assumed flat, since nodes/narrative/ (and future nodes/lora/, nodes/composition_engine/) sit
+    one level deeper than nodes/*.py files (Plan 20).
+    """
+    base = path.parent
+    for _ in range(level - 1):
+        base = base.parent
     parts = (module or "").split(".") if module else []
     target = base.joinpath(*parts)
     if module:
@@ -110,15 +119,20 @@ def _resolves(level: int, module: str | None, names: list[str]) -> bool:
 
 
 def test_relative_imports_in_nodes_modules_resolve():
-    """Code moved from extension.py (package root) into nodes/ needs one more dot on every relative import,
-    including imports inside function bodies that only run when a route is called."""
+    """Code moved from extension.py (package root) into nodes/ needs one more dot on every relative import
+    per directory level of nesting, including imports inside function bodies that only run when a route
+    is called. Applies recursively so nodes/narrative/*.py (and future nodes/<subpkg>/*.py) are checked too."""
     import ast
 
     problems = []
-    for path in sorted((ROOT / "nodes").glob("*.py")):
+    for path in sorted((ROOT / "nodes").glob("**/*.py")):
+        # Depth under nodes/ (nodes/foo.py = 0, nodes/narrative/scene.py = 1, ...) bounds how many
+        # dots can resolve inside the repo: level 1 = own dir, ..., level (depth+2) = package root.
+        depth = len(path.relative_to(ROOT / "nodes").parts) - 1
+        max_level = depth + 2
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.level:
-                if node.level > 2 or not _resolves(node.level, node.module, [a.name for a in node.names]):
-                    problems.append(f"{path.name}:{node.lineno}: {'.' * node.level}{node.module or ''}")
+                if node.level > max_level or not _resolves(path, node.level, node.module, [a.name for a in node.names]):
+                    problems.append(f"{path.relative_to(ROOT)}:{node.lineno}: {'.' * node.level}{node.module or ''}")
     assert not problems, "unresolvable relative imports: " + "; ".join(problems)

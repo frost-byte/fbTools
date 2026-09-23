@@ -21,11 +21,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # We'll need to mock torch and other ComfyUI dependencies
 try:
-    from extension import MaskType, MaskDefinition, load_masks_json, save_masks_json
+    from nodes.narrative.scene import MaskType, MaskDefinition, load_masks_json, save_masks_json
     IMPORTS_AVAILABLE = True
 except ImportError:
     IMPORTS_AVAILABLE = False
-    print("Warning: Could not import extension module. Some tests will be skipped.")
+    print("Warning: Could not import nodes.narrative.scene module. Some tests will be skipped.")
 
 
 class TestMaskSystemIntegration(unittest.TestCase):

@@ -9,7 +9,9 @@ node `fingerprint_inputs` read and the `/fbtools/<x>/reload` routes bump.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+from pathlib import Path
 
 import folder_paths
 from folder_paths import get_output_directory
@@ -206,3 +208,70 @@ def default_stories_dir():
     if not os.path.exists(default_dir):
         os.makedirs(default_dir, exist_ok=True)
     return default_dir
+
+
+# ── Generic directory helpers ──────────────────────────────────────────────────
+# Used across Scene, Story, and ScenePromptManager — no domain-specific meaning,
+# so they live here rather than in any one domain module (Plan 20).
+
+def get_subdirectories(directory_path: str) -> dict:
+    """Return a dictionary mapping subdirectory names to their full paths."""
+    subdir_dict = {}
+
+    if not os.path.isdir(directory_path):
+        logger.warning("Directory '%s' does not exist or is not a directory.", directory_path)
+        return subdir_dict
+
+    with os.scandir(directory_path) as entries:
+        for entry in entries:
+            if entry.is_dir():
+                subdir_dict[entry.name] = entry.path
+
+    return subdir_dict
+
+
+def _directory_fingerprint(path: Path) -> tuple[str, int, int]:
+    """Return a stable fingerprint for a directory tree.
+
+    The hash includes relative paths plus mtime_ns/size for every file and directory,
+    so edits, creates, deletes, and renames will invalidate cached nodes.
+    """
+    if not path.exists() or not path.is_dir():
+        return ("missing", 0, 0)
+
+    digest = hashlib.sha1()
+    dir_count = 0
+    file_count = 0
+
+    for root, dirnames, filenames in os.walk(path):
+        dirnames.sort()
+        filenames.sort()
+
+        root_path = Path(root)
+        rel_root = root_path.relative_to(path).as_posix()
+        rel_root = rel_root if rel_root else "."
+
+        try:
+            root_stat = root_path.stat()
+            root_mtime_ns = int(root_stat.st_mtime_ns)
+        except Exception:
+            root_mtime_ns = 0
+
+        digest.update(f"D|{rel_root}|{root_mtime_ns}\n".encode("utf-8"))
+        dir_count += 1
+
+        for filename in filenames:
+            file_path = root_path / filename
+            rel_file = file_path.relative_to(path).as_posix()
+            try:
+                st = file_path.stat()
+                file_mtime_ns = int(st.st_mtime_ns)
+                file_size = int(st.st_size)
+            except Exception:
+                file_mtime_ns = 0
+                file_size = 0
+
+            digest.update(f"F|{rel_file}|{file_mtime_ns}|{file_size}\n".encode("utf-8"))
+            file_count += 1
+
+    return (digest.hexdigest(), dir_count, file_count)
