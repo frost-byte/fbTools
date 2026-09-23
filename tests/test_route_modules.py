@@ -26,6 +26,12 @@ EXPECTED = {
     "kdenlive_archive": 8,
     "libber": 13,
     "dataset_caption": 5,
+    # narrative.scene (5 routes, Plan 21) is deliberately absent: unlike every module above, it
+    # transitively imports utils/images.py, which does `import torchvision...` at module level —
+    # this fixture only mocks folder_paths/server, not torch/torchvision, so importing it here
+    # raises (a real torchvision/mocked-torch incompatibility, not a bug in the module itself).
+    # test_relative_imports_in_nodes_modules_resolve and test_extension_imports_every_route_module
+    # (both below) still cover it; only this specific per-module route-count check cannot.
 }
 
 
