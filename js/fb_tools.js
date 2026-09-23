@@ -319,6 +319,41 @@ function handleNodes() {
     }
 }
 
+// Small collapsed Get/Set nodes (e.g. from KJNodes) are frequently dropped visually on top of the
+// larger node they route a value into/out of. Litegraph's z-order is just array order (later =
+// drawn on top = wins hit-testing), so once a Get/Set dot ends up on top it can permanently block
+// clicks to whatever is underneath it -- including the click that would otherwise bring that node
+// back to the front itself. This is a manual escape hatch for that trap: send every Get/Set node
+// in the currently-viewed graph (which may be a subgraph) to the back in one shot.
+function sendGetSetNodesToBack() {
+    const graph = app.canvas?.graph || app.graph;
+    const canvas = app.canvas;
+    if (!graph || !canvas?.sendToBack) return;
+
+    const targets = (graph._nodes || []).filter((n) => n.type === "GetNode" || n.type === "SetNode");
+    if (!targets.length) {
+        showToast({
+            severity: "info",
+            summary: "No Get/Set Nodes",
+            detail: "No GetNode/SetNode instances found in this graph.",
+            life: 2500,
+        });
+        return;
+    }
+
+    for (const node of targets) {
+        canvas.sendToBack(node);
+    }
+    graph.setDirtyCanvas(true, true);
+
+    showToast({
+        severity: "success",
+        summary: "Sent to Back",
+        detail: `Moved ${targets.length} Get/Set node${targets.length === 1 ? "" : "s"} behind everything else.`,
+        life: 2500,
+    });
+}
+
 /**
  * Update a widget's value from message.text array
  * @param {object} node - The node instance
@@ -446,6 +481,11 @@ app.registerExtension({
         label: "Extract Node as JSON",
         icon: "pi pi-file-arrow-up",
         function: handleNodes,
+    }, {
+        id: "fb_tools.send-get-set-to-back",
+        label: "Send Get/Set Nodes to Back",
+        icon: "pi pi-angle-double-down",
+        function: sendGetSetNodesToBack,
     }],
     getSelectionToolboxCommands: (selectedItem) => {
         return ["fb_tools.extract-node-json"];
