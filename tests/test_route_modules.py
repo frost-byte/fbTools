@@ -25,6 +25,7 @@ EXPECTED = {
     "prompt_collections": 4,
     "kdenlive_archive": 8,
     "libber": 13,
+    "dataset_caption": 5,
 }
 
 

@@ -1,15 +1,19 @@
 """
-Source-level contract tests for dataset caption API handlers in extension.py.
+Source-level contract tests for dataset caption API handlers in nodes/dataset_caption.py
+(moved out of extension.py in Plan 18; this test's technique predates the move and stays valid —
+just repointed).
 
-These tests intentionally avoid importing extension.py because it depends on
-full ComfyUI runtime modules that are not available in unit-test environments.
+These tests intentionally avoid importing nodes/dataset_caption.py's route handlers and executing
+them — comfy_api.latest.io is only ever a mock under conftest.py, so calling execute() against it
+wouldn't exercise real behavior. AST source-text inspection is the meaningful check here instead,
+same technique test_route_modules.py uses at the import level for the routes themselves.
 """
 
 import ast
 from pathlib import Path
 
 
-EXTENSION_PATH = Path(__file__).resolve().parents[1] / "extension.py"
+EXTENSION_PATH = Path(__file__).resolve().parents[1] / "nodes" / "dataset_caption.py"
 SOURCE = EXTENSION_PATH.read_text(encoding="utf-8")
 TREE = ast.parse(SOURCE)
 
