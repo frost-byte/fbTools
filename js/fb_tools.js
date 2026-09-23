@@ -320,17 +320,20 @@ function handleNodes() {
 }
 
 // Small collapsed Get/Set nodes (e.g. from KJNodes) are frequently dropped visually on top of the
-// larger node they route a value into/out of. Litegraph's z-order is just array order (later =
-// drawn on top = wins hit-testing), so once a Get/Set dot ends up on top it can permanently block
-// clicks to whatever is underneath it -- including the click that would otherwise bring that node
-// back to the front itself. This is a manual escape hatch for that trap: send every Get/Set node
-// in the currently-viewed graph (which may be a subgraph) to the back in one shot.
+// larger node they route a value into/out of. Draw order (and hit-test priority) is the position
+// of each node in the graph's own `nodes` array -- later entries draw over, and are clicked before,
+// earlier ones -- and that array position is exactly what gets written into the saved workflow
+// JSON. This reorders `graph._nodes` directly (not via canvas.sendToBack/bringToFront, which drive
+// a separate, session-only render z-index that never gets serialized into the workflow at all) so
+// the fix is real and persists across save/reload: every GetNode/SetNode moves to the front of the
+// array, preserving their relative order among themselves and leaving every other node's relative
+// order untouched.
 function sendGetSetNodesToBack() {
     const graph = app.canvas?.graph || app.graph;
-    const canvas = app.canvas;
-    if (!graph || !canvas?.sendToBack) return;
+    if (!graph || !Array.isArray(graph._nodes)) return;
 
-    const targets = (graph._nodes || []).filter((n) => n.type === "GetNode" || n.type === "SetNode");
+    const isGetSet = (n) => n.type === "GetNode" || n.type === "SetNode";
+    const targets = graph._nodes.filter(isGetSet);
     if (!targets.length) {
         showToast({
             severity: "info",
@@ -341,15 +344,15 @@ function sendGetSetNodesToBack() {
         return;
     }
 
-    for (const node of targets) {
-        canvas.sendToBack(node);
-    }
+    const rest = graph._nodes.filter((n) => !isGetSet(n));
+    graph._nodes = [...targets, ...rest];
     graph.setDirtyCanvas(true, true);
+    graph.change?.();
 
     showToast({
         severity: "success",
         summary: "Sent to Back",
-        detail: `Moved ${targets.length} Get/Set node${targets.length === 1 ? "" : "s"} behind everything else.`,
+        detail: `Moved ${targets.length} Get/Set node${targets.length === 1 ? "" : "s"} to the back of the draw order.`,
         life: 2500,
     });
 }
