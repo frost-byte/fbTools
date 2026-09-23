@@ -34,6 +34,38 @@ let _pending   = null;   // node data that arrived before the tab was mounted
 
 // ── Tree helpers ──────────────────────────────────────────────────────────────
 
+// jsnview wires its own delegated click handler for individual toggles (attached once, in its
+// constructor, directly on the tree's own root element), which is expected to keep working no
+// matter where that root ends up in the DOM. In practice, once the tree lives inside this sidebar
+// tab it stops firing reliably (root cause not fully pinned down -- possibly something else in the
+// tab's own event handling intercepting the click first). Rather than depend on that, this
+// registers our own listener directly and does the exact same thing `_collapseAll`/`_expandAll`
+// already do (both confirmed working). It's registered on the CAPTURE phase and stops propagation
+// after handling a toggle, so jsnview's own bubble-phase listener never also sees the same click --
+// without that, if jsnview's handler *did* still fire underneath ours, the two would cancel each
+// other out (open then immediately re-close).
+function _handleToggleClick(e) {
+    const toggle = e.target.closest?.(".jsv-toggle");
+    if (!toggle || !_container?.contains(toggle)) return;
+    const content = toggle.parentElement?.querySelector(".jsv-content");
+    if (!content) return;
+    e.stopPropagation();
+    toggle.classList.toggle("-rotate-90");
+    content.classList.toggle("hidden");
+}
+
+// jsnview's applyValueStyles() only sets a class + text for string/number/bigint/boolean/null --
+// anything else (most commonly a genuinely `undefined` property value, but also e.g. symbol or
+// function) falls through with no className and no textContent set at all, rendering as blank
+// space with zero indication anything is even there. Post-process the rendered tree to give those
+// leaves the same treatment `null` already gets (an italic, muted placeholder) instead of nothing.
+function _fixUnstyledLeaves(root) {
+    root?.querySelectorAll("span:empty:not([class])").forEach((el) => {
+        el.textContent = "undefined";
+        el.className = "fbt-ni-undefined";
+    });
+}
+
 function _collapseAll() {
     _container?.querySelectorAll(".jsv-toggle").forEach(t => {
         const content = t.parentElement?.querySelector(".jsv-content");
@@ -88,7 +120,9 @@ async function _renderData(nodeData) {
         showFoldmarker: true,
         maxDepth: 4,
     });
-    _container.appendChild(formatter.getElement());
+    const treeEl = formatter.getElement();
+    _container.appendChild(treeEl);
+    _fixUnstyledLeaves(treeEl);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -137,6 +171,7 @@ export function renderNodeInspector(rootEl) {
     // Content area
     const content = document.createElement("div");
     content.className = "fbt-ni-content";
+    content.addEventListener("click", _handleToggleClick, { capture: true });
     _container = content;
 
     panel.append(toolbar, content);

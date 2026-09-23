@@ -56,3 +56,5 @@
 .fbt-ni-content .text-rose-700  { color: var(--fbt-error) !important; }
 /* type label (italic) */
 .fbt-ni-content .text-stone-700 { color: var(--p-stone-400,  #a8a29e) !important; }
+/* values jsnview itself leaves unstyled/blank (e.g. undefined) — see _fixUnstyledLeaves() */
+.fbt-ni-content .fbt-ni-undefined { color: var(--fbt-muted) !important; font-style: italic; opacity: .7; }
