@@ -129,3 +129,35 @@ disk (backups, older snapshots with different root-fixup history) that reference
 folder in inconsistent ways — confirm which file is the one actually being edited before trusting
 its reference counts as ground truth.
 
+---
+
+## ComfyUI's `graph.serialize()` doesn't read node draw-order from `graph._nodes`
+
+**Symptom**: two small "pass-through" nodes (e.g. KJNodes' `GetNode`/`SetNode`) end up visually on
+top of a larger node they overlap, permanently blocking clicks to it — including the click that
+would otherwise bring it back to the front via the frontend's own built-in bring-to-front-on-click.
+Reordering `graph._nodes` live (splicing the array, or looping `canvas.sendToBack(node)`) fixes the
+*current session's rendering*, but the fix vanishes the moment the workflow is saved and reloaded.
+
+**Cause**: traced through the bundled frontend source
+(`comfyui_frontend_package/static/assets/*.js`, minified but not property-mangled, so real method
+names like `serialize`/`asSerialisable` are still grep-able). `graph.serialize()` (litegraph's
+long-standing public export method, also aliased as `toJSON()`) does not read `graph._nodes` order
+at all for its `nodes` array — it rebuilds that array from a separate internal node registry
+(`idsByOwner`, a plain JS `Set` keyed by owning-graph id) that only tracks original insertion
+order, with no public API to reorder it. Live rendering and the saved-file order are two genuinely
+different code paths; fixing one does not touch the other. The workflow JSON's own `order` field on
+each node is a red herring here too — it's litegraph's execution/topological-sort order, unrelated
+to visual stacking (no correlation with array position or z-order at all).
+
+**Fix pattern**: a *persistent* z-order fix has to patch `graph.serialize()` itself (grab it via
+`Object.getPrototypeOf(app.graph)` so the patch covers every graph instance, including subgraphs),
+reordering its **output** `nodes` array after calling the original — this is the one point
+guaranteed to run on every save regardless of trigger (Ctrl+S, Save menu, autosave) or live canvas
+state. For the *live* visual half (so clicks aren't blocked during the current session), call
+`app.canvas.sendToBack(node)`/`bringToFront(node)` per node — litegraph's real z-index mechanism —
+not a raw `graph._nodes` splice, which doesn't reliably force a repaint (most likely a stale
+render-order cache that a plain array reassignment never invalidates). See
+`js/fb_tools.js`'s `patchGraphSerializeOrder()` (persistence) and `sendGetSetNodesToBack()` (live)
+for a working example of both halves.
+
