@@ -488,7 +488,7 @@ app.registerExtension({
         function: sendGetSetNodesToBack,
     }],
     getSelectionToolboxCommands: (selectedItem) => {
-        return ["fb_tools.extract-node-json"];
+        return ["fb_tools.extract-node-json", "fb_tools.send-get-set-to-back"];
     },
     nodeCreated(node) {
         patchNodeForTracking(node, app);
