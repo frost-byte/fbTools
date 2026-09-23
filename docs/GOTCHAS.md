@@ -161,3 +161,32 @@ render-order cache that a plain array reassignment never invalidates). See
 `js/fb_tools.js`'s `patchGraphSerializeOrder()` (persistence) and `sendGetSetNodesToBack()` (live)
 for a working example of both halves.
 
+---
+
+## ComfyUI's bundled Tailwind CSS is real, but purged to only what ComfyUI itself uses
+
+**Symptom**: a third-party library loaded via CDN (e.g. jsnview, used by the Node Inspector tab)
+that assumes a Tailwind utility class works renders with that specific utility silently missing —
+not a wholesale "no styling at all" failure, which would be obvious, but one property quietly
+absent while its siblings work fine. Concretely: jsnview's collapse/expand toggle used
+`absolute -left-4 top-1` to place itself in a row's left gutter; `position:absolute` and `top`
+applied correctly but `left` never did, leaving the toggle unplaced (in practice, invisible/
+unclickable) while everything else about the row rendered normally.
+
+**Cause**: ComfyUI's frontend (`comfyui_frontend_package`, e.g.
+`static/assets/main-DCtjL70R.css`) ships **real, non-fake Tailwind-generated utility CSS** — not
+"no Tailwind" as it's easy to assume from a quick look. But it's a production Tailwind build,
+purged down to only the exact utility classes ComfyUI's own Vue components reference. That happens
+to include common ones like `.absolute`, `.relative`, `.top-1`, `.-rotate-90`, `.pl-7` (ComfyUI's
+own code uses those), but not `.-left-4` unscoped (only `.left-4` and a `lg:` responsive variant
+survived the purge, because nothing in ComfyUI's own markup uses the bare negative form). There's
+no reliable way to know in advance which arbitrary utility a random third-party library needs will
+or won't have survived Comfy's purge — it depends entirely on what ComfyUI's own UI happens to use.
+
+**Fix pattern**: don't assume a Tailwind-based CDN library's utility classes either all work or
+all fail — check each one that controls layout/positioning specifically, not just colors. For
+anything found missing, add an explicit override in this repo's own CSS restoring the exact value
+the library intended, same way `js/styles/ui/node_inspector.css` already remaps jsnview's color
+utility classes to ComfyUI palette tokens. See that file's `.jsv-toggle` rule (`position`/`left`/
+`top` set explicitly) for a working example.
+

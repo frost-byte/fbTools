@@ -41,6 +41,15 @@
 }
 .fbt-ni-content .jsv-toggle {
     color: var(--fbt-muted) !important;
+    /* jsnview positions this via Tailwind's `absolute -left-4 top-1`. ComfyUI's own bundled
+       Tailwind CSS happens to include `.absolute`/`.top-1`/`.relative` (real utility classes it
+       uses itself) but purges the unscoped `.-left-4` utility (only `.left-4` and a `lg:` variant
+       survive), so the toggle gets positioned/top'd but never shifted into the row's left gutter
+       -- it ends up with no `left` at all, effectively unplaced. Restore it explicitly so this
+       doesn't depend on what Comfy's Tailwind build happens to purge. */
+    position: absolute !important;
+    left: -1rem !important;
+    top: 0.25rem !important;
 }
 /* object keys */
 .fbt-ni-content .text-amber-800 { color: var(--p-amber-400,  #fbbf24) !important; }
