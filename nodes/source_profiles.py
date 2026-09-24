@@ -63,10 +63,12 @@ from ..utils.source_profile_analysis import (
 )
 from ..utils.proxy_cache import ensure_source_profile_proxy as _ensure_proxy
 from ..utils.reference_bundles import load_registry as _load_bundle_registry
+from ..utils.composition_resources import get_background as _get_background
 from ..utils.prompt_assembler import (
     assemble_prompt as _assemble_prompt,
     MODEL_TYPES as _PROMPT_MODEL_TYPES,
     _build_h3_refplan,
+    _build_background_slot,
 )
 from ..utils.libber_resolve import extract_libber_names, apply_slot_dialogue
 from ..utils.logging_utils import get_logger
@@ -923,6 +925,26 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     if _d3:
                         slot_dialogue[_bslot] = _d3
 
+        # ── Background as visual reference (per clip) ───────────────────────────
+        # Mirrors assemble_composition()'s {BG}-shortcut slot exactly (same shared
+        # _build_background_slot helper), minus the shortcut itself: a clip is always
+        # exactly one synthetic shot (see _shot_id below), so there's no multi-shot
+        # ambiguity for a {BG} token to resolve -- the slot is simply always included
+        # when a background resolves, and naturally reads as "appears throughout" in
+        # retention_analysis. "O" is the next free letter after SOURCE_SLOTS (A-J) and
+        # BUNDLE_SLOTS (K-N) in this file's fixed reserved-letter scheme.
+        BACKGROUND_SLOT = "O"
+        effective_bg_id = clip.get("background_id", "") or source_profile.get("default_background_id", "")
+        if effective_bg_id:
+            try:
+                resolved_background = _get_background(user_data_dir(), effective_bg_id)
+            except Exception:
+                resolved_background = None
+            if resolved_background:
+                bg_slot = _build_background_slot(resolved_background)
+                if bg_slot is not None:
+                    slot_assignments[BACKGROUND_SLOT] = bg_slot
+
         # ── Build scene_instance ────────────────────────────────────────────────
         _shot_id = f"{clip_id_used}_shot_1"
         scene_instance = {
@@ -1272,6 +1294,7 @@ async def _source_profiles_save(request):
             media_dir=data.get("media_dir", "input"),
             media_type=data.get("media_type", "video"),
             default_segment_duration=float(seg_dur_raw) if seg_dur_raw is not None else None,
+            default_background_id=data.get("default_background_id", ""),
         )
         if "subjects" in data:
             registry = registry.set_subjects(pid, data["subjects"])

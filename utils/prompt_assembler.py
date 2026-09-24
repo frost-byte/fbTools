@@ -1790,6 +1790,41 @@ def _slot_letter(index: int) -> str:
     return letters
 
 
+def _build_background_slot(resolved_background: dict) -> dict | None:
+    """The slot_assignments entry for a background used as a visual <Subject N> reference, or
+    None if it has no usable reference_images.
+
+    Shared by assemble_composition() (one background for the whole composition) and
+    SourceProfileClipPrompt (one background per clip, see nodes/source_profiles.py) so both
+    paths mint an identical slot shape -- _build_ref_map()/_assemble_h3_ref2va() don't know or
+    care which caller built it, they just read whatever's in slot_assignments generically.
+    """
+    ref_images = resolved_background.get("reference_images", [])
+    if not ref_images:
+        return None
+    bg_desc = resolved_background.get("description", "")
+    bg_lighting = resolved_background.get("lighting", "")
+    bg_appearance = (bg_desc.rstrip(". ") + ". " + bg_lighting).strip(". ") if bg_lighting else bg_desc
+    return {
+        "name": resolved_background.get("name", "Background"),
+        "appearance": {"summary": bg_appearance},
+        "voice": {},
+        "character_sheet_images": [
+            r if isinstance(r, dict) else {"file": r, "role": "scene reference"}
+            for r in ref_images
+        ],
+        "concept_id": "",
+        "subject_id": "",
+        # A setting, not a person: gives the retention line "the <name>'s" wording
+        # instead of the neutral-person "their" default.
+        "entity_type": "location",
+        "pronoun_style": "location",
+        # Reads as "retain the beach's appearance" in retention_analysis.
+        "short_name": "the " + (str(resolved_background.get("name", "") or "setting")
+                                .replace("_", " ").strip().lower() or "setting"),
+    }
+
+
 def assemble_composition(
     composition: dict,
     resolved_subjects: dict[str, dict],
@@ -1892,32 +1927,12 @@ def assemble_composition(
     # so this is an accepted, extremely-low-probability limitation instead.
     bg_letter = None
     if composition.get("background_as_reference") and resolved_background:
-        ref_images = resolved_background.get("reference_images", [])
-        if ref_images:
+        bg_slot = _build_background_slot(resolved_background)
+        if bg_slot is not None:
             bg_letter = _slot_letter(_next_letter_idx)
             _next_letter_idx += 1
             slot_map["BG"] = bg_letter
-            bg_desc = resolved_background.get("description", "")
-            bg_lighting = resolved_background.get("lighting", "")
-            bg_appearance = (bg_desc.rstrip(". ") + ". " + bg_lighting).strip(". ") if bg_lighting else bg_desc
-            slot_assignments[bg_letter] = {
-                "name": resolved_background.get("name", "Background"),
-                "appearance": {"summary": bg_appearance},
-                "voice": {},
-                "character_sheet_images": [
-                    r if isinstance(r, dict) else {"file": r, "role": "scene reference"}
-                    for r in ref_images
-                ],
-                "concept_id": "",
-                "subject_id": "",
-                # A setting, not a person: gives the retention line "the <name>'s" wording
-                # instead of the neutral-person "their" default.
-                "entity_type": "location",
-                "pronoun_style": "location",
-                # Reads as "retain the beach's appearance" in retention_analysis.
-                "short_name": "the " + (str(resolved_background.get("name", "") or "setting")
-                                        .replace("_", " ").strip().lower() or "setting"),
-            }
+            slot_assignments[bg_letter] = bg_slot
 
     # Outfit reference subjects: each assigned outfit whose reference_images contain
     # at least one entry with use_as_reference=True becomes its own <Subject N> slot.

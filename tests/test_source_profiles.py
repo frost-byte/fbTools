@@ -498,12 +498,14 @@ def test_normalize_clip_fills_defaults():
     assert c["frame_load_cap"] == sp.DEFAULT_FRAME_LOAD_CAP
     assert c["subjects"] == []
     assert c["action"] == ""
+    assert c["background_id"] == ""
 
 def test_normalize_clip_preserves_values():
     c = sp._normalize_clip({
         "id": "c2", "label": "Intro", "start_time": 5.5, "end_time": 15.0,
         "select_every_nth": 3, "frame_load_cap": 60,
         "subjects": ["s1", "s2"], "action": "They talk",
+        "background_id": "bg_beach",
     })
     assert c["start_time"] == 5.5
     assert c["end_time"] == 15.0
@@ -511,6 +513,28 @@ def test_normalize_clip_preserves_values():
     assert c["frame_load_cap"] == 60
     assert c["subjects"] == ["s1", "s2"]
     assert c["action"] == "They talk"
+    assert c["background_id"] == "bg_beach"
+
+
+# ── default_background_id (profile-level fallback) ──────────────────────────────
+
+def test_normalize_profile_defaults_background_id_empty():
+    p = sp._normalize_profile("prof_1", {})
+    assert p["default_background_id"] == ""
+
+def test_normalize_profile_preserves_default_background_id():
+    p = sp._normalize_profile("prof_1", {"default_background_id": "bg_office"})
+    assert p["default_background_id"] == "bg_office"
+
+def test_define_profile_sets_default_background_id():
+    reg = SourceProfileRegistry()
+    reg2 = reg.define_profile("prof_1", name="Office Scene", default_background_id="bg_office")
+    assert reg2.profiles["prof_1"]["default_background_id"] == "bg_office"
+
+def test_define_profile_default_background_id_defaults_empty():
+    reg = SourceProfileRegistry()
+    reg2 = reg.define_profile("prof_1", name="Office Scene")
+    assert reg2.profiles["prof_1"]["default_background_id"] == ""
 
 
 # ── set_clips / upsert_clip / remove_clip ─────────────────────────────────────

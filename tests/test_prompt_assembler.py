@@ -1539,6 +1539,87 @@ class TestAppearanceOverrides:
         assert "untouched summary" in result["prompt"]
 
 
+# ── _build_background_slot (shared by assemble_composition and
+#    SourceProfileClipPrompt, Plan: component-reference-system Phase 1) ─────────
+
+_build_background_slot = pa._build_background_slot
+
+
+class TestBuildBackgroundSlot:
+    def test_returns_none_without_reference_images(self):
+        assert _build_background_slot({"name": "Beach", "description": "a beach"}) is None
+
+    def test_returns_none_for_empty_reference_images_list(self):
+        assert _build_background_slot({"name": "Beach", "reference_images": []}) is None
+
+    def test_returns_slot_shape_with_reference_images(self):
+        slot = _build_background_slot({
+            "name": "Beach House", "description": "a beach house at sunset",
+            "reference_images": ["beach1.png"],
+        })
+        assert slot is not None
+        assert slot["entity_type"] == "location"
+        assert slot["pronoun_style"] == "location"
+        assert slot["short_name"] == "the beach house"
+        assert slot["appearance"]["summary"] == "a beach house at sunset"
+        assert slot["character_sheet_images"] == [{"file": "beach1.png", "role": "scene reference"}]
+
+    def test_normalizes_dict_reference_images(self):
+        slot = _build_background_slot({
+            "name": "Office", "reference_images": [{"file": "office1.png", "role": "wide shot"}],
+        })
+        assert slot["character_sheet_images"] == [{"file": "office1.png", "role": "wide shot"}]
+
+    def test_appends_lighting_to_description(self):
+        slot = _build_background_slot({
+            "name": "Office", "description": "a modern office", "lighting": "warm afternoon light",
+            "reference_images": ["office1.png"],
+        })
+        assert slot["appearance"]["summary"] == "a modern office. warm afternoon light"
+
+    def test_short_name_falls_back_to_setting_when_unnamed(self):
+        slot = _build_background_slot({"reference_images": ["x.png"]})
+        assert slot["short_name"] == "the setting"
+
+
+# ── assemble_composition: background_as_reference (regression coverage for the
+#    _build_background_slot extraction — same behavior before and after) ───────
+
+class TestAssembleCompositionBackground:
+    def test_background_as_reference_mints_subject_and_picture(self):
+        comp = _simple_composition()
+        comp["background_as_reference"] = True
+        resolved = _make_resolved_subjects()
+        background = {
+            "name": "Rooftop", "description": "a rooftop at night",
+            "reference_images": ["rooftop1.png"],
+        }
+        result = assemble_composition(comp, resolved, background, "h3_ref2va")
+        assert "<Picture" in result["prompt"]
+        assert "retain the rooftop" in result["prompt"].lower()
+
+    def test_background_as_reference_false_does_not_mint_subject(self):
+        comp = _simple_composition()
+        comp["background_as_reference"] = False
+        resolved = _make_resolved_subjects()
+        background = {"name": "Rooftop", "reference_images": ["rooftop1.png"]}
+        result = assemble_composition(comp, resolved, background, "h3_ref2va")
+        assert "rooftop" not in result["prompt"].lower()
+
+    def test_background_without_reference_images_does_not_mint_subject(self):
+        # The background's own description still feeds a plain detailed_description line
+        # regardless of whether it becomes a Subject (separate, pre-existing behavior) --
+        # what this test actually checks is that no *second* Subject/Picture gets minted
+        # for it when there's no image to back one.
+        comp = _simple_composition()
+        comp["background_as_reference"] = True
+        resolved = _make_resolved_subjects()
+        background = {"name": "Rooftop", "description": "a rooftop at night"}
+        result = assemble_composition(comp, resolved, background, "h3_ref2va")
+        assert "<Subject 2>" not in result["prompt"]
+        assert "<Picture" not in result["prompt"]
+
+
 # ── assemble_composition: hybrid cast retention markers (bundle-slot fix) ───────
 #
 # apply_cast_to_subjects (utils/prompt_compositions.py) mints an extra

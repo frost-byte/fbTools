@@ -70,6 +70,10 @@ def _normalize_clip(entry: dict) -> dict:
         "non_diegetic_music":  str(entry.get("non_diegetic_music", "")),
         "allows_dialogue":     bool(entry.get("allows_dialogue", True)),
         "loras":               [_normalize_lora(l) for l in entry.get("loras", []) if l and l.get("name")],
+        # Optional backgrounds.json entry id used as a visual <Subject N> reference for this
+        # clip specifically. Empty (default) preserves today's behavior entirely: background is
+        # either described in free text or via a location-typed subject, never image-backed.
+        "background_id":       str(entry.get("background_id", "")),
     }
 
 
@@ -101,6 +105,9 @@ def _normalize_profile(pid: str, entry: dict) -> dict:
         "proxy_short_edge":         _normalize_proxy_short_edge(
                                         entry.get("proxy_short_edge", _PROXY_SHORT_EDGE_DEFAULT)
                                     ),
+        # Fallback background for any clip that doesn't set its own background_id. Empty
+        # (default) means no profile-level default -- unset clips stay text-only as today.
+        "default_background_id":   str(entry.get("default_background_id", "")),
     }
 
 
@@ -145,6 +152,7 @@ class SourceProfileRegistry:
         media_dir: str = "input",
         media_type: str = "video",
         default_segment_duration: float | None = None,
+        default_background_id: str = "",
     ) -> "SourceProfileRegistry":
         """Return a NEW registry with the profile created or updated.
 
@@ -161,6 +169,7 @@ class SourceProfileRegistry:
             "subjects":                 existing.get("subjects", []),
             "clips":                    existing.get("clips", []),
             "default_segment_duration": default_segment_duration,
+            "default_background_id":   default_background_id,
         }
         return new_reg
 
