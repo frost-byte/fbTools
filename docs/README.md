@@ -26,6 +26,7 @@ Welcome to the comfyui-fbTools documentation. This directory contains all docume
 ### UI & Video
 - [Video Prompt UI Layout](VIDEO_PROMPT_UI_LAYOUT.md) - Video prompt interface design
 - [Video Prompt UX Implementation](VIDEO_PROMPT_UX_IMPLEMENTATION.md) - User experience details
+- [Frontend i18n / Localization](frontend_i18n_localization.md) - What ComfyUI's locale system covers (commands, node defs, settings) vs. what's outside it (our own custom sidebar panel content) — reference only, not currently used
 
 ### VLM / LLM Systems
 - [VLM Systems](vlm_systems.md) - The two existing VLM backends (dataset captioning vs. Compose LLM panel) and their routing rule
