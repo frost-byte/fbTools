@@ -1,0 +1,8 @@
+{
+    "fb_tools_extract-node-json": {
+        "label": "Extract Node as JSON — view it in the fbTools sidebar's Node Inspector tab (also copied to clipboard)"
+    },
+    "fb_tools_send-get-set-to-back": {
+        "label": "Send Get/Set Nodes to Back — push all GetNode/SetNode instances behind other nodes, on canvas and on save"
+    }
+}

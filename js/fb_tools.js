@@ -287,31 +287,6 @@ app.extensionManager.registerSidebarTab({
     },
 });
 
-// The selection toolbox renders our two commands via ComfyUI's own button component, which
-// resolves its title/tooltip text from an i18n key (`commands.<id>.label`) rather than the
-// command's own `label` field. Since we don't ship a locale file registering that key, it
-// silently resolves to an empty string -- confirmed live, both the rendered button's aria-label
-// and its hover tooltip are "" -- so the icon-only buttons give no hint at all what they do. Set
-// a native `title` attribute lazily, on first hover, instead of fighting ComfyUI's i18n plumbing:
-// cheap (one delegated listener, real work only runs once per button) and shows a normal browser
-// tooltip regardless of how the toolbox itself resolves its own text.
-const TOOLTIP_BY_ICON = {
-    "pi-file-arrow-up": "Extract Node as JSON — view it in the fbTools sidebar's Node Inspector tab (also copied to clipboard)",
-    "pi-angle-double-down": "Send Get/Set Nodes to Back — push all GetNode/SetNode instances behind other nodes, on canvas and on save",
-};
-function attachSelectionToolboxTooltips() {
-    document.addEventListener("pointerover", (e) => {
-        const btn = e.target.closest?.("button");
-        if (!btn || btn.title) return;
-        for (const [iconClass, tooltip] of Object.entries(TOOLTIP_BY_ICON)) {
-            if (btn.querySelector(`i.${iconClass}`)) {
-                btn.title = tooltip;
-                return;
-            }
-        }
-    });
-}
-
 // Add context menu entry for extracting a node as json
 app.registerExtension({
     name: "FBToolsContextMenu",
@@ -331,7 +306,6 @@ app.registerExtension({
     },
     setup() {
         patchGraphSerializeOrder();
-        attachSelectionToolboxTooltips();
     },
     commands: [{
         id: "fb_tools.extract-node-json",

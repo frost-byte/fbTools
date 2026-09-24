@@ -46,7 +46,7 @@ Icon = "https://raw.githubusercontent.com/frost-byte/fbTools/main/icon_256.png"
 Tags = []
 Repository = "https://github.com/frost-byte/fbTools"
 
-includes = ['js']
+includes = ['js', 'locales']
 
 [tool.setuptools.package-data]
 "*" = ["*.*"]
