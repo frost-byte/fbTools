@@ -169,13 +169,14 @@ function _allMedia(type, dir) {
 // ── Data load ─────────────────────────────────────────────────────────────────
 
 async function _loadAll() {
-    const [pr, vIn, vOut, iIn, iOut, lorasRes] = await Promise.allSettled([
+    const [pr, vIn, vOut, iIn, iOut, lorasRes, bgRes] = await Promise.allSettled([
         sourceProfilesApi.list(),
         bundlesApi.listMedia("video", true, "input"),
         bundlesApi.listMedia("video", true, "output"),
         bundlesApi.listMedia("image", true, "input"),
         bundlesApi.listMedia("image", true, "output"),
         fetch("/fbtools/loras/list").then(r => r.json()),
+        fetch("/fbtools/backgrounds/list").then(r => r.json()),
     ]);
     _S.profiles       = pr.value?.profiles    ?? [];
     _S.mediaVideos    = vIn.value?.files      ?? [];
@@ -183,6 +184,18 @@ async function _loadAll() {
     _S.mediaImages    = iIn.value?.files      ?? [];
     _S.mediaImagesOut = iOut.value?.files     ?? [];
     _S.lorasList      = lorasRes.value?.loras ?? [];
+    // Same registry Compositions use for background-as-<Subject N> references
+    // (utils/composition_resources.py); only entries with reference_images are
+    // useful here, but list them all — a background without images just never
+    // mints a Subject slot when picked (see _build_background_slot server-side).
+    _S.backgrounds    = bgRes.value?.backgrounds ?? [];
+}
+
+function _bgOptions() {
+    return [
+        { id: "", label: "— none —" },
+        ...(_S.backgrounds || []).map(b => ({ id: b.id, label: b.name || b.id })),
+    ];
 }
 
 async function _loadHistory(profileId) {
@@ -610,6 +623,20 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         sourceProfilesApi.save(profile).catch(err => _toast(`Save failed: ${err.message}`, "error"));
     });
 
+    // Default background — fallback for any clip that doesn't set its own background_id
+    // (see the per-clip picker below). Same backgrounds.json registry Compositions use.
+    const defaultBgSel = _mk("select", { cls: "spe-clip-sel",
+        title: "Fallback background used as a <Subject N> visual reference for any clip below that doesn't pick its own." });
+    _bgOptions().forEach(o => {
+        const opt = _mk("option", { value: o.id }, [o.label]);
+        if (o.id === (profile.default_background_id || "")) opt.selected = true;
+        defaultBgSel.appendChild(opt);
+    });
+    defaultBgSel.addEventListener("change", () => {
+        profile.default_background_id = defaultBgSel.value;
+        sourceProfilesApi.save(profile).catch(err => _toast(`Save failed: ${err.message}`, "error"));
+    });
+
     const autoSegBtn = _mk("button", { cls: "spe-btn sm", onclick: runAutoSegment }, ["Auto-segment"]);
 
     // ── Video settings (collapsible) ─────────────────────────────────────────
@@ -639,6 +666,10 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     videoSettingsBody.appendChild(_mk("div", { cls: "spe-clips-toolbar", style: { marginTop: "4px" } }, [
         _mk("label", { title: "Proxy resolution — shorter edge in pixels (must be ÷32)" }, ["Proxy edge:"]),
         proxyEdgeSel,
+    ]));
+    videoSettingsBody.appendChild(_mk("div", { cls: "spe-clips-toolbar", style: { marginTop: "4px" } }, [
+        _mk("label", { title: "Fallback background used as a <Subject N> visual reference for any clip below that doesn't pick its own." }, ["Default background:"]),
+        defaultBgSel,
     ]));
 
     // Detect row — active backend badge + detect button
@@ -1488,6 +1519,33 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             });
             updateSlotLabels();
 
+            // Per-clip background — overrides the profile's default background (see the
+            // "Default background" picker in Video settings above) for this segment only.
+            const clipBgSel = _mk("select", { cls: "spe-clip-sel",
+                title: "Background for this segment — overrides the profile's default background." });
+            _bgOptions().forEach(o => {
+                const opt = _mk("option", { value: o.id }, [o.label]);
+                if (o.id === (clip.background_id || "")) opt.selected = true;
+                clipBgSel.appendChild(opt);
+            });
+            clipBgSel.onchange = () => { clips[i] = { ...clips[i], background_id: clipBgSel.value }; commitClip(i); };
+
+            const applyBgAllBtn = _mk("button", {
+                cls: "spe-btn sm ghost",
+                title: "Copy this background to all segments",
+                textContent: "→ all",
+                style: { padding: "1px 5px", fontSize: "10px", opacity: "0.65" },
+            });
+            applyBgAllBtn.addEventListener("click", () => {
+                const val = clipBgSel.value;
+                clips.forEach((c, j) => {
+                    if (j === i) return;
+                    clips[j] = { ...clips[j], background_id: val };
+                    commitClip(j);
+                });
+                _toast("Background applied to all segments", "success");
+            });
+
             const applyLoraToAll = (loraEntry) => {
                 if (!loraEntry.name) return;
                 let applied = 0;
@@ -1547,6 +1605,11 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 boundsRow,
                 actionEl,
                 subjects.length ? subjWrap : null,
+                _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px", marginTop: "4px" } }, [
+                    _mk("span", { cls: "spe-clip-field-label", style: { flex: "1", marginBottom: "0" } }, ["Background"]),
+                    applyBgAllBtn,
+                ]),
+                clipBgSel,
                 _mk("div", { style: { display: "flex", gap: "4px" } }, [describeBtn]),
                 _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" } }, [
                     _mk("span", { cls: "spe-clip-field-label", style: { flex: "1", marginBottom: "0" } }, ["Overall soundscape"]),
