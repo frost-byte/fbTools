@@ -1,17 +1,19 @@
 """Source-level contract test for the /fbtools/source_profiles/proxy_stream route in
-extension.py (Plan 15: SceneCastBuild clip video preview).
+nodes/source_profiles.py (Plan 15: SceneCastBuild clip video preview; moved out of
+extension.py in Plan 28).
 
-Follows tests/test_dataset_caption_api.py's pattern: extension.py depends on full ComfyUI runtime
-modules unavailable in unit tests, so this AST-parses the route handler's source instead of
-importing it, and asserts on the safety checks that matter — the same allow-listed-root pattern
-as the sibling /fbtools/bundles/audio_cache/stream route (itself untested; this is the first test
-of that whole pattern in this repo, not a duplicate of an existing one).
+Follows tests/test_dataset_caption_api.py's pattern: this module depends on full ComfyUI
+runtime modules unavailable in unit tests, so this AST-parses the route handler's source
+instead of importing it, and asserts on the safety checks that matter — the same
+allow-listed-root pattern as the sibling /fbtools/bundles/audio_cache/stream route (itself
+untested; this is the first test of that whole pattern in this repo, not a duplicate of an
+existing one).
 """
 import ast
 from pathlib import Path
 
-EXTENSION_PATH = Path(__file__).resolve().parents[1] / "extension.py"
-SOURCE = EXTENSION_PATH.read_text(encoding="utf-8")
+SOURCE_PATH = Path(__file__).resolve().parents[1] / "nodes" / "source_profiles.py"
+SOURCE = SOURCE_PATH.read_text(encoding="utf-8")
 TREE = ast.parse(SOURCE)
 
 
