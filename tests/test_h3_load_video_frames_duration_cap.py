@@ -1,10 +1,11 @@
-"""Source-level contract test for a regression in _h3_load_video_frames() (extension.py):
-the duration -> frame_load_cap conversion must divide by select_every_nth.
+"""Source-level contract test for a regression in _h3_load_video_frames()
+(nodes/compositions.py, moved out of extension.py in Plan 29): the duration -> frame_load_cap
+conversion must divide by select_every_nth.
 
-extension.py can't be imported directly in unit tests (its ~75 io.ComfyNode subclasses need a
-real base class, not conftest.py's bare MagicMock) — see test_dataset_caption_api.py's own
-docstring for the same constraint. AST-parsing the function's source is this repo's established
-way of covering an extension.py route/function under that constraint.
+extension.py (and its split-out nodes/ modules) can't be imported directly in unit tests (its
+~75 io.ComfyNode subclasses need a real base class, not conftest.py's bare MagicMock) — see
+test_dataset_caption_api.py's own docstring for the same constraint. AST-parsing the function's
+source is this repo's established way of covering a route/function under that constraint.
 
 Bug history: duration_cap was computed as int(duration * target_fps), ignoring
 select_every_nth entirely, while `frame_load_cap` (which this value feeds) is compared against
@@ -16,7 +17,7 @@ then got ping-pong padded to 124 for not being a valid H3 17k+5 count — 56 alr
 import ast
 from pathlib import Path
 
-EXTENSION_PATH = Path(__file__).resolve().parents[1] / "extension.py"
+EXTENSION_PATH = Path(__file__).resolve().parents[1] / "nodes" / "compositions.py"
 SOURCE = EXTENSION_PATH.read_text(encoding="utf-8")
 TREE = ast.parse(SOURCE)
 

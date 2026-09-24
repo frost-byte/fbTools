@@ -2,28 +2,39 @@
 
 extension.py can't be imported directly in tests (its ~75 io.ComfyNode subclasses need a real
 base class, not conftest.py's bare MagicMock) — see test_dataset_caption_api.py's own docstring
-for the same constraint. AST-parsing is this repo's established way of covering an extension.py
-route/function under that constraint (also used by
-tests/test_source_profile_proxy_stream_route.py and tests/test_h3_load_video_frames_duration_cap.py
-earlier this session).
+for the same constraint. AST-parsing is this repo's established way of covering a route/function
+under that constraint (also used by tests/test_source_profile_proxy_stream_route.py and
+tests/test_h3_load_video_frames_duration_cap.py earlier this session).
+
+The functions this test covers moved out of extension.py in Plan 29, split across three files
+(bundles.py owns the routes; composition_shared.py and compositions.py each own one function the
+other needs, since neither is a leaf relative to the other -- see nodes/composition_shared.py's
+own docstring) -- so this searches all three rather than a single hardcoded path.
 """
 import ast
 from pathlib import Path
 
-EXTENSION_PATH = Path(__file__).resolve().parents[1] / "extension.py"
-SOURCE = EXTENSION_PATH.read_text(encoding="utf-8")
-TREE = ast.parse(SOURCE)
+_NODES_DIR = Path(__file__).resolve().parents[1] / "nodes"
+_CANDIDATE_PATHS = [
+    _NODES_DIR / "composition_shared.py",
+    _NODES_DIR / "compositions.py",
+    _NODES_DIR / "bundles.py",
+]
+_PARSED = [(p.read_text(encoding="utf-8"), ast.parse(p.read_text(encoding="utf-8"))) for p in _CANDIDATE_PATHS]
 
 
 def _find_function(name: str):
-    for node in ast.walk(TREE):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return node
+    for source, tree in _PARSED:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                node._source = source  # stashed for _src()
+                return node
     raise AssertionError(f"Missing function: {name}")
 
 
 def _src(name: str) -> str:
-    return ast.get_source_segment(SOURCE, _find_function(name)) or ""
+    node = _find_function(name)
+    return ast.get_source_segment(node._source, node) or ""
 
 
 def _decorator_route_paths(func_node) -> list[str]:
@@ -58,7 +69,7 @@ def test_resolve_cast_media_proxy_call_is_guarded_by_try_except():
     found_try_wrapping_ensure_call = False
     for node in ast.walk(func):
         if isinstance(node, ast.Try):
-            try_src = ast.get_source_segment(SOURCE, node) or ""
+            try_src = ast.get_source_segment(func._source, node) or ""
             if "_ensure_bundle_proxy(" in try_src:
                 found_try_wrapping_ensure_call = True
                 assert node.handlers, "the _ensure_bundle_proxy call must be inside a try/except"
