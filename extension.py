@@ -49,6 +49,9 @@ from .nodes.subjects import (
 )
 from .nodes.scene_templates import SceneTemplateIOType, SceneTemplateLoad, SceneTemplateList
 from .nodes.outfits import OutfitRegistryIOType, OutfitRegistryLoad, OutfitDefine, OutfitList
+from .nodes.composition_types import (
+    SourceProfileIOType, SceneInstanceIOType, CastIOType, H3RefplanType, CompositionIOType,
+)
 from .utils.composition_track_summary import summarize_scene_cast, summarize_loras, summarize_composition_meta
 from .nodes import kdenlive_archive as _kdenlive_archive_routes  # noqa: F401  (registers /fbtools/kdenlive/* routes on import)
 # Route-only modules: importing them registers their /fbtools/* handlers on the PromptServer routes.
@@ -404,25 +407,7 @@ def _source_profile_get_names() -> list[str]:
         return ["(none)"]
 
 
-# ── Custom type: SOURCE_PROFILE ───────────────────────────────────────────────
-
-SOURCE_PROFILE_TYPE = "SOURCE_PROFILE"
-
-
-@io.comfytype(io_type=SOURCE_PROFILE_TYPE)
-class SourceProfileIOType:
-    """Carries a full source profile (media ref + subjects list) between nodes."""
-    Type = object  # SourceProfileRegistry profile dict
-
-    class Input(io.Input):
-        def __init__(self, name: str, **kwargs):
-            super().__init__(name, **kwargs)
-
-    class Output(io.Output):
-        def __init__(self, name: str = "source_profile", **kwargs):
-            super().__init__(name, **kwargs)
-
-
+# SourceProfileIOType moved to nodes/composition_types.py (Plan 27)
 # ── Node: SourceProfileLoad ───────────────────────────────────────────────────
 
 class SourceProfileLoad(io.ComfyNode):
@@ -2927,25 +2912,7 @@ async def _source_profiles_prebuild_proxies(request: web.Request) -> web.Respons
 # OutfitRegistryLoad/OutfitDefine/OutfitList (+ OutfitRegistryIOType, _outfit_get_ids) moved to nodes/outfits.py (Plan 26)
 
 
-# ── Custom type: SCENE_INSTANCE ──────────────────────────────────────────────
-
-SCENE_INSTANCE_TYPE = "SCENE_INSTANCE"
-
-
-@io.comfytype(io_type=SCENE_INSTANCE_TYPE)
-class SceneInstanceIOType:
-    """Carries a composed scene dict between SceneCompose → PromptAssemble nodes."""
-    Type = object  # dict with template, slot_assignments, dialogue, outfit_overrides
-
-    class Input(io.Input):
-        def __init__(self, name: str, **kwargs):
-            super().__init__(name, **kwargs)
-
-    class Output(io.Output):
-        def __init__(self, name: str = "scene_instance", **kwargs):
-            super().__init__(name, **kwargs)
-
-
+# SceneInstanceIOType moved to nodes/composition_types.py (Plan 27)
 # ── Node: SceneCompose ────────────────────────────────────────────────────────
 
 class SceneCompose(io.ComfyNode):
@@ -3915,43 +3882,7 @@ async def _bundles_audio_cache_stream(request):
 # Scene Cast nodes  (Reference Bundle & Scene Cast system)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── Custom type: SCENE_CAST ───────────────────────────────────────────────────
-
-SCENE_CAST_TYPE = "SCENE_CAST"
-
-
-@io.comfytype(io_type=SCENE_CAST_TYPE)
-class CastIOType:
-    """Carries a scene cast dict between SceneCastLoad → PromptCompositionLoader nodes."""
-    Type = object  # dict: {id, name, entries: [{subject_id, bundle_id, visual_mode, use_audio}], ...}
-
-    class Input(io.Input):
-        def __init__(self, name: str, **kwargs):
-            super().__init__(name, **kwargs)
-
-
-H3_REFPLAN_TYPE = "FBTOOLS_H3_REFPLAN"
-
-
-@io.comfytype(io_type=H3_REFPLAN_TYPE)
-class H3RefplanType:
-    """Ordered reference descriptor bundle from PromptCompositionLoader → CompositionToH3Conditioning.
-
-    Carries descriptors (paths + params) for all references in native node order:
-      images → [soundtrack_audio + video] pairs → standalone_audios
-    Terminal node decodes media and delegates to MiniMaxH3ReferenceToVideo.execute.
-    """
-    Type = object  # dict: {prompt, model_type, ref_image_size, references: [...]}
-
-    class Input(io.Input):
-        def __init__(self, name: str, **kwargs):
-            super().__init__(name, **kwargs)
-
-    class Output(io.Output):
-        def __init__(self, name: str = "scene_cast", **kwargs):
-            super().__init__(name, **kwargs)
-
-
+# CastIOType/H3RefplanType moved to nodes/composition_types.py (Plan 27)
 # ── Scene Cast helpers ────────────────────────────────────────────────────────
 
 def _cast_get_ids() -> list[str]:
@@ -4897,25 +4828,7 @@ def _composition_get_names() -> list[str]:
         return ["(none)"]
 
 
-# ── Custom type + loader: PROMPT_COMPOSITION ─────────────────────────────────
-
-COMPOSITION_TYPE = "PROMPT_COMPOSITION"
-
-
-@io.comfytype(io_type=COMPOSITION_TYPE)
-class CompositionIOType:
-    """Carries a full saved Prompt Composition dict between nodes."""
-    Type = object  # composition dict (see utils/prompt_compositions.py schema)
-
-    class Input(io.Input):
-        def __init__(self, name: str, **kwargs):
-            super().__init__(name, **kwargs)
-
-    class Output(io.Output):
-        def __init__(self, name: str = "prompt_composition", **kwargs):
-            super().__init__(name, **kwargs)
-
-
+# CompositionIOType moved to nodes/composition_types.py (Plan 27)
 class CompositionLoad(io.ComfyNode):
     """Load a saved Prompt Composition and expose it for wiring into SceneCastBuild.
 
