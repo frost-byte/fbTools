@@ -1,5 +1,16 @@
 /* ── FBT Panel (panel chrome, tab strip, LLM status bar) ─────────────────── */
-.fbt-panel { display:flex; flex-direction:column; height:100%; flex:1; min-height:0; overflow:hidden; font-size:13px; }
+/* ComfyUI mounts sidebar tab content inside a plain `display:block` wrapper with no definite
+   height of its own (only ITS OWN ancestor, `.sidebar-content-container`, has one, from the
+   splitter layout). A `display:block` parent doesn't pass that height down to a percentage- or
+   flex-sized child, so `height:100%`/`flex:1` here have nothing to resolve against and this panel
+   (and everything under it) silently grows to fit its content instead of being clamped -- any
+   `flex:1; overflow:auto` region further down (e.g. Node Inspector's JSON tree) never gets real
+   internal overflow, which also breaks mousewheel scrolling wherever `overscroll-behavior:contain`
+   is set (nothing to scroll locally, so the wheel event has nowhere to go instead of chaining up).
+   Fix: escape the unconstrained wrapper via `position:absolute` sized against the nearest
+   positioned ancestor's PADDING box, which resolves correctly regardless of intervening display
+   modes. See the matching `.sidebar-content-container:has(.fbt-panel)` rule below. */
+.fbt-panel { display:flex; flex-direction:column; position:absolute; inset:0; flex:1; min-height:0; overflow:hidden; font-size:13px; }
 
 /* Header */
 .fbt-panel-hdr {
@@ -52,9 +63,16 @@
 .fbt-tab .pi { font-size:14px; }
 .fbt-tab-lbl { font-size:9px; text-transform:uppercase; letter-spacing:.04em; line-height:1; }
 
-/* Content panes — pure flex chain, no absolute positioning needed.
+/* Content panes — flex chain below .fbt-panel (which now escapes ComfyUI's own
+   unconstrained wrapper via position:absolute — see the comment on .fbt-panel above).
    Visibility is controlled via inline display style (not a class) so that
    render functions which set their own inline display can't accidentally
    override the hide logic. */
 .fbt-tab-contents { flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
 .fbt-tab-content  { flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+
+/* Establishes the positioned containing block .fbt-panel's position:absolute resolves against.
+   ComfyUI's own sidebar host div (`.sidebar-content-container`) already has a definite, correctly
+   -clamped height from the splitter layout, but is `position:static` by default. Scoped with
+   :has() so this never touches any other (non-fbTools) sidebar tab sharing the same host class. */
+.sidebar-content-container:has(.fbt-panel) { position:relative; }
