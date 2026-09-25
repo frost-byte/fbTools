@@ -406,7 +406,10 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     default="",
                     tooltip=(
                         "Optional prefix prepended to 'profile_name/clip_label' for the filename_prefix output. "
-                        "Include a trailing '/' to place outputs in a subfolder (e.g. 'video/' → 'video/office_work/clip_1'). "
+                        "Recommended: wire this from SceneCastBuild's filename_prefix output for automatic "
+                        "primary-subject/source_profiles foldering (e.g. 'video/alex/source_profiles/office_work/' "
+                        "-> '.../office_work/clip_1'). Or type a literal root here for standalone use without a cast "
+                        "(e.g. 'video/' -> 'video/office_work/clip_1'). "
                         "Wire the output into a VHS_VideoCombine filename_prefix input."
                     ),
                     optional=True,
@@ -1780,7 +1783,9 @@ async def _source_profiles_detect_segments(request: web.Request) -> web.Response
         use_8bit            bool
 
     Returns:
-        { "segments": [{start_time, end_time, label, action}, …], "raw_response": str }
+        { "segments": [{start_time, end_time, label, action, overall_soundscape,
+                         setting_label}, …],
+          "raw_response": str }
     """
     import tempfile
 

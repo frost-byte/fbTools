@@ -142,11 +142,19 @@ def extract_cast_info(prompt_graph: dict, load_composition=None) -> dict:
     Returns {"tags": [bundle_id, ...], "primary_subject": subject_id | None,
              "primary_bundle": bundle_id | None, "composition_name": str | None, "note": str | None}.
     tags is every distinct bundle_id from the SceneCastBuild cast entries, in first-seen order.
-    primary_subject is the subject in the composition's first slot (dict insertion order — never
-    sorted: slot_letter()'s A..Z, AA.. scheme sorts wrong past Z as plain strings). primary_bundle is
-    the specific bundle_id the cast used for that subject in this clip (None if that subject has no
-    cast entry / no bundle here, distinct from having no primary_subject at all). note explains a
-    None primary (no cast node, no composition, composition not found, or no slot assigned).
+
+    primary_subject prefers an explicit tag: a cast entry with "primary": true (set via the ★
+    toggle in the Scene Cast Build tab UI — see nodes/scene_casts.py::SceneCastBuild.execute()'s
+    own filename_prefix computation, which this mirrors) always wins, for both Composition- and
+    Source-Profile-driven clips alike. Only when no entry is tagged does this fall back to the
+    composition's first slot (dict insertion order — never sorted: slot_letter()'s A..Z, AA..
+    scheme sorts wrong past Z as plain strings) — which, as before, only works for a
+    Composition-driven clip; a Source-Profile-driven clip with nothing tagged still can't be
+    resolved. primary_bundle is the specific bundle_id the cast used for that subject in this clip
+    (None if that subject has no cast entry / no bundle here, distinct from having no
+    primary_subject at all). note explains a None primary (no cast node, no composition,
+    composition not found, or no slot assigned) — it is always None when primary_subject came from
+    an explicit tag.
     """
     cast_nodes = _find_nodes(prompt_graph, _SCENE_CAST_BUILD)
     if not cast_nodes:
@@ -171,6 +179,24 @@ def extract_cast_info(prompt_graph: dict, load_composition=None) -> dict:
             bundle_by_subject[sid] = bid
 
     comp_name = _composition_name(prompt_graph, cast_node)
+
+    # Explicit tag wins over everything below, for both Composition- and Source-Profile-driven
+    # clips — mirrors subject_id-or-source_subject_id fallback SceneCastBuild.execute() itself
+    # uses when resolving a source-derived entry's subject_id.
+    explicit_primary = next(
+        (
+            (entry.get("subject_id") or entry.get("source_subject_id"))
+            for entry in (entries if isinstance(entries, list) else [])
+            if isinstance(entry, dict) and entry.get("primary")
+            and (entry.get("subject_id") or entry.get("source_subject_id"))
+        ),
+        None,
+    )
+    if explicit_primary:
+        return {"tags": tags, "primary_subject": explicit_primary,
+                "primary_bundle": bundle_by_subject.get(explicit_primary),
+                "composition_name": comp_name, "note": None}
+
     if comp_name is None:
         return {"tags": tags, "primary_subject": None, "primary_bundle": None, "composition_name": None,
                 "note": "no Prompt Composition resolved — likely Source-Profile-driven; "

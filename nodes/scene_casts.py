@@ -18,7 +18,11 @@ from .shared import (
     reload_counter, send_status_update,
 )
 from .composition_types import CastIOType, SourceProfileIOType, CompositionIOType
-from ..utils.scene_casts import load_registry as _load_cast_registry
+from ..utils.scene_casts import (
+    load_registry as _load_cast_registry,
+    resolve_primary_subject as _resolve_primary_subject,
+    build_cast_filename_prefix as _build_cast_filename_prefix,
+)
 from ..utils.reference_bundles import load_registry as _load_bundle_registry
 from ..utils.subject_profiles import load_registry as _load_subject_registry
 from ..utils.source_profiles import (
@@ -26,7 +30,10 @@ from ..utils.source_profiles import (
     resolve_ordinal_subject as _sp_resolve_ordinal_subject,
     resolve_ordinal_from_list as _sp_resolve_ordinal_from_list,
 )
-from ..utils.prompt_compositions import composition_ordinal_roster as _composition_ordinal_roster
+from ..utils.prompt_compositions import (
+    composition_ordinal_roster as _composition_ordinal_roster,
+    _slugify,
+)
 from ..utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -237,6 +244,18 @@ class SceneCastBuild(io.ComfyNode):
                         "execute(); do not edit by hand."
                     ),
                 ),
+                io.String.Input(
+                    "filename_prefix",
+                    display_name="Filename Prefix",
+                    default="",
+                    optional=True,
+                    tooltip=(
+                        "Optional literal root (e.g. 'video/'). The primary-subject and "
+                        "comps/source-profile segments are added automatically from "
+                        "whichever cast entry's tab is marked primary (★) and whichever "
+                        "of Source Profile / Prompt Composition is connected."
+                    ),
+                ),
             ],
             outputs=[
                 CastIOType.Output(
@@ -272,6 +291,17 @@ class SceneCastBuild(io.ComfyNode):
                     display_name="Prompt Composition",
                     tooltip="Pass-through of the connected Prompt Composition.",
                 ),
+                io.String.Output(
+                    "filename_prefix",
+                    display_name="Filename Prefix",
+                    tooltip=(
+                        "prefix + primary_subject_id + comps|source_profiles/<name> "
+                        "(e.g. 'video/alex/comps/'). Wire into SourceProfileClipPrompt or "
+                        "PromptCompositionLoader's own filename_prefix input, which "
+                        "appends the clip/composition name. Empty if no cast entry is "
+                        "marked primary."
+                    ),
+                ),
             ],
         )
 
@@ -284,6 +314,7 @@ class SceneCastBuild(io.ComfyNode):
         clip_duration_multiplier: int = 1,
         prompt_composition=None,
         composition_overrides_json: str = "{}",
+        filename_prefix: str = "",
         **_,
     ):
         bundle_mtime = subject_mtime = source_mtime = 0
@@ -305,7 +336,8 @@ class SceneCastBuild(io.ComfyNode):
         pc_id = prompt_composition.get("id", "") if isinstance(prompt_composition, dict) else ""
         pc_subjects = json.dumps(prompt_composition.get("subjects", {}), sort_keys=True) if isinstance(prompt_composition, dict) else ""
         return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json, clip_id, sp_id,
-                clip_duration_multiplier, pc_id, pc_subjects, composition_overrides_json)
+                clip_duration_multiplier, pc_id, pc_subjects, composition_overrides_json,
+                filename_prefix)
 
     @classmethod
     def execute(
@@ -316,6 +348,7 @@ class SceneCastBuild(io.ComfyNode):
         clip_duration_multiplier: int = 1,
         prompt_composition=None,
         composition_overrides_json: str = "{}",
+        filename_prefix: str = "",
         **_,
     ) -> io.NodeOutput:
         try:
@@ -475,6 +508,7 @@ class SceneCastBuild(io.ComfyNode):
                         "image_selection": image_selection,
                         "retention":       retention or _RETENTION_SOURCE,
                         "dialogue":        str(e.get("dialogue", "") or "").strip(),
+                        "primary":         bool(e.get("primary", False)),
                         **src_fields,
                     })
                 else:
@@ -483,6 +517,7 @@ class SceneCastBuild(io.ComfyNode):
                         "subject_id": subject_id or source_subject_id,
                         "retention":  retention or _RETENTION_SOURCE,
                         "dialogue":   str(e.get("dialogue", "") or "").strip(),
+                        "primary":    bool(e.get("primary", False)),
                         **src_fields,
                     })
 
@@ -499,6 +534,7 @@ class SceneCastBuild(io.ComfyNode):
                     "image_selection": image_selection,
                     "retention":       retention or _RETENTION_BUNDLE,
                     "dialogue":        str(e.get("dialogue", "") or "").strip(),
+                    "primary":         bool(e.get("primary", False)),
                 })
 
         # Flag (never silently resolve) two or more entries landing on the same
@@ -554,26 +590,41 @@ class SceneCastBuild(io.ComfyNode):
                  + (" + source profile" if has_sp else "") + ")"]
         for e in entries:
             ret_str = f" [{e.get('retention', '')}]" if e.get("retention") else ""
+            bullet = "★" if e.get("primary") else "•"
             if e.get("source_profile_id") and e.get("bundle_id"):
                 # Hybrid
                 audio_flag = " + audio" if e.get("use_audio") else ""
                 sp_subj = e.get("source_subject_id", "?")
                 lines.append(
-                    f"  • {e['subject_id']} [{e['bundle_id']},"
+                    f"  {bullet} {e['subject_id']} [{e['bundle_id']},"
                     f" {e['visual_mode']}{audio_flag}] + src:{sp_subj}{ret_str}"
                 )
             elif e.get("source_profile_id"):
                 # Source-only
                 etype = e.get("entity_type", "?")
                 role  = e.get("role_description", e.get("subject_id", "?"))
-                lines.append(f"  • [{etype}] {role}{ret_str}")
+                lines.append(f"  {bullet} [{etype}] {role}{ret_str}")
             else:
                 # Bundle-only
                 audio_flag = " + audio" if e.get("use_audio") else ""
                 lines.append(
-                    f"  • {e['subject_id']} → {e['bundle_id']} [{e['visual_mode']}{audio_flag}]{ret_str}"
+                    f"  {bullet} {e['subject_id']} → {e['bundle_id']} [{e['visual_mode']}{audio_flag}]{ret_str}"
                 )
         summary = "\n".join(lines)
+
+        # ── filename_prefix: {prefix}{primary_subject_id}/{comps|source_profiles/<name>}/ ──
+        # No fallback guessing here when nothing is tagged primary — that inference stays
+        # in utils.generation_metadata.extract_cast_info() for archive-time reprocessing
+        # of clips generated before this existed. See the design notes in
+        # ~/.claude/plans/scene-cast-primary-subject-path.md.
+        primary_subject_id = _resolve_primary_subject(entries)
+        if has_sp:
+            kind = f"source_profiles/{_slugify(source_profile.get('name', ''))}"
+        elif isinstance(prompt_composition, dict) and prompt_composition:
+            kind = "comps"
+        else:
+            kind = ""
+        filename_prefix_out = _build_cast_filename_prefix(filename_prefix, primary_subject_id, kind)
 
         send_status_update(
             cls.hidden.unique_id,
@@ -581,4 +632,5 @@ class SceneCastBuild(io.ComfyNode):
             + (" | source profile" if has_sp else ""),
         )
         mult = max(1, int(clip_duration_multiplier or 1))
-        return io.NodeOutput(cast, summary, source_profile or {}, clip_id or "", mult, prompt_composition or {})
+        return io.NodeOutput(cast, summary, source_profile or {}, clip_id or "", mult,
+                              prompt_composition or {}, filename_prefix_out)

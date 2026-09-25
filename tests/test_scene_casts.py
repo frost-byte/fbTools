@@ -14,6 +14,8 @@ validate_cast = sc.validate_cast
 resolve_cast_for_subject = sc.resolve_cast_for_subject
 make_entry = sc.make_entry
 VISUAL_MODES = sc.VISUAL_MODES
+resolve_primary_subject = sc.resolve_primary_subject
+build_cast_filename_prefix = sc.build_cast_filename_prefix
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -333,3 +335,66 @@ def test_resolve_returns_copy():
     entry = resolve_cast_for_subject(cast, "char_alice")
     entry["bundle_id"] = "TAMPERED"
     assert resolve_cast_for_subject(cast, "char_alice")["bundle_id"] == "alice_autumn"
+
+
+# ── resolve_primary_subject ───────────────────────────────────────────────────
+
+def test_resolve_primary_subject_empty_entries():
+    assert resolve_primary_subject([]) == ""
+
+
+def test_resolve_primary_subject_none_flagged():
+    entries = [{"subject_id": "alice"}, {"subject_id": "bob"}]
+    assert resolve_primary_subject(entries) == ""
+
+
+def test_resolve_primary_subject_one_flagged():
+    entries = [
+        {"subject_id": "alice", "primary": False},
+        {"subject_id": "bob", "primary": True},
+    ]
+    assert resolve_primary_subject(entries) == "bob"
+
+
+def test_resolve_primary_subject_first_flagged_wins_when_multiple():
+    # The UI is what enforces "only one" — this function stays defensive rather than erroring.
+    entries = [
+        {"subject_id": "alice", "primary": True},
+        {"subject_id": "bob", "primary": True},
+    ]
+    assert resolve_primary_subject(entries) == "alice"
+
+
+def test_resolve_primary_subject_flagged_but_no_subject_id_skipped():
+    entries = [
+        {"subject_id": "", "primary": True},
+        {"subject_id": "bob", "primary": True},
+    ]
+    assert resolve_primary_subject(entries) == "bob"
+
+
+# ── build_cast_filename_prefix ────────────────────────────────────────────────
+
+def test_build_filename_prefix_all_parts():
+    assert build_cast_filename_prefix("video/", "alex", "comps") == "video/alex/comps/"
+
+
+def test_build_filename_prefix_no_literal_prefix():
+    assert build_cast_filename_prefix("", "alex", "source_profiles/office_work") == \
+        "alex/source_profiles/office_work/"
+
+
+def test_build_filename_prefix_no_primary():
+    assert build_cast_filename_prefix("video/", "", "comps") == "video/comps/"
+
+
+def test_build_filename_prefix_no_kind():
+    assert build_cast_filename_prefix("video/", "alex", "") == "video/alex/"
+
+
+def test_build_filename_prefix_nothing_tagged():
+    assert build_cast_filename_prefix("video/", "", "") == "video/"
+
+
+def test_build_filename_prefix_everything_empty():
+    assert build_cast_filename_prefix("", "", "") == ""

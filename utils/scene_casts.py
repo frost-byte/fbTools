@@ -231,3 +231,25 @@ def resolve_cast_for_subject(cast: dict, subject_id: str) -> dict | None:
         if entry.get("subject_id") == subject_id:
             return copy.deepcopy(entry)
     return None
+
+
+# ── Primary-subject output routing ────────────────────────────────────────────
+
+def resolve_primary_subject(entries: list[dict]) -> str:
+    """First cast entry flagged primary, or "" if none is (or the flagged one has no
+    subject_id). Defensive: never raises, and more than one flagged entry (a hand-edited
+    cast_entries_json, or a workflow-API call bypassing the UI's own exclusivity) just
+    takes the first — the UI is what actually enforces "only one," not this function."""
+    for e in entries:
+        if e.get("primary") and e.get("subject_id"):
+            return e["subject_id"]
+    return ""
+
+
+def build_cast_filename_prefix(prefix: str, primary_subject_id: str, kind: str) -> str:
+    """Compose a VHS_VideoCombine-ready filename_prefix root from an optional literal
+    prefix, the tagged primary subject id, and a "kind" folder segment (e.g. "comps" or
+    "source_profiles/<slug>"). Never guesses primary_subject_id or kind — that's the
+    caller's job (see SceneCastBuild.execute()); an empty part is simply omitted."""
+    parts = [p for p in (primary_subject_id, kind) if p]
+    return prefix + ("/".join(parts) + "/" if parts else "")

@@ -326,7 +326,7 @@ function _buildCastBuildUI(node, app) {
 
             const lbl = document.createElement("span");
             lbl.className = "fbt-scb-tab-lbl";
-            lbl.textContent = _tabLabel(idx);
+            lbl.textContent = (_entries[idx]?.primary ? "★ " : "") + _tabLabel(idx);
             lbl.title = _entries[idx]?.bundle_id || _entries[idx]?.subject_id || `Entry ${idx + 1}`;
             tab.appendChild(lbl);
 
@@ -545,7 +545,26 @@ function _buildCastBuildUI(node, app) {
         _fillBundleSel(bundSel, _compOrdinal ? "" : (entry.subject_id || ""), entry.bundle_id || "");
         subjSel.disabled = _compOrdinal;
 
-        row1.append(_lbl("Subject"), subjSel, arrow, _lbl("Bundle"), bundSel);
+        // Primary subject: exactly one entry across all tabs may be flagged. Feeds
+        // SceneCastBuild's filename_prefix output (see nodes/scene_casts.py); exclusivity is
+        // enforced here by rewriting every entry's flag in the same commit, not by validation.
+        const primaryBtn = document.createElement("button");
+        primaryBtn.className = "fbt-scb-primary-toggle";
+        primaryBtn.textContent = "★";
+        primaryBtn.title = entry.primary
+            ? "Primary subject for this generation's output path — click to unset"
+            : "Mark as the primary subject for this generation's output path (only one entry can be primary)";
+        primaryBtn.classList.toggle("active", !!entry.primary);
+        primaryBtn.addEventListener("click", () => {
+            const makePrimary = !entry.primary;
+            _entries.forEach(e => { e.primary = false; });
+            if (makePrimary) entry.primary = true;
+            _syncWidget();
+            _buildTabStrip();   // refresh star markers on other tabs
+            _renderActiveTab(); // refresh this button's active state/title
+        });
+
+        row1.append(_lbl("Subject"), subjSel, arrow, _lbl("Bundle"), bundSel, primaryBtn);
 
         // ── Row 2: Source + Mode + Audio ─────────────────────────────────────────
         const row2 = document.createElement("div");

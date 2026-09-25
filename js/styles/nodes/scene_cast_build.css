@@ -227,6 +227,28 @@
     background: var(--p-surface-hover, #2a2a2a);
     color: var(--p-surface-200, #ddd);
 }
+
+/* ── Primary-subject toggle ────────────────────────────────────────────────── */
+.fbt-scb-primary-toggle {
+    padding: 2px 6px;
+    font-size: 11px;
+    background: var(--fbt-input-bg);
+    border: 1px solid var(--fbt-border);
+    border-radius: 3px;
+    color: var(--fbt-muted);
+    cursor: pointer;
+    line-height: 1.4;
+    flex-shrink: 0;
+}
+.fbt-scb-primary-toggle.active {
+    background: var(--fbt-warn);
+    border-color: var(--fbt-warn-border);
+    color: #fff;
+}
+.fbt-scb-primary-toggle:not(.active):hover {
+    background: var(--p-surface-hover, #2a2a2a);
+    color: var(--fbt-warn);
+}
 .fbt-scb-ord-input {
     width: 40px;
     padding: 2px 4px;

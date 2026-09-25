@@ -85,6 +85,72 @@ def test_no_composition_node_at_all_source_profile_driven():
     assert "Source-Profile" in info["note"]
 
 
+# ── Explicit "primary" tag (Scene Cast Build's ★ toggle) ────────────────────────────
+
+def test_explicit_primary_resolves_source_profile_driven_clip():
+    # This is exactly the case the docstring used to call "can't be determined yet" —
+    # an explicit tag closes it.
+    graph = {"1": _cast_node([
+        {"subject_id": "a", "bundle_id": "bun_a", "primary": False},
+        {"subject_id": "b", "bundle_id": "bun_b", "primary": True},
+    ])}
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["primary_subject"] == "b"
+    assert info["primary_bundle"] == "bun_b"
+    assert info["composition_name"] is None
+    assert info["note"] is None
+
+
+def test_explicit_primary_falls_back_to_source_subject_id_when_no_subject_id():
+    # Mirrors SceneCastBuild.execute()'s own subject_id-or-source_subject_id resolution
+    # for a source-derived entry the UI never assigned an explicit subject_id to.
+    graph = {"1": _cast_node([
+        {"subject_id": "", "source_subject_id": "sp_char_1", "primary": True},
+    ])}
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["primary_subject"] == "sp_char_1"
+
+
+def test_explicit_primary_overrides_composition_slot_order():
+    graph = {
+        "3918": _cast_node(
+            [{"subject_id": "alex", "bundle_id": "alex_bundle", "primary": False},
+             {"subject_id": "sam", "bundle_id": "sam_bundle", "primary": True}],
+            prompt_composition_link=["3923", 0],
+        ),
+        "3923": _comp_load_node("wide_shot"),
+    }
+    compositions = {"wide_shot": {"subjects": {"A": "alex", "B": "sam"}}}
+    info = extract_cast_info(graph, load_composition=_loader(compositions))
+    # Slot order alone would say "alex" (slot A) — the explicit flag wins instead.
+    assert info["primary_subject"] == "sam"
+    assert info["primary_bundle"] == "sam_bundle"
+    assert info["composition_name"] == "wide_shot"
+    assert info["note"] is None
+
+
+def test_no_primary_tag_falls_through_to_slot_order_unchanged():
+    # Regression guard: untagged entries behave exactly as before this feature existed.
+    graph = {
+        "3918": _cast_node(
+            [{"subject_id": "alex", "bundle_id": "alex_bundle"},
+             {"subject_id": "sam", "bundle_id": "sam_bundle"}],
+            prompt_composition_link=["3923", 0],
+        ),
+        "3923": _comp_load_node("wide_shot"),
+    }
+    compositions = {"wide_shot": {"subjects": {"A": "alex", "B": "sam"}}}
+    info = extract_cast_info(graph, load_composition=_loader(compositions))
+    assert info["primary_subject"] == "alex"
+
+
+def test_empty_string_primary_is_falsy_not_tagged():
+    graph = {"1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a", "primary": ""}])}
+    info = extract_cast_info(graph, load_composition=_loader({}))
+    assert info["primary_subject"] is None  # no composition either -> untagged source-profile case
+    assert "Source-Profile" in info["note"]
+
+
 # ── Cast / tags ──────────────────────────────────────────────────────────────────
 
 def test_no_scene_cast_build_node():
