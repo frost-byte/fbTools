@@ -37,10 +37,7 @@ class SubdirLister(io.ComfyNode):
 
         subdir_dict = get_subdirectories(directory_path)
 
-        return io.NodeOutput({
-            "dir_dict": subdir_dict,
-            "dir_names": list(subdir_dict.keys()) if subdir_dict else []
-        })
+        return io.NodeOutput(subdir_dict, list(subdir_dict.keys()) if subdir_dict else [])
 
 class MultiLoraLoader(io.ComfyNode):
     """

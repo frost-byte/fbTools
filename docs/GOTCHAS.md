@@ -13,6 +13,88 @@ next time.
 
 ---
 
+## `io.NodeOutput(*args)` takes positional values, not a dict — a single dict silently eats the rest
+
+**Symptom**: a node declares 2+ outputs in its schema, but only its first output ever seems to
+reach downstream nodes correctly, and it arrives as the *wrong type* — e.g. a whole Python dict
+where a plain `IMAGE` tensor was expected. Wiring the node's real output into a real consumer
+(`PreviewImage`, `MaskToImage`, etc.) throws something like `KeyError: 0` deep inside ComfyUI's own
+`nodes.py` — the consumer tried `images[0]` on what turned out to be a dict, not a tensor/batch.
+
+**Cause**: `comfy_api.latest._io.NodeOutput.__init__(self, *args, ...)` stores whatever positional
+arguments you pass as a plain tuple (`self.args = args`), and each declared output slot reads from
+that tuple by index — slot 0 is `args[0]`, slot 1 is `args[1]`, and so on. Calling
+`io.NodeOutput({"output_image": img, "info": info})` passes **one** argument — a dict — so
+`self.args` is a **1-element tuple containing that dict**. Output slot 0 becomes the whole dict
+instead of `img`, and slot 1 (`info`) doesn't exist at all, even though the schema promises it.
+Nothing validates the argument count against the schema at definition time, so this only surfaces
+the moment something downstream actually tries to consume a slot past the first — which can be a
+long time after the node was written, if it was never exercised end-to-end before.
+
+**Found**: `SAMPreprocessNHWC`, `TailEnhancePro`, `TailSplit`, `OpaqueAlpha` (`nodes/image_processing.py`)
+and `SubdirLister` (`nodes/utility.py`) all had this exact bug, caught only once each was actually
+wired into a real consumer while building `example_workflows/` fixtures — not by reading the code,
+and not by any existing test (none of these nodes' `execute()` methods are covered by
+`tests/`, only their pure `utils/` helpers are). **Not every `io.NodeOutput({...})` call is wrong**:
+`AudioFixShape` (`nodes/audio.py`) correctly passes a single dict, because its schema declares
+exactly **one** `AUDIO`-typed output, and ComfyUI's own AUDIO convention *is* a
+`{"waveform", "sample_rate"}` dict — one argument for one output. Check the schema's output count
+before assuming a dict-argument call is broken.
+
+**Fix pattern**: match the schema exactly — `io.NodeOutput(value1, value2, value3)`, one positional
+argument per declared output, in the same order as the node's own `outputs=[...]` list. Never pass
+a single dict meant to represent multiple outputs.
+
+---
+
+## A tensor "mask" output declared as `io.Image.Output` instead of `io.Mask.Output`
+
+**Symptom**: wiring a node's mask-shaped output into `PreviewImage` throws
+`TypeError: Cannot handle this data type: (1, 1, 1), |u1` deep inside ComfyUI's core `save_images`.
+
+**Cause**: `OpaqueAlpha` (`nodes/image_processing.py`) built its "opaque mask" as a genuine 1-channel
+tensor (`[B, H, W, 1]`) but declared its output as `io.Image.Output`, which any standard IMAGE
+consumer (like `PreviewImage`) expects to be 3- or 4-channel RGB/RGBA. Compare `MaskProcessor` in
+the same file, which correctly declares its mask output as `io.Mask.Output` and returns a bare
+`[B, H, W]` tensor (no trailing channel dim) — that's this codebase's real MASK convention
+throughout, matching ComfyUI's own. A mask-shaped value declared as IMAGE will fail the moment a
+real IMAGE consumer touches it; only the earlier `NodeOutput` bug above happened to hide this one
+for so long (that bug corrupted the output before it ever reached a consumer).
+
+**Fix pattern**: if a node's output is genuinely a mask, declare it `io.Mask.Output` and squeeze it
+to `[B, H, W]` before returning, even if the same tensor needs its `[..., 1]` trailing-channel form
+internally for other math (e.g. `torch.cat`/assignment against a 4-channel image) — squeeze only the
+value that actually gets returned, not the working copy.
+
+---
+
+## `TailEnhancePro` (and its `utils/images.py` helpers) expect `List[torch.Tensor]`, not a batched tensor
+
+**Symptom**: `RuntimeError: Boolean value of Tensor with more than one value is ambiguous`, or a
+`torch.cat` error on a single tensor, inside a node whose own docstring says it takes a
+`LIST[IMAGE]`.
+
+**Cause**: ComfyUI's V3 `Input` base class (`comfy_api/latest/_io.py`) has no mechanism to hand a
+node a genuine Python list from a single upstream connection — a plain `io.Image.Input(...)` always
+receives one batched `[B, H, W, C]` tensor. `TailEnhancePro.execute()` never converts that tensor to
+a list before treating it like one (`if not input_frames`, slicing into `head`/`tail`, iterating
+`for img in tail`), and its two real helpers, `_compute_ref_stats`/`_pick_ref_image`
+(`utils/images.py`), are correctly written for an actual `List[torch.Tensor]` (their own type hints
+say so, and `torch.cat(sub, dim=0)` only makes sense concatenating separate list items into a new
+batch dim — never called on an already-batched tensor). The node's own internals were never
+consistent with each other; it was written years ago for a specific Wan2.1/2.2 clip-stitching
+use case (cleaning up flicker/color-mismatch in the last few frames before chaining to the next
+clip) and never actually run against real multi-frame input since.
+
+**Fix pattern**: convert once, at the top of the function that needs list semantics, rather than
+rewriting already-correct list-based helpers to accept a tensor:
+```python
+if isinstance(input_frames, torch.Tensor):
+    input_frames = [input_frames[i:i + 1] for i in range(input_frames.shape[0])]
+```
+
+---
+
 ## ComfyUI custom-node package-name collisions ("model", "nodes", "utils", …)
 
 **Symptom**: importing a class from a sibling `custom_nodes` package fails
@@ -189,4 +271,28 @@ anything found missing, add an explicit override in this repo's own CSS restorin
 the library intended, same way `js/styles/ui/node_inspector.css` already remaps jsnview's color
 utility classes to ComfyUI palette tokens. See that file's `.jsv-toggle` rule (`position`/`left`/
 `top` set explicitly) for a working example.
+
+---
+
+## `SubjectLayerDefine`'s mask is inverted relative to core `LoadImageMask(channel="alpha")`
+
+**Symptom**: wire a transparent-background PNG's alpha channel into `SubjectLayerDefine`'s `mask`
+input via core `LoadImage` + `LoadImageMask(channel="alpha")`, and every subject renders as a flat
+silhouette of the **canvas** color instead of its own colors, while the true background renders
+black instead of the configured `canvas_color`. Confirmed by actually running
+`example_workflows/subject_compositor_positioning.json` during development — not a hypothetical.
+
+**Cause**: ComfyUI core's `LoadImage`/`LoadImageMask` deliberately inverts alpha on load
+(`nodes.py`: `mask = 1. - torch.from_numpy(mask)`), because ComfyUI's MASK convention treats `1` as
+"masked-out / inpaint region," the opposite of "area to keep." `SubjectLayerDefine`'s own mask input
+(`utils/subject_compositor.py::apply_mask_to_image`) expects the opposite: `1 = keep`, matching its
+own docstring. Feeding it straight through silently swaps which pixels are treated as "the subject"
+vs. "empty," which is why the *canvas* color shows through the subject shapes and black (the
+transparent PNG region's baked-in RGB) shows through everywhere else.
+
+**Fix pattern**: insert a core `InvertMask` node between `LoadImageMask` and `SubjectLayerDefine`'s
+`mask` input whenever deriving the mask from an image's own alpha channel this way. If the mask
+instead comes from a real segmentation/matting node (SAM, rembg, etc.), check that node's own
+convention before assuming either direction — this is a ComfyUI-ecosystem-wide ambiguity, not
+something unique to `LoadImageMask`.
 

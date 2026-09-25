@@ -92,10 +92,7 @@ class SAMPreprocessNHWC(io.ComfyNode):
         # /home/beerye/comfyui_env/.venv/lib/python3.12/site-packages/segment_anything/predictor.py", line 80, in set_torch_image
         info = f"[fbTools: SAMPreprocessNHWC] out={tuple(img.shape)} range=[{img.min().item():.1f},{img.max().item():.1f}]"
         logger.info(info)
-        return io.NodeOutput({
-            "output_image": img,
-            "info": info
-        })
+        return io.NodeOutput(img, info)
 
 class TailEnhancePro(io.ComfyNode):
     """
@@ -193,8 +190,17 @@ class TailEnhancePro(io.ComfyNode):
     ):
 
         info_msgs = []
-        if not input_frames or len(input_frames) == 0:
+        if input_frames is None or len(input_frames) == 0:
             return ([], None, "[TailEnhancePro] empty input")
+
+        # ComfyUI hands this a single batched [B, H, W, C] tensor (V3's Input class has no
+        # mechanism to deliver a real Python list from one upstream connection) — but everything
+        # below, and _compute_ref_stats/_pick_ref_image in utils/images.py, are written for a
+        # genuine List[torch.Tensor] of single-frame [1, H, W, C] tensors (per this node's own
+        # docstring: "Split last K frames of a LIST[IMAGE]"). Convert once, up front, rather than
+        # rewriting the list-based logic below to handle a tensor.
+        if isinstance(input_frames, torch.Tensor):
+            input_frames = [input_frames[i:i + 1] for i in range(input_frames.shape[0])]
 
         n = len(input_frames)
         k = max(1, min(int(tail_count), n))
@@ -245,11 +251,7 @@ class TailEnhancePro(io.ComfyNode):
         if info_msgs:
             msg += " | " + " ; ".join(info_msgs)
 
-        return io.NodeOutput({
-            "output_frames": out_frames,
-            "batched": batched,
-            "info": msg
-        })
+        return io.NodeOutput(out_frames, batched, msg)
 
 class TailSplit(io.ComfyNode):
     """
@@ -318,11 +320,7 @@ class TailSplit(io.ComfyNode):
         if debug:
             logger.debug(msg)
 
-        return io.NodeOutput({
-            "main_image": main_image,
-            "tail_image": tail_image,
-            "debug_info": msg
-        })
+        return io.NodeOutput(main_image, tail_image, msg)
 
 class OpaqueAlpha(io.ComfyNode):
     """
@@ -347,7 +345,7 @@ class OpaqueAlpha(io.ComfyNode):
             ],
             outputs=[
                 io.Image.Output("image_rgba", tooltip="Output image with RGBA channels"),
-                io.Image.Output("mask", tooltip="Opaque alpha mask"),
+                io.Mask.Output("mask", tooltip="Opaque alpha mask"),
                 io.String.Output("debug_info", tooltip="Debug information"),
             ],
         )
@@ -397,19 +395,20 @@ class OpaqueAlpha(io.ComfyNode):
         except Exception:
             alpha_summary = ""
             
+        # MASK convention is [B, H, W] (no trailing channel dim) — mask itself stays [B, H, W, 1]
+        # above since that's what the RGBA-building math needs (cat/assign against a 4-channel
+        # image), only the returned value is squeezed to match.
+        mask_out = mask.squeeze(-1)
+
         msg = (
             f"OpaqueAlpha: image in shape={image.shape}, alpha_value={alpha_value}, force_replace_alpha={force_replace_alpha},dtype={image.dtype}, device={image.device}, "
-            f"range=[{mn:.6f},{mx:.6f}] -> image out shape={image_rgba.shape}, mask shape={mask.shape}{alpha_summary}"
+            f"range=[{mn:.6f},{mx:.6f}] -> image out shape={image_rgba.shape}, mask shape={mask_out.shape}{alpha_summary}"
         )
-        
+
         if debug:
             logger.debug(msg)
 
-        return io.NodeOutput({
-            "image_rgba": image_rgba,
-            "mask": mask,
-            "debug_info": msg
-        })
+        return io.NodeOutput(image_rgba, mask_out, msg)
 
 class MaskProcessor(io.ComfyNode):
     """
