@@ -381,6 +381,78 @@ def test_parse_segments_default_label_when_missing():
     assert "Segment" in segs[0]["label"]
 
 
+# ── soundscape field ─────────────────────────────────────────────────────────
+
+def test_parse_segments_extracts_soundscape():
+    raw = _seg_json([
+        {"start_time": 0.0, "end_time": 10.0, "label": "Intro", "action": "They walk in",
+         "soundscape": "Quiet room tone with a ceiling fan hum."},
+    ])
+    segs = _parse_segments(raw)
+    assert segs[0]["overall_soundscape"] == "Quiet room tone with a ceiling fan hum."
+
+
+def test_parse_segments_soundscape_defaults_empty_when_missing():
+    raw = _seg_json([{"start_time": 0.0, "end_time": 10.0, "label": "Intro", "action": "They walk in"}])
+    segs = _parse_segments(raw)
+    assert segs[0]["overall_soundscape"] == ""
+
+
+def test_parse_segments_soundscape_strips_whitespace():
+    raw = _seg_json([
+        {"start_time": 0.0, "end_time": 10.0, "label": "Intro", "action": "x",
+         "soundscape": "  Crowd chatter.  "},
+    ])
+    segs = _parse_segments(raw)
+    assert segs[0]["overall_soundscape"] == "Crowd chatter."
+
+
+def test_parse_segments_fallback_includes_empty_soundscape():
+    segs = _parse_segments("{}", video_duration=30.0)
+    assert segs[0]["overall_soundscape"] == ""
+
+
+def test_build_segment_prompt_includes_soundscape_field():
+    prompt = spa.build_segment_detection_prompt()
+    assert "soundscape" in prompt
+
+
+# ── setting_label field ─────────────────────────────────────────────────────────
+
+def test_parse_segments_extracts_setting_label():
+    raw = _seg_json([
+        {"start_time": 0.0, "end_time": 10.0, "label": "Intro", "action": "They walk in",
+         "setting_label": "Kitchen"},
+    ])
+    segs = _parse_segments(raw)
+    assert segs[0]["setting_label"] == "Kitchen"
+
+
+def test_parse_segments_setting_label_defaults_empty_when_missing():
+    raw = _seg_json([{"start_time": 0.0, "end_time": 10.0, "label": "Intro", "action": "They walk in"}])
+    segs = _parse_segments(raw)
+    assert segs[0]["setting_label"] == ""
+
+
+def test_parse_segments_setting_label_strips_whitespace():
+    raw = _seg_json([
+        {"start_time": 0.0, "end_time": 10.0, "label": "Intro", "action": "x",
+         "setting_label": "  Rooftop Patio  "},
+    ])
+    segs = _parse_segments(raw)
+    assert segs[0]["setting_label"] == "Rooftop Patio"
+
+
+def test_parse_segments_fallback_includes_empty_setting_label():
+    segs = _parse_segments("{}", video_duration=30.0)
+    assert segs[0]["setting_label"] == ""
+
+
+def test_build_segment_prompt_includes_setting_label_field():
+    prompt = spa.build_segment_detection_prompt()
+    assert "setting_label" in prompt
+
+
 # ── parse_clip_description_response ───────────────────────────────────────────
 
 def test_parse_clip_desc_extracts_action():

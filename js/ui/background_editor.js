@@ -11,7 +11,14 @@ import { makeEntry, buildHistorySection } from "../utils/llm_history.js";
 import { lib, notifyLibraryChanged } from "./library_store.js";
 import { mk as _mk, toast as _toast, ceViewUrl as _ceViewUrl, isVideoFile as _isVideoFile } from "./library_common.js";
 
-export function openBackgroundEditor(existing) {
+/**
+ * @param {object|null} existing  Background dict to edit, or null/undefined for a new one.
+ * @param {{file:string, folder?:string, frameTime?:number, name?:string}} [seed]  Only used
+ *   when existing is absent — pre-selects a file/frame (e.g. a Source Profile clip's
+ *   representative timestamp) and name so the modal opens one click from Analyze instead of
+ *   requiring the user to navigate the file browser themselves.
+ */
+export function openBackgroundEditor(existing, seed) {
     const isNew = !existing;
 
     let refImages = (existing?.reference_images || []).map(r =>
@@ -32,6 +39,8 @@ export function openBackgroundEditor(existing) {
         descEl.value  = existing.description  || "";
         lightEl.value = existing.lighting     || "";
         sndEl.value   = existing.soundscape   || "";
+    } else if (seed?.name) {
+        nameEl.value = seed.name;
     }
 
     // ── Reference images ───────────────────────────────────────────────────────
@@ -177,6 +186,18 @@ export function openBackgroundEditor(existing) {
                     analyzeBtn.textContent = "🔍 Analyze with LLM";
                 }
             } });
+    }
+
+    // Pre-select a file/frame for a brand-new background (e.g. opened from a Source Profile
+    // clip's representative timestamp) — reuses the exact same path a manual file-browser pick
+    // goes through, so preview, frame row visibility and button enabling all follow for free.
+    if (isNew && seed?.file) {
+        _applySelection(seed.file, seed.folder || "input");
+        if (typeof seed.frameTime === "number") {
+            frameTime = seed.frameTime;
+            frameInput.value = frameTime.toFixed(2);
+            if (previewVid.readyState >= 1) previewVid.currentTime = frameTime;
+        }
     }
 
     const actionRow = _mk("div", { cls: "fbt-ce-outfit-action-row" });

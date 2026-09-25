@@ -650,7 +650,9 @@ Return ONLY valid JSON — no markdown, no prose, no code fences:
       "end_time":         <float, seconds>,
       "label":            "short title for this segment (≤8 words)",
       "shot_description": "one sentence describing the camera's framing, angle and point of view relative to the subjects (e.g. 'A top-down, close-up shot from a first-person perspective.')",
-      "action":           "1-2 sentence description of the action in this segment"
+      "action":           "1-2 sentence description of the action in this segment",
+      "soundscape":       "1 sentence describing the likely ambient/background audio for this segment, inferred from visual cues (e.g. 'quiet room tone with a ceiling fan hum', 'crowd chatter and distant music')",
+      "setting_label":    "short consistent tag for the physical setting/location of this segment (≤4 words, e.g. 'kitchen', 'rooftop patio') — use the SAME wording for segments in the same location"
     }
   ]
 }
@@ -713,7 +715,12 @@ with a sequential suffix (e.g. "Walking — part 1", "Walking — part 2").
 For each segment between transitions, provide:
 - start_time / end_time  (seconds)
 - label  (very short title, ≤8 words)
-- action  (1-2 sentence summary of the action in that segment)\
+- action  (1-2 sentence summary of the action in that segment)
+- soundscape  (1 sentence: the likely ambient/background audio for this segment,
+  inferred from what's visible — room tone, crowd noise, machinery, nature sounds,
+  music, traffic, etc. Do not describe dialogue or speech content here.)
+- setting_label  (a short, consistent name for the physical location — reuse
+  identical wording across segments in the same place within this batch of frames)\
 """
 
 _DESCRIBE_CLIP_PROMPT = (
@@ -841,9 +848,16 @@ def _combine_shot_and_action(shot_description: str, action: str) -> str:
 def _parse_segments_response(raw: str, video_duration: float = 0.0) -> list[dict]:
     """Parse a VLM segment-detection response into a list of clip dicts.
 
-    Each returned dict has: start_time, end_time, label, action.
-    Invalid / out-of-order entries are discarded.  If the result is empty
-    and video_duration > 0, returns a single segment covering [0, video_duration].
+    Each returned dict has: start_time, end_time, label, action, overall_soundscape,
+    setting_label. overall_soundscape is the model's inferred ambient/background audio for
+    the segment (from the "soundscape" schema field). setting_label is a short, model-suggested
+    tag for the segment's physical location (from the "setting_label" schema field), meant to be
+    reused verbatim across segments in the same place — but the model sees each detection window
+    in a separate, stateless call (see nodes/source_profiles.py::_run_window), so identical
+    wording across two *different* windows is not guaranteed; treat it as a grouping hint for the
+    caller to review, not an authoritative identity. Both fields are empty string if the model
+    omitted them, never guessed here. Invalid / out-of-order entries are discarded.  If the result
+    is empty and video_duration > 0, returns a single segment covering [0, video_duration].
     """
     text = raw.strip()
     m = _FENCE_RE.search(text)
@@ -892,6 +906,8 @@ def _parse_segments_response(raw: str, video_duration: float = 0.0) -> list[dict
             "action":     _combine_shot_and_action(
                 str(item.get("shot_description", "")), str(item.get("action", "")),
             ),
+            "overall_soundscape": str(item.get("soundscape", "") or "").strip(),
+            "setting_label": str(item.get("setting_label", "") or "").strip(),
         })
         prev_end = end
 
@@ -901,6 +917,8 @@ def _parse_segments_response(raw: str, video_duration: float = 0.0) -> list[dict
             "end_time":   round(video_duration, 3),
             "label":      "Full video",
             "action":     "",
+            "overall_soundscape": "",
+            "setting_label": "",
         })
 
     return segments

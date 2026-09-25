@@ -12,6 +12,8 @@ import { sourceProfilesApi }        from "../api/source_profiles.js";
 import { bundlesApi }               from "../api/bundles.js";
 import { getActiveCaptionerType }   from "./llm_panel.js";
 import { api }                      from "../../../scripts/api.js";
+import { groupSuggestionsBySetting, normalizeSettingLabel } from "../utils/segment_grouping.js";
+import { openBackgroundEditor }     from "./background_editor.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -547,6 +549,11 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     let clipsOpen = false;
     let suggestions = [];
     let inferredSubjects = [];
+    // Advisory grouping of `suggestions` by their (per-window, unreliable — see
+    // js/utils/segment_grouping.js) setting_label suggestion, for the "Settings found" review
+    // step. Keyed by normalizeSettingLabel(group.key) -> background_id chosen for that group;
+    // reset on every fresh detect run, consumed (then discarded) when suggestions are applied.
+    let groupBackgroundMap = new Map();
     let detecting = false;
     let autoSegRunning = false;
     // captioner_type for clip requests comes from the global active backend (LLM tab)
@@ -694,6 +701,76 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     videoSettingsBody.appendChild(_mk("div", { cls: "spe-clips-toolbar" }, [
         backendNote, detectBtn, detectSpinner, applySugBtn,
     ]));
+
+    // "Settings found" review — populated after a detect run, cleared on apply. Advisory
+    // grouping only (see groupSuggestionsBySetting's own docs on why): the user can rename,
+    // ignore, or create a Background per group before applying.
+    const settingsGroupEl = _mk("div", { cls: "spe-settings-groups" });
+    videoSettingsBody.appendChild(settingsGroupEl);
+
+    function _renderSettingsGroups() {
+        settingsGroupEl.innerHTML = "";
+        if (!suggestions.length) return;
+        const groups = groupSuggestionsBySetting(suggestions);
+        // Nothing worth reviewing if every suggestion came back unlabeled.
+        if (groups.length === 1 && groups[0].key === "") return;
+
+        settingsGroupEl.appendChild(_mk("div", { cls: "spe-clip-field-label", style: { marginTop: "6px" } },
+            [`Settings found (${groups.length}) — optionally assign a Background per group:`]));
+
+        groups.forEach(group => {
+            const rep = suggestions[group.representativeIndex];
+
+            const labelInput = _mk("input", { type: "text", cls: "spe-clip-inp",
+                value: group.label,
+                title: "Rename this group for your own reference — does not affect detection." });
+            labelInput.oninput = () => { group.label = labelInput.value; };
+
+            const countEl = _mk("span", { style: { color: "#888", fontSize: "11px", whiteSpace: "nowrap" } },
+                [`${group.indices.length} seg${group.indices.length !== 1 ? "s" : ""}`]);
+
+            const bgSel = _mk("select", { cls: "spe-clip-sel" });
+            _bgOptions().forEach(o => {
+                const opt = _mk("option", { value: o.id }, [o.label]);
+                if (o.id === (groupBackgroundMap.get(group.key) || "")) opt.selected = true;
+                bgSel.appendChild(opt);
+            });
+            bgSel.onchange = () => {
+                if (bgSel.value) groupBackgroundMap.set(group.key, bgSel.value);
+                else groupBackgroundMap.delete(group.key);
+            };
+
+            const createBtn = _mk("button", { cls: "spe-btn sm ghost",
+                title: "Create a Background from this group's representative frame",
+                onclick: () => {
+                    openBackgroundEditor(null, {
+                        file: profile.media_filename,
+                        folder: profile.media_dir || "input",
+                        frameTime: rep.start_time + 1,
+                        name: group.label !== "(unlabeled)" ? group.label : "",
+                    });
+                    // The modal manages its own lifecycle (Save/Cancel both just remove the
+                    // overlay); watch for that removal to refresh our local background list
+                    // and this row's dropdown, without touching background_editor.js further.
+                    const overlayEl = document.querySelector(".fbt-ce-modal-overlay:last-of-type");
+                    if (!overlayEl) return;
+                    const observer = new MutationObserver(() => {
+                        if (document.body.contains(overlayEl)) return;
+                        observer.disconnect();
+                        fetch("/fbtools/backgrounds/list").then(r => r.json()).then(bgRes => {
+                            _S.backgrounds = bgRes.backgrounds ?? [];
+                            _renderSettingsGroups();
+                        }).catch(() => {});
+                    });
+                    observer.observe(document.body, { childList: true });
+                },
+            }, ["Create Background"]);
+
+            settingsGroupEl.appendChild(_mk("div", { cls: "spe-clips-toolbar", style: { marginTop: "4px" } }, [
+                labelInput, countEl, bgSel, createBtn,
+            ]));
+        });
+    }
 
     // Detect flags row — tooltips explain actual VLM-prompt impact, not just the label
     const _FLAG_TOOLTIPS = {
@@ -1805,14 +1882,16 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         const defNth     = profile.default_select_every_nth ?? 1;
         const defCap     = profile.default_frame_load_cap   ?? 0;
         const newClips   = suggestions.map((seg, idx) => ({
-            id:               `clip_${idx + 1}`,
-            label:            seg.label  || `Segment ${idx + 1}`,
-            start_time:       seg.start_time,
-            end_time:         seg.end_time,
-            action:           seg.action || "",
-            subjects:         subjectIds,
-            select_every_nth: defNth,
-            frame_load_cap:   defCap,
+            id:                 `clip_${idx + 1}`,
+            label:              seg.label  || `Segment ${idx + 1}`,
+            start_time:         seg.start_time,
+            end_time:           seg.end_time,
+            action:             seg.action || "",
+            overall_soundscape: seg.overall_soundscape || "",
+            background_id:      groupBackgroundMap.get(normalizeSettingLabel(seg.setting_label)) || "",
+            subjects:           subjectIds,
+            select_every_nth:   defNth,
+            frame_load_cap:     defCap,
         }));
         applySugBtn.disabled = true;
         applySugBtn.textContent = "…";
@@ -1842,6 +1921,8 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
 
             suggestions      = [];
             inferredSubjects = [];
+            groupBackgroundMap = new Map();
+            _renderSettingsGroups();
             if (detNoteEl) { detNoteEl.remove(); detNoteEl = null; }
             onClipsChanged(clips);
             redraw();
@@ -1914,7 +1995,9 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             suggestions      = res.segments          || [];
             inferredSubjects = res.inferred_subjects || [];
             lastRawResponse  = res.raw_response      || "";
+            groupBackgroundMap = new Map();
             applySugBtn.disabled = suggestions.length === 0;
+            _renderSettingsGroups();
             if (detNoteEl) detNoteEl.remove();
             if (suggestions.length) {
                 const subjNote = inferredSubjects.length
@@ -2758,9 +2841,13 @@ async function _saveProfile(rootEl, updated) {
 function _renderList(root) {
     root.innerHTML = "";
 
-    // Toolbar
+    // Toolbar — built once per mount. The search input's own oninput handler below only
+    // repopulates listEl, never rebuilds this input itself, or every keystroke would destroy
+    // and recreate the field the user is actively typing into (the new element isn't focused,
+    // so focus silently falls out to nothing after the very first character — indistinguishable
+    // from a global shortcut "stealing" the second keystroke, but really just a missing element).
     const searchEl = _mk("input", { type: "text", placeholder: "Search profiles…", value: _S.filterText });
-    searchEl.oninput = () => { _S.filterText = searchEl.value; _renderList(root); };
+    searchEl.oninput = () => { _S.filterText = searchEl.value; _populateProfileList(root, listEl); };
 
     const newBtn = _mk("button", { cls: "spe-btn primary", onclick: () => _createNewProfile(root) }, ["+ New"]);
     root.appendChild(_mk("div", { cls: "spe-toolbar" }, [searchEl, newBtn]));
@@ -2768,6 +2855,12 @@ function _renderList(root) {
     // List
     const listEl = _mk("div", { cls: "spe-list" });
     root.appendChild(listEl);
+
+    _populateProfileList(root, listEl);
+}
+
+function _populateProfileList(root, listEl) {
+    listEl.innerHTML = "";
 
     const q = _S.filterText.toLowerCase();
     const filtered = _S.profiles.filter(p =>
