@@ -1,0 +1,40 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": { "image": "subject_a.png" }
+  },
+  "2": {
+    "class_type": "LoadImageMask",
+    "inputs": { "image": "subject_a.png", "channel": "alpha" }
+  },
+  "2b": {
+    "class_type": "InvertMask",
+    "inputs": { "mask": ["2", 0] }
+  },
+  "3": {
+    "class_type": "fbt_MaskProcessor",
+    "inputs": {
+      "input_mask": ["2b", 0],
+      "image": ["1", 0],
+      "min_hole_size": 10,
+      "grow_amount": 5,
+      "smooth_iterations": 0,
+      "enable_region_smooth": true,
+      "region_smooth_sigma": 128,
+      "blur_radius": 5.0,
+      "debug": false
+    }
+  },
+  "4": {
+    "class_type": "MaskToImage",
+    "inputs": { "mask": ["3", 0] }
+  },
+  "5": {
+    "class_type": "PreviewImage",
+    "inputs": { "images": ["4", 0] }
+  },
+  "6": {
+    "class_type": "PreviewImage",
+    "inputs": { "images": ["3", 1] }
+  }
+}

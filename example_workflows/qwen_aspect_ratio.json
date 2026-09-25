@@ -1,0 +1,24 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": { "image": "background_scene.png" }
+  },
+  "2": {
+    "class_type": "fbt_QwenAspectRatio",
+    "inputs": { "input_image": ["1", 0] }
+  },
+  "3": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": ["1", 0],
+      "upscale_method": "bilinear",
+      "width": ["2", 0],
+      "height": ["2", 1],
+      "crop": "disabled"
+    }
+  },
+  "4": {
+    "class_type": "PreviewImage",
+    "inputs": { "images": ["3", 0] }
+  }
+}

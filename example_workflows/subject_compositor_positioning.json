@@ -1,0 +1,76 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": { "image": "subject_a.png" }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": { "image": "subject_b.png" }
+  },
+  "3": {
+    "class_type": "LoadImageMask",
+    "inputs": { "image": "subject_a.png", "channel": "alpha" }
+  },
+  "4": {
+    "class_type": "LoadImageMask",
+    "inputs": { "image": "subject_b.png", "channel": "alpha" }
+  },
+  "3b": {
+    "class_type": "InvertMask",
+    "inputs": { "mask": ["3", 0] }
+  },
+  "4b": {
+    "class_type": "InvertMask",
+    "inputs": { "mask": ["4", 0] }
+  },
+  "5": {
+    "class_type": "fbt_SubjectLayerDefine",
+    "inputs": {
+      "image": ["1", 0],
+      "mask": ["3b", 0],
+      "pad_top": 0.0,
+      "pad_bottom": 0.0,
+      "pad_left": 0.0,
+      "pad_right": 0.0,
+      "offset_x": -0.35,
+      "offset_y": 0.0,
+      "remove_background": false,
+      "bg_model": "BiRefNet-general"
+    }
+  },
+  "6": {
+    "class_type": "fbt_SubjectLayerDefine",
+    "inputs": {
+      "image": ["2", 0],
+      "mask": ["4b", 0],
+      "pad_top": 0.0,
+      "pad_bottom": 0.0,
+      "pad_left": 0.0,
+      "pad_right": 0.0,
+      "offset_x": 0.35,
+      "offset_y": 0.1,
+      "remove_background": false,
+      "bg_model": "BiRefNet-general"
+    }
+  },
+  "7": {
+    "class_type": "fbt_SubjectCompositor",
+    "inputs": {
+      "canvas_width": 1024,
+      "canvas_height": 768,
+      "canvas_color": "#334455",
+      "output_mode": "both",
+      "divisible_by": 32,
+      "layers.layer0": ["5", 0],
+      "layers.layer1": ["6", 0]
+    }
+  },
+  "8": {
+    "class_type": "PreviewImage",
+    "inputs": { "images": ["7", 0] }
+  },
+  "9": {
+    "class_type": "PreviewImage",
+    "inputs": { "images": ["7", 1] }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "1": { "class_type": "LoadImage", "inputs": { "image": "frame_1.png" } },
+  "2": { "class_type": "LoadImage", "inputs": { "image": "frame_2.png" } },
+  "3": { "class_type": "LoadImage", "inputs": { "image": "frame_3.png" } },
+  "4": { "class_type": "LoadImage", "inputs": { "image": "frame_4.png" } },
+  "5": { "class_type": "LoadImage", "inputs": { "image": "frame_5.png" } },
+  "6": {
+    "class_type": "ImageBatch",
+    "inputs": { "image1": ["1", 0], "image2": ["2", 0] }
+  },
+  "7": {
+    "class_type": "ImageBatch",
+    "inputs": { "image1": ["6", 0], "image2": ["3", 0] }
+  },
+  "8": {
+    "class_type": "ImageBatch",
+    "inputs": { "image1": ["7", 0], "image2": ["4", 0] }
+  },
+  "9": {
+    "class_type": "ImageBatch",
+    "inputs": { "image1": ["8", 0], "image2": ["5", 0] }
+  },
+  "10": {
+    "class_type": "fbt_TailSplit",
+    "inputs": { "image": ["9", 0], "tail_size": 2, "debug": false }
+  },
+  "11": {
+    "class_type": "PreviewImage",
+    "inputs": { "images": ["10", 0] }
+  },
+  "12": {
+    "class_type": "PreviewImage",
+    "inputs": { "images": ["10", 1] }
+  },
+  "13": {
+    "class_type": "fbt_TailEnhancePro",
+    "inputs": {
+      "input_frames": ["9", 0],
+      "tail_count": 2,
+      "ref_window": 3,
+      "ref_from_head": true,
+      "enable_deflicker": true,
+      "deflicker_mode": "luma_scale",
+      "deflicker_strength": 0.5,
+      "clahe_clip_limit": 2.0,
+      "clahe_grid_w": 8,
+      "clahe_grid_h": 8,
+      "enable_color_match": true,
+      "color_mode": "meanstd",
+      "color_amount": 0.6,
+      "enable_unsharp": true,
+      "unsharp_radius": 1.5,
+      "unsharp_amount": 0.5,
+      "enable_bilateral": false,
+      "bilateral_d": 5,
+      "bilateral_sigma_color": 25.0,
+      "bilateral_sigma_space": 7.0
+    }
+  },
+  "14": {
+    "class_type": "PreviewImage",
+    "inputs": { "images": ["13", 1] }
+  }
+}
