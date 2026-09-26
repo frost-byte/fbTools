@@ -484,6 +484,10 @@ def _resolve_cast_media(
                     "audio_retention":  audio.get("retention", "timbre"),
                     "audio_role":       audio.get("role", ""),
                     "audio_cache":      audio.get("audio_cache", ""),
+                    # Default excludes the reference video's own background/setting from the
+                    # generated output — H3 was observed picking it up in some generations.
+                    # Opt-in checkbox in the Scene Cast Build tab ("Keep BG").
+                    "include_video_background": bool(entry.get("include_video_background", False)),
                 })
 
         if want_images:

@@ -509,6 +509,7 @@ class SceneCastBuild(io.ComfyNode):
                         "retention":       retention or _RETENTION_SOURCE,
                         "dialogue":        str(e.get("dialogue", "") or "").strip(),
                         "primary":         bool(e.get("primary", False)),
+                        "include_video_background": bool(e.get("include_video_background", False)),
                         **src_fields,
                     })
                 else:
@@ -535,6 +536,7 @@ class SceneCastBuild(io.ComfyNode):
                     "retention":       retention or _RETENTION_BUNDLE,
                     "dialogue":        str(e.get("dialogue", "") or "").strip(),
                     "primary":         bool(e.get("primary", False)),
+                    "include_video_background": bool(e.get("include_video_background", False)),
                 })
 
         # Flag (never silently resolve) two or more entries landing on the same

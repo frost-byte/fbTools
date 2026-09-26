@@ -159,7 +159,8 @@
     outline: none;
     border-color: var(--fbt-blue);
 }
-.fbt-scb-audio {
+.fbt-scb-audio,
+.fbt-scb-keep-bg {
     width: 14px;
     height: 14px;
     flex-shrink: 0;

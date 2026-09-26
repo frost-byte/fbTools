@@ -761,6 +761,10 @@ class SourceProfileClipPrompt(io.ComfyNode):
                                 "audio_retention":  audio.get("retention", "timbre"),
                                 "audio_role":       audio.get("role", ""),
                                 "audio_cache":      audio.get("audio_cache", ""),
+                                # Default excludes this reference video's own background/setting
+                                # from the generated output; opt-in via the Scene Cast Build tab's
+                                # "Keep BG" checkbox on this cast entry.
+                                "include_video_background": bool(cast_entry.get("include_video_background", False)),
                             })
 
                     # extract_from_video: a SEPARATE video whose audio track is the

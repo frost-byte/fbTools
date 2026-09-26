@@ -603,6 +603,18 @@ function _buildCastBuildUI(node, app) {
 
         modeWrap.append(imgBtn, imgSubWrap, vidBtn, bothBtn);
 
+        // Video references default to EXCLUDING their source background/setting from the
+        // generated output (H3 was picking up the reference video's own background in some
+        // generations) — this is an opt-in to keep it instead. Declared up here (before
+        // _syncModeActive/_buildNumBtns run below) since _syncModeActive toggles its visibility.
+        const bgLabel = _lbl("Keep BG");
+        const bgCb = document.createElement("input");
+        bgCb.type      = "checkbox";
+        bgCb.className = "fbt-scb-keep-bg";
+        bgCb.title     = "By default the video reference's own background/setting is excluded "
+            + "from the generated scene. Check this to keep it instead.";
+        bgCb.checked   = !!entry.include_video_background;
+
         const _selArr  = () => Array.isArray(entry.image_selection) ? entry.image_selection : [];
         const _selHas  = i  => _selArr().includes(i);
         const _selNone = ()  => entry.image_selection == null || (Array.isArray(entry.image_selection) && !entry.image_selection.length);
@@ -620,6 +632,11 @@ function _buildCastBuildUI(node, app) {
             imgSubWrap.querySelectorAll(".fbt-scb-mode-btn-num").forEach((btn, i) => {
                 btn.classList.toggle("active", hasImg && _selHas(i));
             });
+            // Background-inclusion checkbox only means anything when a video reference
+            // is actually in play (video/both) — meaningless for images-only.
+            const showBg = isVid || isBoth;
+            bgLabel.style.display = showBg ? "" : "none";
+            bgCb.style.display    = showBg ? "" : "none";
         };
 
         const _buildNumBtns = bun => {
@@ -739,7 +756,7 @@ function _buildCastBuildUI(node, app) {
         const srcLabel = _lbl("Source");
         srcLabel.style.display = _connectedSPSubjects.length ? "" : "none";
         const audLabel = _lbl("Audio");
-        row2.append(srcLabel, srcSel, ordToggleBtn, ordInput, _lbl("Mode"), modeWrap, audLabel, audCb);
+        row2.append(srcLabel, srcSel, ordToggleBtn, ordInput, _lbl("Mode"), modeWrap, audLabel, audCb, bgLabel, bgCb);
 
         // ── Row 3: Dialogue ──────────────────────────────────────────────────────
         const row3 = document.createElement("div");
@@ -869,6 +886,11 @@ function _buildCastBuildUI(node, app) {
 
         audCb.addEventListener("change", () => {
             entry.use_audio = audCb.checked;
+            _syncWidget();
+        });
+
+        bgCb.addEventListener("change", () => {
+            entry.include_video_background = bgCb.checked;
             _syncWidget();
         });
 

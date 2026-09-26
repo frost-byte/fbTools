@@ -443,6 +443,7 @@ def _build_ref_map(
             "picture_nums": picture_nums,
             "video_num": video_num,
             "video_file": video_file,
+            "include_video_background": bool(ve.get("include_video_background", False)) if ve else False,
             "audio_num": audio_num,
             "soundtrack_num": soundtrack_num,
             "soundtrack_retention": soundtrack_retention,
@@ -1255,6 +1256,15 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                     f"{_whose} appearance in the target video "
                     f"must fully match {_who} shown in <Video {vnum}>"
                 )
+                # A plain identity-reference video (not an editing/continuation source) defaults
+                # to excluding its own background/setting from the generated scene — H3 was
+                # observed carrying it over in some generations. Opt-in per cast entry ("Keep BG"
+                # in the Scene Cast Build tab) restores the old no-instruction behavior.
+                if not info.get("include_video_background", False):
+                    preserve_desc += (
+                        f"; ignore the background/setting of <Video {vnum}> "
+                        f"— do not carry it into the generated scene"
+                    )
             ra.append(f"<Video {vnum}> ({role_clause}): {video_status} - {preserve_desc}.")
 
     # Picture entries: "<Picture N>: fully_preserved - ..." or, when a subject

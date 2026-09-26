@@ -863,6 +863,22 @@ def test_video_refs_in_summary_body():
     assert "<Video 1>" in prompt
 
 
+def test_video_identity_reference_excludes_background_by_default():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = _video_entries(("char_alice", "alice.mp4"))
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "ignore the background/setting of <Video 1>" in prompt
+
+
+def test_video_identity_reference_include_video_background_opts_out():
+    alice = _make_subject("Alice", subject_id="char_alice")
+    scene = _make_scene(slot_A=alice)
+    ve = [{"subject_id": "char_alice", "video_file": "alice.mp4", "include_video_background": True}]
+    prompt = assemble_prompt(scene, "h3_ref2va", ve)["prompt"]
+    assert "ignore the background/setting" not in prompt
+
+
 def test_video_numbering_continuous_across_slots():
     alice = _make_subject("Alice", subject_id="char_alice")
     bob = _make_subject("Bob", subject_id="char_bob")
