@@ -14,6 +14,7 @@ import { getActiveCaptionerType }   from "./llm_panel.js";
 import { api }                      from "../../../scripts/api.js";
 import { groupSuggestionsBySetting, normalizeSettingLabel } from "../utils/segment_grouping.js";
 import { openBackgroundEditor }     from "./background_editor.js";
+import { isVideoFile }              from "./library_common.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -198,6 +199,21 @@ function _bgOptions() {
         { id: "", label: "— none —" },
         ...(_S.backgrounds || []).map(b => ({ id: b.id, label: b.name || b.id })),
     ];
+}
+
+/** URL for a Background's first still-image reference (videos skipped), or "" if none/not found. */
+function _bgThumbUrl(bgId) {
+    if (!bgId) return "";
+    const bg = (_S.backgrounds || []).find(b => b.id === bgId);
+    if (!bg) return "";
+    for (const r of bg.reference_images || []) {
+        const file = typeof r === "string" ? r : r?.file;
+        if (file && !isVideoFile(file)) {
+            const folder = (typeof r === "object" && r.folder) || "input";
+            return _mediaUrl(file, folder);
+        }
+    }
+    return "";
 }
 
 async function _loadHistory(profileId) {
@@ -1598,14 +1614,31 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
 
             // Per-clip background — overrides the profile's default background (see the
             // "Default background" picker in Video settings above) for this segment only.
-            const clipBgSel = _mk("select", { cls: "spe-clip-sel",
+            const clipBgSel = _mk("select", { cls: "spe-clip-sel", style: { flex: "1", minWidth: "0" },
                 title: "Background for this segment — overrides the profile's default background." });
             _bgOptions().forEach(o => {
                 const opt = _mk("option", { value: o.id }, [o.label]);
                 if (o.id === (clip.background_id || "")) opt.selected = true;
                 clipBgSel.appendChild(opt);
             });
-            clipBgSel.onchange = () => { clips[i] = { ...clips[i], background_id: clipBgSel.value }; commitClip(i); };
+            const clipBgThumb = _mk("img", { cls: "spe-clip-bg-thumb", alt: "" });
+            const _syncClipBgThumb = () => {
+                const bg  = (_S.backgrounds || []).find(b => b.id === clipBgSel.value);
+                const url = _bgThumbUrl(clipBgSel.value);
+                clipBgThumb.src   = url;
+                clipBgThumb.title = bg ? `${bg.name || bg.id} — click to open` : "";
+                clipBgThumb.style.display = url ? "" : "none";
+            };
+            _syncClipBgThumb();
+            clipBgThumb.onclick = () => {
+                const bg = (_S.backgrounds || []).find(b => b.id === clipBgSel.value);
+                if (bg) openBackgroundEditor(bg);
+            };
+            clipBgSel.onchange = () => {
+                clips[i] = { ...clips[i], background_id: clipBgSel.value };
+                commitClip(i);
+                _syncClipBgThumb();
+            };
 
             const applyBgAllBtn = _mk("button", {
                 cls: "spe-btn sm ghost",
@@ -1686,7 +1719,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                     _mk("span", { cls: "spe-clip-field-label", style: { flex: "1", marginBottom: "0" } }, ["Background"]),
                     applyBgAllBtn,
                 ]),
-                clipBgSel,
+                _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px" } }, [clipBgSel, clipBgThumb]),
                 _mk("div", { style: { display: "flex", gap: "4px" } }, [describeBtn]),
                 _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" } }, [
                     _mk("span", { cls: "spe-clip-field-label", style: { flex: "1", marginBottom: "0" } }, ["Overall soundscape"]),

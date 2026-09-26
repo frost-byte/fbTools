@@ -162,6 +162,10 @@
 .spe-bound-mid { align-self:center; padding-top:24px; font-size:11px; color:var(--fbt-muted);
     text-align:center; white-space:nowrap; }
 
+/* Per-clip Background dropdown thumbnail — half the size of .spe-bound-thumb, same aspect ratio */
+.spe-clip-bg-thumb { width:60px; height:34px; border-radius:4px; object-fit:cover;
+    border:1px solid var(--fbt-border); background:var(--fbt-bg); flex:0 0 auto; cursor:pointer; }
+
 /* Clip LoRA editor */
 .spe-lora-section { margin-top:6px; border-top:1px solid var(--fbt-border-sub); padding-top:6px; }
 .spe-lora-header { display:flex; align-items:center; justify-content:space-between;
