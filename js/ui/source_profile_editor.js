@@ -2167,7 +2167,7 @@ function _renderSubjectForm(container, initial = {}, onSave, onCancel) {
         pronounEl.appendChild(o);
     });
     const shortNameEl = _mk("input", {
-        type: "text", placeholder: "e.g. young woman, armored warrior, stone hallway",
+        type: "text", placeholder: "e.g. young woman, armored knight, stone hallway",
         value: initial.short_name || "",
     });
     const shortNameRow = _mk("div", { cls: "spe-form-row" }, [
