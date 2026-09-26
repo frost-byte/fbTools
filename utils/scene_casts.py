@@ -246,10 +246,22 @@ def resolve_primary_subject(entries: list[dict]) -> str:
     return ""
 
 
-def build_cast_filename_prefix(prefix: str, primary_subject_id: str, kind: str) -> str:
+def resolve_primary_bundle(entries: list[dict]) -> str:
+    """bundle_id of the first cast entry flagged primary, or "" if none is flagged, the
+    flagged entry has no subject_id, or it has no bundle_id (a source-only entry). Mirrors
+    resolve_primary_subject's same first-match/defensive semantics — same entry, same
+    exclusivity assumption enforced by the UI, not here."""
+    for e in entries:
+        if e.get("primary") and e.get("subject_id"):
+            return e.get("bundle_id", "")
+    return ""
+
+
+def build_cast_filename_prefix(prefix: str, primary_subject_id: str, bundle_id: str, kind: str) -> str:
     """Compose a VHS_VideoCombine-ready filename_prefix root from an optional literal
-    prefix, the tagged primary subject id, and a "kind" folder segment (e.g. "comps" or
-    "source_profiles/<slug>"). Never guesses primary_subject_id or kind — that's the
-    caller's job (see SceneCastBuild.execute()); an empty part is simply omitted."""
-    parts = [p for p in (primary_subject_id, kind) if p]
+    prefix, the tagged primary subject id, that subject's bundle id, and a "kind" folder
+    segment (e.g. "compositions" or "source_profiles/<slug>"). Never guesses any of these —
+    that's the caller's job (see SceneCastBuild.execute()); an empty part is simply omitted,
+    so a missing bundle_id (e.g. a source-only primary entry) doesn't leave a gap."""
+    parts = [p for p in (primary_subject_id, bundle_id, kind) if p]
     return prefix + ("/".join(parts) + "/" if parts else "")

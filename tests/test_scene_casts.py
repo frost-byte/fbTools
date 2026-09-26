@@ -15,6 +15,7 @@ resolve_cast_for_subject = sc.resolve_cast_for_subject
 make_entry = sc.make_entry
 VISUAL_MODES = sc.VISUAL_MODES
 resolve_primary_subject = sc.resolve_primary_subject
+resolve_primary_bundle = sc.resolve_primary_bundle
 build_cast_filename_prefix = sc.build_cast_filename_prefix
 
 
@@ -373,28 +374,74 @@ def test_resolve_primary_subject_flagged_but_no_subject_id_skipped():
     assert resolve_primary_subject(entries) == "bob"
 
 
+# ── resolve_primary_bundle ─────────────────────────────────────────────────────
+
+def test_resolve_primary_bundle_empty_entries():
+    assert resolve_primary_bundle([]) == ""
+
+
+def test_resolve_primary_bundle_none_flagged():
+    entries = [{"subject_id": "alice", "bundle_id": "alice_autumn"}]
+    assert resolve_primary_bundle(entries) == ""
+
+
+def test_resolve_primary_bundle_one_flagged():
+    entries = [
+        {"subject_id": "alice", "bundle_id": "alice_autumn", "primary": False},
+        {"subject_id": "bob", "bundle_id": "bob_summer", "primary": True},
+    ]
+    assert resolve_primary_bundle(entries) == "bob_summer"
+
+
+def test_resolve_primary_bundle_flagged_but_no_bundle_id():
+    # Source-only primary entry — no bundle_id key at all.
+    entries = [{"subject_id": "bob", "primary": True}]
+    assert resolve_primary_bundle(entries) == ""
+
+
+def test_resolve_primary_bundle_flagged_but_no_subject_id_skipped():
+    entries = [
+        {"subject_id": "", "bundle_id": "should_be_skipped", "primary": True},
+        {"subject_id": "bob", "bundle_id": "bob_summer", "primary": True},
+    ]
+    assert resolve_primary_bundle(entries) == "bob_summer"
+
+
 # ── build_cast_filename_prefix ────────────────────────────────────────────────
 
 def test_build_filename_prefix_all_parts():
-    assert build_cast_filename_prefix("video/", "alex", "comps") == "video/alex/comps/"
+    assert build_cast_filename_prefix("video/", "bob", "bob_summer", "compositions") == \
+        "video/bob/bob_summer/compositions/"
+
+
+def test_build_filename_prefix_source_profile_kind():
+    assert build_cast_filename_prefix("video/", "bob", "bob_summer", "source_profiles/clip_session") == \
+        "video/bob/bob_summer/source_profiles/clip_session/"
 
 
 def test_build_filename_prefix_no_literal_prefix():
-    assert build_cast_filename_prefix("", "alex", "source_profiles/office_work") == \
-        "alex/source_profiles/office_work/"
+    assert build_cast_filename_prefix("", "bob", "bob_summer", "source_profiles/office_work") == \
+        "bob/bob_summer/source_profiles/office_work/"
+
+
+def test_build_filename_prefix_no_bundle():
+    # Source-only primary entry — bundle segment omitted, no gap left behind.
+    assert build_cast_filename_prefix("video/", "bob", "", "source_profiles/office_work") == \
+        "video/bob/source_profiles/office_work/"
 
 
 def test_build_filename_prefix_no_primary():
-    assert build_cast_filename_prefix("video/", "", "comps") == "video/comps/"
+    assert build_cast_filename_prefix("video/", "", "", "compositions") == "video/compositions/"
 
 
 def test_build_filename_prefix_no_kind():
-    assert build_cast_filename_prefix("video/", "alex", "") == "video/alex/"
+    assert build_cast_filename_prefix("video/", "bob", "bob_summer", "") == \
+        "video/bob/bob_summer/"
 
 
 def test_build_filename_prefix_nothing_tagged():
-    assert build_cast_filename_prefix("video/", "", "") == "video/"
+    assert build_cast_filename_prefix("video/", "", "", "") == "video/"
 
 
 def test_build_filename_prefix_everything_empty():
-    assert build_cast_filename_prefix("", "", "") == ""
+    assert build_cast_filename_prefix("", "", "", "") == ""

@@ -816,7 +816,8 @@ class PromptCompositionLoader(io.ComfyNode):
                     tooltip=(
                         "Optional prefix prepended literally to the composition name for the filename_prefix output. "
                         "Recommended: wire this from SceneCastBuild's filename_prefix output for automatic "
-                        "primary-subject/comps foldering (e.g. 'video/alex/comps/' -> '.../comps/bbc_ride'). "
+                        "primary-subject/bundle/compositions foldering (e.g. 'video/alex/alex_salon_eyes/compositions/' "
+                        "-> '.../compositions/bbc_ride'). "
                         "Or type a literal root here for standalone use without a cast "
                         "(e.g. 'video/' -> 'video/bbc_ride'). "
                         "Wire the output into a VHS_VideoCombine filename_prefix input."

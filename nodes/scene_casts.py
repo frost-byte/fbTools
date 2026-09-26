@@ -21,6 +21,7 @@ from .composition_types import CastIOType, SourceProfileIOType, CompositionIOTyp
 from ..utils.scene_casts import (
     load_registry as _load_cast_registry,
     resolve_primary_subject as _resolve_primary_subject,
+    resolve_primary_bundle as _resolve_primary_bundle,
     build_cast_filename_prefix as _build_cast_filename_prefix,
 )
 from ..utils.reference_bundles import load_registry as _load_bundle_registry
@@ -295,11 +296,12 @@ class SceneCastBuild(io.ComfyNode):
                     "filename_prefix",
                     display_name="Filename Prefix",
                     tooltip=(
-                        "prefix + primary_subject_id + comps|source_profiles/<name> "
-                        "(e.g. 'video/alex/comps/'). Wire into SourceProfileClipPrompt or "
-                        "PromptCompositionLoader's own filename_prefix input, which "
-                        "appends the clip/composition name. Empty if no cast entry is "
-                        "marked primary."
+                        "prefix + primary_subject_id + bundle_id + compositions|source_profiles/<name> "
+                        "(e.g. 'video/alex/alex_salon_eyes/compositions/'). Wire into "
+                        "SourceProfileClipPrompt or PromptCompositionLoader's own "
+                        "filename_prefix input, which appends the clip/composition name. "
+                        "Empty if no cast entry is marked primary; the bundle_id segment is "
+                        "omitted if the primary entry has none (a source-only entry)."
                     ),
                 ),
             ],
@@ -614,19 +616,21 @@ class SceneCastBuild(io.ComfyNode):
                 )
         summary = "\n".join(lines)
 
-        # ── filename_prefix: {prefix}{primary_subject_id}/{comps|source_profiles/<name>}/ ──
+        # ── filename_prefix: {prefix}{primary_subject_id}/{bundle_id}/{compositions|source_profiles/<name>}/ ──
         # No fallback guessing here when nothing is tagged primary — that inference stays
         # in utils.generation_metadata.extract_cast_info() for archive-time reprocessing
         # of clips generated before this existed. See the design notes in
         # ~/.claude/plans/scene-cast-primary-subject-path.md.
         primary_subject_id = _resolve_primary_subject(entries)
+        primary_bundle_id = _resolve_primary_bundle(entries)
         if has_sp:
             kind = f"source_profiles/{_slugify(source_profile.get('name', ''))}"
         elif isinstance(prompt_composition, dict) and prompt_composition:
-            kind = "comps"
+            kind = "compositions"
         else:
             kind = ""
-        filename_prefix_out = _build_cast_filename_prefix(filename_prefix, primary_subject_id, kind)
+        filename_prefix_out = _build_cast_filename_prefix(
+            filename_prefix, primary_subject_id, primary_bundle_id, kind)
 
         send_status_update(
             cls.hidden.unique_id,
