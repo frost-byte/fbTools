@@ -137,6 +137,7 @@ export function openBackgroundEditor(existing, seed) {
         addRefBtn.disabled = isVideo;
         addRefBtn.title    = isVideo ? "Videos cannot be added directly — use Analyze with LLM" : "";
         if (analyzeBtn) analyzeBtn.disabled = false;
+        removeBtn.disabled = false;
     };
 
     // ── File tree ──────────────────────────────────────────────────────────────
@@ -154,6 +155,37 @@ export function openBackgroundEditor(existing, seed) {
     const addRefBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "+ Add as Reference",
         disabled: true,
         onclick: () => { if (selFile && !selFile.isVideo) _addFileToRefs(selFile.path, selFile.folder); } });
+
+    // Removes people from the selected image/frame via the H3 background-plate workflow
+    // (server-side, no LLM needed) and adds the clean result as a reference image — same
+    // add-on-success pattern as Analyze below. On success, the result also becomes the new
+    // selection (same path _applySelection already uses for a Source Profile seed), so clicking
+    // the button again chains straight onto this run's output for a second pass — deliberately
+    // not an automatic multi-pass loop: each pass takes ~2 minutes, and seeing a result before
+    // deciding whether it needs another pass beats burning a blind second run on a bad first one.
+    const removeBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "🧹 Remove People (H3)",
+        disabled: true,
+        onclick: async () => {
+            if (!selFile) { alert("Select a file from the browser first."); return; }
+            removeBtn.disabled    = true;
+            removeBtn.textContent = "Generating…";
+            const startedAt = performance.now();
+            try {
+                const data = await compositionsApi.removeBackgroundPeople(selFile.path,
+                    { folder: selFile.folder || "input", frameTime });
+                const elapsed = Math.round((performance.now() - startedAt) / 1000);
+                _addFileToRefs(data.file, data.folder || "output");
+                // Chain-ready: the new plate becomes the active selection/preview. The file tree
+                // pane itself won't highlight it until its media list next refreshes — the preview
+                // and filename above the browser are what actually reflect the new selection.
+                _applySelection(data.file, data.folder || "output");
+                _toast(`Removed people in ${elapsed}s — result selected, ready for another pass`, "success");
+            } catch (e) { alert(`Remove People failed: ${e.message}`); }
+            finally {
+                removeBtn.disabled    = false;
+                removeBtn.textContent = "🧹 Remove People (H3)";
+            }
+        } });
 
     let analyzeBtn = null;
     let bgHistRefresh = null;
@@ -202,9 +234,17 @@ export function openBackgroundEditor(existing, seed) {
 
     const actionRow = _mk("div", { cls: "fbt-ce-outfit-action-row" });
     actionRow.appendChild(addRefBtn);
+    actionRow.appendChild(removeBtn);
     if (analyzeBtn) actionRow.appendChild(analyzeBtn);
 
-    browserSection.append(bgTree.el, selFileEl, previewWrap, frameRow, actionRow);
+    const removeBtnHint = _mk("div", { cls: "fbt-ce-hint", textContent:
+        "\"Remove People\" runs MiniMax H3 Reference-to-Video + Fizgig H3 Still "
+        + "(templates/h3_background_plate.api.json) directly on this ComfyUI server — your own "
+        + "open canvas isn't touched. Needs that template file to exist; takes ~2 minutes per pass "
+        + "on this machine; whichever model/LoRA the template specifies is what runs. Output lands "
+        + "under output/fbtools/h3_background_plates/." });
+
+    browserSection.append(bgTree.el, selFileEl, previewWrap, frameRow, actionRow, removeBtnHint);
 
     _renderRefList();
 

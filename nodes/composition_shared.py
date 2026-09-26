@@ -49,6 +49,16 @@ _COMPOSITION_SETTINGS_DEFAULTS: dict = {
     "melband_model_path":          "",  # Kijai/MelBandRoFormer_comfy — fp16 or fp32 .safetensors
     # H3 model output limits
     "h3_max_frames":               360,  # 15 s × 24 fps — 0 = unclamped
+    # H3 background-plate ("Remove People") generation overrides — each "" / 0 means "use whatever
+    # templates/h3_background_plate.api.json itself specifies", i.e. unset. Only applied when the
+    # template exposes the matching optional IN:* title (see utils/h3_template_runner.patch_prompt).
+    "h3_bg_plate_model":            "",  # diffusion_models filename
+    "h3_bg_plate_clip":             "",  # text_encoders filename
+    "h3_bg_plate_lora":             "",  # loras filename
+    "h3_bg_plate_lora_strength":    0.38,  # only applied when h3_bg_plate_lora is set
+    "h3_bg_plate_sampler":          "",  # comfy.samplers.SAMPLER_NAMES entry
+    "h3_bg_plate_scheduler":        "",  # comfy.samplers.SCHEDULER_NAMES entry
+    "h3_bg_plate_steps":            0,   # 0 = unset/use template default
 }
 
 

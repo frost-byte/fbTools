@@ -92,6 +92,12 @@ export class CompositionsAPI extends BaseAPI {
         return this.get("/loras/list");
     }
 
+    /** Enumeration lists + has_*_override capability flags for the H3 Background Plate settings
+     *  section — see nodes/backgrounds_presets.py::_backgrounds_h3_settings_options. */
+    getH3SettingsOptions() {
+        return this.get("/backgrounds/h3_settings_options");
+    }
+
     // ── Outfits ─────────────────────────────────────────────────────────────────
 
     getOutfitRegistry() {
@@ -119,6 +125,14 @@ export class CompositionsAPI extends BaseAPI {
             frame_time:  frameTime,
             max_tokens:  maxTokens,
         });
+    }
+
+    /** Run the H3 background-plate workflow (removes people) on a file/frame. Can take a while
+     *  (a real generation run) — callers should show a "working" state while this is pending. */
+    removeBackgroundPeople(filename, { folder = "input", frameTime = 1.0, prompt } = {}) {
+        const body = { filename, folder, frame_time: frameTime };
+        if (prompt) body.prompt = prompt;
+        return this.post("/backgrounds/remove_people", body);
     }
 
     listMedia(type, recursive = false, folder = "input") {

@@ -224,6 +224,19 @@ async def _compositions_settings_post(request):
             v = int(body["h3_max_frames"])
             settings["h3_max_frames"] = max(0, min(9999, v))
 
+        for _key in ("h3_bg_plate_model", "h3_bg_plate_clip", "h3_bg_plate_lora",
+                     "h3_bg_plate_sampler", "h3_bg_plate_scheduler"):
+            if _key in body:
+                settings[_key] = str(body[_key]).strip()
+
+        if "h3_bg_plate_lora_strength" in body:
+            v = float(body["h3_bg_plate_lora_strength"])
+            settings["h3_bg_plate_lora_strength"] = max(0.0, min(2.0, v))
+
+        if "h3_bg_plate_steps" in body:
+            v = int(body["h3_bg_plate_steps"])
+            settings["h3_bg_plate_steps"] = 0 if v <= 0 else max(1, min(10000, v))
+
         _write_composition_settings(settings)
         return web.json_response(settings)
     except Exception as exc:

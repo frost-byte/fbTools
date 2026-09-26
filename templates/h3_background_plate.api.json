@@ -1,0 +1,314 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "10Eros_Max_h3_TURBO-hybrid_beta5_int8.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "IN:model"
+    }
+  },
+  "3": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "IN:clip"
+    }
+  },
+  "4": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "9": {
+    "inputs": {
+      "noise_seed": 179298629995073
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "IN:seed"
+    }
+  },
+  "10": {
+    "inputs": {
+      "model": [
+        "69",
+        0
+      ],
+      "conditioning": [
+        "29",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Basic Guider"
+    }
+  },
+  "11": {
+    "inputs": {
+      "sampler_name": "er_sde"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "IN:sampler"
+    }
+  },
+  "12": {
+    "inputs": {
+      "scheduler": "simple",
+      "steps": 8,
+      "denoise": 1,
+      "model": [
+        "69",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "IN:scheduler"
+    }
+  },
+  "13": {
+    "inputs": {
+      "noise": [
+        "9",
+        0
+      ],
+      "guider": [
+        "10",
+        0
+      ],
+      "sampler": [
+        "11",
+        0
+      ],
+      "sigmas": [
+        "12",
+        0
+      ],
+      "latent_image": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "14": {
+    "inputs": {
+      "samples": [
+        "13",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "FizgigH3StillDecode",
+    "_meta": {
+      "title": "Fizgig H3 Still Decode"
+    }
+  },
+  "19": {
+    "inputs": {
+      "width": [
+        "31",
+        0
+      ],
+      "height": [
+        "31",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "FizgigH3StillLatent",
+    "_meta": {
+      "title": "Fizgig H3 Still Latent (single frame)"
+    }
+  },
+  "20": {
+    "inputs": {
+      "filename_prefix": "Fizgig_H3_Still",
+      "images": [
+        "14",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "OUT:save"
+    }
+  },
+  "29": {
+    "inputs": {
+      "prompt": "Edit <Picture 1>: remove people, remove animals, remove faces and body parts, and remove any watermarks from the image while recreating a photo-realistic version of the background.",
+      "width": [
+        "31",
+        0
+      ],
+      "height": [
+        "31",
+        1
+      ],
+      "length": 5,
+      "ref_image_size": "match",
+      "clip": [
+        "69",
+        1
+      ],
+      "vae": [
+        "4",
+        0
+      ],
+      "ref_images.ref_image_0": [
+        "34",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "_meta": {
+      "title": "IN:prompt"
+    }
+  },
+  "30": {
+    "inputs": {
+      "image": "bedroom_wood_sunset_bg_out_00002_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "IN:image"
+    }
+  },
+  "31": {
+    "inputs": {
+      "image": [
+        "34",
+        0
+      ]
+    },
+    "class_type": "GetImageSize",
+    "_meta": {
+      "title": "Get Image Size"
+    }
+  },
+  "34": {
+    "inputs": {
+      "custom_width": 0,
+      "custom_height": 0,
+      "megapixels": 2,
+      "scale_by": 1,
+      "resize_mode": "longest_side",
+      "resize_value": 0,
+      "upscale_method": "lanczos",
+      "device": "cpu",
+      "divisible_by": 32,
+      "output_mode": "stretch",
+      "crop_position": "center",
+      "pad_color": "#FFFFFF",
+      "image": [
+        "30",
+        0
+      ]
+    },
+    "class_type": "AILab_ImageResize",
+    "_meta": {
+      "title": "Image Resize (RMBG) 🖼️🎭"
+    }
+  },
+  "68": {
+    "inputs": {
+      "model_target": "MiniMaxH3",
+      "summary_include_prev_stack": false,
+      "lora_0": "None",
+      "strength_model_0": 1,
+      "strength_clip_0": 1,
+      "enabled_0": true,
+      "video_0": 1,
+      "audio_0": 1,
+      "lora_1": "None",
+      "strength_model_1": 1,
+      "strength_clip_1": 1,
+      "enabled_1": true,
+      "video_1": 1,
+      "audio_1": 1,
+      "lora_2": "None",
+      "strength_model_2": 1,
+      "strength_clip_2": 1,
+      "enabled_2": true,
+      "video_2": 1,
+      "audio_2": 1,
+      "lora_3": "None",
+      "strength_model_3": 1,
+      "strength_clip_3": 1,
+      "enabled_3": true,
+      "video_3": 1,
+      "audio_3": 1,
+      "lora_4": "None",
+      "strength_model_4": 1,
+      "strength_clip_4": 1,
+      "enabled_4": true,
+      "video_4": 1,
+      "audio_4": 1,
+      "lora_5": "None",
+      "strength_model_5": 1,
+      "strength_clip_5": 1,
+      "enabled_5": true,
+      "video_5": 1,
+      "audio_5": 1,
+      "lora_6": "None",
+      "strength_model_6": 1,
+      "strength_clip_6": 1,
+      "enabled_6": true,
+      "video_6": 1,
+      "audio_6": 1,
+      "lora_7": "None",
+      "strength_model_7": 1,
+      "strength_clip_7": 1,
+      "enabled_7": true,
+      "video_7": 1,
+      "audio_7": 1
+    },
+    "class_type": "fbt_LoraStackBuilder",
+    "_meta": {
+      "title": "IN:lora"
+    }
+  },
+  "69": {
+    "inputs": {
+      "model_target": "MiniMaxH3",
+      "stack_json": "[]",
+      "low_mem_load": false,
+      "merge_loras": false,
+      "int8_model": false,
+      "lora_stack_data": [
+        "68",
+        0
+      ],
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "fbt_LoraStackApply",
+    "_meta": {
+      "title": "LoRA Stack Apply"
+    }
+  }
+}

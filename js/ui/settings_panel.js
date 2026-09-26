@@ -232,4 +232,129 @@ export async function renderSettingsPanel(parent) {
             + "Each node also has its own Max Clip Frames widget that you can override per-node.",
     }));
     wrap.appendChild(h3Sec);
+
+    // ── H3 Background Plate ────────────────────────────────────────────────────
+    // Optional overrides for the "Remove People (H3)" generation (js/ui/background_editor.js).
+    // Each control maps to a titled node the exported templates/h3_background_plate.api.json may
+    // or may not currently expose (see nodes/backgrounds_presets.py::_backgrounds_h3_settings_options)
+    // — unsupported ones render disabled rather than silently doing nothing when set.
+    const bgPlateSec = _section("H3 Background Plate");
+    const DEFAULT_OPT = "— use template default —";
+
+    let bgOptions = { models: [], clips: [], samplers: [], schedulers: [],
+        has_model_override: false, has_clip_override: false, has_lora_override: false,
+        has_sampler_override: false, has_scheduler_override: false, template_defaults: {} };
+    let loraList = [];
+    let optionsError = "";
+    try {
+        [bgOptions, loraList] = await Promise.all([
+            compositionsApi.getH3SettingsOptions(),
+            compositionsApi.listLoras().then(r => r.loras ?? []),
+        ]);
+    } catch (e) {
+        optionsError = e.message || "Failed to load options";
+    }
+
+    const tplDefaults = bgOptions.template_defaults || {};
+
+    /** A "— use template default (X) —"-first select, disabled with a tooltip when unsupported. */
+    const _overrideSelect = (values, currentValue, supported, templateDefault, onChange) => {
+        const sel = _mk("select", { cls: "fbt-ce-select fbt-ce-settings-sel",
+            style: { flex: "1", minWidth: "0", maxWidth: "260px" } });
+        const label = templateDefault ? `${DEFAULT_OPT} (${templateDefault})` : DEFAULT_OPT;
+        sel.appendChild(_mk("option", { value: "", textContent: label }));
+        values.forEach(v => {
+            const o = _mk("option", { value: v, textContent: v });
+            if (v === currentValue) o.selected = true;
+            sel.appendChild(o);
+        });
+        sel.disabled = !supported;
+        sel.title = supported ? "" : "The current template doesn't expose this override yet — "
+            + "see templates/README.md";
+        sel.addEventListener("change", onChange);
+        return sel;
+    };
+
+    const modelSel = _overrideSelect(bgOptions.models, settings.h3_bg_plate_model,
+        bgOptions.has_model_override, tplDefaults.model, () => _save({ h3_bg_plate_model: modelSel.value }));
+    bgPlateSec.appendChild(_row("Model", modelSel, "Diffusion model checkpoint override"));
+
+    const clipSel = _overrideSelect(bgOptions.clips, settings.h3_bg_plate_clip,
+        bgOptions.has_clip_override, tplDefaults.clip, () => _save({ h3_bg_plate_clip: clipSel.value }));
+    bgPlateSec.appendChild(_row("Clip", clipSel, "Text encoder / CLIP model override"));
+
+    const samplerSel = _overrideSelect(bgOptions.samplers, settings.h3_bg_plate_sampler,
+        bgOptions.has_sampler_override, tplDefaults.sampler, () => _save({ h3_bg_plate_sampler: samplerSel.value }));
+    bgPlateSec.appendChild(_row("Sampler", samplerSel, "Sampler algorithm override"));
+
+    const schedulerSel = _overrideSelect(bgOptions.schedulers, settings.h3_bg_plate_scheduler,
+        bgOptions.has_scheduler_override, tplDefaults.scheduler,
+        () => _save({ h3_bg_plate_scheduler: schedulerSel.value }));
+    const stepsInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "0", max: "10000", step: "1",
+        value: settings.h3_bg_plate_steps || "",
+        placeholder: tplDefaults.steps != null ? String(tplDefaults.steps) : "default",
+        title: `Sampler steps override. Blank = use the template's own value`
+            + (tplDefaults.steps != null ? ` (currently ${tplDefaults.steps}).` : "."),
+    });
+    stepsInp.disabled = !bgOptions.has_scheduler_override;
+    stepsInp.addEventListener("change", () => {
+        const v = parseInt(stepsInp.value, 10);
+        const clamped = isNaN(v) || v <= 0 ? 0 : Math.max(1, Math.min(10000, v));
+        stepsInp.value = clamped || "";
+        _save({ h3_bg_plate_steps: clamped });
+    });
+    stepsInp.style.flex     = "0 0 auto";
+    stepsInp.style.width    = "72px";
+    const schedulerGroup = _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", flex: "1", minWidth: "0" } },
+        [schedulerSel, _mk("span", { cls: "fbt-be-proc-unit", textContent: "Steps" }), stepsInp]);
+    bgPlateSec.appendChild(_row("Scheduler", schedulerGroup, "Scheduler algorithm override, plus a steps override"));
+
+    const loraSel = _overrideSelect(loraList, settings.h3_bg_plate_lora,
+        bgOptions.has_lora_override, tplDefaults.lora, () => _save({ h3_bg_plate_lora: loraSel.value }));
+    // Only show a real number here when an override is actually active (h3_bg_plate_lora set) —
+    // otherwise leave it blank with the template's own current strength as the placeholder, so
+    // this never displays a number that looks live but isn't actually being applied.
+    const loraStrengthPlaceholder = tplDefaults.lora_strength != null ? String(tplDefaults.lora_strength) : "default";
+    const loraStrengthInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "0", max: "2", step: "0.05",
+        value: settings.h3_bg_plate_lora ? (settings.h3_bg_plate_lora_strength ?? "") : "",
+        placeholder: loraStrengthPlaceholder,
+        title: `LoRA strength (applied to both model and CLIP) — only used while a LoRA above is `
+            + `selected. Blank = use the template's own value (currently ${loraStrengthPlaceholder}).`,
+    });
+    loraStrengthInp.disabled = !bgOptions.has_lora_override;
+    loraStrengthInp.addEventListener("change", () => {
+        const v = parseFloat(loraStrengthInp.value);
+        if (!isNaN(v)) {
+            const clamped = Math.max(0, Math.min(2, v));
+            loraStrengthInp.value = clamped;
+            _save({ h3_bg_plate_lora_strength: clamped });
+        }
+    });
+    loraStrengthInp.style.flex  = "0 0 auto";
+    loraStrengthInp.style.width = "64px";
+    const loraStrengthLabel = _mk("span", { cls: "fbt-be-proc-unit", textContent: "Weight" });
+    const loraGroup = _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", flex: "1", minWidth: "0" } },
+        [loraSel, loraStrengthLabel, loraStrengthInp]);
+    bgPlateSec.appendChild(_row("LoRA", loraGroup,
+        "Optional turbo/style LoRA override — the Weight value is applied to both the LoRA's "
+        + "model and CLIP strength"));
+
+    if (optionsError) {
+        bgPlateSec.appendChild(_mk("p", { cls: "fbt-settings-note",
+            textContent: `Couldn't load model/LoRA options (${optionsError}) — all overrides above `
+                + "are disabled until this loads. Reopen Settings to retry." }));
+    } else {
+        bgPlateSec.appendChild(_mk("p", { cls: "fbt-settings-note",
+            textContent: "Every field above is optional and only takes effect once the exported "
+                + "template exposes the matching titled node (disabled fields don't yet — see "
+                + "templates/README.md). A turbo LoRA is typically tuned for a low step count "
+                + "(often as low as 8); pairing one with a mismatched step count, or a non-turbo "
+                + "model with too few steps, can produce poor results — tune Steps to match your "
+                + "Model/LoRA choice." }));
+    }
+    wrap.appendChild(bgPlateSec);
 }
