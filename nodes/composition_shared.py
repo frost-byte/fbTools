@@ -59,6 +59,10 @@ _COMPOSITION_SETTINGS_DEFAULTS: dict = {
     "h3_bg_plate_sampler":          "",  # comfy.samplers.SAMPLER_NAMES entry
     "h3_bg_plate_scheduler":        "",  # comfy.samplers.SCHEDULER_NAMES entry
     "h3_bg_plate_steps":            0,   # 0 = unset/use template default
+    # Default False: leave the model resident after a "Remove People" run, since chaining several
+    # passes back-to-back (the auto-reselect flow) is the common case and reloading each time is
+    # slow. Settings exposes this as "Unload model after each run" for the opposite preference.
+    "h3_bg_plate_unload_after_run": False,
 }
 
 

@@ -237,6 +237,9 @@ async def _compositions_settings_post(request):
             v = int(body["h3_bg_plate_steps"])
             settings["h3_bg_plate_steps"] = 0 if v <= 0 else max(1, min(10000, v))
 
+        if "h3_bg_plate_unload_after_run" in body:
+            settings["h3_bg_plate_unload_after_run"] = bool(body["h3_bg_plate_unload_after_run"])
+
         _write_composition_settings(settings)
         return web.json_response(settings)
     except Exception as exc:

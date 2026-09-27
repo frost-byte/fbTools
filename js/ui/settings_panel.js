@@ -11,6 +11,7 @@
  */
 
 import { compositionsApi } from "../api/compositions.js";
+import { toast as _toast } from "./library_common.js";
 
 export const LS_H3_MAX = "fbt_h3_max_frames";
 
@@ -342,6 +343,29 @@ export async function renderSettingsPanel(parent) {
     bgPlateSec.appendChild(_row("LoRA", loraGroup,
         "Optional turbo/style LoRA override — the Weight value is applied to both the LoRA's "
         + "model and CLIP strength"));
+
+    bgPlateSec.appendChild(_groupLabel("Memory"));
+    bgPlateSec.appendChild(_cb("Unload model after each run", "h3_bg_plate_unload_after_run",
+        "Off (default) leaves the model resident so chaining several \"Remove People\" passes back "
+        + "to back stays fast. On unloads it after every run, trading that speed for freed VRAM."));
+
+    const freeVramBtn = _mk("button", { cls: "fbt-ce-btn sm", textContent: "Free VRAM now",
+        title: "Unload resident models immediately — same effect as Manager's own "
+            + "\"Free model and node cache\" button.",
+        onclick: async () => {
+            freeVramBtn.disabled    = true;
+            freeVramBtn.textContent = "Freeing…";
+            try {
+                await compositionsApi.freeH3Vram();
+                _toast("VRAM freed", "success");
+            } catch (e) {
+                alert(`Free VRAM failed: ${e.message}`);
+            } finally {
+                freeVramBtn.disabled    = false;
+                freeVramBtn.textContent = "Free VRAM now";
+            }
+        } });
+    bgPlateSec.appendChild(_row("", freeVramBtn));
 
     if (optionsError) {
         bgPlateSec.appendChild(_mk("p", { cls: "fbt-settings-note",

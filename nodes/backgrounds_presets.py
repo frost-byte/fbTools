@@ -6,7 +6,7 @@ from __future__ import annotations
 from ..utils.composition_resources import list_backgrounds as _list_backgrounds, get_background as _get_background, save_background as _save_background, delete_background as _delete_background, list_camera_presets as _list_camera_presets, save_camera_preset as _save_camera_preset, delete_camera_preset as _delete_camera_preset, list_sound_presets as _list_sound_presets, save_sound_preset as _save_sound_preset, delete_sound_preset as _delete_sound_preset
 from ..utils.source_profile_analysis import extract_frame_at_time
 from ..utils.h3_template_runner import load_template, find_node_by_title, patch_prompt
-from ..utils.h3_job_runner import submit_and_wait, H3JobError
+from ..utils.h3_job_runner import submit_and_wait, free_vram, H3JobError
 from aiohttp import web
 from .llm_assistant import _route_llm
 from .composition_shared import _read_composition_settings
@@ -294,7 +294,8 @@ async def _backgrounds_remove_people(request):
         save_node_id = find_node_by_title(template, "OUT:save")
         seed = random.randint(0, 2**32 - 1)
         filename_prefix = f"fbtools/h3_background_plates/{uuid.uuid4().hex[:12]}"
-        overrides = _h3_bg_plate_overrides(_read_composition_settings())
+        settings = _read_composition_settings()
+        overrides = _h3_bg_plate_overrides(settings)
         prompt = patch_prompt(
             template,
             image=load_image_name,
@@ -304,7 +305,17 @@ async def _backgrounds_remove_people(request):
             overrides=overrides,
         )
 
-        result = await submit_and_wait(request, prompt, save_node_id)
+        try:
+            result = await submit_and_wait(request, prompt, save_node_id)
+        finally:
+            # The job reached ComfyUI's own queue either way (unlike the outer except Exception
+            # branch below, which catches failures before submission ever happened) — models may
+            # already be resident by the time a mid-run failure occurs, so unload regardless of
+            # success/failure once the user has opted into it. Default is to stay resident, since
+            # chaining several passes back-to-back (the auto-reselect flow) is the common case.
+            if settings.get("h3_bg_plate_unload_after_run"):
+                await free_vram(request)
+
         subfolder = result.get("subfolder", "")
         out_filename = result.get("filename", "")
         out_file = f"{subfolder}/{out_filename}" if subfolder else out_filename
@@ -323,6 +334,19 @@ async def _backgrounds_remove_people(request):
                 os.remove(temp_path)
             except OSError as exc:
                 logger.warning("background remove_people: could not clean up temp file %s: %s", temp_path, exc)
+
+
+@routes.post("/fbtools/backgrounds/free_vram")
+async def _backgrounds_free_vram(request):
+    """Manually unload resident models / free memory — same effect as the Manager UI's own
+    "Free model and node cache" button. On-demand counterpart to the "Unload model after each run"
+    Settings default, for whenever the user wants to reclaim VRAM without waiting on that setting."""
+    try:
+        await free_vram(request)
+        return web.json_response({"success": True})
+    except Exception as exc:
+        logger.error("background free_vram error: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 @routes.get("/fbtools/backgrounds/h3_settings_options")

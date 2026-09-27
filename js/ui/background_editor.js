@@ -187,6 +187,25 @@ export function openBackgroundEditor(existing, seed) {
             }
         } });
 
+    // Manual VRAM reclaim, independent of the "Unload model after each run" Settings default —
+    // handy after a batch of chained passes without leaving Settings' resident-by-default in place
+    // for future runs.
+    const freeVramBtn = _mk("button", { cls: "fbt-ce-btn sm", textContent: "Free VRAM",
+        title: "Unload resident models now — same effect as Manager's own \"Free model and node "
+            + "cache\" button.",
+        onclick: async () => {
+            freeVramBtn.disabled    = true;
+            freeVramBtn.textContent = "Freeing…";
+            try {
+                await compositionsApi.freeH3Vram();
+                _toast("VRAM freed", "success");
+            } catch (e) { alert(`Free VRAM failed: ${e.message}`); }
+            finally {
+                freeVramBtn.disabled    = false;
+                freeVramBtn.textContent = "Free VRAM";
+            }
+        } });
+
     let analyzeBtn = null;
     let bgHistRefresh = null;
     if (lib.llmLoaded && lib.llmVision) {
@@ -235,6 +254,7 @@ export function openBackgroundEditor(existing, seed) {
     const actionRow = _mk("div", { cls: "fbt-ce-outfit-action-row" });
     actionRow.appendChild(addRefBtn);
     actionRow.appendChild(removeBtn);
+    actionRow.appendChild(freeVramBtn);
     if (analyzeBtn) actionRow.appendChild(analyzeBtn);
 
     const removeBtnHint = _mk("div", { cls: "fbt-ce-hint", textContent:
@@ -242,7 +262,10 @@ export function openBackgroundEditor(existing, seed) {
         + "(templates/h3_background_plate.api.json) directly on this ComfyUI server — your own "
         + "open canvas isn't touched. Needs that template file to exist; takes ~2 minutes per pass "
         + "on this machine; whichever model/LoRA the template specifies is what runs. Output lands "
-        + "under output/fbtools/h3_background_plates/." });
+        + "under output/fbtools/h3_background_plates/. The model stays resident after each run by "
+        + "default so chained passes stay fast — click \"Free VRAM\" to reclaim it now, or flip "
+        + "\"Unload model after each run\" in Settings > H3 Background Plate to make that the "
+        + "default." });
 
     browserSection.append(bgTree.el, selFileEl, previewWrap, frameRow, actionRow, removeBtnHint);
 

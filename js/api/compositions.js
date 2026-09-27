@@ -98,6 +98,12 @@ export class CompositionsAPI extends BaseAPI {
         return this.get("/backgrounds/h3_settings_options");
     }
 
+    /** Unload resident models / free memory now — same effect as Manager's own "Free model and
+     *  node cache" button. Manual counterpart to the "Unload model after each run" setting. */
+    freeH3Vram() {
+        return this.post("/backgrounds/free_vram", {});
+    }
+
     // ── Outfits ─────────────────────────────────────────────────────────────────
 
     getOutfitRegistry() {

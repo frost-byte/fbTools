@@ -17,7 +17,7 @@ PKG = "fbt_route_test_pkg"
 # module -> number of @routes.* handlers it must register
 EXPECTED = {
     "llm_assistant": 40,
-    "backgrounds_presets": 13,
+    "backgrounds_presets": 14,
     "media": 6,
     "registry_api": 15,
     "outfits": 7,

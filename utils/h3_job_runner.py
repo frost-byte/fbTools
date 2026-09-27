@@ -81,3 +81,26 @@ async def submit_and_wait(
             elapsed += poll_interval
 
     raise H3JobError(f"Timed out after {timeout}s waiting for prompt_id={prompt_id}")
+
+
+async def free_vram(request, *, unload_models: bool = True, free_memory: bool = True) -> None:
+    """Ask this same ComfyUI server to unload resident models / free memory.
+
+    Same mechanism as the Manager UI's "Free model and node cache" button — POSTs to this server's
+    own core /free endpoint (server.py's post_free), which just sets a flag the main execution loop
+    checks after finishing the current/next queued item (execution.py, main.py's run loop); it does
+    not happen synchronously inside this call. Best-effort: logs and swallows any failure rather
+    than raising, since this is a courtesy cleanup step, not something that should turn a successful
+    generation into a reported error.
+    """
+    base_url = f"{request.scheme}://{request.host}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{base_url}/free",
+                json={"unload_models": unload_models, "free_memory": free_memory},
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("h3_job_runner.free_vram: /free returned status %s", resp.status)
+    except Exception as exc:
+        logger.warning("h3_job_runner.free_vram: request failed: %s", exc)
