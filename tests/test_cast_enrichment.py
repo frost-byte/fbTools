@@ -29,12 +29,13 @@ def _cast(entries):
     return {"entries": entries}
 
 
-def _entry(subject_id, bundle_id, visual_mode="images", use_audio=False):
+def _entry(subject_id, bundle_id, visual_mode="images", use_audio=False, image_selection=None):
     return {
         "subject_id": subject_id,
         "bundle_id": bundle_id,
         "visual_mode": visual_mode,
         "use_audio": use_audio,
+        "image_selection": image_selection,
     }
 
 
@@ -53,6 +54,7 @@ def _bundle(
     video_file="",
     audio_source="none",
     audio_file="",
+    audio_video_file="",
     appearance_override="",
 ):
     return {
@@ -64,6 +66,7 @@ def _bundle(
         "audio": {
             "source": audio_source,
             "file": audio_file,
+            "video_file": audio_video_file,
         },
         "appearance_override": appearance_override,
     }
@@ -98,6 +101,45 @@ def test_image_files_deduplicated():
     assert result["A"]["character_sheet_images"] == ["same.png", "other.png"]
 
 
+def test_image_selection_list_filters_to_specific_indices():
+    # Regression: this call site silently ignored image_selection entirely, always including
+    # every bundle file regardless of what was picked in the Scene Cast Build tab (confirmed
+    # live, 2026-09-28) — nodes/compositions.py's own subject resolution already respected it.
+    subj = _subject("Alice")
+    comp = _composition({"A": "alice"})
+    cast = _cast([_entry("alice", "b1", visual_mode="images", image_selection=[0, 2])])
+    reg  = _BundleRegistry({"b1": _bundle(files=["a1.png", "a2.png", "a3.png", "a4.png"])})
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == ["a1.png", "a3.png"]
+
+
+def test_image_selection_legacy_single_int_selects_one_file():
+    subj = _subject("Alice")
+    comp = _composition({"A": "alice"})
+    cast = _cast([_entry("alice", "b1", visual_mode="images", image_selection=1)])
+    reg  = _BundleRegistry({"b1": _bundle(files=["a1.png", "a2.png", "a3.png"])})
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == ["a2.png"]
+
+
+def test_image_selection_out_of_range_indices_ignored():
+    subj = _subject("Alice")
+    comp = _composition({"A": "alice"})
+    cast = _cast([_entry("alice", "b1", visual_mode="images", image_selection=[0, 5, -1])])
+    reg  = _BundleRegistry({"b1": _bundle(files=["a1.png", "a2.png"])})
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == ["a1.png"]
+
+
+def test_image_selection_empty_list_selects_no_files():
+    subj = _subject("Alice")
+    comp = _composition({"A": "alice"})
+    cast = _cast([_entry("alice", "b1", visual_mode="images", image_selection=[])])
+    reg  = _BundleRegistry({"b1": _bundle(files=["a1.png", "a2.png"])})
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["character_sheet_images"] == []
+
+
 def test_video_mode_entry_does_not_add_sheets():
     subj = _subject("Alice")
     comp = _composition({"A": "alice"})
@@ -130,6 +172,45 @@ def test_audio_extract_from_visual_does_not_set_voice_file():
     )})
     result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
     assert result["A"]["voice"]["audio_reference_file"] == ""
+
+
+def test_audio_extract_from_video_sets_reference_with_no_visual_reference_at_all():
+    # Regression: extract_from_video is a genuinely separate video used purely as an audio
+    # source (voice timbre) — it must work with visual_mode="images" and no bundle video_file
+    # at all, since it carries no visual reference of its own. Confirmed missing here live
+    # (2026-09-28) — nodes/compositions.py's own separate resolution path already handled it.
+    subj = _subject("Alice")
+    comp = _composition({"A": "alice"})
+    cast = _cast([_entry("alice", "b1", visual_mode="images", use_audio=True)])
+    reg  = _BundleRegistry({"b1": _bundle(
+        files=["a1.png"],
+        audio_source="extract_from_video",
+        audio_video_file="someone_elses_clip.mp4",
+    )})
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    assert result["A"]["voice"]["audio_reference_file"] == "someone_elses_clip.mp4"
+    # The image reference still comes through independently.
+    assert result["A"]["character_sheet_images"] == ["a1.png"]
+
+
+def test_audio_extract_from_video_carries_timing_and_role():
+    subj = _subject("Alice")
+    comp = _composition({"A": "alice"})
+    cast = _cast([_entry("alice", "b1", use_audio=True)])
+    reg  = _BundleRegistry({"b1": _bundle(
+        audio_source="extract_from_video", audio_video_file="clip.mp4",
+    )})
+    reg._b["b1"]["audio"]["start_time"] = 12.0
+    reg._b["b1"]["audio"]["duration"]   = 4.0
+    reg._b["b1"]["audio"]["retention"]  = "style"
+    reg._b["b1"]["audio"]["role"]       = "primary_dialogue"
+    result = apply_cast_to_subjects({"A": subj}, comp, cast, reg)
+    voice = result["A"]["voice"]
+    assert voice["audio_reference_file"] == "clip.mp4"
+    assert voice["audio_start_time"] == 12.0
+    assert voice["audio_duration"]   == 4.0
+    assert voice["audio_retention"]  == "style"
+    assert voice["audio_role"]       == "primary_dialogue"
 
 
 def test_use_audio_false_does_not_set_reference():

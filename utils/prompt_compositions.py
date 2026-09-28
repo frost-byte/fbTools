@@ -299,8 +299,10 @@ def validate_composition(composition: dict) -> list[str]:
 def _enrich_subject_with_bundle(subj: dict, bundle: dict, entry: dict) -> None:
     """Apply bundle images/audio/appearance onto subj in place.
 
-    image-mode visual.files      → appended to character_sheet_images
-    use_audio=True + source=file → bundle audio → voice.audio_reference_file
+    image-mode visual.files, filtered by entry's image_selection (if any)
+                                  → appended to character_sheet_images
+    use_audio=True + source in ("file", "extract_from_video")
+                                  → bundle audio → voice.audio_reference_file
     appearance_override          → replaces appearance.summary
     """
     visual_mode = entry.get("visual_mode", "images")
@@ -309,7 +311,23 @@ def _enrich_subject_with_bundle(subj: dict, bundle: dict, entry: dict) -> None:
 
     # 1. Image-mode files → character_sheet_images (deduplicated, appended)
     if visual_mode == "images":
-        files = [f for f in visual.get("files", []) if f]
+        raw_files = visual.get("files", [])
+        # image_selection: None=all, list[int]=specific indices, int=legacy single — same
+        # convention as nodes/compositions.py's own subject resolution and
+        # utils/composition_track_summary.py's _selected_images(). This call site was the one
+        # place that never read it, so every bundle image was included regardless of what was
+        # actually picked in the Scene Cast Build tab (confirmed live, 2026-09-28).
+        img_sel = entry.get("image_selection")
+        if img_sel is not None:
+            if isinstance(img_sel, list):
+                raw_files = [raw_files[i] for i in img_sel if isinstance(i, int) and 0 <= i < len(raw_files)]
+            else:
+                try:
+                    idx = int(img_sel)
+                    raw_files = [raw_files[idx]] if 0 <= idx < len(raw_files) else []
+                except (TypeError, ValueError):
+                    pass
+        files = [f for f in raw_files if f]
         if files:
             sheets: list = subj.setdefault("character_sheet_images", [])
             for f in files:
@@ -317,13 +335,21 @@ def _enrich_subject_with_bundle(subj: dict, bundle: dict, entry: dict) -> None:
                     sheets.append(f)
 
     # 2. Audio → voice fields
-    # extract_from_visual means the audio is a VIDEO SOUNDTRACK — it is handled
-    # at the video-entry level (video_entries_full / soundtrack_audio in the
+    # extract_from_visual means the audio is the SAME video used visually — it is
+    # handled at the video-entry level (video_entries_full / soundtrack_audio in the
     # refplan) and must NOT also appear as a standalone voice.audio_reference_file,
-    # which would create a duplicate reference.  Only source="file" (a separate
-    # standalone audio asset) populates the subject's voice fields.
-    if entry.get("use_audio", False) and audio.get("source") == "file":
-        audio_file = audio.get("file", "")
+    # which would create a duplicate reference. source="file" and
+    # source="extract_from_video" (a genuinely separate video used purely as an
+    # audio source, with no visual reference of its own) are both standalone audio
+    # references from this function's point of view — the downstream ffmpeg-based
+    # loader (_h3_load_audio) extracts audio from any container regardless of
+    # extension, so a video file works here exactly like a plain audio file.
+    # extract_from_video was confirmed missing here live (2026-09-28) —
+    # nodes/compositions.py's own separate resolution path already handles it
+    # correctly; this call site did not.
+    audio_source = audio.get("source")
+    if entry.get("use_audio", False) and audio_source in ("file", "extract_from_video"):
+        audio_file = audio.get("file", "") if audio_source == "file" else audio.get("video_file", "")
         if audio_file:
             v = subj.setdefault("voice", {})
             v["audio_reference_file"] = audio_file
