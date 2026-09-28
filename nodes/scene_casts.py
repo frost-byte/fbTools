@@ -616,7 +616,7 @@ class SceneCastBuild(io.ComfyNode):
                 )
         summary = "\n".join(lines)
 
-        # ── filename_prefix: {prefix}{primary_subject_id}/{bundle_id}/{compositions|source_profiles/<name>}/ ──
+        # ── filename_prefix: {prefix}{primary_subject_id}/{bundle_id}/{compositions/<name>|source_profiles/<name>}/ ──
         # No fallback guessing here when nothing is tagged primary — that inference stays
         # in utils.generation_metadata.extract_cast_info() for archive-time reprocessing
         # of clips generated before this existed. See the design notes in
@@ -626,7 +626,8 @@ class SceneCastBuild(io.ComfyNode):
         if has_sp:
             kind = f"source_profiles/{_slugify(source_profile.get('name', ''))}"
         elif isinstance(prompt_composition, dict) and prompt_composition:
-            kind = "compositions"
+            comp_label = prompt_composition.get("name") or prompt_composition.get("id") or "composition"
+            kind = f"compositions/{_slugify(comp_label)}"
         else:
             kind = ""
         filename_prefix_out = _build_cast_filename_prefix(
