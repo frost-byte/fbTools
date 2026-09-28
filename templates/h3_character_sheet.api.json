@@ -1,0 +1,839 @@
+{
+  "115": {
+    "inputs": {
+      "aspect_ratio": "1:1 (Square)",
+      "megapixels": 1,
+      "multiple": 32
+    },
+    "class_type": "ResolutionSelector",
+    "_meta": {
+      "title": "IN:aspect_ratio"
+    }
+  },
+  "125": {
+    "inputs": {
+      "noise": [
+        "129",
+        0
+      ],
+      "guider": [
+        "126",
+        0
+      ],
+      "sampler": [
+        "377",
+        0
+      ],
+      "sigmas": [
+        "383",
+        0
+      ],
+      "latent_image": [
+        "3939",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "126": {
+    "inputs": {
+      "model": [
+        "3931",
+        0
+      ],
+      "conditioning": [
+        "136",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Basic Guider"
+    }
+  },
+  "129": {
+    "inputs": {
+      "noise_seed": 482416324565532
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "IN:seed"
+    }
+  },
+  "131": {
+    "inputs": {
+      "expression": "max(5, round(a * b)) + (5 - (max(5, round(a * b)) % 17)) % 17",
+      "values.a": [
+        "132",
+        0
+      ],
+      "values.b": [
+        "190",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "Math Expression"
+    }
+  },
+  "132": {
+    "inputs": {
+      "value": [
+        "387",
+        0
+      ]
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Float (Duration)"
+    }
+  },
+  "136": {
+    "inputs": {
+      "prompt": [
+        "364",
+        0
+      ],
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "131",
+        1
+      ],
+      "ref_image_size": "max",
+      "clip": [
+        "3925",
+        1
+      ],
+      "vae": [
+        "3922",
+        0
+      ],
+      "audio_vae": [
+        "3921",
+        0
+      ],
+      "ref_images.ref_image_0": [
+        "281",
+        0
+      ],
+      "ref_images.ref_image_1": [
+        "283",
+        0
+      ],
+      "ref_images.ref_image_2": [
+        "285",
+        0
+      ],
+      "ref_images.ref_image_3": [
+        "287",
+        0
+      ],
+      "ref_images.ref_image_4": [
+        "293",
+        0
+      ],
+      "ref_images.ref_image_5": [
+        "296",
+        0
+      ],
+      "ref_images.ref_image_6": [
+        "299",
+        0
+      ],
+      "ref_images.ref_image_7": [
+        "302",
+        0
+      ],
+      "ref_images.ref_image_8": [
+        "305",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "_meta": {
+      "title": "MiniMax H3 Reference to Video"
+    }
+  },
+  "138": {
+    "inputs": {
+      "value": "subject_definitions:\n<Subject 1> is ONE single person, the same individual in <Picture 2> and in every reference after it.\nThose images serve one purpose: to say who this person is - face, head shape, hair, complexion, body\nproportions, identifying marks. Nothing else is taken from them: not their clothing or lack of it,\nnot how much of the body they show, not their poses, backgrounds or lighting.\n\n<Outfit 1> is the clothing in <Picture 1> and the only thing taken from that image: its garments,\ncolours, materials, fit, footwear and accessories exactly as shown. Whoever wears it there is not\ntaken, nor the hanger, background or light. {{OUTFIT_HINT}}. <Outfit 1> IS THE ONLY CLOTHING ANYWHERE IN THIS SHEET:\nnothing from any other reference is used or blended in. <Subject 1> wears it in every panel.\n\nsummary:\n[reference generation] The target video is a single still frame: a reference data sheet laying out\n<Subject 1> wearing <Outfit 1> - full views along the top, close-ups along the bottom - on a neutral\nstudio backdrop. The composition never changes, so one frame can be exported as the sheet.\n\nretention_analysis:\n<Picture 1>: attribute_transfer - the clothing is transferred onto <Subject 1> and, as clothing,\n             fully preserved: every garment, colour, fabric, cut, collar, sleeve and hem line,\n             fastening, shoe and accessory reproduced exactly in every panel. Sole authority on what\n             <Subject 1> wears. Its wearer, pose, background and light are not retained.\n<Picture 2> and every reference after it: partially_preserved - ONLY the identity is retained: face,\n             head shape, hair, complexion, body proportions, identifying marks. Everything else\n             changes: what they wear changes to <Outfit 1>, how much of the body they show changes -\n             it is covered however little is worn there - and poses, framing, backgrounds and light\n             change to those specified below.\n\ndetailed_description:\nThe target video is a STILL IMAGE - a frozen reference data sheet in flat product-photography style,\nwith no motion from the first frame to the last: a seamless neutral mid-grey background, soft even\nstudio light from the front and both sides so every surface is readable and nothing falls into black\nshadow, neutral accurate colour, no stylised grading, no environment.\n\nTHE SUBJECT IS A PERSON, and their identity is what this sheet exists to lock. The SAME individual in\nevery one of the eight panels: same face shape and features, eye spacing and colour, nose, mouth,\njaw, hairline, hair, complexion and build; age, weight and bone structure do not change between\npanels. The expression is the same in all eight: calm and neutral, mouth closed, eyes open, lit the\nsame way throughout. Neither person nor outfit is redesigned, restyled, slimmed or embellished.\n\n<Subject 1> IS FULLY DRESSED IN <Outfit 1> IN EVERY ONE OF THE EIGHT PANELS AND IN NOTHING ELSE.\nEach garment is worn normally: the top on the torso, covering chest, stomach, back and shoulders\ndown to where it ends; the lower garment on legs and hips; the footwear on the feet, fitted to this\nperson's build. The torso is clothed in every panel, front, side, back and close-ups alike. Bare\nskin appears ONLY where <Outfit 1> leaves it uncovered - head, neck, hands, forearms if the sleeves\nare short. The person is never shirtless, bare-chested, stripped to the waist or in underwear; no\ngarment is left off, opened, pulled aside or made transparent to show the body underneath. Wherever\na reference shows them undressed, <Outfit 1> is put on over that and covers it completely.\n\nTAKE ONLY THE PERSON THEMSELVES from the identity references. Where one is a close-up, place what it\nshows on the matching part of the body - a tattooed shoulder means that shoulder carries that exact\ntattoo, under the sleeve where the sleeve covers it. Their rooms, furniture, scenery, other people,\nobjects and light are ignored.\n\n[Shot 1] The frame is a grid of panels on that grey background, separated by thin even neutral-grey\ngutters of equal width, with a matching margin around the outside. Every panel is a plain rectangle,\nflat to the camera, with no tilt, no perspective and no drop shadow.\n\nTOP ROW - FOUR FULL VIEWS, equal panels side by side, the whole subject in each, shown at exactly\nthe same scale, at the same height, upright and level, centred in its own panel, lit identically,\nphotographed from the same camera height and distance. Only the viewing angle differs:\n  1 - FRONT, facing the camera straight on\n  2 - THREE-QUARTER, turned 45 degrees to its own right\n  3 - SIDE, a STRICT profile at exactly 90 degrees: the camera sees only one side of the subject,\n      the far arm and far leg are hidden behind the near ones, and the face is seen edge-on with the\n      nose in silhouette. This panel must be clearly different from panel 2, not a second\n      three-quarter view.\n  4 - BACK, seen from directly behind\n\nBOTTOM ROW - FOUR CLOSE-UPS, equal panels side by side, each a tight crop on one main area of the\nsame subject, filling its panel, on the same grey background and in the same light. The four areas\nare DIFFERENT from each other and each appears ONCE. No two of these panels show the same area, the\nsame framing or the same crop, and none of them repeats another:\n  5 - HEAD AND SHOULDERS: the face, head and shoulders, front-on.\n  6 - CHEST AND WAIST: the clothed torso and the waistline of the outfit, front-on, showing how the\n      garments sit and fasten there. No head in frame. The torso is clothed in this panel too.\n  7 - ARM AND HAND: one whole arm from shoulder to fingertips, with the hand open and clearly visible.\n  8 - LEG AND FOOT: one whole leg from hip to the ground, with the foot clearly visible.\nAny angle or crop the references do not already contain is built from the ones that do, keeping the\nsame silhouette, garment shapes, layering and proportions. Each close-up is shot STRAIGHT ON, square\nto that part of the subject, filling its panel, with no tilt and no oblique angle; the head close-up\nfaces the camera front-on, not turned to the side.\n\nIt is one and the same person in the same outfit in every panel, top row and bottom row alike, with\nthe same face, build, colours and proportions. The back view belongs to the same person as the front\nview, and each close-up belongs to the same person as the full views.\n\nPOSE - in the four full views the person stands in a relaxed A-pose, feet shoulder width apart, arms\nheld slightly away from the body with open hands and separated fingers, head level and facing along\nthe body, the same pose in all four.\n\nThis is a FROZEN FRAME. Nothing moves at all. The camera holds a static shot and does not move,\nzoom, tilt, shake or drift. The panels do not slide, resize, reorder, cross-fade or animate. The\nsubject does not move, turn, gesture, breathe or change pose inside any panel. Every frame is\nidentical to the first: the shot reads as a single photograph, not as a video.\n\nNo text, letters, numbers, captions, labels, arrows, callouts, measurement lines, colour swatches,\nlogos or watermarks anywhere in the frame or the gutters, no second copy of the subject inside a\npanel, no repeated panel, no two panels showing the same area or crop, no extra, empty or\noverlapping panels, no other object or person, no second face, no change of identity, age or build\nbetween panels, no bare chest, no bare torso, no shirtless panel, no exposed stomach, no underwear,\nno partial nudity, no clothing from any reference other than <Picture 1>, no mixing of two outfits,\nno substituted top, trousers or shoes, no missing garment in one panel that is present in another,\nno environment, no floor pattern, no cast shadow on the background, no camera movement, no cuts, no\nfades, no motion blur, no depth-of-field blur, no stylised or cartoon rendering, no dramatic or\ncoloured lighting, no lens flare, no smoke or atmosphere.\n\noverall_soundscape:\nSilence.\n\nnon_diegetic_music: N/A\n"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "IN:character_prompt"
+    }
+  },
+  "190": {
+    "inputs": {
+      "Number": [
+        "389",
+        0
+      ]
+    },
+    "class_type": "Float",
+    "_meta": {
+      "title": "FPS  (24 defult)"
+    }
+  },
+  "281": {
+    "inputs": {
+      "indexes": "0",
+      "images": [
+        "400",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "283": {
+    "inputs": {
+      "indexes": "1",
+      "images": [
+        "400",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "285": {
+    "inputs": {
+      "indexes": "2",
+      "images": [
+        "400",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "287": {
+    "inputs": {
+      "indexes": "3",
+      "images": [
+        "400",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "293": {
+    "inputs": {
+      "indexes": "4",
+      "images": [
+        "400",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "296": {
+    "inputs": {
+      "indexes": "5",
+      "images": [
+        "400",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "299": {
+    "inputs": {
+      "indexes": "6",
+      "images": [
+        "400",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "302": {
+    "inputs": {
+      "indexes": "7",
+      "images": [
+        "400",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "305": {
+    "inputs": {
+      "indexes": "8",
+      "images": [
+        "400",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "325": {
+    "inputs": {
+      "model": [
+        "3931",
+        0
+      ],
+      "conditioning": [
+        "136",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Basic Guider"
+    }
+  },
+  "326": {
+    "inputs": {
+      "model_name": "minimax_h3_latent_upscaler_3d_bf16.safetensors",
+      "mode": "scale by multiplier",
+      "mode.scale": 1.5,
+      "align": 32,
+      "enable_temporal_chunking": true,
+      "force_unload": "cuda",
+      "device": "cuda",
+      "precision": "bf16",
+      "latent": [
+        "334",
+        0
+      ]
+    },
+    "class_type": "MinimaxH3LatentUpscaler3D",
+    "_meta": {
+      "title": "IN:upscale_factor"
+    }
+  },
+  "330": {
+    "inputs": {
+      "noise": [
+        "129",
+        0
+      ],
+      "guider": [
+        "325",
+        0
+      ],
+      "sampler": [
+        "373",
+        0
+      ],
+      "sigmas": [
+        "370",
+        0
+      ],
+      "latent_image": [
+        "332",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "332": {
+    "inputs": {
+      "video_latent": [
+        "326",
+        0
+      ],
+      "audio_latent": [
+        "334",
+        1
+      ]
+    },
+    "class_type": "LTXVConcatAVLatent",
+    "_meta": {
+      "title": "Concat AV Latent"
+    }
+  },
+  "334": {
+    "inputs": {
+      "av_latent": [
+        "125",
+        1
+      ]
+    },
+    "class_type": "LTXVSeparateAVLatent",
+    "_meta": {
+      "title": "Separate AV Latent"
+    }
+  },
+  "361": {
+    "inputs": {
+      "key_0": "prompt",
+      "value_0": [
+        "138",
+        0
+      ],
+      "key_1": "duration",
+      "value_1": "0.1",
+      "key_2": "fps",
+      "value_2": "1",
+      "key_3": "steps",
+      "value_3": "16",
+      "key_4": "",
+      "value_4": ""
+    },
+    "class_type": "Basic data handling: DictCreate",
+    "_meta": {
+      "title": "Character Sheet Options"
+    }
+  },
+  "363": {
+    "inputs": {
+      "key": "duration",
+      "input_dict": [
+        "3938",
+        0
+      ]
+    },
+    "class_type": "Basic data handling: DictGet",
+    "_meta": {
+      "title": "get"
+    }
+  },
+  "364": {
+    "inputs": {
+      "key": "prompt",
+      "input_dict": [
+        "3938",
+        0
+      ]
+    },
+    "class_type": "Basic data handling: DictGet",
+    "_meta": {
+      "title": "get"
+    }
+  },
+  "370": {
+    "inputs": {
+      "sigmas": [
+        "372",
+        0
+      ]
+    },
+    "class_type": "ManualSigmas",
+    "_meta": {
+      "title": "SigmasSecond"
+    }
+  },
+  "372": {
+    "inputs": {
+      "strings": "0.9035, 0.6316, 0.3158, 0.0000\n0.9035, 0.8000, 0.6316, 0.3158, 0.0000\n0.9231, 0.8780, 0.8000, 0.6316, 0.3158, 0.0000",
+      "multiline": false,
+      "select": 2
+    },
+    "class_type": "ImpactStringSelector",
+    "_meta": {
+      "title": "IN:upscale_steps_select"
+    }
+  },
+  "373": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "IN:sampler2"
+    }
+  },
+  "377": {
+    "inputs": {
+      "sampler_name": "res_multistep"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "IN:sampler1"
+    }
+  },
+  "383": {
+    "inputs": {
+      "scheduler": "simple",
+      "steps": [
+        "397",
+        0
+      ],
+      "denoise": 1,
+      "model": [
+        "3931",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "IN:scheduler1"
+    }
+  },
+  "387": {
+    "inputs": {
+      "string": [
+        "363",
+        0
+      ],
+      "default": 0.1
+    },
+    "class_type": "cg_String to Float",
+    "_meta": {
+      "title": "String to Float"
+    }
+  },
+  "389": {
+    "inputs": {
+      "key": "fps",
+      "input_dict": [
+        "3938",
+        0
+      ]
+    },
+    "class_type": "Basic data handling: DictGet",
+    "_meta": {
+      "title": "get"
+    }
+  },
+  "394": {
+    "inputs": {
+      "value": "subject_definitions:\n<Subject 1> is ONE single person, the same individual in <Picture 2> and in every reference after it.\nThose images serve one purpose: to say who this person is - face, head shape, hair, complexion,\nskin tone and texture, identifying marks. Nothing else is taken from them: not their clothing or\nlack of it, not their poses, backgrounds or lighting.\n\n<Outfit 1> is the clothing in <Picture 1> and the only thing taken from that image: the colour,\nfabric and cut of whatever is visible at the neckline and shoulders. Whoever wears it there is not\ntaken, nor the hanger, background or light.  {{OUTFIT_HINT}}. <Outfit 1> IS THE ONLY CLOTHING VISIBLE IN THIS SHEET.\n<Subject 1> wears it in every panel.\n\nsummary:\n[reference generation] The target video is a single still frame: a three-panel facial reference\nsheet of <Subject 1> wearing <Outfit 1>, head and upper shoulders in every panel, on a neutral\nstudio backdrop, each panel showing a different angle of the same face. The composition never\nchanges, so one frame can be exported as the sheet.\n\nretention_analysis:\n<Picture 1>: attribute_transfer - only the visible neckline and collar of the clothing is\n             transferred onto <Subject 1> and, as clothing, fully preserved in every panel: colour,\n             fabric and cut of what is visible. Its wearer, pose, background and light are not\n             retained.\n<Picture 2> and every reference after it: partially_preserved - ONLY the identity is retained: face\n             shape, eye shape and spacing, eyebrow shape, nose shape, mouth and lip shape, jaw and\n             chin line, ear shape where visible, hairline, hair colour and texture, skin tone and\n             texture, identifying marks. Everything else changes: framing, angle, background and\n             light change to those specified below; clothing changes to <Outfit 1>.\n\ndetailed_description:\nThe target video is a STILL IMAGE - a frozen reference sheet in flat product-photography style, with\nno motion from the first frame to the last: a seamless neutral mid-grey background, soft even studio\nlight from the front and both sides so no harsh shadow falls across the face in any panel, neutral\naccurate colour, no stylised grading, no environment.\n\nTHE SUBJECT IS A PERSON, and their identity is what this sheet exists to lock. The SAME individual in\nall three panels: identical face shape, eye shape, spacing and colour, eyebrow shape, nose shape and\nbridge, mouth and lip shape, jaw and chin line, ear shape where visible, hairline, hair colour and\ntexture, skin tone and texture, and any identifying marks - freckles, moles, scars, tattoos where\nvisible. Age, weight and bone structure do not change between panels; nothing is idealised, slimmed,\nsmoothed, symmetrised or beautified. The expression is the same calm, neutral expression in all\nthree panels - mouth closed, eyes open - lit the same way throughout.\n\n<Subject 1> IS DRESSED IN <Outfit 1> AT THE NECKLINE IN EVERY PANEL AND IN NOTHING ELSE VISIBLE.\nBare skin appears only where <Outfit 1> leaves the neck and shoulders uncovered. No garment, collar\nor neckline changes between panels.\n\nTAKE ONLY THE PERSON THEMSELVES from the identity references. Their rooms, furniture, scenery, other\npeople, objects and light are ignored.\n\n[Shot 1] The frame is THREE EQUAL PANELS SIDE BY SIDE, separated by thin even neutral-grey gutters of\nequal width, with a matching margin around the outside. Every panel is a plain rectangle, flat to the\ncamera, with no tilt, no perspective and no drop shadow. In every panel the head and upper shoulders\nfill the panel, cropped just below the collarbone, with minimal headroom above the hair and minimal\nside margin - the face is the largest element in each panel by a wide margin, shown at exactly the\nsame scale, same framing distance and same vertical position across all three panels. Only the\nviewing angle differs, left to right:\n\n  1 - THREE-QUARTER LEFT: turned roughly 30-45 degrees to the subject's own left, both eyes still\n      clearly visible, most of the face still readable.\n  2 - FRONT: facing the camera straight on, directly ahead.\n  3 - THREE-QUARTER RIGHT: turned roughly 30-45 degrees to the subject's own right, both eyes still\n      clearly visible, most of the face still readable. This panel must be a clear mirror-opposite\n      angle from panel 1, not a repeat of it or of panel 2.\n\nEach panel is shot straight on, square to the camera, with sharp critical focus across the entire\nface in every panel - eyes, nose and mouth all in focus - no depth-of-field blur, no soft focus, no\nmotion blur anywhere in the frame.\n\nIt is one and the same person in the same outfit in every panel, with the same face, hair, skin and\nproportions. Panel 1's left side of the face and panel 3's right side of the face belong to the same\nindividual as panel 2's front view - any natural asymmetry between the two sides (uneven features,\na mark present on only one side) is preserved faithfully from the identity references rather than\nmirrored or averaged out between panels.\n\nThis is a FROZEN FRAME. Nothing moves at all. The camera holds a static shot and does not move, zoom,\ntilt, shake or drift. The panels do not slide, resize, reorder, cross-fade or animate. The subject\ndoes not move, turn, gesture, breathe or change pose inside any panel. Every frame is identical to\nthe first: the shot reads as a single photograph, not as a video.\n\nNo text, letters, numbers, captions, labels, arrows, callouts, logos or watermarks anywhere in the\nframe or the gutters, no second copy of the subject inside a panel, no repeated panel, no two panels\nshowing the same angle, no extra, empty or overlapping panels, no other object or person, no second\nface, no change of identity, age or build between panels, no hat, glasses or accessory not present in\nthe identity references, no exaggerated or stylised expression, no makeup or grooming changes beyond\nwhat the references show, no clothing from any reference other than <Picture 1>, no mixing of two\noutfits, no missing collar in one panel that is present in another, no environment, no floor pattern,\nno cast shadow on the background, no camera movement, no cuts, no fades, no stylised or cartoon\nrendering, no dramatic or coloured lighting, no lens flare, no vignette, no film grain.\n\noverall_soundscape:\nSilence.\n\nnon_diegetic_music: N/A"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "IN:face_prompt"
+    }
+  },
+  "395": {
+    "inputs": {
+      "key_0": "prompt",
+      "value_0": [
+        "394",
+        0
+      ],
+      "key_1": "duration",
+      "value_1": "0.1",
+      "key_2": "fps",
+      "value_2": "1",
+      "key_3": "steps",
+      "value_3": "12",
+      "key_4": "",
+      "value_4": ""
+    },
+    "class_type": "Basic data handling: DictCreate",
+    "_meta": {
+      "title": "Face Sheet Options"
+    }
+  },
+  "396": {
+    "inputs": {
+      "key": "steps",
+      "input_dict": [
+        "3938",
+        0
+      ]
+    },
+    "class_type": "Basic data handling: DictGet",
+    "_meta": {
+      "title": "get"
+    }
+  },
+  "397": {
+    "inputs": {
+      "string": [
+        "396",
+        0
+      ]
+    },
+    "class_type": "StringToInt",
+    "_meta": {
+      "title": "String to Int"
+    }
+  },
+  "400": {
+    "inputs": {
+      "image_paths": "",
+      "mode": "Keep Input Ratio",
+      "ratio_preset": "16:9",
+      "megapixels": 1,
+      "width": 1024,
+      "height": 1024,
+      "divisible_by": "32",
+      "interpolation": "lanczos",
+      "resize_method": "Fit (Letterbox/Pillarbox)",
+      "recursive_folders": false,
+      "list_output_mode": "Original Size",
+      "disabled_image_paths": ""
+    },
+    "class_type": "DenoAdvancedImageSourceLoader",
+    "_meta": {
+      "title": "IN:refs"
+    }
+  },
+  "3921": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "3922": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "3924": {
+    "inputs": {
+      "unet_name": "10Eros_Max_h3_TURBO-hybrid_beta5_int8.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "IN:model"
+    }
+  },
+  "3925": {
+    "inputs": {
+      "model_target": "MiniMaxH3",
+      "stack_json": "[]",
+      "low_mem_load": false,
+      "merge_loras": false,
+      "int8_model": false,
+      "lora_stack_data": [
+        "3936",
+        0
+      ],
+      "model": [
+        "3924",
+        0
+      ],
+      "clip": [
+        "3926",
+        0
+      ]
+    },
+    "class_type": "fbt_LoraStackApply",
+    "_meta": {
+      "title": "LoRA Stack Apply"
+    }
+  },
+  "3926": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "IN:clip"
+    }
+  },
+  "3931": {
+    "inputs": {
+      "enabled": true,
+      "chunks": 2,
+      "min_tokens": 8192,
+      "model": [
+        "3933",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3ChunkFeedForward",
+    "_meta": {
+      "title": "MiniMax H3 Chunk FeedForward"
+    }
+  },
+  "3932": {
+    "inputs": {
+      "attention": "comfy kitchen attention",
+      "model": [
+        "3925",
+        0
+      ]
+    },
+    "class_type": "ModelAttentionBackend",
+    "_meta": {
+      "title": "Model Attention Backend"
+    }
+  },
+  "3933": {
+    "inputs": {
+      "selection": "sol-attn",
+      "selection.tau": 1.3,
+      "start_percent": 0.2,
+      "end_percent": 1,
+      "dense_blocks": "",
+      "min_tokens": 12288,
+      "extra_tokens": 256,
+      "sink_conditioning": "exact_kv_and_rows",
+      "verbose": false,
+      "model": [
+        "3932",
+        0
+      ]
+    },
+    "class_type": "BlockSparseAttention",
+    "_meta": {
+      "title": "Model Sparse Attention"
+    }
+  },
+  "3936": {
+    "inputs": {
+      "model_target": "MiniMaxH3",
+      "summary_include_prev_stack": false,
+      "lora_0": "None",
+      "strength_model_0": 1,
+      "strength_clip_0": 1,
+      "enabled_0": true,
+      "video_0": 1,
+      "audio_0": 1,
+      "lora_1": "None",
+      "strength_model_1": 1,
+      "strength_clip_1": 1,
+      "enabled_1": true,
+      "video_1": 1,
+      "audio_1": 1,
+      "lora_2": "None",
+      "strength_model_2": 1,
+      "strength_clip_2": 1,
+      "enabled_2": true,
+      "video_2": 1,
+      "audio_2": 1,
+      "lora_3": "None",
+      "strength_model_3": 1,
+      "strength_clip_3": 1,
+      "enabled_3": true,
+      "video_3": 1,
+      "audio_3": 1,
+      "lora_4": "None",
+      "strength_model_4": 1,
+      "strength_clip_4": 1,
+      "enabled_4": true,
+      "video_4": 1,
+      "audio_4": 1,
+      "lora_5": "None",
+      "strength_model_5": 1,
+      "strength_clip_5": 1,
+      "enabled_5": true,
+      "video_5": 1,
+      "audio_5": 1,
+      "lora_6": "None",
+      "strength_model_6": 1,
+      "strength_clip_6": 1,
+      "enabled_6": true,
+      "video_6": 1,
+      "audio_6": 1,
+      "lora_7": "None",
+      "strength_model_7": 1,
+      "strength_clip_7": 1,
+      "enabled_7": true,
+      "video_7": 1,
+      "audio_7": 1
+    },
+    "class_type": "fbt_LoraStackBuilder",
+    "_meta": {
+      "title": "IN:lora"
+    }
+  },
+  "3938": {
+    "inputs": {
+      "switch": false,
+      "on_false": [
+        "361",
+        0
+      ],
+      "on_true": [
+        "395",
+        0
+      ]
+    },
+    "class_type": "LazySwitchKJ",
+    "_meta": {
+      "title": "IN:mode"
+    }
+  },
+  "3939": {
+    "inputs": {
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "FizgigH3StillLatent",
+    "_meta": {
+      "title": "Fizgig H3 Still Latent (single frame)"
+    }
+  },
+  "3940": {
+    "inputs": {
+      "filename_prefix": "Fizgig_H3_Still",
+      "images": [
+        "3941",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "OUT:save"
+    }
+  },
+  "3941": {
+    "inputs": {
+      "samples": [
+        "330",
+        0
+      ],
+      "vae": [
+        "3922",
+        0
+      ]
+    },
+    "class_type": "FizgigH3StillDecode",
+    "_meta": {
+      "title": "Fizgig H3 Still Decode"
+    }
+  }
+}

@@ -296,3 +296,61 @@ instead comes from a real segmentation/matting node (SAM, rembg, etc.), check th
 convention before assuming either direction — this is a ComfyUI-ecosystem-wide ambiguity, not
 something unique to `LoadImageMask`.
 
+---
+
+## Multi-reference-image prompts can assign special meaning to slot ORDER, not just membership
+
+**Symptom**: an H3 character/face-sheet generation renders the subject in a completely different
+outfit than any of the reference photos actually show (e.g. a two-piece shirt-and-trousers set
+substituted for a single dress) — even though the intended outfit reference genuinely was among the
+images sent, and every other identity/generation setting was correct. Confirmed against a real
+generation, 2026-09-27 (see `project_h3_character_sheet` session notes).
+
+**Cause**: the workflow's own prompt text (baked into `templates/h3_character_sheet.api.json`'s
+`DictCreate` nodes, not anything this repo's code writes) defines `<Outfit 1>` as "the clothing in
+`<Picture 1>`" specifically — i.e. whichever reference image lands in the **first** `ref_image_N`
+slot — and explicitly instructs the model to ignore clothing in every other reference ("Nothing else
+is taken from them: not their clothing or lack of it"). `nodes/h3_character_sheet.py`'s picker UI
+(`js/ui/bundle_editor.js::_buildCharSheetPicker`) originally selected images by checkbox and always
+sent them in ascending bundle-index order, with no way for the user to control which image landed in
+that semantically special first slot — so "Picture 1" ended up being whichever image happened to sit
+at the lowest index in the bundle, not necessarily the one that actually showed the intended outfit.
+
+**Fix pattern**: when a template's prompt assigns special meaning to a specific reference-image
+*position* (not just "is this image included"), the picker UI must treat position as a first-class,
+user-controlled property — not derive it implicitly from an unrelated ordering (array index, alpha
+sort, etc.). Fixed here by tracking picks as one unified, insertion-order-preserving list (`picks`)
+spanning every source of reference images (the bundle's own saved images AND on-demand video-frame
+extracts), with a visible numbered badge on each thumbnail so the user can confirm what's in the
+critical first slot *before* generating, rather than only from the DictCreate node's own multi
+line prompt text describing the same convention. Before assuming reordering doesn't matter for a
+multi-reference-image prompt, read the prompt text itself for `<Picture N>`/positional language.
+
+---
+
+## KJNodes' `GetImagesFromBatchIndexed` has zero bounds checking — a smaller batch crashes, it doesn't clamp
+
+**Symptom**: a ComfyUI workflow that fans one image batch out to several fixed-index consumers
+(e.g. N separate `GetImagesFromBatchIndexed` nodes reading indices `0..N-1` from the same upstream
+batch) works fine when the batch has exactly N images, then hard-crashes the moment fewer are
+supplied: `IndexError: index <k> is out of bounds for dimension 0 with size <actual>` from
+`comfyui-kjnodes/nodes/image_nodes.py`'s `indexedimagesfrombatch` (`chosen_images =
+images[indices_tensor]`, no `min()`/clamp against the batch's actual size). Confirmed live,
+2026-09-27, feeding the H3 character-sheet template (`templates/h3_character_sheet.api.json`) a
+single reference image against its 9 hard-coded `GetImagesFromBatchIndexed` consumers.
+
+**Cause**: this node (and likely other plain-indexing KJNodes utilities) assumes the caller already
+guarantees a batch at least as large as the largest index requested — it does not degrade
+gracefully for a smaller one, unlike nodes explicitly designed for variable-length lists (e.g. ones
+using `%` wraparound or `min(idx, len-1)` clamping internally).
+
+**Fix pattern**: when patching a variable number of items into a template that fans a batch out to
+fixed-index consumers like this, PAD the supplied list up to the consumers' expected fixed count
+before building the batch — don't rely on the workflow to handle a shorter one, and don't assume
+"looks optional in the graph" (an unconnected/optional downstream socket) means partial input is
+supported either; the crash happens upstream of that, in the indexing node itself. See
+`utils/h3_template_runner.py::patch_character_sheet_prompt`'s cyclic-repeat padding for a working
+example — pick a padding strategy that preserves whichever position(s) the template's own prompt
+treats as semantically special (see the ordering gotcha above) rather than naively repeating the
+whole list from the start.
+

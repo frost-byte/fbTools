@@ -130,6 +130,31 @@ export class BundlesAPI extends BaseAPI {
     proxyStatus(bundle_id) {
         return this.get("/bundles/proxy_status", { bundle_id });
     }
+
+    // ── H3 Character/Face Sheet generation ─────────────────────────────────────
+
+    /** Enumeration lists + has_*_override capability flags for the H3 Character Sheet settings
+     *  section — see nodes/h3_character_sheet.py::_bundles_character_sheet_settings_options. */
+    getCharSheetSettingsOptions() {
+        return this.get("/bundles/character_sheet_settings_options");
+    }
+
+    /** Run the H3 character/face-sheet workflow against up to 9 reference images, in order. Can
+     *  take a while (a real two-pass generation run) — callers should show a "working" state
+     *  while this is pending. `refs` is an ORDERED list of {kind:"image", index} (an index into
+     *  the bundle's own saved visual.files, resolved server-side) and/or {kind:"frame", file}
+     *  (a plain filename already in the input directory root, e.g. from extractFrame() — never
+     *  written into the bundle). Order matters: position 0 is what this template's own prompt
+     *  treats as "Picture 1", the sole outfit reference — every other position only contributes
+     *  identity. Capped at 9 entries server-side. `outfitHint` is optional freeform text
+     *  substituted into the active mode's own prompt wherever its author placed a literal
+     *  {{OUTFIT_HINT}} token — no-op if that mode's prompt node isn't titled for it (see
+     *  has_character_prompt_override/has_face_prompt_override from getCharSheetSettingsOptions). */
+    generateCharacterSheet(bundleId, mode, refs, outfitHint) {
+        const body = { bundle_id: bundleId, mode, refs: refs || [] };
+        if (outfitHint && outfitHint.trim()) body.outfit_hint = outfitHint.trim();
+        return this.post("/bundles/generate_character_sheet", body);
+    }
 }
 
 export const bundlesApi = new BundlesAPI();

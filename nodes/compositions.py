@@ -240,6 +240,28 @@ async def _compositions_settings_post(request):
         if "h3_bg_plate_unload_after_run" in body:
             settings["h3_bg_plate_unload_after_run"] = bool(body["h3_bg_plate_unload_after_run"])
 
+        for _key in ("h3_char_sheet_model", "h3_char_sheet_clip", "h3_char_sheet_lora",
+                     "h3_char_sheet_sampler1", "h3_char_sheet_scheduler1", "h3_char_sheet_sampler2",
+                     "h3_char_sheet_aspect_ratio"):
+            if _key in body:
+                settings[_key] = str(body[_key]).strip()
+
+        if "h3_char_sheet_lora_strength" in body:
+            v = float(body["h3_char_sheet_lora_strength"])
+            settings["h3_char_sheet_lora_strength"] = max(0.0, min(2.0, v))
+
+        if "h3_char_sheet_upscale_steps_select" in body:
+            v = int(body["h3_char_sheet_upscale_steps_select"])
+            settings["h3_char_sheet_upscale_steps_select"] = 0 if v <= 0 else max(1, min(10, v))
+
+        if "h3_char_sheet_upscale_factor" in body:
+            v = float(body["h3_char_sheet_upscale_factor"])
+            settings["h3_char_sheet_upscale_factor"] = 0.0 if v <= 0 else max(0.1, min(8.0, v))
+
+        if "h3_char_sheet_megapixels" in body:
+            v = float(body["h3_char_sheet_megapixels"])
+            settings["h3_char_sheet_megapixels"] = 0.0 if v <= 0 else max(0.1, min(8.0, v))
+
         _write_composition_settings(settings)
         return web.json_response(settings)
     except Exception as exc:

@@ -11,6 +11,7 @@
  */
 
 import { compositionsApi } from "../api/compositions.js";
+import { bundlesApi } from "../api/bundles.js";
 import { toast as _toast } from "./library_common.js";
 
 export const LS_H3_MAX = "fbt_h3_max_frames";
@@ -381,4 +382,176 @@ export async function renderSettingsPanel(parent) {
                 + "Model/LoRA choice." }));
     }
     wrap.appendChild(bgPlateSec);
+
+    // ── H3 Character Sheet ─────────────────────────────────────────────────────
+    // Optional overrides for the Bundle editor's "Generate Character/Face Sheet" action. Same
+    // disabled-until-supported pattern as H3 Background Plate above — see
+    // nodes/h3_character_sheet.py::_bundles_character_sheet_settings_options and
+    // templates/README.md's "h3_character_sheet.api.json" section. VRAM is shared machine-wide
+    // state, so "Unload model after each run" above (h3_bg_plate_unload_after_run) also governs
+    // this feature — there's no separate checkbox here, just a matching Free VRAM button.
+    const charSheetSec = _section("H3 Character Sheet");
+
+    let csOptions = { models: [], clips: [], samplers: [], schedulers: [], aspect_ratios: [],
+        has_model_override: false, has_clip_override: false, has_lora_override: false,
+        has_sampler1_override: false, has_scheduler1_override: false, has_sampler2_override: false,
+        has_upscale_steps_select_override: false, has_upscale_factor_override: false,
+        has_aspect_ratio_override: false, template_defaults: {} };
+    let csLoraList = [];
+    let csOptionsError = "";
+    try {
+        [csOptions, csLoraList] = await Promise.all([
+            bundlesApi.getCharSheetSettingsOptions(),
+            compositionsApi.listLoras().then(r => r.loras ?? []),
+        ]);
+    } catch (e) {
+        csOptionsError = e.message || "Failed to load options";
+    }
+
+    const csDefaults = csOptions.template_defaults || {};
+
+    const csModelSel = _overrideSelect(csOptions.models, settings.h3_char_sheet_model,
+        csOptions.has_model_override, csDefaults.model, () => _save({ h3_char_sheet_model: csModelSel.value }));
+    charSheetSec.appendChild(_row("Model", csModelSel, "Diffusion model checkpoint override"));
+
+    const csClipSel = _overrideSelect(csOptions.clips, settings.h3_char_sheet_clip,
+        csOptions.has_clip_override, csDefaults.clip, () => _save({ h3_char_sheet_clip: csClipSel.value }));
+    charSheetSec.appendChild(_row("Clip", csClipSel, "Text encoder / CLIP model override"));
+
+    const csSampler1Sel = _overrideSelect(csOptions.samplers, settings.h3_char_sheet_sampler1,
+        csOptions.has_sampler1_override, csDefaults.sampler1,
+        () => _save({ h3_char_sheet_sampler1: csSampler1Sel.value }));
+    charSheetSec.appendChild(_row("Sampler (1st pass)", csSampler1Sel, "Base-pass sampler algorithm override"));
+
+    const csScheduler1Sel = _overrideSelect(csOptions.schedulers, settings.h3_char_sheet_scheduler1,
+        csOptions.has_scheduler1_override, csDefaults.scheduler1,
+        () => _save({ h3_char_sheet_scheduler1: csScheduler1Sel.value }));
+    charSheetSec.appendChild(_row("Scheduler (1st pass)", csScheduler1Sel,
+        "Base-pass scheduler override — steps for this pass come from the selected mode "
+        + "(Character/Face Sheet), not from Settings"));
+
+    const csSampler2Sel = _overrideSelect(csOptions.samplers, settings.h3_char_sheet_sampler2,
+        csOptions.has_sampler2_override, csDefaults.sampler2,
+        () => _save({ h3_char_sheet_sampler2: csSampler2Sel.value }));
+    charSheetSec.appendChild(_row("Sampler (upscale pass)", csSampler2Sel, "Upscale-pass sampler algorithm override"));
+
+    const csUpscaleStepsInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "1", max: "10", step: "1",
+        value: settings.h3_char_sheet_upscale_steps_select || "",
+        placeholder: csDefaults.upscale_steps_select != null ? String(csDefaults.upscale_steps_select) : "default",
+        title: "Upscale-pass sigma preset select (the workflow's 3/4/5-step curve choice). "
+            + "Blank = use the template's own value"
+            + (csDefaults.upscale_steps_select != null ? ` (currently ${csDefaults.upscale_steps_select}).` : "."),
+    });
+    csUpscaleStepsInp.disabled = !csOptions.has_upscale_steps_select_override;
+    csUpscaleStepsInp.addEventListener("change", () => {
+        const v = parseInt(csUpscaleStepsInp.value, 10);
+        const clamped = isNaN(v) || v <= 0 ? 0 : Math.max(1, Math.min(10, v));
+        csUpscaleStepsInp.value = clamped || "";
+        _save({ h3_char_sheet_upscale_steps_select: clamped });
+    });
+    charSheetSec.appendChild(_row("Upscale Steps Preset", csUpscaleStepsInp,
+        "Which preset sigma curve the upscale pass uses"));
+
+    const csUpscaleFactorInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "0.1", max: "8", step: "0.1",
+        value: settings.h3_char_sheet_upscale_factor || "",
+        placeholder: csDefaults.upscale_factor != null ? String(csDefaults.upscale_factor) : "default",
+        title: "Upscale scale multiplier. Blank = use the template's own value"
+            + (csDefaults.upscale_factor != null ? ` (currently ${csDefaults.upscale_factor}).` : "."),
+    });
+    csUpscaleFactorInp.disabled = !csOptions.has_upscale_factor_override;
+    csUpscaleFactorInp.addEventListener("change", () => {
+        const v = parseFloat(csUpscaleFactorInp.value);
+        const clamped = isNaN(v) || v <= 0 ? 0 : Math.max(0.1, Math.min(8, v));
+        csUpscaleFactorInp.value = clamped || "";
+        _save({ h3_char_sheet_upscale_factor: clamped });
+    });
+    charSheetSec.appendChild(_row("Upscale Factor", csUpscaleFactorInp, "Scale multiplier for the upscale pass"));
+
+    const csAspectSel = _overrideSelect(csOptions.aspect_ratios || [], settings.h3_char_sheet_aspect_ratio,
+        csOptions.has_aspect_ratio_override, csDefaults.aspect_ratio,
+        () => _save({ h3_char_sheet_aspect_ratio: csAspectSel.value }));
+    const csMegapixelsInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "0.1", max: "8", step: "0.1",
+        value: settings.h3_char_sheet_megapixels || "",
+        placeholder: csDefaults.megapixels != null ? String(csDefaults.megapixels) : "1",
+        title: "Target megapixels override. Blank = use the template's own value"
+            + (csDefaults.megapixels != null ? ` (currently ${csDefaults.megapixels}).` : "."),
+    });
+    csMegapixelsInp.disabled = !csOptions.has_aspect_ratio_override;
+    csMegapixelsInp.addEventListener("change", () => {
+        const v = parseFloat(csMegapixelsInp.value);
+        const clamped = isNaN(v) || v <= 0 ? 0 : Math.max(0.1, Math.min(8, v));
+        csMegapixelsInp.value = clamped || "";
+        _save({ h3_char_sheet_megapixels: clamped });
+    });
+    csMegapixelsInp.style.flex  = "0 0 auto";
+    csMegapixelsInp.style.width = "64px";
+    const csAspectGroup = _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", flex: "1", minWidth: "0" } },
+        [csAspectSel, _mk("span", { cls: "fbt-be-proc-unit", textContent: "MP" }), csMegapixelsInp]);
+    charSheetSec.appendChild(_row("Aspect Ratio", csAspectGroup, "Output aspect ratio preset, plus a megapixels override"));
+
+    const csLoraSel = _overrideSelect(csLoraList, settings.h3_char_sheet_lora,
+        csOptions.has_lora_override, csDefaults.lora, () => _save({ h3_char_sheet_lora: csLoraSel.value }));
+    const csLoraStrengthPlaceholder = csDefaults.lora_strength != null ? String(csDefaults.lora_strength) : "default";
+    const csLoraStrengthInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "0", max: "2", step: "0.05",
+        value: settings.h3_char_sheet_lora ? (settings.h3_char_sheet_lora_strength ?? "") : "",
+        placeholder: csLoraStrengthPlaceholder,
+        title: `LoRA strength (applied to both model and CLIP) — only used while a LoRA above is `
+            + `selected. Blank = use the template's own value (currently ${csLoraStrengthPlaceholder}).`,
+    });
+    csLoraStrengthInp.disabled = !csOptions.has_lora_override;
+    csLoraStrengthInp.addEventListener("change", () => {
+        const v = parseFloat(csLoraStrengthInp.value);
+        if (!isNaN(v)) {
+            const clamped = Math.max(0, Math.min(2, v));
+            csLoraStrengthInp.value = clamped;
+            _save({ h3_char_sheet_lora_strength: clamped });
+        }
+    });
+    csLoraStrengthInp.style.flex  = "0 0 auto";
+    csLoraStrengthInp.style.width = "64px";
+    const csLoraGroup = _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", flex: "1", minWidth: "0" } },
+        [csLoraSel, _mk("span", { cls: "fbt-be-proc-unit", textContent: "Weight" }), csLoraStrengthInp]);
+    charSheetSec.appendChild(_row("LoRA", csLoraGroup,
+        "Optional turbo/style LoRA override — the Weight value is applied to both the LoRA's "
+        + "model and CLIP strength"));
+
+    const csFreeVramBtn = _mk("button", { cls: "fbt-ce-btn sm", textContent: "Free VRAM now",
+        title: "Unload resident models immediately — same effect as Manager's own "
+            + "\"Free model and node cache\" button.",
+        onclick: async () => {
+            csFreeVramBtn.disabled    = true;
+            csFreeVramBtn.textContent = "Freeing…";
+            try {
+                await compositionsApi.freeH3Vram();
+                _toast("VRAM freed", "success");
+            } catch (e) {
+                alert(`Free VRAM failed: ${e.message}`);
+            } finally {
+                csFreeVramBtn.disabled    = false;
+                csFreeVramBtn.textContent = "Free VRAM now";
+            }
+        } });
+    charSheetSec.appendChild(_row("", csFreeVramBtn,
+        "Shares VRAM with H3 Background Plate — see \"Unload model after each run\" above"));
+
+    if (csOptionsError) {
+        charSheetSec.appendChild(_mk("p", { cls: "fbt-settings-note",
+            textContent: `Couldn't load model/LoRA options (${csOptionsError}) — all overrides above `
+                + "are disabled until this loads. Reopen Settings to retry." }));
+    } else {
+        charSheetSec.appendChild(_mk("p", { cls: "fbt-settings-note",
+            textContent: "Every field above is optional and only takes effect once "
+                + "templates/h3_character_sheet.api.json exposes the matching titled node (disabled "
+                + "fields don't yet — see templates/README.md). Prompt/duration/fps/steps for each "
+                + "mode live inside the template's own Character/Face Sheet Options nodes, not here." }));
+    }
+    wrap.appendChild(charSheetSec);
 }

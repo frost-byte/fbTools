@@ -62,7 +62,23 @@ _COMPOSITION_SETTINGS_DEFAULTS: dict = {
     # Default False: leave the model resident after a "Remove People" run, since chaining several
     # passes back-to-back (the auto-reselect flow) is the common case and reloading each time is
     # slow. Settings exposes this as "Unload model after each run" for the opposite preference.
+    # Shared with the H3 Character Sheet feature below — VRAM is a machine-wide resource, not
+    # per-template, so there's no separate h3_char_sheet_unload_after_run setting.
     "h3_bg_plate_unload_after_run": False,
+    # H3 character/face-sheet generation overrides (Bundle editor) — same "" / 0 = unset convention
+    # as h3_bg_plate_* above. See templates/README.md's "h3_character_sheet.api.json" section and
+    # nodes/h3_character_sheet.py.
+    "h3_char_sheet_model":                "",  # diffusion_models filename
+    "h3_char_sheet_clip":                 "",  # text_encoders filename
+    "h3_char_sheet_lora":                 "",  # loras filename
+    "h3_char_sheet_lora_strength":        0.38,  # only applied when h3_char_sheet_lora is set
+    "h3_char_sheet_sampler1":             "",  # comfy.samplers.SAMPLER_NAMES entry (first pass)
+    "h3_char_sheet_scheduler1":           "",  # comfy.samplers.SCHEDULER_NAMES entry (first pass)
+    "h3_char_sheet_sampler2":             "",  # comfy.samplers.SAMPLER_NAMES entry (upscale pass)
+    "h3_char_sheet_upscale_steps_select": 0,   # ImpactStringSelector "select" (3/4/5-step preset); 0 = unset
+    "h3_char_sheet_upscale_factor":       0.0,  # MinimaxH3LatentUpscaler3D scale multiplier; 0 = unset
+    "h3_char_sheet_aspect_ratio":         "",  # ResolutionSelector aspect_ratio entry
+    "h3_char_sheet_megapixels":           0.0,  # ResolutionSelector megapixels; 0 = unset
 }
 
 

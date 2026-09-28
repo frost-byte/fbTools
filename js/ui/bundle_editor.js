@@ -418,6 +418,7 @@ function _renderForm() {
 
     const imgPickerWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
     const vidPickerWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
+    const charSheetWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
 
     // Default-mode toggle (images | video | both) — sets visual.type only.
     const defaultModeToggle = _buildToggle(
@@ -447,6 +448,20 @@ function _renderForm() {
     vidDetails.appendChild(vidSummaryEl);
     vidDetails.appendChild(vidPickerWrap);
 
+    // Character/Face Sheet generation — its own sub-details, a sibling of Images/Video rather than
+    // nested inside either, so it stays visible/discoverable even when the bundle has only a video
+    // reference (no images at all) and the Images sub-details is left collapsed. Hidden entirely
+    // (see the display-toggle below, once _buildCharSheetPicker's return value is known) when the
+    // bundle has neither images nor a video to generate from at all.
+    const charSheetDetails = document.createElement("details");
+    charSheetDetails.className = "fbt-be-details fbt-be-sub-details";
+    charSheetDetails.open = true;
+    const charSheetSummaryEl = document.createElement("summary");
+    charSheetSummaryEl.className = "fbt-be-details-summary";
+    charSheetSummaryEl.textContent = "Generate Character/Face Sheet (H3)";
+    charSheetDetails.appendChild(charSheetSummaryEl);
+    charSheetDetails.appendChild(charSheetWrap);
+
     // Default mode row — shown below both sub-sections
     const defaultModeRow = _mk("div", { cls: "fbt-be-default-mode-row" }, [
         _mk("span", { cls: "fbt-be-default-mode-label", textContent: "Default mode:" }),
@@ -463,6 +478,7 @@ function _renderForm() {
     visualSec.appendChild(visualSummaryEl);
     visualSec.appendChild(imgDetails);
     visualSec.appendChild(vidDetails);
+    visualSec.appendChild(charSheetDetails);
     visualSec.appendChild(defaultModeRow);
 
     // ── Audio ──────────────────────────────────────────────────────────────────
@@ -471,6 +487,7 @@ function _renderForm() {
     // _llmEl is null here but captured by reference; it will be set by the time
     // the LLM pool refresh callback is invoked.
     _buildImageList(imgPickerWrap, b, () => _llmEl?._refreshPool?.());
+    charSheetDetails.style.display = _buildCharSheetPicker(charSheetWrap, b) ? "" : "none";
     _buildVideoPicker(vidPickerWrap, b);
 
     const audioPickerWrap = _mk("div", { cls: "fbt-be-picker-wrap" });
@@ -1172,6 +1189,23 @@ function _viewUrl(relPath, folder = "input") {
     return `/view?filename=${encodeURIComponent(name)}&type=${folder}&subfolder=${encodeURIComponent(sub)}`;
 }
 
+/** Full-size click-to-preview overlay for a single image URL. Dismiss by clicking the backdrop
+ * or pressing Escape — same interaction convention as this file's existing form modals
+ * (.fbt-ce-modal-overlay), just without the form chrome, since this is only ever an image. */
+function _openImageLightbox(url) {
+    const overlay = _mk("div", { cls: "fbt-ce-modal-overlay",
+        onclick: e => { if (e.target === overlay) _close(); } });
+    const img = _mk("img", { cls: "fbt-be-lightbox-img", src: url, alt: "" });
+    overlay.appendChild(img);
+    const _onKey = e => { if (e.key === "Escape") _close(); };
+    function _close() {
+        overlay.remove();
+        document.removeEventListener("keydown", _onKey);
+    }
+    document.addEventListener("keydown", _onKey);
+    document.body.appendChild(overlay);
+}
+
 function _buildImageList(wrap, b, onFilesChange = null) {
     if (!_S.mediaImages.length && !_S.mediaImagesOutput.length) {
         wrap.appendChild(_mk("div", { cls: "fbt-be-media-empty", textContent: "No image files found" }));
@@ -1474,6 +1508,280 @@ function _buildImageList(wrap, b, onFilesChange = null) {
     outer.appendChild(tabRow);
     outer.appendChild(browseHoverWrap);
     wrap.appendChild(outer);
+}
+
+const MAX_CHAR_SHEET_REFS = 9;
+
+/** Bundle editor action: pick up to 9 images and/or video-reference frames, choose Character
+ * Sheet vs Face Sheet, and run the H3 character/face-sheet workflow server-to-server. Same UX
+ * pattern as background_editor.js's "Remove People (H3)" button — disable+relabel while pending,
+ * toast on success, alert() on failure.
+ *
+ * Pick ORDER matters, not just which ones are picked: this template's own prompt defines
+ * "Picture 1" (the first ref) as the SOLE outfit source — every other pick contributes identity
+ * only (face/hair/build), never clothing (confirmed 2026-09-27 against a real generation that
+ * substituted the wrong outfit because whichever image happened to sit at the lowest bundle index
+ * landed in that slot, not the one actually showing the intended outfit). So picks are tracked as
+ * one unified, order-preserving list spanning both the image grid and the video-frame-picks grid
+ * — not two independently-sorted selections — with a numbered badge on each thumbnail showing its
+ * current position. Bundle images are still resolved server-side from the saved bundle by index
+ * (nodes/h3_character_sheet.py reads visual.files off the saved registry, not this form's
+ * in-memory state) — only the ORDER and the video-frame filenames come from the client. */
+function _buildCharSheetPicker(wrap, b) {
+    const files = (b.visual.files || []).map(v => (typeof v === "string" ? { file: v, role: "character sheet" } : v));
+    const hasVideo = !!b.visual.file;
+    if (!files.length && !hasVideo) return false;
+
+    const orderHint = _mk("div", { cls: "fbt-ce-hint", textContent:
+        "Pick order matters: the FIRST image or frame you check becomes \"Picture 1\" — the sole "
+        + "outfit reference in this workflow's prompt. Every other pick only contributes identity "
+        + "(face, hair, build) — its own clothing is ignored. The numbered badge on each thumbnail "
+        + "shows its current position; uncheck and recheck in a different order to change it." });
+
+    // Single ordered list spanning both the image grid and the video-frame-picks grid — position
+    // 0 is what the template's prompt treats as "Picture 1" (see the function doc above). Video
+    // frames are ephemeral (pulled on demand via extractFrame(), never written into
+    // b.visual.files). Combined length is capped at MAX_CHAR_SHEET_REFS (the H3 hard limit).
+    const picks = [];  // [{kind:'image', index} | {kind:'frame', file, frameIndex}]
+    const imageBadges = new Map();  // index -> badge element
+    const grid = _mk("div", { cls: "fbt-be-img-thumbs" });
+    let addFrameBtn = null;
+
+    const _findImagePick = i => picks.findIndex(p => p.kind === "image" && p.index === i);
+
+    const _syncAll = () => {
+        const atLimit = picks.length >= MAX_CHAR_SHEET_REFS;
+        grid.querySelectorAll("input[type=checkbox]").forEach(cb => {
+            if (!cb.checked) cb.disabled = atLimit;
+        });
+        if (addFrameBtn) addFrameBtn.disabled = atLimit;
+        imageBadges.forEach((badge, i) => {
+            const pos = _findImagePick(i);
+            badge.textContent = pos === -1 ? "" : String(pos + 1);
+            badge.style.display = pos === -1 ? "none" : "";
+        });
+        _rebuildFrameGrid();
+    };
+
+    files.forEach((entry, i) => {
+        const f = entry.file || "";
+        if (!f) return;
+        const fileFolder = _S.mediaImagesOutput.includes(f) ? "output" : "input";
+        const thumb = _mk("div", { cls: "fbt-be-img-thumb" });
+        const img = document.createElement("img");
+        img.src   = _viewUrl(f, fileFolder);
+        img.alt   = f.split("/").pop();
+        img.title = f.split("/").pop();
+        thumb.appendChild(img);
+
+        const badge = _mk("div", { cls: "fbt-be-img-thumb-order" });
+        thumb.appendChild(badge);
+        imageBadges.set(i, badge);
+
+        const previewBtn = _mk("button", { cls: "fbt-be-img-thumb-preview-btn", textContent: "🔍",
+            title: "Preview full size" });
+        previewBtn.addEventListener("click", e => { e.stopPropagation(); _openImageLightbox(img.src); });
+        thumb.appendChild(previewBtn);
+
+        const cb = _mk("input", { type: "checkbox" });
+        cb.checked = i < MAX_CHAR_SHEET_REFS;
+        if (cb.checked) picks.push({ kind: "image", index: i });
+        cb.className = "fbt-be-img-thumb-checkbox";
+        cb.addEventListener("click", e => e.stopPropagation());
+        cb.addEventListener("change", () => {
+            if (cb.checked) {
+                picks.push({ kind: "image", index: i });
+            } else {
+                const pos = _findImagePick(i);
+                if (pos !== -1) picks.splice(pos, 1);
+            }
+            _syncAll();
+        });
+        thumb.appendChild(cb);
+        thumb.addEventListener("click", () => { cb.checked = !cb.checked; cb.dispatchEvent(new Event("change")); });
+
+        grid.appendChild(thumb);
+    });
+
+    // ── Video-frame picks (only when the bundle has a video reference) ─────────
+    let frameSection = null;
+    const frameGrid = _mk("div", { cls: "fbt-be-img-thumbs" });
+
+    function _rebuildFrameGrid() {
+        frameGrid.innerHTML = "";
+        picks.forEach((pick, pos) => {
+            if (pick.kind !== "frame") return;
+            const thumb = _mk("div", { cls: "fbt-be-img-thumb" });
+            const img = document.createElement("img");
+            img.src   = _viewUrl(pick.file, "input");
+            img.alt   = `frame ${pick.frameIndex}`;
+            img.title = `frame ${pick.frameIndex}`;
+            thumb.appendChild(img);
+            thumb.appendChild(_mk("div", { cls: "fbt-be-img-thumb-order", textContent: String(pos + 1) }));
+            const previewBtn = _mk("button", { cls: "fbt-be-img-thumb-preview-btn", textContent: "🔍",
+                title: "Preview full size" });
+            previewBtn.addEventListener("click", e => { e.stopPropagation(); _openImageLightbox(img.src); });
+            thumb.appendChild(previewBtn);
+            const del = _mk("button", { cls: "fbt-be-img-thumb-del", textContent: "✕", title: "Remove frame" });
+            del.addEventListener("click", e => {
+                e.stopPropagation();
+                bundlesApi.deleteTmpFrame(pick.file).catch(() => {});
+                picks.splice(picks.indexOf(pick), 1);
+                _syncAll();
+            });
+            thumb.appendChild(del);
+            frameGrid.appendChild(thumb);
+        });
+    }
+
+    if (hasVideo) {
+        const frameIndexInp = _mk("input", { cls: "fbt-ce-input fbt-be-llm-frame-input",
+            type: "number", value: "0", min: "0", step: "1", title: "Frame index (0 = first frame)" });
+        addFrameBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "+ Add Frame",
+            onclick: async () => {
+                addFrameBtn.disabled    = true;
+                addFrameBtn.textContent = "Extracting…";
+                try {
+                    const r = await bundlesApi.extractFrame(
+                        b.visual.file, parseInt(frameIndexInp.value, 10) || 0, b.visual.video_dir || "input");
+                    frameIndexInp.max = r.frame_count - 1;
+                    picks.push({ kind: "frame", file: r.tmp_filename, frameIndex: r.frame_index });
+                } catch (e) { _toast("Frame extraction failed: " + e.message, "error"); }
+                finally {
+                    addFrameBtn.textContent = "+ Add Frame";
+                    _syncAll();
+                }
+            } });
+        const frameControlRow = _mk("div", { cls: "fbt-be-llm-video-row" }, [frameIndexInp, addFrameBtn]);
+        frameSection = _mk("div", {}, [
+            _mk("div", { cls: "fbt-be-param-section-label", textContent: "Frames from video reference" }),
+            frameControlRow,
+            frameGrid,
+        ]);
+    }
+    _syncAll();
+
+    let mode = "character";
+    const modeToggle = _buildToggle(["character", "face"], ["Character Sheet", "Face Sheet"], mode,
+        val => { mode = val; _syncHintEnabled(); });
+
+    // Outfit hint — substituted into the active mode's own prompt wherever its author placed a
+    // literal {{OUTFIT_HINT}} token (see nodes/h3_character_sheet.py::_h3_char_sheet_prompt_override).
+    // Support is per-mode and template-dependent, so this starts disabled until the capability
+    // check below resolves — same "never let the user configure something that silently does
+    // nothing" principle as the Settings panel's own override controls.
+    const outfitHintInp = _mk("textarea", { cls: "fbt-ce-textarea", rows: 2,
+        placeholder: "Outfit hint (optional) — e.g. \"a red dress with thin straps, no sleeves\"" });
+    outfitHintInp.disabled = true;
+    let hintCaps = { character: false, face: false };
+    function _syncHintEnabled() {
+        const supported = hintCaps[mode];
+        outfitHintInp.disabled = !supported;
+        outfitHintInp.title = supported
+            ? "Injected into the active mode's prompt wherever it places {{OUTFIT_HINT}}"
+            : `The current template's ${mode === "face" ? "Face Sheet" : "Character Sheet"} prompt `
+              + "isn't titled for this yet — see templates/README.md";
+    }
+    bundlesApi.getCharSheetSettingsOptions().then(opts => {
+        hintCaps = { character: !!opts.has_character_prompt_override, face: !!opts.has_face_prompt_override };
+        _syncHintEnabled();
+    }).catch(() => { outfitHintInp.title = "Couldn't load override capabilities — reopen this bundle to retry."; });
+
+    const resultImg = _mk("img", { cls: "fbt-be-img-preview fbt-be-img-preview-clickable", alt: "",
+        title: "Click to view full size",
+        onclick: () => { if (resultImg.src) _openImageLightbox(resultImg.src); } });
+    resultImg.style.display = "none";
+    const resultLabel = _mk("div", { cls: "fbt-ce-hint" });
+    let lastResult = null;  // {file, folder} of the most recent generation, for "Add to Bundle"
+
+    const addResultBtn = _mk("button", { cls: "fbt-ce-btn fbt-ce-btn-sm", textContent: "+ Add to Bundle",
+        style: { display: "none" },
+        onclick: () => {
+            if (!lastResult) return;
+            b.visual.files = b.visual.files || [];
+            b.visual.files.push({
+                file: lastResult.file,
+                role: mode === "face" ? "head turnaround" : "character sheet",
+            });
+            // The generated file always lands under output/ but isn't in _S.mediaImagesOutput yet
+            // (that list is only refreshed on a full bundle-editor load) — without this, the
+            // Images section's own folder-inference (_S.mediaImagesOutput.includes(f)) would
+            // wrongly assume "input" and render a broken thumbnail once it does eventually refresh.
+            if (!_S.mediaImagesOutput.includes(lastResult.file)) _S.mediaImagesOutput.push(lastResult.file);
+            // Deliberately NOT calling _renderForm() here — that would rebuild this whole picker
+            // from scratch, wiping the outfit hint text, video-frame picks and mode selection along
+            // with it, forcing the user to redo all of that setup just to run a second generation.
+            // b.visual.files is already updated (the data that actually matters for Save); the
+            // Images section's thumbnail grid simply won't show the new entry until this bundle is
+            // next reopened, which the toast below sets the right expectation for.
+            _toast("Added to bundle images — click Save, then reopen to see it in the Images list", "success");
+            addResultBtn.style.display = "none";
+        } });
+
+    const genBtn = _mk("button", { cls: "fbt-ce-btn", textContent: "✨ Generate Sheet (H3)",
+        onclick: async () => {
+            if (!b.id) { alert("Save the bundle first — generation reads its saved images from disk."); return; }
+            if (!picks.length) { alert("Select at least one image or frame."); return; }
+            const refs = picks.map(p => p.kind === "image"
+                ? { kind: "image", index: p.index }
+                : { kind: "frame", file: p.file });
+            genBtn.disabled    = true;
+            genBtn.textContent = "Generating…";
+            addResultBtn.style.display = "none";
+            const startedAt = performance.now();
+            try {
+                const data = await bundlesApi.generateCharacterSheet(b.id, mode, refs, outfitHintInp.value);
+                const elapsed = Math.round((performance.now() - startedAt) / 1000);
+                lastResult = { file: data.file, folder: data.folder || "output" };
+                resultImg.src = _viewUrl(data.file, data.folder || "output");
+                resultImg.style.display = "";
+                resultLabel.textContent = `Output: ${data.file}`;
+                addResultBtn.style.display = "";
+                _toast(`Generated ${mode} sheet in ${elapsed}s`, "success");
+            } catch (e) { alert(`Generate failed: ${e.message}`); }
+            finally {
+                genBtn.disabled    = false;
+                genBtn.textContent = "✨ Generate Sheet (H3)";
+            }
+        } });
+
+    const freeVramBtn = _mk("button", { cls: "fbt-ce-btn sm", textContent: "Free VRAM",
+        title: "Unload resident models now — same effect as Manager's own \"Free model and node "
+            + "cache\" button.",
+        onclick: async () => {
+            freeVramBtn.disabled    = true;
+            freeVramBtn.textContent = "Freeing…";
+            try {
+                await compositionsApi.freeH3Vram();
+                _toast("VRAM freed", "success");
+            } catch (e) { alert(`Free VRAM failed: ${e.message}`); }
+            finally {
+                freeVramBtn.disabled    = false;
+                freeVramBtn.textContent = "Free VRAM";
+            }
+        } });
+
+    const actionRow = _mk("div", { cls: "fbt-ce-outfit-action-row" }, [modeToggle, genBtn, freeVramBtn]);
+
+    const hint = _mk("div", { cls: "fbt-ce-hint", textContent:
+        "Runs the H3 character/face-sheet workflow (templates/h3_character_sheet.api.json) directly "
+        + "on this ComfyUI server — your own open canvas isn't touched. A two-pass (base + upscale) "
+        + "generation, so expect it to take a few minutes. Uses the bundle's currently SAVED images "
+        + "— click Save first if you've just added or removed any. Video frame picks are extracted "
+        + "on demand and never saved into the bundle — they expire automatically after ~30 minutes "
+        + "if you don't generate. Shares model/VRAM behavior with Settings > H3 Background Plate "
+        + "(\"Unload model after each run\")." });
+
+    wrap.appendChild(orderHint);
+    wrap.appendChild(grid);
+    if (frameSection) wrap.appendChild(frameSection);
+    wrap.appendChild(outfitHintInp);
+    wrap.appendChild(actionRow);
+    wrap.appendChild(resultImg);
+    wrap.appendChild(resultLabel);
+    wrap.appendChild(addResultBtn);
+    wrap.appendChild(hint);
+    return true;
 }
 
 function _buildAudioProcessingSection(wrap, b, sourceAudioEl = null) {

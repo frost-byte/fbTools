@@ -26,6 +26,7 @@ EXPECTED = {
     "kdenlive_archive": 8,
     "libber": 13,
     "dataset_caption": 5,
+    "h3_character_sheet": 2,
     # narrative.scene (5 routes, Plan 21) and narrative.story (5 routes, Plan 22) are deliberately
     # absent: unlike every module above, they transitively import utils/images.py (story.py via its
     # `.scene` sibling import), which does `import torchvision...` at module level — this fixture

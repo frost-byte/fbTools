@@ -230,7 +230,8 @@ async def _backgrounds_remove_people(request):
 
     Runs MiniMax H3 Reference-to-Video + Fizgig H3 Still (see templates/h3_background_plate.api.json)
     server-to-server via this same ComfyUI instance's own /prompt + /history endpoints — no browser
-    tab is involved, so the user's own open canvas is untouched.
+    canvas is touched (see utils/h3_job_runner.py's module docstring for why a global progress
+    indicator can still show activity even though no canvas gets node-level rendering for this job).
 
     Body: { filename, folder="input", frame_time=1.0, prompt? }
     Returns: { file, folder: "output" } — a path (with subfolder, if any) under output/, ready to

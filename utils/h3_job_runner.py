@@ -1,8 +1,13 @@
 """Submit an API-format ComfyUI prompt to this same server and await its result.
 
-Server-to-server: POSTs to this server's own /prompt (no client_id, so no browser tab receives
-progress events for the job — the user's own open canvas is left untouched) and polls
-/history/{prompt_id} until the job completes, fails, or times out. Mirrors the request/response
+Server-to-server: POSTs to this server's own /prompt (no client_id) and polls /history/{prompt_id}
+until the job completes, fails, or times out. This does NOT hide the job from every open browser
+tab — ComfyUI broadcasts execution/progress websocket events to all connected clients regardless of
+which client_id (if any) submitted the prompt, so a global indicator (e.g. a top-of-page progress
+bar from some custom node) will still show activity. What stays untouched is canvas-specific
+rendering (node highlighting, per-node live preview overlays), since that's driven by matching node
+ids against whatever graph happens to be loaded in that tab — our submitted prompt's node ids come
+from the template file, not the tab's own canvas. Mirrors the request/response
 shapes of ComfyUI's own server.py (POST /prompt, GET /history/{prompt_id}) and execution.py
 (PromptQueue.task_done's history entry shape) — verified against the installed ComfyUI source
 rather than assumed.

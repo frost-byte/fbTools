@@ -210,4 +210,79 @@ describe("BundlesAPI", () => {
             expect(result.files[0]).toBe("voice.wav");
         });
     });
+
+    // ── getCharSheetSettingsOptions ────────────────────────────────────────────
+
+    describe("getCharSheetSettingsOptions", () => {
+        test("calls /fbtools/bundles/character_sheet_settings_options", async () => {
+            mockFetch.mockResponse({ models: [], has_model_override: false });
+            await api.getCharSheetSettingsOptions();
+            const { url } = mockFetch.getCalls()[0];
+            expect(String(url)).toContain("/bundles/character_sheet_settings_options");
+        });
+
+        test("returns the options payload", async () => {
+            mockFetch.mockResponse({ models: ["a.safetensors"], has_model_override: true });
+            const result = await api.getCharSheetSettingsOptions();
+            expect(result.has_model_override).toBe(true);
+            expect(result.models).toContain("a.safetensors");
+        });
+    });
+
+    // ── generateCharacterSheet ─────────────────────────────────────────────────
+
+    describe("generateCharacterSheet", () => {
+        test("posts to /fbtools/bundles/generate_character_sheet", async () => {
+            mockFetch.mockResponse({ file: "out.png", folder: "output" });
+            await api.generateCharacterSheet("b1", "character");
+            const { url, options } = mockFetch.getCalls()[0];
+            expect(String(url)).toContain("/bundles/generate_character_sheet");
+            expect(options.method).toBe("POST");
+        });
+
+        test("sends bundle_id, mode, and an empty refs list by default", async () => {
+            mockFetch.mockResponse({ file: "out.png", folder: "output" });
+            await api.generateCharacterSheet("b1", "face");
+            const { body } = mockFetch.getCalls()[0];
+            const parsed = JSON.parse(body);
+            expect(parsed.bundle_id).toBe("b1");
+            expect(parsed.mode).toBe("face");
+            expect(parsed.refs).toEqual([]);
+        });
+
+        test("sends refs in the given order, mixing image and frame kinds", async () => {
+            mockFetch.mockResponse({ file: "out.png", folder: "output" });
+            const refs = [
+                { kind: "frame", file: "_fbt_tmp_abc123.jpg" },
+                { kind: "image", index: 2 },
+                { kind: "image", index: 0 },
+            ];
+            await api.generateCharacterSheet("b1", "character", refs);
+            const { body } = mockFetch.getCalls()[0];
+            const parsed = JSON.parse(body);
+            expect(parsed.refs).toEqual(refs);
+        });
+
+        test("returns the generated file result", async () => {
+            mockFetch.mockResponse({ file: "fbtools/h3_character_sheets/abc/out.png", folder: "output" });
+            const result = await api.generateCharacterSheet("b1", "character");
+            expect(result.folder).toBe("output");
+            expect(result.file).toContain("h3_character_sheets");
+        });
+
+        test("includes trimmed outfit_hint when provided", async () => {
+            mockFetch.mockResponse({ file: "out.png", folder: "output" });
+            await api.generateCharacterSheet("b1", "character", [{ kind: "image", index: 0 }], "  a red dress  ");
+            const { body } = mockFetch.getCalls()[0];
+            const parsed = JSON.parse(body);
+            expect(parsed.outfit_hint).toBe("a red dress");
+        });
+
+        test("omits outfit_hint when blank or not provided", async () => {
+            mockFetch.mockResponse({ file: "out.png", folder: "output" });
+            await api.generateCharacterSheet("b1", "character", [{ kind: "image", index: 0 }], "   ");
+            const { body } = mockFetch.getCalls()[0];
+            expect(JSON.parse(body).outfit_hint).toBeUndefined();
+        });
+    });
 });
