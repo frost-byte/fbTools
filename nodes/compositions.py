@@ -262,6 +262,28 @@ async def _compositions_settings_post(request):
             v = float(body["h3_char_sheet_megapixels"])
             settings["h3_char_sheet_megapixels"] = 0.0 if v <= 0 else max(0.1, min(8.0, v))
 
+        for _key in ("qwen21_photo_restore_model", "qwen21_photo_restore_clip",
+                     "qwen21_photo_restore_vae", "qwen21_photo_restore_sampler",
+                     "qwen21_photo_restore_scheduler", "qwen21_photo_restore_negative_prompt"):
+            if _key in body:
+                settings[_key] = str(body[_key]).strip()
+
+        if "qwen21_photo_restore_steps" in body:
+            v = int(body["qwen21_photo_restore_steps"])
+            settings["qwen21_photo_restore_steps"] = 0 if v <= 0 else max(1, min(10000, v))
+
+        if "qwen21_photo_restore_cfg" in body:
+            v = float(body["qwen21_photo_restore_cfg"])
+            settings["qwen21_photo_restore_cfg"] = 0.0 if v <= 0 else max(0.1, min(30.0, v))
+
+        if "qwen21_photo_restore_denoise" in body:
+            v = float(body["qwen21_photo_restore_denoise"])
+            settings["qwen21_photo_restore_denoise"] = 0.0 if v <= 0 else max(0.01, min(1.0, v))
+
+        if "qwen21_photo_restore_resolution" in body:
+            v = int(body["qwen21_photo_restore_resolution"])
+            settings["qwen21_photo_restore_resolution"] = 0 if v <= 0 else max(1, min(4096, v))
+
         _write_composition_settings(settings)
         return web.json_response(settings)
     except Exception as exc:

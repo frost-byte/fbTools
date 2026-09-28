@@ -7,6 +7,7 @@ h3_template_runner = import_test_module("utils/h3_template_runner.py")
 find_node_by_title = h3_template_runner.find_node_by_title
 patch_prompt = h3_template_runner.patch_prompt
 patch_character_sheet_prompt = h3_template_runner.patch_character_sheet_prompt
+patch_qwen21_photo_restore_prompt = h3_template_runner.patch_qwen21_photo_restore_prompt
 
 
 def _template():
@@ -271,4 +272,113 @@ def test_patch_character_sheet_prompt_missing_required_title_raises():
     with pytest.raises(ValueError, match="IN:mode"):
         patch_character_sheet_prompt(
             tpl, ref_images=["a.png"], mode_select=False, seed=1, filename_prefix="pfx",
+        )
+
+
+# ── patch_qwen21_photo_restore_prompt ───────────────────────────────────────────
+
+def _qwen21_photo_restore_template():
+    """A minimal but representative API-format template matching the real exported
+    qwen21_photo_restore.api.json contract — field names differ from the MiniMax H3 templates
+    above (image_paths still matches, but "value" not "prompt", "seed" not "noise_seed")."""
+    return {
+        "1": {
+            "class_type": "DenoAdvancedImageSourceLoader",
+            "inputs": {"image_paths": "", "mode": "Keep Input Ratio"},
+            "_meta": {"title": "IN:refs"},
+        },
+        "2": {
+            "class_type": "PrimitiveStringMultiline",
+            "inputs": {"value": ""},
+            "_meta": {"title": "IN:restore_prompt"},
+        },
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": 0, "steps": 25, "cfg": 1, "sampler_name": "euler",
+                "scheduler": "simple", "denoise": 1,
+            },
+            "_meta": {"title": "IN:seed"},
+        },
+        "4": {
+            "class_type": "SaveImageAdvanced",
+            "inputs": {"filename_prefix": "Qwen_image_2.1"},
+            "_meta": {"title": "OUT:save"},
+        },
+        "5": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": "default_model.safetensors", "weight_dtype": "default"},
+            "_meta": {"title": "IN:model"},
+        },
+        "6": {
+            "class_type": "TextEncodeQwenImage21",
+            "inputs": {"negative_prompt": "", "resolution": 0},
+            "_meta": {"title": "IN:negative_prompt"},
+        },
+    }
+
+
+def test_patch_qwen21_photo_restore_prompt_sets_required_contract_fields():
+    tpl = _qwen21_photo_restore_template()
+    patched = patch_qwen21_photo_restore_prompt(
+        tpl,
+        image="fbtools_tmp/photo.jpg",
+        prompt_text="restore this photo",
+        seed=42,
+        filename_prefix="fbtools/qwen21_photo_restore/abc123",
+    )
+    assert patched["1"]["inputs"]["image_paths"] == "fbtools_tmp/photo.jpg"
+    assert patched["2"]["inputs"]["value"] == "restore this photo"
+    assert patched["3"]["inputs"]["seed"] == 42
+    assert patched["4"]["inputs"]["filename_prefix"] == "fbtools/qwen21_photo_restore/abc123"
+
+
+def test_patch_qwen21_photo_restore_prompt_does_not_mutate_original_template():
+    tpl = _qwen21_photo_restore_template()
+    patch_qwen21_photo_restore_prompt(
+        tpl, image="x.jpg", prompt_text="restore", seed=1, filename_prefix="pfx",
+    )
+    assert tpl["1"]["inputs"]["image_paths"] == ""
+    assert tpl["2"]["inputs"]["value"] == ""
+
+
+def test_patch_qwen21_photo_restore_prompt_sampler_overrides_merge_onto_seed_node():
+    # steps/cfg/sampler_name/scheduler/denoise all live on the same KSampler node as the
+    # required seed field — an "IN:seed" override must merge alongside it, not clobber it.
+    tpl = _qwen21_photo_restore_template()
+    patched = patch_qwen21_photo_restore_prompt(
+        tpl, image="x.jpg", prompt_text="restore", seed=1, filename_prefix="pfx",
+        overrides={"IN:seed": {"cfg": 2.5, "steps": 30}},
+    )
+    assert patched["3"]["inputs"]["seed"] == 1
+    assert patched["3"]["inputs"]["cfg"] == 2.5
+    assert patched["3"]["inputs"]["steps"] == 30
+
+
+def test_patch_qwen21_photo_restore_prompt_negative_prompt_override():
+    tpl = _qwen21_photo_restore_template()
+    patched = patch_qwen21_photo_restore_prompt(
+        tpl, image="x.jpg", prompt_text="restore", seed=1, filename_prefix="pfx",
+        overrides={"IN:negative_prompt": {"negative_prompt": "scratches, dust, blur"}},
+    )
+    assert patched["6"]["inputs"]["negative_prompt"] == "scratches, dust, blur"
+
+
+def test_patch_qwen21_photo_restore_prompt_silently_skips_override_for_title_absent_from_template():
+    tpl = _qwen21_photo_restore_template()
+    del tpl["5"]  # no IN:model in this template
+    patched = patch_qwen21_photo_restore_prompt(
+        tpl, image="x.jpg", prompt_text="restore", seed=1, filename_prefix="pfx",
+        overrides={"IN:model": {"unet_name": "other.safetensors"}},
+    )
+    assert patched["1"]["inputs"]["image_paths"] == "x.jpg"
+    assert "5" not in patched
+
+
+def test_patch_qwen21_photo_restore_prompt_missing_required_title_raises():
+    tpl = _qwen21_photo_restore_template()
+    del tpl["2"]  # drop IN:restore_prompt
+    with pytest.raises(ValueError, match="IN:restore_prompt"):
+        patch_qwen21_photo_restore_prompt(
+            tpl, image="x.jpg", prompt_text="restore", seed=1, filename_prefix="pfx",
         )

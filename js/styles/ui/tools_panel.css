@@ -1,0 +1,30 @@
+/* ── Tools panel (standalone generation utilities, e.g. Photo Restoration) ──── */
+.fbt-tools-panel {
+    display:flex; flex-direction:column; height:100%; overflow:hidden;
+}
+.fbt-tools-toolbar {
+    display:flex; align-items:center; gap:6px; padding:6px 10px;
+    background:var(--fbt-card);
+    border-bottom:1px solid var(--fbt-border); flex-shrink:0;
+}
+.fbt-tools-title {
+    font-size:11px; font-weight:600; letter-spacing:.05em;
+    text-transform:uppercase; color:var(--fbt-muted);
+}
+.fbt-tools-content {
+    flex:1; min-height:0; overflow-y:auto;
+    display:flex; flex-direction:column; gap:10px;
+    padding:10px; overscroll-behavior:contain;
+}
+.fbt-tools-advanced summary {
+    font-size:11px; color:var(--fbt-muted); cursor:pointer; user-select:none;
+    padding:2px 0;
+}
+.fbt-tools-advanced textarea { margin-top:6px; }
+.fbt-tools-result {
+    display:flex; flex-direction:column; gap:6px;
+    padding:10px;
+    background: color-mix(in srgb, var(--p-primary-400, #818cf8) 5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--p-primary-400, #818cf8) 20%, transparent);
+    border-radius: 5px;
+}

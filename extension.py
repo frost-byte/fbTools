@@ -41,6 +41,7 @@ from .nodes import prompt_collections as _prompt_collections_routes  # noqa: F40
 from .nodes import llm_assistant as _llm_assistant_routes  # noqa: F401
 from .nodes import bundles as _bundles_routes  # noqa: F401
 from .nodes import h3_character_sheet as _h3_character_sheet_routes  # noqa: F401
+from .nodes import qwen21_photo_restore as _qwen21_photo_restore_routes  # noqa: F401
 from .utils.util import (
     draw_pose_json,
     draw_pose,

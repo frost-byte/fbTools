@@ -9,6 +9,7 @@ export { CompositionsAPI, compositionsApi } from "./api/compositions.js";
 export { LlmAPI, llmApi } from "./api/llm.js";
 export { BundlesAPI, bundlesApi } from "./api/bundles.js";
 export { KdenliveAPI, kdenliveApi } from "./api/kdenlive.js";
+export { ToolsAPI, toolsApi } from "./api/tools.js";
 
 // Utilities
 export { BaseAPI, APIError } from "./utils/api_base.js";

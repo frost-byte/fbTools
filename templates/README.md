@@ -172,3 +172,61 @@ the caller's reference list up to exactly 9 by cycling it back over itself befor
 that same three repeated three times. Index 0 (the sole outfit reference — see `IN:refs` above) is
 always exactly what the caller supplied first; only the redundant identity-only slots get repeats.
 This needs no template changes — it's entirely handled in `utils/h3_template_runner.py`.
+
+## `qwen21_photo_restore.api.json`
+
+Powers `POST /fbtools/tools/restore_photo` (`nodes/qwen21_photo_restore.py`), built from
+`/mnt/comfy_ssd/ComfyUI/user/default/workflows/qwen21_photo_restore.json` (Comfy-Org's own
+Qwen-Image-2.1 example workflow, trimmed and re-titled). A genuinely different model/architecture
+from the two MiniMax H3 templates above, built for this feature after H3 turned out unworkable for
+photo restoration: H3's reference-to-video and image-to-video nodes always build an *empty* starting
+latent and only ever attach real images as conditioning (confirmed against
+`comfy_extras/nodes_minimax_h3.py`), so there is no real image content in the latent for a low
+`denoise` to preserve. Qwen-Image-2.1's own edit-encode node (`TextEncodeQwenImage21`) genuinely
+VAE-encodes the source photo as part of its conditioning, which is what makes faithful restoration
+possible at all.
+
+### Required titles (must always be present)
+
+- `IN:refs` — the `DenoAdvancedImageSourceLoader` node; patches its `image_paths` input. Only the
+  first loaded image is ever used (a `GetImagesFromBatchIndexed` pulls index `0`) — unlike the H3
+  character-sheet template, there is no 9-slot padding here, one path in, one path used.
+- `IN:restore_prompt` — a `PrimitiveStringMultiline` node; patches its `value` input. The actual
+  `TextEncodeQwenImage21` node's own `prompt` input is a graph *link* back to this node in the
+  exported template, not a patchable widget itself, so the prompt is patched here, not on the
+  encode node.
+- `IN:seed` — a plain `KSampler` node (this workflow has no separate `RandomNoise` node); patches
+  its `seed` input, **not** `noise_seed` — that field name is specific to `RandomNoise`, used by
+  the MiniMax H3 templates, not this one.
+- `OUT:save` — the `SaveImageAdvanced` node; patches its `filename_prefix` input.
+
+### Optional titles (Settings → Qwen Photo Restore overrides)
+
+Each is entirely optional — the feature works with none of them present, falling back to whatever
+the template itself specifies. `GET /fbtools/tools/restore_photo_settings_options` reports which of
+these the current template exposes.
+
+- `IN:model` — the `UNETLoader` node (`unet_name`/`weight_dtype`)
+- `IN:clip` — the `CLIPLoader` node (`clip_name`/`type`/`device`)
+- `IN:vae` — the `VAELoader` node (`vae_name`)
+- `IN:seed` — also accepts `steps`/`cfg`/`sampler_name`/`scheduler`/`denoise` overrides merged onto
+  the same node as the required `seed` field
+- `IN:negative_prompt` — a *second*, unrelated title on the same `TextEncodeQwenImage21` node whose
+  own `prompt` field is a link rather than a widget (see above); patches `negative_prompt` and
+  `resolution`. Per Qwen-Image-2.1's own convention, `negative_prompt` is inert unless `cfg` is
+  raised above `1.0` (the official/default value) at the same time.
+
+### Prompt hint placeholder
+
+The default restoration prompt (a Python constant in `nodes/qwen21_photo_restore.py`, not read from
+this template's own baked-in default at request time — the route always sends `prompt_text`
+explicitly) contains a literal `{{RESTORE_HINT}}` placeholder, replaced with a caller-supplied
+`restore_hint` (or `""` if none given) before every run. The same placeholder is also kept in this
+template's own `IN:restore_prompt` default text purely so it reads the same when opened directly in
+ComfyUI — that copy is never actually read by the route.
+
+### Exporting
+
+Workflow menu → **Export (API)** → overwrite `qwen21_photo_restore.api.json` here. Re-export any
+time the graph changes — the route reads this file fresh on every call, no restart needed for
+template-only changes (a restart is only needed when the Python route code itself changes).

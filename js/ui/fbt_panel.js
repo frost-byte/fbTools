@@ -23,6 +23,7 @@ import { renderNodeInspector }       from "./node_inspector.js";
 import { renderLlmPanel, getActiveBackendLabel, onBackendChange } from "./llm_panel.js";
 import { renderSettingsPanel } from "./settings_panel.js";
 import { renderKdenliveArchive } from "./kdenlive_archive.js";
+import { renderToolsPanel } from "./tools_panel.js";
 
 // ── Shared LLM state ───────────────────────────────────────────────────────────
 // Any tab can read fbtLlm to see what's currently loaded without its own fetch.
@@ -99,6 +100,7 @@ const TABS = [
     { id: "history",      label: "History",  icon: "pi pi-history",     render: renderRunHistory },
     { id: "inspector",    label: "Inspect",  icon: "pi pi-code",        render: renderNodeInspector },
     { id: "kdenlive",     label: "Archive",  icon: "pi pi-box",         render: renderKdenliveArchive },
+    { id: "tools",        label: "Tools",    icon: "pi pi-wrench",      render: renderToolsPanel },
     { id: "settings",     label: "Settings", icon: "pi pi-sliders-h",   render: renderSettingsPanel },
 ];
 

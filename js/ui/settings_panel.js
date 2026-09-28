@@ -12,6 +12,7 @@
 
 import { compositionsApi } from "../api/compositions.js";
 import { bundlesApi } from "../api/bundles.js";
+import { toolsApi } from "../api/tools.js";
 import { toast as _toast } from "./library_common.js";
 
 export const LS_H3_MAX = "fbt_h3_max_frames";
@@ -554,4 +555,143 @@ export async function renderSettingsPanel(parent) {
                 + "mode live inside the template's own Character/Face Sheet Options nodes, not here." }));
     }
     wrap.appendChild(charSheetSec);
+
+    // ── Qwen Photo Restore ─────────────────────────────────────────────────────
+    // Optional overrides for the Tools tab's "Restore Photo" action (js/ui/tools_panel.js). Same
+    // disabled-until-supported pattern as the two H3 sections above — see
+    // nodes/qwen21_photo_restore.py::_tools_restore_photo_settings_options and
+    // templates/README.md's "qwen21_photo_restore.api.json" section. A genuinely different model
+    // (Qwen-Image-2.1, not MiniMax H3) but VRAM is still shared machine-wide state, so "Unload
+    // model after each run" above also governs this feature.
+    const restoreSec = _section("Qwen Photo Restore");
+
+    let prOptions = { models: [], clips: [], vaes: [], samplers: [], schedulers: [],
+        has_model_override: false, has_clip_override: false, has_vae_override: false,
+        has_sampler_override: false, has_negative_prompt_override: false, template_defaults: {} };
+    let prOptionsError = "";
+    try {
+        prOptions = await toolsApi.getRestorePhotoSettingsOptions();
+    } catch (e) {
+        prOptionsError = e.message || "Failed to load options";
+    }
+
+    const prDefaults = prOptions.template_defaults || {};
+
+    const prModelSel = _overrideSelect(prOptions.models, settings.qwen21_photo_restore_model,
+        prOptions.has_model_override, prDefaults.model, () => _save({ qwen21_photo_restore_model: prModelSel.value }));
+    restoreSec.appendChild(_row("Model", prModelSel, "Diffusion model checkpoint override"));
+
+    const prClipSel = _overrideSelect(prOptions.clips, settings.qwen21_photo_restore_clip,
+        prOptions.has_clip_override, prDefaults.clip, () => _save({ qwen21_photo_restore_clip: prClipSel.value }));
+    restoreSec.appendChild(_row("Clip", prClipSel, "Text encoder / CLIP model override"));
+
+    const prVaeSel = _overrideSelect(prOptions.vaes, settings.qwen21_photo_restore_vae,
+        prOptions.has_vae_override, prDefaults.vae, () => _save({ qwen21_photo_restore_vae: prVaeSel.value }));
+    restoreSec.appendChild(_row("VAE", prVaeSel, "VAE override"));
+
+    const prSamplerSel = _overrideSelect(prOptions.samplers, settings.qwen21_photo_restore_sampler,
+        prOptions.has_sampler_override, prDefaults.sampler,
+        () => _save({ qwen21_photo_restore_sampler: prSamplerSel.value }));
+    const prSchedulerSel = _overrideSelect(prOptions.schedulers, settings.qwen21_photo_restore_scheduler,
+        prOptions.has_sampler_override, prDefaults.scheduler,
+        () => _save({ qwen21_photo_restore_scheduler: prSchedulerSel.value }));
+    const prStepsInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "0", max: "10000", step: "1",
+        value: settings.qwen21_photo_restore_steps || "",
+        placeholder: prDefaults.steps != null ? String(prDefaults.steps) : "default",
+        title: "Sampler steps override. Blank = use the template's own value"
+            + (prDefaults.steps != null ? ` (currently ${prDefaults.steps}).` : "."),
+    });
+    prStepsInp.disabled = !prOptions.has_sampler_override;
+    prStepsInp.addEventListener("change", () => {
+        const v = parseInt(prStepsInp.value, 10);
+        const clamped = isNaN(v) || v <= 0 ? 0 : Math.max(1, Math.min(10000, v));
+        prStepsInp.value = clamped || "";
+        _save({ qwen21_photo_restore_steps: clamped });
+    });
+    prStepsInp.style.flex  = "0 0 auto";
+    prStepsInp.style.width = "64px";
+    const prSamplerGroup = _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", flex: "1", minWidth: "0" } },
+        [prSamplerSel, prSchedulerSel, _mk("span", { cls: "fbt-be-proc-unit", textContent: "Steps" }), prStepsInp]);
+    restoreSec.appendChild(_row("Sampler", prSamplerGroup, "Sampler/scheduler algorithm override, plus a steps override"));
+
+    const prCfgInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "0.1", max: "30", step: "0.1",
+        value: settings.qwen21_photo_restore_cfg || "",
+        placeholder: prDefaults.cfg != null ? String(prDefaults.cfg) : "1",
+        title: "CFG override. Qwen-Image-2.1's official path keeps this at 1 (Negative Prompt below "
+            + "is inert below cfg 1). Blank = use the template's own value"
+            + (prDefaults.cfg != null ? ` (currently ${prDefaults.cfg}).` : "."),
+    });
+    prCfgInp.disabled = !prOptions.has_sampler_override;
+    prCfgInp.addEventListener("change", () => {
+        const v = parseFloat(prCfgInp.value);
+        const clamped = isNaN(v) || v <= 0 ? 0 : Math.max(0.1, Math.min(30, v));
+        prCfgInp.value = clamped || "";
+        _save({ qwen21_photo_restore_cfg: clamped });
+    });
+    const prDenoiseInp = _mk("input", {
+        cls: "fbt-ce-input fbt-ce-settings-lufs",
+        type: "number", min: "0.01", max: "1", step: "0.01",
+        value: settings.qwen21_photo_restore_denoise || "",
+        placeholder: prDefaults.denoise != null ? String(prDefaults.denoise) : "1",
+        title: "Denoise override. Blank = use the template's own value"
+            + (prDefaults.denoise != null ? ` (currently ${prDefaults.denoise}).` : "."),
+    });
+    prDenoiseInp.disabled = !prOptions.has_sampler_override;
+    prDenoiseInp.addEventListener("change", () => {
+        const v = parseFloat(prDenoiseInp.value);
+        const clamped = isNaN(v) || v <= 0 ? 0 : Math.max(0.01, Math.min(1, v));
+        prDenoiseInp.value = clamped || "";
+        _save({ qwen21_photo_restore_denoise: clamped });
+    });
+    const prCfgDenoiseGroup = _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", flex: "1", minWidth: "0" } },
+        [_mk("span", { cls: "fbt-be-proc-unit", textContent: "CFG" }), prCfgInp,
+         _mk("span", { cls: "fbt-be-proc-unit", textContent: "Denoise" }), prDenoiseInp]);
+    restoreSec.appendChild(_row("CFG / Denoise", prCfgDenoiseGroup, "Same IN:seed node as Sampler above"));
+
+    const prNegPromptInp = _mk("textarea", {
+        cls: "fbt-ce-textarea", rows: 2,
+        value: settings.qwen21_photo_restore_negative_prompt || "",
+        placeholder: prDefaults.negative_prompt || "default (blank)",
+        title: "Negative prompt override — inert unless CFG above is raised past 1.",
+    });
+    prNegPromptInp.disabled = !prOptions.has_negative_prompt_override;
+    prNegPromptInp.addEventListener("change", () =>
+        _save({ qwen21_photo_restore_negative_prompt: prNegPromptInp.value.trim() }));
+    restoreSec.appendChild(_row("Negative Prompt", prNegPromptInp,
+        "Only takes effect once CFG above is raised past 1"));
+
+    const prFreeVramBtn = _mk("button", { cls: "fbt-ce-btn sm", textContent: "Free VRAM now",
+        title: "Unload resident models immediately — same effect as Manager's own "
+            + "\"Free model and node cache\" button.",
+        onclick: async () => {
+            prFreeVramBtn.disabled    = true;
+            prFreeVramBtn.textContent = "Freeing…";
+            try {
+                await compositionsApi.freeH3Vram();
+                _toast("VRAM freed", "success");
+            } catch (e) {
+                alert(`Free VRAM failed: ${e.message}`);
+            } finally {
+                prFreeVramBtn.disabled    = false;
+                prFreeVramBtn.textContent = "Free VRAM now";
+            }
+        } });
+    restoreSec.appendChild(_row("", prFreeVramBtn,
+        "Shares VRAM with H3 Background Plate — see \"Unload model after each run\" above"));
+
+    if (prOptionsError) {
+        restoreSec.appendChild(_mk("p", { cls: "fbt-settings-note",
+            textContent: `Couldn't load model options (${prOptionsError}) — all overrides above `
+                + "are disabled until this loads. Reopen Settings to retry." }));
+    } else {
+        restoreSec.appendChild(_mk("p", { cls: "fbt-settings-note",
+            textContent: "Every field above is optional and only takes effect once "
+                + "templates/qwen21_photo_restore.api.json exposes the matching titled node (disabled "
+                + "fields don't yet — see templates/README.md)." }));
+    }
+    wrap.appendChild(restoreSec);
 }

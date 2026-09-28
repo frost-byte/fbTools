@@ -79,6 +79,20 @@ _COMPOSITION_SETTINGS_DEFAULTS: dict = {
     "h3_char_sheet_upscale_factor":       0.0,  # MinimaxH3LatentUpscaler3D scale multiplier; 0 = unset
     "h3_char_sheet_aspect_ratio":         "",  # ResolutionSelector aspect_ratio entry
     "h3_char_sheet_megapixels":           0.0,  # ResolutionSelector megapixels; 0 = unset
+    # Qwen-Image-2.1 photo-restoration ("Tools" tab) generation overrides — same "" / 0 = unset
+    # convention as h3_bg_plate_* above. See templates/README.md's "qwen21_photo_restore.api.json"
+    # section and nodes/qwen21_photo_restore.py. Reuses h3_bg_plate_unload_after_run for VRAM
+    # (a machine-wide resource, not per-template).
+    "qwen21_photo_restore_model":           "",  # diffusion_models filename
+    "qwen21_photo_restore_clip":            "",  # text_encoders filename
+    "qwen21_photo_restore_vae":             "",  # vae filename
+    "qwen21_photo_restore_sampler":         "",  # comfy.samplers.SAMPLER_NAMES entry
+    "qwen21_photo_restore_scheduler":       "",  # comfy.samplers.SCHEDULER_NAMES entry
+    "qwen21_photo_restore_steps":           0,   # 0 = unset/use template default
+    "qwen21_photo_restore_cfg":             0.0,  # 0 = unset/use template default; raise only with a negative_prompt
+    "qwen21_photo_restore_denoise":         0.0,  # 0 = unset/use template default
+    "qwen21_photo_restore_negative_prompt": "",  # unused unless cfg > 1 (Qwen-Image-2.1's own convention)
+    "qwen21_photo_restore_resolution":      0,   # 0 = unset/use template default (native photo size)
 }
 
 

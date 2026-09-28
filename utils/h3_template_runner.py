@@ -105,6 +105,19 @@ def patch_prompt(
 MAX_REF_IMAGES = 9
 
 
+def _pad_ref_images(ref_images: list[str]) -> list[str]:
+    """Cycle `ref_images` back over itself up to MAX_REF_IMAGES entries — shared by every
+    template built on the DenoAdvancedImageSourceLoader -> 9x GetImagesFromBatchIndexed chain
+    (see the module comment above for why padding is required, not optional). Index 0 is always
+    exactly the caller's own first entry; only positions beyond what was actually supplied repeat.
+    """
+    if not ref_images:
+        raise ValueError("ref_images must contain at least one image")
+    if len(ref_images) > MAX_REF_IMAGES:
+        raise ValueError(f"ref_images supports at most {MAX_REF_IMAGES} images, got {len(ref_images)}")
+    return (ref_images * (MAX_REF_IMAGES // len(ref_images) + 1))[:MAX_REF_IMAGES]
+
+
 def patch_character_sheet_prompt(
     template: dict,
     *,
@@ -137,21 +150,9 @@ def patch_character_sheet_prompt(
 
     Returns a new dict; `template` itself is never mutated.
     """
-    if not ref_images:
-        raise ValueError("ref_images must contain at least one image")
-    if len(ref_images) > MAX_REF_IMAGES:
-        raise ValueError(f"ref_images supports at most {MAX_REF_IMAGES} images, got {len(ref_images)}")
+    padded = _pad_ref_images(ref_images)
 
     patched = copy.deepcopy(template)
-
-    # The 9 ref_image_N sockets are each fed by their own GetImagesFromBatchIndexed(index=N) node
-    # reading the SAME shared batch this loader produces — those indices are hard-coded 0-8 in the
-    # source workflow with no bounds checking, so a batch smaller than 9 crashes execution with a
-    # raw IndexError (confirmed live, 2026-09-27: "index 8 is out of bounds for dimension 0 with
-    # size 1" from a single-image request). Padding by cycling the given images back over
-    # themselves keeps every slot valid while leaving index 0 — the sole outfit reference, see the
-    # module comment above — exactly what the caller actually chose.
-    padded = (ref_images * (MAX_REF_IMAGES // len(ref_images) + 1))[:MAX_REF_IMAGES]
 
     refs_id = find_node_by_title(patched, "IN:refs")
     patched[refs_id]["inputs"]["image_paths"] = "\n".join(padded)
@@ -170,6 +171,77 @@ def patch_character_sheet_prompt(
         if node_id is None:
             logger.debug(
                 "patch_character_sheet_prompt: template has no node titled %r, skipping override", title
+            )
+            continue
+        patched[node_id]["inputs"].update(field_values)
+
+    return patched
+
+
+def patch_qwen21_photo_restore_prompt(
+    template: dict,
+    *,
+    image: str,
+    prompt_text: str,
+    seed: int,
+    filename_prefix: str,
+    overrides: dict[str, dict] | None = None,
+) -> dict:
+    """Deep-copy `template` and patch the Qwen-Image-2.1 photo-restoration template's required
+    contract nodes, plus any optional overrides the template happens to support.
+
+    A different model/workflow than the MiniMax H3 templates above (H3 could not preserve real
+    photo content faithfully enough for restoration — it only ever conditions on reference images
+    rather than genuinely encoding them, per the architecture investigation this template replaces;
+    Qwen-Image-2.1's dedicated edit-encode node does real image-conditioned editing instead). Same
+    4-title conceptual shape as patch_prompt(), but the field names differ per node, confirmed
+    against the real exported API template (2026-09-28) — so this needs its own patch function
+    rather than reusing patch_prompt() as-is:
+
+      IN:refs           — the DenoAdvancedImageSourceLoader node; patches its "image_paths" input
+                          to a single resolved image path. Only the first loaded image is ever used
+                          (a GetImagesFromBatchIndexed pulls index "0"), so unlike the H3 templates
+                          above there is no 9-slot padding here — one path in, one path used.
+      IN:restore_prompt — a PrimitiveStringMultiline node; patches its "value" input. The actual
+                          TextEncodeQwenImage21 node's own "prompt" input is a graph LINK back to
+                          this node in the exported template, not a patchable widget itself — that
+                          is why the prompt is patched here rather than via a title on the encode
+                          node.
+      IN:seed           — a plain KSampler node (this workflow has no separate RandomNoise node);
+                          patches its "seed" input, NOT "noise_seed" — that field name is specific
+                          to RandomNoise, used by the MiniMax H3 templates, not this one.
+      OUT:save          — the SaveImageAdvanced node; patches its "filename_prefix" input.
+
+    `overrides` behaves exactly as in patch_prompt(): a lenient {title: {field: value}} mapping,
+    silently skipped per-title if the template doesn't expose it. Known optional titles this
+    template exposes: "IN:seed" (also steps/cfg/sampler_name/scheduler/denoise — the same node as
+    the required seed field, merged via .update() same as everywhere else), "IN:model" (unet_name/
+    weight_dtype), "IN:clip" (clip_name/type/device), "IN:vae" (vae_name), "IN:negative_prompt"
+    (negative_prompt/resolution — a second, unrelated title on the same TextEncodeQwenImage21 node
+    whose own "prompt" field is a link rather than a widget, hence the separate title/name here).
+
+    Returns a new dict; `template` itself is never mutated.
+    """
+    patched = copy.deepcopy(template)
+
+    refs_id = find_node_by_title(patched, "IN:refs")
+    patched[refs_id]["inputs"]["image_paths"] = image
+
+    prompt_id = find_node_by_title(patched, "IN:restore_prompt")
+    patched[prompt_id]["inputs"]["value"] = prompt_text
+
+    seed_id = find_node_by_title(patched, "IN:seed")
+    patched[seed_id]["inputs"]["seed"] = seed
+
+    save_id = find_node_by_title(patched, "OUT:save")
+    patched[save_id]["inputs"]["filename_prefix"] = filename_prefix
+
+    for title, field_values in (overrides or {}).items():
+        node_id = find_node_by_title(patched, title, required=False)
+        if node_id is None:
+            logger.debug(
+                "patch_qwen21_photo_restore_prompt: template has no node titled %r, skipping "
+                "override", title,
             )
             continue
         patched[node_id]["inputs"].update(field_values)

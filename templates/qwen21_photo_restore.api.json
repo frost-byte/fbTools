@@ -1,0 +1,176 @@
+{
+  "461": {
+    "inputs": {
+      "filename_prefix": "Qwen_image_2.1",
+      "format": "png",
+      "format.bit_depth": "8-bit",
+      "format.input_color_space": "sRGB",
+      "images": [
+        "499",
+        0
+      ]
+    },
+    "class_type": "SaveImageAdvanced",
+    "_meta": {
+      "title": "OUT:save"
+    }
+  },
+  "477": {
+    "inputs": {
+      "image_paths": "img128.jpg",
+      "mode": "Keep Input Ratio",
+      "ratio_preset": "16:9",
+      "megapixels": 1,
+      "width": 1024,
+      "height": 1024,
+      "divisible_by": "32",
+      "interpolation": "lanczos",
+      "resize_method": "Fit (Letterbox/Pillarbox)",
+      "recursive_folders": false,
+      "list_output_mode": "Original Size",
+      "disabled_image_paths": ""
+    },
+    "class_type": "DenoAdvancedImageSourceLoader",
+    "_meta": {
+      "title": "IN:refs"
+    }
+  },
+  "480": {
+    "inputs": {
+      "indexes": "0",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "489": {
+    "inputs": {
+      "value": "subject_definitions:\n<image1> is a single photograph, scanned from an old slide, showing exactly one moment in\ntime. It is not a character reference and not a composite of multiple sources \u2014 everything in\nthis photograph is real and factual: the person or people shown, their appearance, pose,\nclothing, expression, and the surrounding scene. Nothing about who or what is depicted is\ninvented, guessed, or restyled.\n\nThe output should be a restored photograph, The photograph shows real people and a real scene exactly as originally captured; treat every visible detail - faces, bodies, clothing, posture, objects, architecture,\nfoliage, light and shadow - as ground truth to be preserved, not material to reinterpret.\n\nRESTORE the physical condition of the photograph:\n- Remove dust, speckling, scratches and specks introduced by the scanning or the aging film itself.\n- Resolve blur and softness introduced by the original optics, film grain, or the scan, recovering\n  natural sharpness and fine detail without inventing texture that was not implicit in the source.\n- Reduce excessive film grain and noise to a clean, natural photographic look, without smoothing\n  away real texture such as skin pores, fabric weave, or foliage detail.\n- Repair burn spots, light leaks, chemical staining, discoloration blotches, creases, and physical\n  tears or missing fragments of the emulsion, reconstructing only the damaged area itself using the\n  surrounding undamaged image as the only guide for what belongs there.\n- Correct faded, shifted, or yellowed color balance back to a natural, accurate rendition\n  consistent with the rest of the image's own visible tones. If the photograph is genuinely\n  black-and-white, keep it black-and-white - do not invent color that is not inferable from the\n  photograph itself.\n- Even out exposure and contrast lost to age, without introducing artificial HDR, glow, or\n  stylized contrast the original photograph would not have had.\n\n{{RESTORE_HINT}}\n\nDo not alter anything else about the photograph. The people shown keep their exact identity,\nproportions, expressions, pose and clothing. The background, framing and camera angle are\nunchanged. Nothing is added, removed, relocated, or reimagined - this is a cleanup of the\nphysical print, not a reinterpretation of the scene.\n\nThis is a FROZEN FRAME. Nothing moves at all. The camera holds a static shot and does not move,\nzoom, tilt, shake or drift. Every frame is identical to the first: the shot reads as a single\nrestored photograph, not as a video.\n\nNo text, letters, numbers, captions, labels, watermarks, borders or frames added anywhere in the\nimage, no new objects, people or animals introduced, no removal of any person or object present\nin the original, no change of identity, age, body proportions or facial features of anyone shown,\nno colorization of a genuinely black-and-white photograph, no invented background detail beyond\nwhat the undamaged parts of the photograph already show, no stylized, painterly, cartoon, HDR or\nAI-generated look, no added grain, vignette, lens flare, or artistic color grading, no cropping or\nchange of aspect ratio, no camera movement, no cuts, no fades, no motion blur."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "IN:restore_prompt"
+    }
+  },
+  "495": {
+    "inputs": {
+      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "IN:model"
+    }
+  },
+  "496": {
+    "inputs": {
+      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "IN:clip"
+    }
+  },
+  "497": {
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "IN:vae"
+    }
+  },
+  "499": {
+    "inputs": {
+      "samples": [
+        "500",
+        0
+      ],
+      "vae": [
+        "497",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "500": {
+    "inputs": {
+      "seed": 43427648583068,
+      "steps": 25,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "502",
+        0
+      ],
+      "positive": [
+        "503",
+        0
+      ],
+      "negative": [
+        "503",
+        1
+      ],
+      "latent_image": [
+        "503",
+        2
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "IN:seed"
+    }
+  },
+  "502": {
+    "inputs": {
+      "device": "auto",
+      "dtype": "default",
+      "model": [
+        "495",
+        0
+      ]
+    },
+    "class_type": "QwenImage21Cache",
+    "_meta": {
+      "title": "Qwen Image 2.1 Cache"
+    }
+  },
+  "503": {
+    "inputs": {
+      "prompt": [
+        "489",
+        0
+      ],
+      "negative_prompt": "",
+      "resolution": 0,
+      "clip": [
+        "496",
+        0
+      ],
+      "images.image_1": [
+        "480",
+        0
+      ],
+      "vae": [
+        "497",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImage21",
+    "_meta": {
+      "title": "IN:negative_prompt"
+    }
+  }
+}
