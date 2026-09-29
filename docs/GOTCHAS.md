@@ -354,3 +354,35 @@ example — pick a padding strategy that preserves whichever position(s) the tem
 treats as semantically special (see the ordering gotcha above) rather than naively repeating the
 whole list from the start.
 
+---
+
+## `comfy-mcp`/`comfy-cli`'s workflow-run conversion can silently drop dynamic-widget-group inputs
+
+**Symptom**: a node with a "dynamic group" widget mechanism (repeatable `key_N`/`value_N` pairs you
+add via a "+" button — e.g. `basic_data_handling`'s `DictCreateFromInt`) works correctly when a
+workflow is run directly in the ComfyUI browser UI, but produces missing/wrong data when the exact
+same saved workflow file is executed via `comfy-mcp`'s `run_workflow` (which wraps `comfy run
+--workflow <path>`, converting a saved UI-graph JSON to an API prompt itself, outside the browser).
+Concretely: `DictCreateFromInt` with 3 real key/value pairs (`clip_a_end_idx`, `clip_b_start_idx`,
+`marker_frame_count`) produced a dict with only the *first* pair when run via `comfy-mcp`, then
+`StringFormatMap`'s `template.format_map()` raised `KeyError: 'clip_b_start_idx'` downstream —
+surfacing as literal `"Key error: 'clip_b_start_idx' not found in mapping"` text baked into an
+`ImageTextOverlay` output. The exact same workflow, run by hand in the browser, produced the correct
+three-line text every time.
+
+**Cause**: not confirmed at the `comfy-cli` source level, but the shape of the failure matches a
+UI→API graph conversion that only understands a node's *declared* `INPUT_TYPES` shape and has no
+knowledge of a pack's custom frontend JS for expanding dynamic widget groups — so it reads however
+many pairs the base schema declares (here, effectively 1) and never sees the additional groups the
+browser's own JS added to the saved graph JSON. This is speculative pattern-matching against the
+observed behavior, not something read directly in `comfy-cli`'s source — treat as a strong lead, not
+a confirmed root cause, if it recurs.
+
+**Fix/workaround**: for any workflow using a dynamic-widget-group node, treat a browser-run result as
+the source of truth for "does this actually work," and don't trust a `comfy-mcp run_workflow` result
+against the same file as equivalent — they can silently diverge. `example_workflows/
+marker_frame_split.json`'s checked-in thumbnail was generated from a real browser run for exactly
+this reason (a `comfy-mcp` run of the same file, moments earlier, produced the broken output above).
+If this needs a permanent fix rather than a workaround, it likely belongs in `comfy-cli` itself (its
+generic UI→API converter), not in this repo.
+

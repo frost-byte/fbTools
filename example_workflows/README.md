@@ -8,17 +8,19 @@ ComfyUI serves this folder automatically (Workflow → Browse Templates) once lo
 
 ## Before running one of these
 
-Each workflow references demo images by filename from ComfyUI's own `input/` directory (that's how
-`LoadImage` always resolves files — a workflow can't embed the actual image bytes). Copy this
-folder's `media/*.png` files into your ComfyUI `input/` directory once before running any of these
+Each workflow references demo media by filename from ComfyUI's own `input/` directory (that's how
+`LoadImage`/`VHS_LoadVideo` always resolve files — a workflow can't embed the actual bytes). Copy
+this folder's `media/*` files into your ComfyUI `input/` directory once before running any of these
 workflows:
 
 ```bash
-cp example_workflows/media/*.png /path/to/ComfyUI/input/
+cp example_workflows/media/* /path/to/ComfyUI/input/
 ```
 
 All demo images are small, synthetic, generic placeholder art (flat-color shapes) — never real
-photos or project-specific content — generated specifically for these workflows.
+photos or project-specific content — generated specifically for these workflows. The one demo video
+(`marker_split_test_80f.mp4`) is likewise synthetic: 80 rendered frames of plain text on a black
+background, no real footage.
 
 ## Workflows
 
@@ -55,7 +57,23 @@ photos or project-specific content — generated specifically for these workflow
   next — but had apparently never been run against real multi-frame input before this workflow
   surfaced its bug (below).
 
-All 6 workflows in this folder are verified live against a real ComfyUI instance.
+- **`marker_frame_split.json`** — `MarkerFrameSplit` (clip-bridging pipeline support: locates a
+  deliberately-inserted marker-color frame segment in a pre-concatenated video and splits it into
+  the "before"/"after" clip halves) feeding its boundary frames into `SubjectLayerDefine` ×2 →
+  `SubjectCompositor` (positioned side by side, `remove_background=False` on both — no background
+  removal needed for this demo) and its three scalar outputs (`clip_a_end_idx`/`clip_b_start_idx`/
+  `marker_frame_count`) into `ImageTextOverlay` via `Basic data handling: DictCreateFromInt` +
+  `StringFormatMap` (from the `basic_data_handling` pack) — burning the diagnostic numbers onto the
+  composited image so a single `PreviewImage` proves both the visual split (frame content reads "A"
+  on the left, "B" on the right) and the exact indices at once. Uses `marker_split_test_80f.mp4` (80
+  frames: 39 "A" + 1 magenta marker + 40 "B"). **Verified live** — run directly in the ComfyUI
+  browser UI; see `docs/GOTCHAS.md` for a real interop gotcha this workflow surfaced with
+  `comfy-mcp`/`comfy-cli`'s workflow-conversion path specifically (not a bug in the workflow itself).
+  This is also the reference example for the new `ImageTextOverlay` node's intended use: giving a
+  scalar/string-output node a real, screenshot-able proof image without a third-party display-node
+  dependency (see `~/.claude/plans/test-workflows-and-demo-data.md`).
+
+All 7 workflows in this folder are verified live against a real ComfyUI instance.
 
 ## Three real bugs this effort caught (all fixed, see `docs/GOTCHAS.md` for the full mechanisms)
 

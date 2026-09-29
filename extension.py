@@ -31,6 +31,8 @@ from .nodes.source_profiles import SourceProfileLoad, SourceProfileDefine, Sourc
 from .nodes.compose import SceneCompose, PromptAssemble
 from .nodes.scene_casts import SceneCastLoad, SceneCastBuild
 from .nodes.compositions import CompositionLoad, PromptCompositionLoader, CompositionToH3Conditioning
+from .nodes.marker_frame_split import MarkerFrameSplit
+from .nodes.image_text_overlay import ImageTextOverlay
 from .nodes import kdenlive_archive as _kdenlive_archive_routes  # noqa: F401  (registers /fbtools/kdenlive/* routes on import)
 # Route-only modules: importing them registers their /fbtools/* handlers on the PromptServer routes.
 from .nodes import backgrounds_presets as _backgrounds_presets_routes  # noqa: F401
@@ -598,6 +600,8 @@ class FBToolsExtension(ComfyExtension):
             CompositionLoad,
             PromptCompositionLoader,
             CompositionToH3Conditioning,
+            MarkerFrameSplit,
+            ImageTextOverlay,
             # Scene Cast nodes
             SceneCastLoad,
             SceneCastBuild,

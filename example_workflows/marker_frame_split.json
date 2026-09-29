@@ -1,0 +1,1518 @@
+{
+  "id": "8297f8c9-257f-47e1-9d2f-df9ce7417fb0",
+  "revision": 0,
+  "last_node_id": 3959,
+  "last_link_id": 3596,
+  "nodes": [
+    {
+      "id": 3927,
+      "type": "VHS_LoadVideo",
+      "pos": [
+        -3172.4504452595115,
+        4268.732979118522
+      ],
+      "size": [
+        255.8291015625,
+        500.871826171875
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3553
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": null
+        }
+      ],
+      "title": "IN:input",
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+        "Node name for S&R": "VHS_LoadVideo"
+      },
+      "widgets_values": {
+        "video": "marker_split_test_80f.mp4",
+        "force_rate": 0,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "choose video to upload": "image",
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "marker_split_test_80f.mp4",
+            "type": "input",
+            "format": "video/mp4",
+            "force_rate": 0,
+            "custom_width": 0,
+            "custom_height": 0,
+            "frame_load_cap": 0,
+            "skip_first_frames": 0,
+            "select_every_nth": 1
+          }
+        }
+      },
+      "widgets_values_named": {
+        "video": "marker_split_test_80f.mp4",
+        "force_rate": 0,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "choose video to upload": "image",
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "marker_split_test_80f.mp4",
+            "type": "input",
+            "format": "video/mp4",
+            "force_rate": 0,
+            "custom_width": 0,
+            "custom_height": 0,
+            "frame_load_cap": 0,
+            "skip_first_frames": 0,
+            "select_every_nth": 1
+          }
+        }
+      }
+    },
+    {
+      "id": 3928,
+      "type": "fbt_MarkerFrameSplit",
+      "pos": [
+        -2795.97832921238,
+        4268.716564759957
+      ],
+      "size": [
+        275.181640625,
+        186
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 3553
+        }
+      ],
+      "outputs": [
+        {
+          "name": "clip_a_frames",
+          "type": "IMAGE",
+          "links": [
+            3566
+          ]
+        },
+        {
+          "name": "clip_b_frames",
+          "type": "IMAGE",
+          "links": [
+            3567
+          ]
+        },
+        {
+          "name": "clip_a_end_idx",
+          "type": "INT",
+          "links": [
+            3579
+          ]
+        },
+        {
+          "name": "clip_b_start_idx",
+          "type": "INT",
+          "links": [
+            3569,
+            3580
+          ]
+        },
+        {
+          "name": "marker_frame_count",
+          "type": "INT",
+          "links": [
+            3581
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "frost-byte/fbTools",
+        "ver": "8cd6c1617dc4b5c193dfb4422a3fa9a66bc5e34a",
+        "Node name for S&R": "fbt_MarkerFrameSplit"
+      },
+      "widgets_values": [
+        "#FF00FF",
+        0.08,
+        1
+      ],
+      "widgets_values_named": {
+        "marker_color": "#FF00FF",
+        "tolerance": 0.08,
+        "min_marker_frames": 1
+      }
+    },
+    {
+      "id": 3931,
+      "type": "INTConstant",
+      "pos": [
+        -3222.2071767618822,
+        3912.46388254855
+      ],
+      "size": [
+        210,
+        58
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "INT",
+          "links": [
+            3554,
+            3558
+          ]
+        }
+      ],
+      "title": "Clip Frames to Use",
+      "properties": {
+        "cnr_id": "comfyui-kjnodes",
+        "ver": "1.5.0",
+        "Node name for S&R": "INTConstant"
+      },
+      "widgets_values": [
+        22
+      ],
+      "widgets_values_named": {
+        "value": 22
+      },
+      "color": "#1b4669",
+      "bgcolor": "#29699c"
+    },
+    {
+      "id": 3932,
+      "type": "VHS_SelectImages",
+      "pos": [
+        -2251.6655264081614,
+        3621.636487797423
+      ],
+      "size": [
+        212.5712890625,
+        106
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3566
+        },
+        {
+          "name": "indexes",
+          "type": "STRING",
+          "widget": {
+            "name": "indexes"
+          },
+          "link": 3564
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3571
+          ]
+        }
+      ],
+      "title": "A Frames",
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+        "Node name for S&R": "VHS_SelectImages"
+      },
+      "widgets_values": {
+        "indexes": "0",
+        "err_if_missing": true,
+        "err_if_empty": true
+      },
+      "widgets_values_named": {
+        "indexes": "0",
+        "err_if_missing": true,
+        "err_if_empty": true
+      }
+    },
+    {
+      "id": 3933,
+      "type": "Basic data handling: CastToString",
+      "pos": [
+        -2809.0479535531067,
+        3922.8961475377328
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input",
+          "type": "*",
+          "link": 3554
+        }
+      ],
+      "outputs": [
+        {
+          "name": "string",
+          "type": "STRING",
+          "links": [
+            3559
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "basic_data_handling",
+        "ver": "2.0.0",
+        "Node name for S&R": "Basic data handling: CastToString"
+      }
+    },
+    {
+      "id": 3934,
+      "type": "StringConcatenate",
+      "pos": [
+        -2530.450346815565,
+        3904.159519459071
+      ],
+      "size": [
+        210,
+        166
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "string_b",
+          "type": "STRING",
+          "widget": {
+            "name": "string_b"
+          },
+          "link": 3559
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            3563,
+            3565
+          ]
+        }
+      ],
+      "title": "Clip B Head Index",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.37.0",
+        "Node name for S&R": "StringConcatenate"
+      },
+      "widgets_values": [
+        ":",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "string_a": ":",
+        "string_b": "",
+        "delimiter": ""
+      }
+    },
+    {
+      "id": 3938,
+      "type": "ComfyMathExpression",
+      "pos": [
+        -2987.3938398417054,
+        3688.9707839005628
+      ],
+      "size": [
+        210,
+        128
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "values.a",
+          "type": "FLOAT,INT,BOOLEAN",
+          "link": 3558
+        },
+        {
+          "name": "values.b",
+          "shape": 7,
+          "type": "FLOAT,INT,BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            3560
+          ]
+        },
+        {
+          "name": "BOOL",
+          "type": "BOOLEAN",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.37.0",
+        "Node name for S&R": "ComfyMathExpression"
+      },
+      "widgets_values": [
+        "-a"
+      ],
+      "widgets_values_named": {
+        "expression": "-a"
+      }
+    },
+    {
+      "id": 3939,
+      "type": "StringConcatenate",
+      "pos": [
+        -2517.63028479883,
+        3529.1326646548573
+      ],
+      "size": [
+        210,
+        166
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "string_a",
+          "type": "STRING",
+          "widget": {
+            "name": "string_a"
+          },
+          "link": 3561
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            3564
+          ]
+        }
+      ],
+      "title": "Clip A Tail Index",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.37.0",
+        "Node name for S&R": "StringConcatenate"
+      },
+      "widgets_values": [
+        "",
+        ":",
+        ""
+      ],
+      "widgets_values_named": {
+        "string_a": "",
+        "string_b": ":",
+        "delimiter": ""
+      }
+    },
+    {
+      "id": 3940,
+      "type": "Basic data handling: CastToString",
+      "pos": [
+        -2727.845280121853,
+        3660.882269387751
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input",
+          "type": "*",
+          "link": 3560
+        }
+      ],
+      "outputs": [
+        {
+          "name": "string",
+          "type": "STRING",
+          "links": [
+            3561
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "basic_data_handling",
+        "ver": "2.0.0",
+        "Node name for S&R": "Basic data handling: CastToString"
+      }
+    },
+    {
+      "id": 3942,
+      "type": "VHS_SelectImages",
+      "pos": [
+        -2249.000980211537,
+        3908.717603606276
+      ],
+      "size": [
+        212.5712890625,
+        106
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3567
+        },
+        {
+          "name": "indexes",
+          "type": "STRING",
+          "widget": {
+            "name": "indexes"
+          },
+          "link": 3565
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3572
+          ]
+        }
+      ],
+      "title": "B Frames",
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+        "Node name for S&R": "VHS_SelectImages"
+      },
+      "widgets_values": {
+        "indexes": "0",
+        "err_if_missing": true,
+        "err_if_empty": true
+      },
+      "widgets_values_named": {
+        "indexes": "0",
+        "err_if_missing": true,
+        "err_if_empty": true
+      }
+    },
+    {
+      "id": 3943,
+      "type": "VHS_SelectImages",
+      "pos": [
+        -2003.2924032208898,
+        3625.1289211901612
+      ],
+      "size": [
+        212.5712890625,
+        106
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3571
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3586,
+            3590
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+        "Node name for S&R": "VHS_SelectImages"
+      },
+      "widgets_values": {
+        "indexes": "-1",
+        "err_if_missing": true,
+        "err_if_empty": true
+      },
+      "widgets_values_named": {
+        "indexes": "-1",
+        "err_if_missing": true,
+        "err_if_empty": true
+      }
+    },
+    {
+      "id": 3944,
+      "type": "VHS_SelectImages",
+      "pos": [
+        -2003.0535112235195,
+        3902.777227549375
+      ],
+      "size": [
+        212.5712890625,
+        106
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3572
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3587
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+        "Node name for S&R": "VHS_SelectImages"
+      },
+      "widgets_values": {
+        "indexes": "0",
+        "err_if_missing": true,
+        "err_if_empty": true
+      },
+      "widgets_values_named": {
+        "indexes": "0",
+        "err_if_missing": true,
+        "err_if_empty": true
+      }
+    },
+    {
+      "id": 3948,
+      "type": "fbt_ImageTextOverlay",
+      "pos": [
+        -827.2705082108849,
+        3679.095631268383
+      ],
+      "size": [
+        400,
+        208
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 3594
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": 3585
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3596
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "frost-byte/fbTools",
+        "ver": "8cd6c1617dc4b5c193dfb4422a3fa9a66bc5e34a",
+        "Node name for S&R": "fbt_ImageTextOverlay"
+      },
+      "widgets_values": [
+        "",
+        "bottom-left",
+        16,
+        "#FFFFFF",
+        "#000000",
+        0.6
+      ],
+      "widgets_values_named": {
+        "text": "",
+        "position": "bottom-left",
+        "font_size": 16,
+        "text_color": "#FFFFFF",
+        "bg_color": "#000000",
+        "bg_opacity": 0.6
+      }
+    },
+    {
+      "id": 3950,
+      "type": "Basic data handling: DictCreateFromInt",
+      "pos": [
+        -2232.638117644159,
+        4257.231882811521
+      ],
+      "size": [
+        270,
+        226
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value_0",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "value_0"
+          },
+          "link": 3579
+        },
+        {
+          "name": "value_1",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "value_1"
+          },
+          "link": 3580
+        },
+        {
+          "name": "value_2",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "value_2"
+          },
+          "link": 3581
+        }
+      ],
+      "outputs": [
+        {
+          "name": "dict",
+          "type": "DICT",
+          "links": [
+            3582
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "basic_data_handling",
+        "ver": "2.0.0",
+        "Node name for S&R": "Basic data handling: DictCreateFromInt"
+      },
+      "widgets_values": [
+        "clip_a_end_idx",
+        "",
+        "clip_b_start_idx",
+        "",
+        "marker_frame_count",
+        "",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "key_0": "clip_a_end_idx",
+        "value_0": "",
+        "key_1": "clip_b_start_idx",
+        "value_1": "",
+        "key_2": "marker_frame_count",
+        "value_2": "",
+        "key_3": "",
+        "value_3": ""
+      }
+    },
+    {
+      "id": 3951,
+      "type": "Basic data handling: StringFormatMap",
+      "pos": [
+        -1668.9792405026717,
+        4286.665718470333
+      ],
+      "size": [
+        359.29914372333474,
+        149.87507363262375
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mapping",
+          "type": "DICT",
+          "link": 3582
+        },
+        {
+          "name": "template",
+          "type": "STRING",
+          "widget": {
+            "name": "template"
+          },
+          "link": 3583
+        }
+      ],
+      "outputs": [
+        {
+          "name": "result",
+          "type": "STRING",
+          "links": [
+            3584,
+            3585
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "basic_data_handling",
+        "ver": "2.0.0",
+        "Node name for S&R": "Basic data handling: StringFormatMap"
+      },
+      "widgets_values": [
+        "Hello, {key}"
+      ],
+      "widgets_values_named": {
+        "template": "Hello, {key}"
+      }
+    },
+    {
+      "id": 3952,
+      "type": "PrimitiveStringMultiline",
+      "pos": [
+        -2182.021429483404,
+        4555.933188063769
+      ],
+      "size": [
+        235.1400272393546,
+        116.71141398954842
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            3583
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.37.0",
+        "Node name for S&R": "PrimitiveStringMultiline"
+      },
+      "widgets_values": [
+        "clip_a_end_idx: {clip_a_end_idx}\nclip_b_start_idx: {clip_b_start_idx}\nmarker_frame_count: {marker_frame_count}"
+      ],
+      "widgets_values_named": {
+        "value": "clip_a_end_idx: {clip_a_end_idx}\nclip_b_start_idx: {clip_b_start_idx}\nmarker_frame_count: {marker_frame_count}"
+      }
+    },
+    {
+      "id": 3953,
+      "type": "fbt_SubjectLayerDefine",
+      "pos": [
+        -1672.1721043372463,
+        3485.20289046815
+      ],
+      "size": [
+        280.912109375,
+        246
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3586
+        },
+        {
+          "name": "mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Layer",
+          "type": "SUBJECT_LAYER",
+          "links": [
+            3588
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "frost-byte/fbTools",
+        "ver": "8cd6c1617dc4b5c193dfb4422a3fa9a66bc5e34a",
+        "Node name for S&R": "fbt_SubjectLayerDefine"
+      },
+      "widgets_values": [
+        0,
+        0,
+        0,
+        0,
+        -0.4,
+        0,
+        false,
+        "BiRefNet-general"
+      ],
+      "widgets_values_named": {
+        "pad_top": 0,
+        "pad_bottom": 0,
+        "pad_left": 0,
+        "pad_right": 0,
+        "offset_x": -0.4,
+        "offset_y": 0,
+        "remove_background": false,
+        "bg_model": "BiRefNet-general"
+      }
+    },
+    {
+      "id": 3954,
+      "type": "fbt_SubjectCompositor",
+      "pos": [
+        -1198.6136359266538,
+        3495.417468451085
+      ],
+      "size": [
+        270,
+        194
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "layers.layer0",
+          "shape": 7,
+          "type": "SUBJECT_LAYER",
+          "link": 3588
+        },
+        {
+          "name": "layers.layer1",
+          "shape": 7,
+          "type": "SUBJECT_LAYER",
+          "link": 3589
+        },
+        {
+          "name": "layers.layer2",
+          "shape": 7,
+          "type": "SUBJECT_LAYER",
+          "link": null
+        },
+        {
+          "name": "canvas_width",
+          "type": "INT",
+          "widget": {
+            "name": "canvas_width"
+          },
+          "link": 3593
+        },
+        {
+          "name": "canvas_height",
+          "type": "INT",
+          "widget": {
+            "name": "canvas_height"
+          },
+          "link": 3592
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Composite Image",
+          "type": "IMAGE",
+          "links": [
+            3594
+          ]
+        },
+        {
+          "name": "Individual Images",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "Layer Count",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "frost-byte/fbTools",
+        "ver": "8cd6c1617dc4b5c193dfb4422a3fa9a66bc5e34a",
+        "Node name for S&R": "fbt_SubjectCompositor"
+      },
+      "widgets_values": [
+        1344,
+        768,
+        "#222222",
+        "both",
+        32
+      ],
+      "widgets_values_named": {
+        "canvas_width": 1344,
+        "canvas_height": 768,
+        "canvas_color": "#222222",
+        "output_mode": "both",
+        "divisible_by": 32
+      }
+    },
+    {
+      "id": 3955,
+      "type": "fbt_SubjectLayerDefine",
+      "pos": [
+        -1669.3826766647387,
+        3837.8141346779216
+      ],
+      "size": [
+        280.912109375,
+        246
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3587
+        },
+        {
+          "name": "mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Layer",
+          "type": "SUBJECT_LAYER",
+          "links": [
+            3589
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "frost-byte/fbTools",
+        "ver": "8cd6c1617dc4b5c193dfb4422a3fa9a66bc5e34a",
+        "Node name for S&R": "fbt_SubjectLayerDefine"
+      },
+      "widgets_values": [
+        0,
+        0,
+        0,
+        0,
+        0.4,
+        0,
+        false,
+        "BiRefNet-general"
+      ],
+      "widgets_values_named": {
+        "pad_top": 0,
+        "pad_bottom": 0,
+        "pad_left": 0,
+        "pad_right": 0,
+        "offset_x": 0.4,
+        "offset_y": 0,
+        "remove_background": false,
+        "bg_model": "BiRefNet-general"
+      }
+    },
+    {
+      "id": 3956,
+      "type": "GetImageSize",
+      "pos": [
+        -1680.230144667906,
+        3206.3105974917366
+      ],
+      "size": [
+        140,
+        124
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3590
+        }
+      ],
+      "outputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "links": [
+            3591
+          ]
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": [
+            3592
+          ]
+        },
+        {
+          "name": "batch_size",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.37.0",
+        "Node name for S&R": "GetImageSize"
+      }
+    },
+    {
+      "id": 3957,
+      "type": "ComfyMathExpression",
+      "pos": [
+        -1439.0026001139288,
+        3225.044653116488
+      ],
+      "size": [
+        284.67534052861265,
+        128
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "values.a",
+          "type": "FLOAT,INT,BOOLEAN",
+          "link": 3591
+        },
+        {
+          "name": "values.b",
+          "shape": 7,
+          "type": "FLOAT,INT,BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            3593
+          ]
+        },
+        {
+          "name": "BOOL",
+          "type": "BOOLEAN",
+          "links": null
+        }
+      ],
+      "title": "Math Expression - Double Width",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.37.0",
+        "Node name for S&R": "ComfyMathExpression"
+      },
+      "widgets_values": [
+        "2*a"
+      ],
+      "widgets_values_named": {
+        "expression": "2*a"
+      }
+    },
+    {
+      "id": 3959,
+      "type": "PreviewImage",
+      "pos": [
+        -262.31414101097903,
+        3674.0196585946705
+      ],
+      "size": [
+        140,
+        246
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 3596
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.37.0",
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    }
+  ],
+  "links": [
+    [
+      3553,
+      3927,
+      0,
+      3928,
+      0,
+      "IMAGE"
+    ],
+    [
+      3554,
+      3931,
+      0,
+      3933,
+      0,
+      "INT"
+    ],
+    [
+      3559,
+      3933,
+      0,
+      3934,
+      0,
+      "STRING"
+    ],
+    [
+      3560,
+      3938,
+      1,
+      3940,
+      0,
+      "INT"
+    ],
+    [
+      3561,
+      3940,
+      0,
+      3939,
+      0,
+      "STRING"
+    ],
+    [
+      3564,
+      3939,
+      0,
+      3932,
+      1,
+      "STRING"
+    ],
+    [
+      3565,
+      3934,
+      0,
+      3942,
+      1,
+      "STRING"
+    ],
+    [
+      3566,
+      3928,
+      0,
+      3932,
+      0,
+      "IMAGE"
+    ],
+    [
+      3567,
+      3928,
+      1,
+      3942,
+      0,
+      "IMAGE"
+    ],
+    [
+      3571,
+      3932,
+      0,
+      3943,
+      0,
+      "IMAGE"
+    ],
+    [
+      3572,
+      3942,
+      0,
+      3944,
+      0,
+      "IMAGE"
+    ],
+    [
+      3558,
+      3931,
+      0,
+      3938,
+      0,
+      "INT"
+    ],
+    [
+      3579,
+      3928,
+      2,
+      3950,
+      0,
+      "INT"
+    ],
+    [
+      3580,
+      3928,
+      3,
+      3950,
+      1,
+      "INT"
+    ],
+    [
+      3581,
+      3928,
+      4,
+      3950,
+      2,
+      "INT"
+    ],
+    [
+      3582,
+      3950,
+      0,
+      3951,
+      0,
+      "DICT"
+    ],
+    [
+      3583,
+      3952,
+      0,
+      3951,
+      1,
+      "STRING"
+    ],
+    [
+      3585,
+      3951,
+      0,
+      3948,
+      1,
+      "STRING"
+    ],
+    [
+      3586,
+      3943,
+      0,
+      3953,
+      0,
+      "IMAGE"
+    ],
+    [
+      3587,
+      3944,
+      0,
+      3955,
+      0,
+      "IMAGE"
+    ],
+    [
+      3588,
+      3953,
+      0,
+      3954,
+      0,
+      "SUBJECT_LAYER"
+    ],
+    [
+      3589,
+      3955,
+      0,
+      3954,
+      1,
+      "SUBJECT_LAYER"
+    ],
+    [
+      3590,
+      3943,
+      0,
+      3956,
+      0,
+      "IMAGE"
+    ],
+    [
+      3591,
+      3956,
+      0,
+      3957,
+      0,
+      "INT"
+    ],
+    [
+      3592,
+      3956,
+      1,
+      3954,
+      4,
+      "INT"
+    ],
+    [
+      3593,
+      3957,
+      1,
+      3954,
+      3,
+      "INT"
+    ],
+    [
+      3594,
+      3954,
+      0,
+      3948,
+      0,
+      "IMAGE"
+    ],
+    [
+      3596,
+      3948,
+      0,
+      3959,
+      0,
+      "IMAGE"
+    ],
+    [
+      3563,
+      3934,
+      0,
+      3941,
+      0,
+      "STRING"
+    ],
+    [
+      3569,
+      3928,
+      3,
+      3941,
+      1,
+      "INT"
+    ],
+    [
+      3584,
+      3951,
+      0,
+      3941,
+      2,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "frontendVersion": "1.55.11",
+    "VHS_latentpreview": true,
+    "VHS_latentpreviewrate": 16,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true,
+    "ds": {
+      "scale": 0.47810941875555224,
+      "offset": [
+        3301.033624898626,
+        -3011.0553614936553
+      ]
+    }
+  },
+  "version": 0.4
+}

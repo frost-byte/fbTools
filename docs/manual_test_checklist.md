@@ -1,116 +1,74 @@
-# Manual Test Checklist — 2026-09-24
+# Manual Test Checklist — 2026-09-28
 
-Covers everything landed since the last ComfyUI restart: the Node Inspector UX fixes, the
-frontend i18n/tooltip system, the full `extension.py` → `nodes/` package-split refactor (Plans
-1-29, pure code motion but worth spot-checking every domain that moved), and Phase 1 of the
-component-reference-system plan (background-as-`<Subject N>` reference for Source Profiles).
+Covers everything landed today: the Qwen-Image-2.1 photo-restoration feature (template, backend,
+Tools tab, Settings section, shared lightbox helper), two real bugs fixed in the Compose system's
+cast-enrichment path (`image_selection` and `extract_from_video` were both silently ignored), and
+the new `MarkerFrameSplit` node for the clip-bridging pipeline design.
 
-Check things off as you go. If something fails, note the node/route/console error next to it
-rather than deleting the line — that makes it easy to file a fix and re-test just that item.
+Check things off as you go. If something fails, note the node/route/console error next to it rather
+than deleting the line — that makes it easy to file a fix and re-test just that item.
 
 ## 0. Restart sanity (do this first)
 
 - [ ] `journalctl -u comfyui_377 --no-pager -n 200` shows `comfyui-fbTools` loading cleanly, zero
-      import errors/tracebacks
-- [ ] Browser console is clean on initial page load (no red errors from `fb_tools.js` or any
-      `js/ui/*`/`js/nodes/*` file)
-- [ ] `GET /object_info` returns successfully and includes `fbt_*` node ids (spot-check a handful
-      from each section below rather than all ~76)
+      import errors/tracebacks — especially `nodes/qwen21_photo_restore.py` and
+      `nodes/marker_frame_split.py` (both new today)
+- [ ] Browser console is clean on initial page load
+- [ ] `GET /object_info` includes `fbt_MarkerFrameSplit`
 
-## 1. Node Inspector / JSONViewer UX
+## 1. Qwen-Image-2.1 Photo Restoration (Tools tab)
 
-- [ ] Mousewheel scrolls the JSON viewer's own container, not the page behind it
-- [ ] Expand/collapse carets are visible and clickable at every nesting level
-- [ ] A toast notification appears on the relevant node-graph interaction (`handleNodes()`)
-- [ ] No leftover/dead UI from the old JSONViewer implementation
+Already live-tested once this session, but worth a clean re-check after this restart:
 
-## 2. Frontend i18n / command tooltips
+- [ ] Tools tab renders: file-tree picker (input/output), source preview, hint/prompt-override
+      fields, Restore button, Free VRAM button, result panel
+- [ ] Selecting a source image shows its preview; clicking the preview opens the click-to-zoom
+      lightbox (`js/ui/lightbox.js`) — same for the result preview after a run
+- [ ] `POST /fbtools/tools/restore_photo` runs end-to-end and returns a real output file
+- [ ] `restore_hint` is respected (substituted into `{{RESTORE_HINT}}` in the default prompt)
+- [ ] The advanced full-`prompt` override field replaces the default prompt entirely when set
+- [ ] "Use as source" re-selects the result as the new source image (chaining)
+- [ ] `GET /fbtools/tools/restore_photo_settings_options` returns correct `has_*_override` flags
+      and `template_defaults` matching `templates/qwen21_photo_restore.api.json`
+- [ ] Settings → "Qwen Photo Restore" section renders, every override field round-trips
+      (save → reload), and disabled fields stay disabled per the `has_*_override` flags
 
-- [ ] Hovering the "Extract Node JSON" command button shows a tooltip (not blank)
-- [ ] Hovering the "Send Get/Set to Back" command button shows a tooltip (not blank)
-- [ ] Network tab: `GET /i18n` returns the `commands.json` entries under `en` (or your active
-      locale)
-- [ ] `docs/frontend_i18n_localization.md` renders/reads correctly as a reference if you need it
+## 2. Compose system — cast-enrichment bug fixes
 
-## 3. extension.py → nodes/ package split (functional spot-checks)
+Both bugs were confirmed live via `CompositionToH3: loading N reference item(s)` log output before
+the fix; re-confirm the same way after this restart.
 
-Pure code motion, but every node's import path changed — spot-check one node per moved domain
-rather than assuming the AST diffs caught everything live.
+- [ ] A Scene Cast Build entry with `image_selection` set to a subset of a bundle's images produces
+      exactly that subset in the H3 refplan — not every image in the bundle
+- [ ] A Scene Cast Build entry with `audio.source = "extract_from_video"` (a separate video used
+      purely as a voice-timbre source) sets `voice.audio_reference_file` correctly, **even when
+      that same entry has no video reference at all** (`visual_mode = "images"`)
+- [ ] Removing images from a Reference Bundle correctly reduces the count in the next generation's
+      reference log (sanity check that nothing regressed the fix)
 
-**Scene domain**
-- [ ] Scene Create / Scene Update load their schema and run without error
-- [ ] `/fbtools/scene/list` and a thumbnail route return real data
+## 3. MarkerFrameSplit (new node, not yet live-tested)
 
-**Story domain**
-- [ ] Story Load / Story Edit / Story View load an existing story correctly
-- [ ] Story Scene Batch / Story Scene Pick run against a real story
-- [ ] `/fbtools/story/list`, `/fbtools/story/load/{name}` return real data
-- [ ] `/fbtools/story/regenerate_thumbnails` works (exercises the new `SceneInfo` sibling import)
+- [ ] Node appears in the node picker under `🧊 frost-byte/Video` as "Marker Frame Split"
+- [ ] Feed it a real IMAGE batch with a solid-color marker segment spliced in (e.g. via ffmpeg:
+      concat a short clip + N frames of solid magenta + another short clip, load with
+      `VHS_LoadVideo`) — confirm `clip_a_frames`/`clip_b_frames`/`clip_a_end_idx`/
+      `clip_b_start_idx`/`marker_frame_count` all match the real splice point
+- [ ] A marker color/tolerance that doesn't match anything in the batch raises a clear `ValueError`
+      (not a silent wrong-data pass-through)
+- [ ] Sanity-check the `tolerance` and `min_marker_frames` widgets actually change behavior at the
+      edges (e.g. a too-tight tolerance misses a slightly-compressed marker; a `min_marker_frames`
+      higher than the real marker run's length also fails to find it)
 
-**LoRA presets**
-- [ ] LoRA Preset Define/Select and Wan Preset Define/Select load their schema and list presets
+## 4. Not covered by this checklist
 
-**Registry layer**
-- [ ] Concept Registry Load / Concept Define / Concept Resolve / Concept List
-- [ ] Subject Profile Load / Define / List
-- [ ] Scene Template Load / List
-- [ ] Outfit Registry Load / Define / List
-
-**Source Profile layer**
-- [ ] Source Profile Load / Define / List
-- [ ] Source Profile Clip Prompt runs end-to-end against a real profile+clip (exercises
-      `_build_h3_refplan`, `asyncio` usage moved into this file)
-- [ ] A `/fbtools/source_profiles/*` route round-trip (save, then load back) works
-
-**Composition-assembly layer**
-- [ ] Scene Compose runs against a real scene template
-- [ ] Prompt Assemble runs — **watch for a known pre-existing bug**: if a `scene_cast` is wired
-      in, `_resolve_cast_media(scene_cast)` is called with one arg but the function needs
-      `(scene_cast, bundle_registry)` — likely raises `TypeError`. Not yet fixed; confirm whether
-      it actually triggers in your workflow.
-- [ ] Scene Cast Load / Scene Cast Build
-- [ ] Composition Load / Prompt Composition Loader / Composition To H3 Conditioning
-- [ ] Bundle routes: list/upload/preprocess-audio round-trip
-- [ ] Compositions/settings routes round-trip
-
-**Grab-bag (compositing / image_processing / qwen_conditioning / audio / utility)**
-- [ ] Subject Layer Define → Subject Compositor produces a composited image
-- [ ] SAM Preprocess NHWC
-- [ ] Tail Enhance Pro
-- [ ] Tail Split
-- [ ] Opaque Alpha
-- [ ] Mask Processor
-- [ ] FB Text Encode Qwen Image Edit Plus
-- [ ] Qwen Aspect Ratio (category still shows "Image Processing" in the node picker — expected)
-- [ ] Audio Fix Shape
-- [ ] Subdir Lister
-
-**Scene Prompt Management (moved to `nodes/narrative/scene_prompts.py`)**
-- [ ] Scene Prompt Manager lists/composes prompts for a real scene
-- [ ] Prompt Composer runs against a `SCENE_INFO` input
-
-## 4. Phase 1 — Background-as-`<Subject N>` reference (Source Profiles)
-
-- [ ] "Default background" dropdown appears in a Source Profile's Video settings section,
-      populated from the same `backgrounds.json` registry Compositions use
-- [ ] Selecting a default background persists after save + reload
-- [ ] Per-clip "Background" dropdown appears in each clip card, defaulting to "— none —"
-- [ ] Setting a per-clip background persists after save + reload
-- [ ] The "→ all" button next to the per-clip background copies it to every other clip
-- [ ] Per-clip `background_id` overrides the profile's `default_background_id` when both are set
-- [ ] Profile's `default_background_id` is used as fallback when a clip has none set
-- [ ] Generated prompt (Source Profile Clip Prompt output) includes a `<Subject N>` reference and
-      `character_sheet_images` for the chosen background, when that background has
-      `reference_images`
-- [ ] A background with no `reference_images` still contributes its `description`/`lighting` text
-      to the prompt's `detailed_description:` section, but does **not** mint a `<Subject N>`/
-      `<Picture N>` slot
-- [ ] Clip Prompt execution doesn't error when `background_id` is empty on both the clip and the
-      profile (no background selected at all)
-
-## 5. Not covered by this checklist
-
-Phase 2 (outfit `Fit_N` wearer-disconnection fix) is still blocked on a live H3 generation test
-with a flat-lay/unworn outfit reference image — that's a design validation step, not a regression
-check, so it isn't in this list. Flag me when you're ready to run that and we'll look at the
-result together.
+- The Qwen-Image-2.1 character/face-sheet workflow (`templates/qwen21_character_sheet.api.json`,
+  `patch_qwen21_character_sheet_prompt`) is **shelved**, not shipped — H3 remains the production
+  backend for that feature (see memory `project_qwen_character_sheet_shelved`). Don't test it as if
+  it were live; there's no route/UI wired to it.
+- The rest of the clip-bridging pipeline (`MiniMaxH3AddGuide` chaining, the full bridge-generation
+  graph) is still a design sketch, not built yet — `MarkerFrameSplit` is the only piece that exists
+  so far.
+- OpenShot-ComfyUI's isolated-venv audio fix (`_openshot_audio_python()`, the DeepFilterNet/LavaSR
+  subprocess redirect) lives in a separate repo (`OpenShot-ComfyUI`, not `comfyui-fbTools`) and was
+  already smoke-tested directly via both runner scripts — not re-listed here since it's not part of
+  this repo's own test surface.
