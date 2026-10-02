@@ -57,6 +57,7 @@ from ..utils.prompt_compositions import (
     apply_cast_to_subjects as _apply_cast_to_subjects,
     apply_composition_overrides as _apply_composition_overrides,
 )
+from ..utils.generation_metadata import resolve_cast_metadata_request as _resolve_cast_metadata_request
 from ..utils.prompt_assembler import (
     assemble_composition as _assemble_composition,
     _build_h3_refplan,
@@ -94,6 +95,45 @@ async def _compositions_get(request):
         return web.json_response({"error": f"Composition '{cid}' not found"}, status=404)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
+
+
+def _safe_load_composition(composition_id):
+    """load_composition(), swallowing a missing/unreadable file -- callers only ever want
+    "best effort, None if it's gone" here, never a 404/500 of their own."""
+    try:
+        return _load_composition(user_data_dir(), composition_id)
+    except Exception:
+        return None
+
+
+@routes.post("/fbtools/compositions/inspect_cast_metadata")
+async def _compositions_inspect_cast_metadata(request):
+    """Resolve a clip's embedded ComfyUI metadata back to the Composition/Subject/Bundle that
+    produced it. Built for OpenShot's Scene Cast builder pre-fill: OpenShot reads a clip's
+    embedded container metadata locally via ffprobe (no file upload needed) and posts the
+    resulting JSON here for resolution, reusing the same logic the Kdenlive archiver already
+    relies on (utils/generation_metadata.py).
+
+    Body: {"prompt_graph": {...}} -- the clip's full embedded "prompt" format tag, or
+          {"cast_summary": {...}} -- the lighter CAST_SUMMARY_TAG shape, for a clip whose full
+          prompt graph was already stripped (e.g. after Kdenlive archiving).
+
+    See utils/generation_metadata.py::resolve_cast_metadata_request for the actual resolution
+    logic (kept out of this module so it stays testable without this file's heavy import chain).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+
+    prompt_graph = body.get("prompt_graph") if isinstance(body, dict) else None
+    cast_summary = body.get("cast_summary") if isinstance(body, dict) else None
+
+    try:
+        result = _resolve_cast_metadata_request(prompt_graph, cast_summary, load_composition=_safe_load_composition)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response(result)
 
 
 @routes.post("/fbtools/compositions/save")

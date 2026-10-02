@@ -370,3 +370,80 @@ def test_cast_summary_tag_round_trips_through_strip_copy_video(tmp_path):
         "primary_bundle": "alex_amd_norsk_dance_flo", "tags": ["alex_amd_norsk_dance_flo"],
         "generated_at": generated_at,
     }
+
+
+# ── resolve_cast_metadata_request (OpenShot's inspect_cast_metadata route body) ────
+
+resolve_cast_metadata_request = gm.resolve_cast_metadata_request
+
+
+def test_resolve_from_prompt_graph_loads_full_composition():
+    graph = {
+        "1": _cast_node([{"subject_id": "alex", "bundle_id": "alex_bundle", "primary": True}],
+                        prompt_composition_link=["2", 0]),
+        "2": _comp_load_node("wide_shot"),
+    }
+    compositions = {"wide_shot": {"id": "wide_shot", "subjects": {"A": "alex", "B": "sam"}}}
+    result = resolve_cast_metadata_request(graph, None, load_composition=_loader(compositions))
+    assert result["composition_name"] == "wide_shot"
+    assert result["composition"] == compositions["wide_shot"]
+    assert result["primary_subject"] == "alex"
+    assert result["primary_bundle"] == "alex_bundle"
+    assert result["tags"] == ["alex_bundle"]
+    assert result["note"] is None
+
+
+def test_resolve_from_cast_summary_maps_composition_key_and_loads_it():
+    summary = {"composition": "wide_shot", "primary_subject": "alex",
+               "primary_bundle": "alex_bundle", "tags": ["alex_bundle"],
+               "generated_at": "2026-09-21T14:32:01+00:00"}
+    compositions = {"wide_shot": {"id": "wide_shot", "subjects": {"A": "alex"}}}
+    result = resolve_cast_metadata_request(None, summary, load_composition=_loader(compositions))
+    assert result["composition_name"] == "wide_shot"
+    assert result["composition"] == compositions["wide_shot"]
+    assert result["primary_subject"] == "alex"
+    assert result["primary_bundle"] == "alex_bundle"
+    assert result["tags"] == ["alex_bundle"]
+    assert result["note"] is None
+
+
+def test_resolve_from_cast_summary_handles_missing_tags_list():
+    summary = {"composition": None, "primary_subject": None, "primary_bundle": None}
+    result = resolve_cast_metadata_request(None, summary, load_composition=_loader({}))
+    assert result["tags"] == []
+    assert result["composition"] is None
+    assert result["composition_name"] is None
+
+
+def test_resolve_prompt_graph_takes_precedence_over_cast_summary_when_both_given():
+    graph = {"1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a", "primary": True}])}
+    summary = {"composition": "ignored", "primary_subject": "ignored", "tags": []}
+    result = resolve_cast_metadata_request(graph, summary, load_composition=_loader({}))
+    assert result["primary_subject"] == "a"
+    assert result["primary_bundle"] == "bun_a"
+
+
+def test_resolve_composition_not_found_returns_none_composition():
+    graph = {
+        "1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a"}], prompt_composition_link=["2", 0]),
+        "2": _comp_load_node("missing_comp"),
+    }
+    result = resolve_cast_metadata_request(graph, None, load_composition=_loader({}))
+    assert result["composition_name"] == "missing_comp"
+    assert result["composition"] is None
+
+
+def test_resolve_neither_input_raises_value_error():
+    import pytest
+    with pytest.raises(ValueError):
+        resolve_cast_metadata_request(None, None, load_composition=_loader({}))
+
+
+def test_resolve_without_load_composition_callback():
+    graph = {
+        "1": _cast_node([{"subject_id": "a", "bundle_id": "bun_a"}], prompt_composition_link=["2", 0]),
+        "2": _comp_load_node("comp"),
+    }
+    result = resolve_cast_metadata_request(graph, None, load_composition=None)
+    assert result["composition_name"] == "comp"
+    assert result["composition"] is None

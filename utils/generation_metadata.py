@@ -221,3 +221,51 @@ def extract_cast_info(prompt_graph: dict, load_composition=None) -> dict:
     note = None if primary_bundle else f"primary subject {primary!r} has no bundle in this clip's cast"
     return {"tags": tags, "primary_subject": primary, "primary_bundle": primary_bundle,
             "composition_name": comp_name, "note": note}
+
+
+def resolve_cast_metadata_request(
+    prompt_graph: dict | None, cast_summary: dict | None, load_composition=None,
+) -> dict:
+    """Shared body for the `/fbtools/compositions/inspect_cast_metadata` route (OpenShot's
+    Scene Cast builder pre-fill: resolve a clip it already has locally back to the
+    Composition/Subject/Bundle that produced it). Split out from the route handler itself so it
+    stays testable without importing nodes/compositions.py's heavy sibling-node import chain
+    (torch/torchvision et al — see docs/GOTCHAS.md).
+
+    Exactly one of prompt_graph (the clip's full embedded "prompt" format tag) / cast_summary (the
+    lighter CAST_SUMMARY_TAG shape, for a clip whose full prompt graph was already stripped) is
+    expected to be a dict; the other should be None. prompt_graph takes precedence if both are
+    given. load_composition(name) -> composition dict | None, same contract as extract_cast_info's
+    own param -- the caller wires in utils.prompt_compositions.load_composition().
+
+    Returns {"composition_name", "composition" (full dict or None), "primary_subject",
+    "primary_bundle", "tags", "note"}. Raises ValueError if neither input is a dict (the route
+    turns that into a 400).
+    """
+    if isinstance(prompt_graph, dict):
+        info = extract_cast_info(prompt_graph, load_composition=load_composition)
+    elif isinstance(cast_summary, dict):
+        tags = cast_summary.get("tags")
+        info = {
+            "tags": tags if isinstance(tags, list) else [],
+            "primary_subject": cast_summary.get("primary_subject"),
+            "primary_bundle": cast_summary.get("primary_bundle"),
+            "composition_name": cast_summary.get("composition"),
+            "note": None,
+        }
+    else:
+        raise ValueError("prompt_graph or cast_summary required")
+
+    comp_name = info.get("composition_name")
+    composition = load_composition(comp_name) if comp_name and load_composition else None
+    if not isinstance(composition, dict):
+        composition = None
+
+    return {
+        "composition_name": comp_name,
+        "composition": composition,
+        "primary_subject": info.get("primary_subject"),
+        "primary_bundle": info.get("primary_bundle"),
+        "tags": info.get("tags", []),
+        "note": info.get("note"),
+    }
