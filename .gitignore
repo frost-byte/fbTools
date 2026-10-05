@@ -117,3 +117,6 @@ node.zip
 .claude/
 =4.49.0
 =4.54
+
+# Personal working copies of templates (real subject/bundle IDs, prompts) -- not for the repo
+templates/*.local.api.json
