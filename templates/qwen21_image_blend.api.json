@@ -1,0 +1,165 @@
+{
+  "461": {
+    "inputs": {
+      "filename_prefix": "Qwen_image_2.1",
+      "format": "png",
+      "format.bit_depth": "8-bit",
+      "format.input_color_space": "sRGB",
+      "images": [
+        "499",
+        0
+      ]
+    },
+    "class_type": "SaveImageAdvanced",
+    "_meta": {
+      "title": "OUT:save"
+    }
+  },
+  "489": {
+    "inputs": {
+      "value": "<image1> is an dull orange circle in the center of a transparent background.\n<image2> is a dull blue-gray square with rounded corners and centered over a transparent background.\n\nThe output is a transparent image containing the dull orange circle from the first input image overlayed on top of the dull blue-gray square from the second image."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "IN:blend_prompt"
+    }
+  },
+  "495": {
+    "inputs": {
+      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "IN:model"
+    }
+  },
+  "496": {
+    "inputs": {
+      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "IN:clip"
+    }
+  },
+  "497": {
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "IN:vae"
+    }
+  },
+  "499": {
+    "inputs": {
+      "samples": [
+        "500",
+        0
+      ],
+      "vae": [
+        "497",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "500": {
+    "inputs": {
+      "seed": 42,
+      "steps": 32,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "502",
+        0
+      ],
+      "positive": [
+        "509",
+        0
+      ],
+      "negative": [
+        "509",
+        1
+      ],
+      "latent_image": [
+        "509",
+        2
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "IN:seed"
+    }
+  },
+  "502": {
+    "inputs": {
+      "device": "auto",
+      "dtype": "default",
+      "model": [
+        "495",
+        0
+      ]
+    },
+    "class_type": "QwenImage21Cache",
+    "_meta": {
+      "title": "Qwen Image 2.1 Cache"
+    }
+  },
+  "505": {
+    "inputs": {
+      "image": "subject_b.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "IN:image2"
+    }
+  },
+  "506": {
+    "inputs": {
+      "image": "subject_a.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "IN:image1"
+    }
+  },
+  "509": {
+    "inputs": {
+      "prompt": [
+        "489",
+        0
+      ],
+      "negative_prompt": "blurry, low quality, watermark, text, logo, changed colors",
+      "resolution": 0,
+      "clip": [
+        "496",
+        0
+      ],
+      "images.image_1": [
+        "506",
+        0
+      ],
+      "images.image_2": [
+        "505",
+        0
+      ],
+      "vae": [
+        "497",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImage21",
+    "_meta": {
+      "title": "IN:negative_prompt"
+    }
+  }
+}

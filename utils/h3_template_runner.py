@@ -247,3 +247,86 @@ def patch_qwen21_photo_restore_prompt(
         patched[node_id]["inputs"].update(field_values)
 
     return patched
+
+
+def patch_qwen21_character_sheet_prompt(
+    template: dict,
+    *,
+    ref_images: list[str],
+    mode_select: int,
+    seed: int,
+    filename_prefix: str,
+    overrides: dict[str, dict] | None = None,
+) -> dict:
+    """Deep-copy `template` and patch the Qwen-Image-2.1 character/face/restore template's
+    required contract nodes, plus any optional overrides the template happens to support.
+
+    A three-way successor to both patch_character_sheet_prompt() (H3) and
+    patch_qwen21_photo_restore_prompt() above, unifying restore/character/face into one Qwen-
+    Image-2.1 template — confirmed against the real exported API template (2026-09-28):
+
+      IN:refs  — the DenoAdvancedImageSourceLoader node; patches its "image_paths" input to
+                 `ref_images` padded up to 9 (see _pad_ref_images) and joined with newlines. Same
+                 9-slot cyclic-padding reasoning as patch_character_sheet_prompt (H3) — whatever
+                 GetImagesFromBatchIndexed chain reads this loader's batch hard-indexes with no
+                 bounds check, so an under-filled batch crashes regardless of mode.
+      IN:mode  — a "Basic data handling: SwitchCase" node; patches its "select" INT input
+                 (0 = restore, 1 = character, 2 = face — case_0/case_1/case_2 feed the three
+                 baked-in prompt nodes below; this function never touches case_0/1/2 themselves,
+                 only which one is selected).
+      IN:seed  — a plain KSampler node (no separate RandomNoise node in this workflow); patches
+                 its "seed" input, NOT "noise_seed" (see patch_qwen21_photo_restore_prompt for
+                 why that field name is H3-RandomNoise-specific).
+      OUT:save — the SaveImageAdvanced node; patches its "filename_prefix" input.
+
+    Unlike patch_qwen21_photo_restore_prompt, there is no `prompt_text` parameter here: each
+    mode's full prompt text stays baked into its own titled PrimitiveStringMultiline node
+    (IN:restore_prompt / IN:character_prompt / IN:face_prompt) — same as the H3
+    patch_character_sheet_prompt() this replaces. A caller wanting to substitute
+    {{RESTORE_HINT}}/{{OUTFIT_HINT}} into the active mode's own prompt does so via `overrides`
+    targeting that mode's title directly, e.g. overrides={"IN:character_prompt": {"value": ...}}
+    — building that replacement value (reading the template's current text and substituting the
+    placeholder) is the caller's job, same division as nodes/h3_character_sheet.py's
+    _h3_char_sheet_prompt_override().
+
+    `overrides` behaves exactly as in patch_prompt(): a lenient {title: {field: value}} mapping,
+    silently skipped per-title if the template doesn't expose it. Known optional titles this
+    template exposes: "IN:seed" (also steps/cfg/sampler_name/scheduler/denoise, merged onto the
+    same node as the required seed field), "IN:model" (unet_name/weight_dtype), "IN:clip"
+    (clip_name/type/device), "IN:vae" (vae_name), "IN:negative_prompt" (negative_prompt/
+    resolution — a second, unrelated title on the TextEncodeQwenImage21 node), "IN:restore_prompt"
+    / "IN:character_prompt" / "IN:face_prompt" (each node's own "value" field, for hint
+    substitution regardless of which mode is currently selected).
+
+    Returns a new dict; `template` itself is never mutated.
+    """
+    if mode_select not in (0, 1, 2):
+        raise ValueError(f"mode_select must be 0 (restore), 1 (character), or 2 (face), got {mode_select!r}")
+
+    padded = _pad_ref_images(ref_images)
+
+    patched = copy.deepcopy(template)
+
+    refs_id = find_node_by_title(patched, "IN:refs")
+    patched[refs_id]["inputs"]["image_paths"] = "\n".join(padded)
+
+    mode_id = find_node_by_title(patched, "IN:mode")
+    patched[mode_id]["inputs"]["select"] = mode_select
+
+    seed_id = find_node_by_title(patched, "IN:seed")
+    patched[seed_id]["inputs"]["seed"] = seed
+
+    save_id = find_node_by_title(patched, "OUT:save")
+    patched[save_id]["inputs"]["filename_prefix"] = filename_prefix
+
+    for title, field_values in (overrides or {}).items():
+        node_id = find_node_by_title(patched, title, required=False)
+        if node_id is None:
+            logger.debug(
+                "patch_qwen21_character_sheet_prompt: template has no node titled %r, skipping "
+                "override", title,
+            )
+            continue
+        patched[node_id]["inputs"].update(field_values)
+
+    return patched

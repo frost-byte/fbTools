@@ -8,6 +8,7 @@ find_node_by_title = h3_template_runner.find_node_by_title
 patch_prompt = h3_template_runner.patch_prompt
 patch_character_sheet_prompt = h3_template_runner.patch_character_sheet_prompt
 patch_qwen21_photo_restore_prompt = h3_template_runner.patch_qwen21_photo_restore_prompt
+patch_qwen21_character_sheet_prompt = h3_template_runner.patch_qwen21_character_sheet_prompt
 
 
 def _template():
@@ -381,4 +382,142 @@ def test_patch_qwen21_photo_restore_prompt_missing_required_title_raises():
     with pytest.raises(ValueError, match="IN:restore_prompt"):
         patch_qwen21_photo_restore_prompt(
             tpl, image="x.jpg", prompt_text="restore", seed=1, filename_prefix="pfx",
+        )
+
+
+# ── patch_qwen21_character_sheet_prompt ─────────────────────────────────────────
+
+def _qwen21_character_sheet_template():
+    """A minimal but representative API-format template matching the real exported
+    qwen21_character_sheet.api.json contract — restore/character/face unified behind one
+    "Basic data handling: SwitchCase" node's "select" field (0/1/2), each mode's full prompt text
+    baked into its own titled node."""
+    return {
+        "1": {
+            "class_type": "DenoAdvancedImageSourceLoader",
+            "inputs": {"image_paths": "", "mode": "Keep Input Ratio"},
+            "_meta": {"title": "IN:refs"},
+        },
+        "2": {
+            "class_type": "PrimitiveStringMultiline",
+            "inputs": {"value": "restore prompt text"},
+            "_meta": {"title": "IN:restore_prompt"},
+        },
+        "3": {
+            "class_type": "PrimitiveStringMultiline",
+            "inputs": {"value": "character prompt text"},
+            "_meta": {"title": "IN:character_prompt"},
+        },
+        "4": {
+            "class_type": "PrimitiveStringMultiline",
+            "inputs": {"value": "face prompt text"},
+            "_meta": {"title": "IN:face_prompt"},
+        },
+        "5": {
+            "class_type": "Basic data handling: SwitchCase",
+            "inputs": {"select": 0, "case_0": ["2", 0], "case_1": ["3", 0], "case_2": ["4", 0]},
+            "_meta": {"title": "IN:mode"},
+        },
+        "6": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": 0, "steps": 25, "cfg": 1, "sampler_name": "euler",
+                "scheduler": "simple", "denoise": 1,
+            },
+            "_meta": {"title": "IN:seed"},
+        },
+        "7": {
+            "class_type": "SaveImageAdvanced",
+            "inputs": {"filename_prefix": "Qwen_image_2.1"},
+            "_meta": {"title": "OUT:save"},
+        },
+        "8": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": "default_model.safetensors", "weight_dtype": "default"},
+            "_meta": {"title": "IN:model"},
+        },
+    }
+
+
+def test_patch_qwen21_character_sheet_prompt_sets_required_contract_fields():
+    tpl = _qwen21_character_sheet_template()
+    patched = patch_qwen21_character_sheet_prompt(
+        tpl,
+        ref_images=["a.png", "b.png", "c.png"],
+        mode_select=1,
+        seed=42,
+        filename_prefix="fbtools/qwen21_character_sheets/abc123",
+    )
+    assert patched["1"]["inputs"]["image_paths"] == "a.png\nb.png\nc.png\na.png\nb.png\nc.png\na.png\nb.png\nc.png"
+    assert patched["5"]["inputs"]["select"] == 1
+    assert patched["6"]["inputs"]["seed"] == 42
+    assert patched["7"]["inputs"]["filename_prefix"] == "fbtools/qwen21_character_sheets/abc123"
+
+
+def test_patch_qwen21_character_sheet_prompt_pads_single_image_to_nine_slots():
+    tpl = _qwen21_character_sheet_template()
+    patched = patch_qwen21_character_sheet_prompt(
+        tpl, ref_images=["a.png"], mode_select=0, seed=1, filename_prefix="pfx",
+    )
+    assert patched["1"]["inputs"]["image_paths"] == "\n".join(["a.png"] * 9)
+
+
+def test_patch_qwen21_character_sheet_prompt_does_not_mutate_original_template():
+    tpl = _qwen21_character_sheet_template()
+    patch_qwen21_character_sheet_prompt(
+        tpl, ref_images=["a.png"], mode_select=2, seed=1, filename_prefix="pfx",
+    )
+    assert tpl["1"]["inputs"]["image_paths"] == ""
+    assert tpl["5"]["inputs"]["select"] == 0
+
+
+def test_patch_qwen21_character_sheet_prompt_rejects_invalid_mode_select():
+    with pytest.raises(ValueError, match="mode_select must be 0"):
+        patch_qwen21_character_sheet_prompt(
+            _qwen21_character_sheet_template(), ref_images=["a.png"], mode_select=3,
+            seed=1, filename_prefix="pfx",
+        )
+
+
+def test_patch_qwen21_character_sheet_prompt_prompt_hint_override_targets_active_mode_node():
+    # A caller substituting {{OUTFIT_HINT}}/{{RESTORE_HINT}} does so via overrides targeting the
+    # mode's own title directly — patch_qwen21_character_sheet_prompt itself never touches the
+    # baked-in prompt text (see patch_character_sheet_prompt's original H3 design, unchanged here).
+    tpl = _qwen21_character_sheet_template()
+    patched = patch_qwen21_character_sheet_prompt(
+        tpl, ref_images=["a.png"], mode_select=1, seed=1, filename_prefix="pfx",
+        overrides={"IN:character_prompt": {"value": "character prompt text with hint applied"}},
+    )
+    assert patched["3"]["inputs"]["value"] == "character prompt text with hint applied"
+    # The inactive modes' prompt nodes are untouched.
+    assert patched["2"]["inputs"]["value"] == "restore prompt text"
+    assert patched["4"]["inputs"]["value"] == "face prompt text"
+
+
+def test_patch_qwen21_character_sheet_prompt_applies_override_for_title_present_in_template():
+    tpl = _qwen21_character_sheet_template()
+    patched = patch_qwen21_character_sheet_prompt(
+        tpl, ref_images=["a.png"], mode_select=0, seed=1, filename_prefix="pfx",
+        overrides={"IN:model": {"unet_name": "turbo_hybrid.safetensors"}},
+    )
+    assert patched["8"]["inputs"]["unet_name"] == "turbo_hybrid.safetensors"
+
+
+def test_patch_qwen21_character_sheet_prompt_silently_skips_override_for_title_absent_from_template():
+    tpl = _qwen21_character_sheet_template()
+    del tpl["8"]  # no IN:model in this template
+    patched = patch_qwen21_character_sheet_prompt(
+        tpl, ref_images=["a.png"], mode_select=0, seed=1, filename_prefix="pfx",
+        overrides={"IN:model": {"unet_name": "turbo_hybrid.safetensors"}},
+    )
+    assert patched["1"]["inputs"]["image_paths"] == "\n".join(["a.png"] * 9)
+    assert "8" not in patched
+
+
+def test_patch_qwen21_character_sheet_prompt_missing_required_title_raises():
+    tpl = _qwen21_character_sheet_template()
+    del tpl["5"]  # drop IN:mode
+    with pytest.raises(ValueError, match="IN:mode"):
+        patch_qwen21_character_sheet_prompt(
+            tpl, ref_images=["a.png"], mode_select=0, seed=1, filename_prefix="pfx",
         )

@@ -1,0 +1,351 @@
+{
+  "461": {
+    "inputs": {
+      "filename_prefix": "Qwen_image_2.1",
+      "format": "png",
+      "format.bit_depth": "8-bit",
+      "format.input_color_space": "sRGB",
+      "images": [
+        "499",
+        0
+      ]
+    },
+    "class_type": "SaveImageAdvanced",
+    "_meta": {
+      "title": "OUT:save"
+    }
+  },
+  "477": {
+    "inputs": {
+      "image_paths": "img128.jpg",
+      "mode": "Keep Input Ratio",
+      "ratio_preset": "16:9",
+      "megapixels": 1,
+      "width": 1024,
+      "height": 1024,
+      "divisible_by": "32",
+      "interpolation": "lanczos",
+      "resize_method": "Fit (Letterbox/Pillarbox)",
+      "recursive_folders": false,
+      "list_output_mode": "Original Size",
+      "disabled_image_paths": ""
+    },
+    "class_type": "DenoAdvancedImageSourceLoader",
+    "_meta": {
+      "title": "IN:refs"
+    }
+  },
+  "480": {
+    "inputs": {
+      "indexes": "0",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "489": {
+    "inputs": {
+      "value": "<image1> is a single photograph, scanned from an old slide, showing exactly one moment in\ntime. It is not a character reference and not a composite of multiple sources — everything in\nthis photograph is real and factual: the person or people shown, their appearance, pose,\nclothing, expression, and the surrounding scene. Nothing about who or what is depicted is\ninvented, guessed, or restyled.\n\nThe output should be a restored photograph, The photograph shows real people and a real scene exactly as originally captured; treat every visible detail - faces, bodies, clothing, posture, objects, architecture,\nfoliage, light and shadow - as ground truth to be preserved, not material to reinterpret.\n\nRESTORE the physical condition of the photograph:\n- Remove dust, speckling, scratches and specks introduced by the scanning or the aging film itself.\n- Resolve blur and softness introduced by the original optics, film grain, or the scan, recovering\n  natural sharpness and fine detail without inventing texture that was not implicit in the source.\n- Reduce excessive film grain and noise to a clean, natural photographic look, without smoothing\n  away real texture such as skin pores, fabric weave, or foliage detail.\n- Repair burn spots, light leaks, chemical staining, discoloration blotches, creases, and physical\n  tears or missing fragments of the emulsion, reconstructing only the damaged area itself using the\n  surrounding undamaged image as the only guide for what belongs there.\n- Correct faded, shifted, or yellowed color balance back to a natural, accurate rendition\n  consistent with the rest of the image's own visible tones. If the photograph is genuinely\n  black-and-white, keep it black-and-white - do not invent color that is not inferable from the\n  photograph itself.\n- Even out exposure and contrast lost to age, without introducing artificial HDR, glow, or\n  stylized contrast the original photograph would not have had.\n\n\n{{RESTORE_HINT}}\n\nDo not alter anything else about the photograph. The people shown keep their exact identity,\nproportions, expressions, pose and clothing. The background, framing and camera angle are\nunchanged. Nothing is added, removed, relocated, or reimagined - this is a cleanup of the\nphysical print, not a reinterpretation of the scene.\n\nThis is a FROZEN FRAME. Nothing moves at all. The camera holds a static shot and does not move,\nzoom, tilt, shake or drift. Every frame is identical to the first: the shot reads as a single\nrestored photograph, not as a video.\n\nNo text, letters, numbers, captions, labels, watermarks, borders or frames added anywhere in the\nimage, no new objects, people or animals introduced, no removal of any person or object present\nin the original, no change of identity, age, body proportions or facial features of anyone shown,\nno colorization of a genuinely black-and-white photograph, no invented background detail beyond\nwhat the undamaged parts of the photograph already show, no stylized, painterly, cartoon, HDR or\nAI-generated look, no added grain, vignette, lens flare, or artistic color grading, no cropping or\nchange of aspect ratio."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "IN:restore_prompt"
+    }
+  },
+  "495": {
+    "inputs": {
+      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "IN:model"
+    }
+  },
+  "496": {
+    "inputs": {
+      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "IN:clip"
+    }
+  },
+  "497": {
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "IN:vae"
+    }
+  },
+  "499": {
+    "inputs": {
+      "samples": [
+        "500",
+        0
+      ],
+      "vae": [
+        "497",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "500": {
+    "inputs": {
+      "seed": 43427648583068,
+      "steps": 25,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "502",
+        0
+      ],
+      "positive": [
+        "503",
+        0
+      ],
+      "negative": [
+        "503",
+        1
+      ],
+      "latent_image": [
+        "503",
+        2
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "IN:seed"
+    }
+  },
+  "502": {
+    "inputs": {
+      "device": "auto",
+      "dtype": "default",
+      "model": [
+        "495",
+        0
+      ]
+    },
+    "class_type": "QwenImage21Cache",
+    "_meta": {
+      "title": "Qwen Image 2.1 Cache"
+    }
+  },
+  "503": {
+    "inputs": {
+      "prompt": [
+        "506",
+        0
+      ],
+      "negative_prompt": "",
+      "resolution": 0,
+      "clip": [
+        "496",
+        0
+      ],
+      "images.image_1": [
+        "480",
+        0
+      ],
+      "vae": [
+        "497",
+        0
+      ],
+      "images.image_2": [
+        "507",
+        0
+      ],
+      "images.image_3": [
+        "508",
+        0
+      ],
+      "images.image_4": [
+        "509",
+        0
+      ],
+      "images.image_5": [
+        "510",
+        0
+      ],
+      "images.image_6": [
+        "511",
+        0
+      ],
+      "images.image_7": [
+        "512",
+        0
+      ],
+      "images.image_8": [
+        "513",
+        0
+      ],
+      "images.image_9": [
+        "514",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImage21",
+    "_meta": {
+      "title": "IN:negative_prompt"
+    }
+  },
+  "504": {
+    "inputs": {
+      "value": "<image1> represents the persons outfit that they are wearing, All other images represent the same person, the same individual in <image2> through <image9>.\nThose images serve one purpose: to say who this person is - face, head shape, hair, complexion, body\nproportions, identifying marks. Nothing else is taken from them: not their clothing or lack of it,\nnot how much of the body they show, not their poses, backgrounds or lighting.\n\nThe person's outfit is the clothing in <image1> and the only thing taken from that image: its garments,\ncolours, materials, fit, footwear and accessories exactly as shown. Whoever wears it there is not\ntaken, nor the hanger, background or light. {{OUTFIT_HINT}}. the outfit in <image1> REPRESENTS THE ONLY CLOTHING ANYWHERE IN THIS SHEET:\nnothing from any other reference is used or blended in. the person in the output character sheet wears this same outfit in every panel.\n\nThe target image is a reference data sheet in flat product-photography style, it is a seamless neutral mid-grey background, soft even studio light from the front and both sides so every surface is readable and nothing falls into black shadow, neutral accurate colour, no stylised grading, no environment.\n\nThe subject in the output image is a single individual, and their identity is what this sheet exists to lock. The SAME individual in every one of the eight panels: same face shape and features, eye spacing and colour, nose, mouth, jaw, hairline, hair, complexion and build; age, weight and bone structure do not change between panels. The expression is the same in all eight: calm and neutral, mouth closed, eyes open, lit the same way throughout. Neither person nor outfit is redesigned, restyled, slimmed or embellished.\n\nTHE SUBJECT in the output image IS DRESSED IN the outfit defined by <image1> IN EVERY ONE OF THE EIGHT PANELS AND IN NOTHING ELSE.\n\nEach garment is worn normally: the top on the torso, covering chest, stomach, back and shoulders\ndown to where it ends; the lower garment on legs and hips; the footwear on the feet, fitted to this\nperson's build. The torso is clothed in every panel, front, side, back and close-ups alike. Bare\nskin appears ONLY where the outfit defined by <image1> leaves it uncovered - head, neck, hands, forearms if the sleeves are short. The person is never shirtless, bare-chested, stripped to the waist or in underwear; no garment is left off, opened, pulled aside or made transparent to show the body underneath. Wherever a reference shows them undressed, then the outfit from <image1> is put on over that and covers it completely.\n\nTAKE ONLY THE PERSON THEMSELVES from the identity references. Where one is a close-up, place what it shows on the matching part of the body - a tattooed shoulder means that shoulder carries that exact tattoo, under the sleeve where the sleeve covers it. Their rooms, furniture, scenery, other people,\nobjects and light are ignored.\n\nThe output image is a grid of panels on that grey background, separated by thin even neutral-grey\ngutters of equal width, with a matching margin around the outside. Every panel is a plain rectangle,\nflat to the camera, with no tilt, no perspective and no drop shadow.\n\nTOP ROW - FOUR FULL VIEWS, equal panels side by side, the whole subject in each, shown at exactly\nthe same scale, at the same height, upright and level, centred in its own panel, lit identically,\nphotographed from the same camera height and distance. Only the viewing angle differs:\n  1 - FRONT, facing the camera straight on\n  2 - THREE-QUARTER, turned 45 degrees to its own right\n  3 - SIDE, a STRICT profile at exactly 90 degrees: the camera sees only one side of the subject,\n      the far arm and far leg are hidden behind the near ones, and the face is seen edge-on with the\n      nose in silhouette. This panel must be clearly different from panel 2, not a second\n      three-quarter view.\n  4 - BACK, seen from directly behind\n\nBOTTOM ROW - FOUR CLOSE-UPS, equal panels side by side, each a tight crop on one main area of the same subject, filling its panel, on the same grey background and in the same light. The four areas\nare DIFFERENT from each other and each appears ONCE. No two of these panels show the same area, the same framing or the same crop, and none of them repeats another:\n  5 - HEAD AND SHOULDERS: the face, head and shoulders, front-on.\n  6 - CHEST AND WAIST: the clothed torso and the waistline of the outfit, front-on, showing how the\n      garments sit and fasten there. No head in frame. The torso is clothed in this panel too.\n  7 - ARM AND HAND: one whole arm from shoulder to fingertips, with the hand open and clearly visible.\n  8 - LEG AND FOOT: one whole leg from hip to the ground, with the foot clearly visible.\nAny angle or crop the references do not already contain is built from the ones that do, keeping the\nsame silhouette, garment shapes, layering and proportions. Each close-up is shot STRAIGHT ON, square to that part of the subject, filling its panel, with no tilt and no oblique angle; the head close-up\nfaces the camera front-on, not turned to the side.\n\nIt is one and the same person in the same outfit in every panel, top row and bottom row alike, with\nthe same face, build, colours and proportions. The back view belongs to the same person as the front\nview, and each close-up belongs to the same person as the full views.\n\nPOSE - in the four full views the person stands in a relaxed A-pose, feet shoulder width apart, arms\nheld slightly away from the body with open hands and separated fingers, head level and facing along\nthe body, the same pose in all four.\n\nNo text, letters, numbers, captions, labels, arrows, callouts, measurement lines, colour swatches,\nlogos or watermarks anywhere in the frame or the gutters, no second copy of the subject inside a\npanel, no repeated panel, no two panels showing the same area or crop, no extra, empty or\noverlapping panels, no other object or person, no second face, no change of identity, age or build\nbetween panels, no bare chest, no bare torso, no shirtless panel, no exposed stomach, no underwear,\nno partial nudity, no clothing from any reference other than <image1>, no mixing of two outfits,\nno substituted top, trousers or shoes, no missing garment in one panel that is present in another,\nno environment, no floor pattern, no cast shadow on the background, no stylised or cartoon rendering, no dramatic or coloured lighting, no lens flare, no smoke or atmosphere."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "IN:character_prompt"
+    }
+  },
+  "505": {
+    "inputs": {
+      "value": "<image1> represents the persons outfit that they are wearing, All other images represent the same person, the same individual in <image2> through <image9>.\nThose images serve one purpose: to say who this person is - face, head shape, hair, complexion, body\nproportions, identifying marks. Nothing else is taken from them: not their clothing or lack of it,\nnot how much of the body they show, not their poses, backgrounds or lighting.\n\nThe person's outfit is the clothing in <image1> and the only thing taken from that image: its garments,\ncolours, materials, fit, footwear and accessories exactly as shown. Whoever wears it there is not\ntaken, nor the hanger, background or light. {{OUTFIT_HINT}}. The outfit in <image1> REPRESENTS THE ONLY CLOTHING ANYWHERE IN THIS SHEET:\nnothing from any other reference is used or blended in. the person in the output character sheet wears this same outfit in every panel.\n\nThe target image contains a seamless neutral mid-grey background, soft even studio\nlight from the front and both sides so no harsh shadow falls across the face in any panel, neutral\naccurate colour, no stylised grading, no environment.\n\nThe subject in the output image is a single individual, and their identity is what this sheet exists to lock. The SAME individual in\nall three panels: identical face shape, eye shape, spacing and colour, eyebrow shape, nose shape and\nbridge, mouth and lip shape, jaw and chin line, ear shape where visible, hairline, hair colour and\ntexture, skin tone and texture, and any identifying marks - freckles, moles, scars, tattoos where\nvisible. Age, weight and bone structure do not change between panels; nothing is idealised, slimmed,\nsmoothed, symmetrised or beautified. The expression is the same calm, neutral expression in all\nthree panels - mouth closed, eyes open - lit the same way throughout.\n\nTHE SUBJECT in the output IS DRESSED IN the outfit defined by <image1> AT THE NECKLINE IN EVERY PANEL AND IN NOTHING ELSE VISIBLE.\nBare skin appears only where the outfit defined by <image1> leaves the neck and shoulders uncovered. No garment, collar or neckline changes between panels.\n\nTAKE ONLY THE PERSON THEMSELVES from the identity references. Their rooms, furniture, scenery, other\npeople, objects and light are ignored.\n\nThe output image consists of THREE EQUAL PANELS SIDE BY SIDE, separated by thin even neutral-grey gutters of equal width, with a matching margin around the outside. Every panel is a plain rectangle, flat to the camera, with no tilt, no perspective and no drop shadow. In every panel the head and upper shoulders\nfill the panel, cropped just below the collarbone, with minimal headroom above the hair and minimal\nside margin - the face is the largest element in each panel by a wide margin, shown at exactly the\nsame scale, same framing distance and same vertical position across all three panels. Only the\nviewing angle differs, left to right:\n\n  1 - THREE-QUARTER LEFT: turned roughly 30-45 degrees to the subject's own left, both eyes still\n      clearly visible, most of the face still readable.\n  2 - FRONT: facing the camera straight on, directly ahead.\n  3 - THREE-QUARTER RIGHT: turned roughly 30-45 degrees to the subject's own right, both eyes still\n      clearly visible, most of the face still readable. This panel must be a clear mirror-opposite\n      angle from panel 1, not a repeat of it or of panel 2.\n\nEach panel is shot straight on, square to the camera, with sharp critical focus across the entire\nface in every panel - eyes, nose and mouth all in focus - no depth-of-field blur, no soft focus, no\nmotion blur anywhere in the frame.\n\nIt is one and the same person in the same outfit in every panel, with the same face, hair, skin and\nproportions. Panel 1's left side of the face and panel 3's right side of the face belong to the same\nindividual as panel 2's front view - any natural asymmetry between the two sides (uneven features,\na mark present on only one side) is preserved faithfully from the identity references rather than\nmirrored or averaged out between panels.\n\nNo text, letters, numbers, captions, labels, arrows, callouts, measurement lines, colour swatches,\nlogos or watermarks anywhere in the frame or the gutters, no second copy of the subject inside a\npanel, no repeated panel, no two panels showing the same area or crop, no extra, empty or\noverlapping panels, no other object or person, no second face, no change of identity, age or build\nbetween panels, no bare chest, no bare torso, no shirtless panel, no exposed stomach, no underwear,\nno partial nudity, no clothing from any reference other than <image1>, no mixing of two outfits,\nno substituted top, trousers or shoes, no missing garment in one panel that is present in another,\nno environment, no floor pattern, no cast shadow on the background, no stylised or cartoon rendering, no dramatic or coloured lighting, no lens flare, no smoke or atmosphere."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "IN:face_prompt"
+    }
+  },
+  "506": {
+    "inputs": {
+      "select": 0,
+      "case_0": [
+        "489",
+        0
+      ],
+      "case_1": [
+        "504",
+        0
+      ],
+      "case_2": [
+        "505",
+        0
+      ]
+    },
+    "class_type": "Basic data handling: SwitchCase",
+    "_meta": {
+      "title": "IN:mode"
+    }
+  },
+  "507": {
+    "inputs": {
+      "indexes": "1",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "508": {
+    "inputs": {
+      "indexes": "2",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "509": {
+    "inputs": {
+      "indexes": "3",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "510": {
+    "inputs": {
+      "indexes": "4",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "511": {
+    "inputs": {
+      "indexes": "5",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "512": {
+    "inputs": {
+      "indexes": "6",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "513": {
+    "inputs": {
+      "indexes": "7",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  },
+  "514": {
+    "inputs": {
+      "indexes": "8",
+      "images": [
+        "477",
+        0
+      ]
+    },
+    "class_type": "GetImagesFromBatchIndexed",
+    "_meta": {
+      "title": "Get Images From Batch Indexed"
+    }
+  }
+}
