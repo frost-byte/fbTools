@@ -20,6 +20,7 @@ import { api }               from "../../../scripts/api.js";
 
 const JSON_WIDGET = "cast_entries_json";
 const OVERRIDES_WIDGET = "composition_overrides_json";
+const BG_OVERRIDE_WIDGET = "background_override_id";
 const MAX_ENTRIES = 8;
 
 
@@ -102,6 +103,11 @@ function _buildCastBuildUI(node, app) {
     const overridesWidget = node.widgets?.find(w => w.name === OVERRIDES_WIDGET);
     if (overridesWidget) setWidgetVisible(overridesWidget, false, node);
 
+    // Backing widget for the Source Profile mode "Background Override" dropdown below —
+    // a plain string (id, "none", or "" for no override), not JSON like overridesWidget.
+    const bgOverrideWidget = node.widgets?.find(w => w.name === BG_OVERRIDE_WIDGET);
+    if (bgOverrideWidget) setWidgetVisible(bgOverrideWidget, false, node);
+
     const actionPreviewWidget = node.widgets?.find(w => w.name === "action_preview");
     if (actionPreviewWidget) setWidgetVisible(actionPreviewWidget, false, node);
 
@@ -180,7 +186,14 @@ function _buildCastBuildUI(node, app) {
     optsSection.className = "fbt-scb-comp-opts";
     optsSection.style.display = "none";
 
+    // Source Profile mode's own background override — mutually exclusive with optsSection
+    // above (a connected Source Profile always takes precedence over a composition).
+    const srcOptsSection = document.createElement("div");
+    srcOptsSection.className = "fbt-scb-comp-opts";
+    srcOptsSection.style.display = "none";
+
     wrap.appendChild(optsSection);
+    wrap.appendChild(srcOptsSection);
     wrap.appendChild(tabStrip);
     wrap.appendChild(tabContent);
 
@@ -937,7 +950,8 @@ function _buildCastBuildUI(node, app) {
         // Tab strip + 3 form rows (subject/mode/dlg) + preview toggle + preview area
         const base = 30 + 26 + 26 + 26 + 24;  // ≈ 132px
         const opts = optsSection.style.display === "none" ? 0 : 46;
-        return base + opts + (_previewOpen ? 140 : 0) + (_clipPreviewOpen ? 140 : 0);
+        const srcOpts = srcOptsSection.style.display === "none" ? 0 : 46;
+        return base + opts + srcOpts + (_previewOpen ? 140 : 0) + (_clipPreviewOpen ? 140 : 0);
     }
 
     function _updateHeight() {
@@ -1055,12 +1069,52 @@ function _buildCastBuildUI(node, app) {
         _updateHeight();
     }
 
+    function _renderSourceOverrideOptions() {
+        srcOptsSection.innerHTML = "";
+        const show = _connectedSPSubjects.length > 0;
+        srcOptsSection.style.display = show ? "" : "none";
+        if (!show) { _updateHeight(); return; }
+
+        const title = document.createElement("div");
+        title.className = "fbt-scb-comp-opts-title";
+        title.textContent = "Background Override";
+
+        const bgSel = document.createElement("select");
+        bgSel.className = "fbt-scb-sel";
+        const addOpt = (value, label) => {
+            const o = document.createElement("option");
+            o.value = value; o.textContent = label; bgSel.appendChild(o);
+        };
+        addOpt("__default__", "Default (clip / profile)");
+        addOpt("none", "(none, this run)");
+        _backgrounds.forEach(b => addOpt(b.id, b.name || b.id));
+        const current = bgOverrideWidget?.value || "";
+        bgSel.value = current === "" ? "__default__" : current;
+        if (!Array.from(bgSel.options).some(o => o.value === bgSel.value)) bgSel.value = "__default__";
+        bgSel.addEventListener("change", () => {
+            if (bgOverrideWidget) {
+                bgOverrideWidget.value = bgSel.value === "__default__" ? "" : bgSel.value;
+                app?.graph?.setDirtyCanvas?.(true, false);
+            }
+        });
+
+        const row = document.createElement("div");
+        row.className = "fbt-scb-form-row fbt-scb-comp-opts-row";
+        row.title = "Override the background used for this generation, without editing the "
+            + "clip's own background in the Source Profile.";
+        row.append(bgSel);
+
+        srcOptsSection.append(title, row);
+        _updateHeight();
+    }
+
     async function _loadBackgrounds() {
         try {
             const res = await compositionsApi.listBackgrounds();
             _backgrounds = res.backgrounds ?? [];
         } catch { _backgrounds = []; }
         _renderCompositionOptions();
+        _renderSourceOverrideOptions();
     }
 
     function _syncWidget() {
@@ -1121,6 +1175,7 @@ function _buildCastBuildUI(node, app) {
         }
         if (seq !== _srcReqSeq) return; // a newer refresh already started; this result is stale
         _connectedSPSubjects = results;
+        _renderSourceOverrideOptions();
 
         // Update source select in the currently visible tab in-place
         const srcSel = tabContent.querySelector(".fbt-scb-src-sel");

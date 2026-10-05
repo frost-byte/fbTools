@@ -42,6 +42,7 @@ from ..utils.source_profiles import (
     MEDIA_TYPES as _SOURCE_MEDIA_TYPES,
     MEDIA_DIRS as _SOURCE_MEDIA_DIRS,
 )
+from ..utils.scene_casts import resolve_effective_background_id as _resolve_effective_background_id
 from ..utils.source_profile_analysis import (
     build_segment_detection_prompt as _spa_build_segment_prompt,
     build_clip_description_prompt as _spa_build_clip_desc_prompt,
@@ -940,8 +941,16 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # when a background resolves, and naturally reads as "appears throughout" in
         # retention_analysis. "O" is the next free letter after SOURCE_SLOTS (A-J) and
         # BUNDLE_SLOTS (K-N) in this file's fixed reserved-letter scheme.
+        #
+        # Precedence: scene_cast's background_override (from SceneCastBuild's
+        # background_override_id widget) beats the clip's own background_id, which
+        # beats the profile's default_background_id -- see
+        # resolve_effective_background_id() in utils/scene_casts.py.
         BACKGROUND_SLOT = "O"
-        effective_bg_id = clip.get("background_id", "") or source_profile.get("default_background_id", "")
+        _bg_override = scene_cast.get("background_override", "") if isinstance(scene_cast, dict) else ""
+        effective_bg_id = _resolve_effective_background_id(
+            _bg_override, clip.get("background_id", ""), source_profile.get("default_background_id", "")
+        )
         if effective_bg_id:
             try:
                 resolved_background = _get_background(user_data_dir(), effective_bg_id)

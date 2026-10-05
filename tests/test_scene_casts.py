@@ -17,6 +17,7 @@ VISUAL_MODES = sc.VISUAL_MODES
 resolve_primary_subject = sc.resolve_primary_subject
 resolve_primary_bundle = sc.resolve_primary_bundle
 build_cast_filename_prefix = sc.build_cast_filename_prefix
+resolve_effective_background_id = sc.resolve_effective_background_id
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -445,3 +446,33 @@ def test_build_filename_prefix_nothing_tagged():
 
 def test_build_filename_prefix_everything_empty():
     assert build_cast_filename_prefix("", "", "", "") == ""
+
+
+# ── resolve_effective_background_id ─────────────────────────────────────────────
+
+def test_bg_override_empty_falls_through_to_clip_id():
+    assert resolve_effective_background_id("", "beach", "office") == "beach"
+
+
+def test_bg_override_empty_and_no_clip_id_falls_through_to_profile_default():
+    assert resolve_effective_background_id("", "", "office") == "office"
+
+
+def test_bg_override_empty_and_nothing_set_returns_empty():
+    assert resolve_effective_background_id("", "", "") == ""
+
+
+def test_bg_override_id_wins_over_clip_and_profile():
+    assert resolve_effective_background_id("rooftop", "beach", "office") == "rooftop"
+
+
+def test_bg_override_none_suppresses_clip_and_profile():
+    assert resolve_effective_background_id("none", "beach", "office") == ""
+
+
+def test_bg_override_whitespace_only_treated_as_empty():
+    assert resolve_effective_background_id("   ", "beach", "office") == "beach"
+
+
+def test_bg_override_id_is_stripped():
+    assert resolve_effective_background_id("  rooftop  ", "beach", "office") == "rooftop"

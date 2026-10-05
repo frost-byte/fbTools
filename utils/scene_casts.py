@@ -265,3 +265,24 @@ def build_cast_filename_prefix(prefix: str, primary_subject_id: str, bundle_id: 
     so a missing bundle_id (e.g. a source-only primary entry) doesn't leave a gap."""
     parts = [p for p in (primary_subject_id, bundle_id, kind) if p]
     return prefix + ("/".join(parts) + "/" if parts else "")
+
+
+def resolve_effective_background_id(
+    override: str, clip_background_id: str, profile_default_background_id: str
+) -> str:
+    """Resolve the background id to use for a Source Profile clip generation.
+
+    Precedence: a per-run override (SceneCastBuild's background_override_id, passed
+    through as cast["background_override"]) beats the clip's own background_id, which
+    beats the Source Profile's default_background_id. An empty/absent override falls
+    through to the clip/profile chain unchanged; override == "none" explicitly suppresses
+    the background for this run regardless of what the clip/profile would otherwise use —
+    the same "id or 'none'" convention apply_composition_overrides() uses for Composition
+    mode's background override, kept consistent across both modes even though they're two
+    separate mechanisms (Source Profile mode is never driven by composition_overrides_json;
+    see SceneCastBuild.execute()).
+    """
+    ov = str(override or "").strip()
+    if ov:
+        return "" if ov == "none" else ov
+    return str(clip_background_id or "").strip() or str(profile_default_background_id or "").strip()

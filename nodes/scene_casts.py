@@ -228,7 +228,23 @@ class SceneCastBuild(io.ComfyNode):
                         "JSON object managed by the on-node Composition options block: "
                         "background id and background-as-reference overrides applied on top "
                         "of the connected Prompt Composition. Empty = use the composition's "
-                        "own values. Do not edit by hand."
+                        "own values. Do not edit by hand. Ignored in Source Profile mode — "
+                        "use background_override_id instead."
+                    ),
+                ),
+                io.String.Input(
+                    "background_override_id",
+                    display_name="Background Override",
+                    default="",
+                    optional=True,
+                    tooltip=(
+                        "Source Profile mode only: override the background used for this "
+                        "generation without editing the clip's own background_id. Empty = use "
+                        "the clip's background_id (falling back to the profile's "
+                        "default_background_id). 'none' = explicitly no background for this "
+                        "run. Managed by the on-node Background Override dropdown — do not "
+                        "edit by hand. Ignored when a Prompt Composition drives the node "
+                        "instead (use composition_overrides_json there)."
                     ),
                 ),
                 io.String.Input(
@@ -316,6 +332,7 @@ class SceneCastBuild(io.ComfyNode):
         clip_duration_multiplier: int = 1,
         prompt_composition=None,
         composition_overrides_json: str = "{}",
+        background_override_id: str = "",
         filename_prefix: str = "",
         **_,
     ):
@@ -339,7 +356,7 @@ class SceneCastBuild(io.ComfyNode):
         pc_subjects = json.dumps(prompt_composition.get("subjects", {}), sort_keys=True) if isinstance(prompt_composition, dict) else ""
         return (bundle_mtime, subject_mtime, source_mtime, cast_entries_json, clip_id, sp_id,
                 clip_duration_multiplier, pc_id, pc_subjects, composition_overrides_json,
-                filename_prefix)
+                background_override_id, filename_prefix)
 
     @classmethod
     def execute(
@@ -350,6 +367,7 @@ class SceneCastBuild(io.ComfyNode):
         clip_duration_multiplier: int = 1,
         prompt_composition=None,
         composition_overrides_json: str = "{}",
+        background_override_id: str = "",
         filename_prefix: str = "",
         **_,
     ) -> io.NodeOutput:
@@ -587,6 +605,12 @@ class SceneCastBuild(io.ComfyNode):
                 ov = {}
             if isinstance(ov, dict) and ov:
                 cast["composition_overrides"] = ov
+
+        # Per-run background override for Source Profile mode — a separate mechanism
+        # from composition_overrides above (that one is explicitly ignored here).
+        # Read by SourceProfileClipPrompt ahead of the clip's own background_id.
+        if connected_profiles and str(background_override_id or "").strip():
+            cast["background_override"] = str(background_override_id).strip()
 
         n = len(entries)
         has_sp = bool(connected_profiles)

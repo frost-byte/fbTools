@@ -99,6 +99,25 @@ marked `(override)`.
 Without the soundscape checkbox the assembler's rule applies: the composition's Overall Soundscape wins, and
 the background's soundscape is only a fallback when the composition's is empty.
 
+## Source Profile mode: Background Override
+
+A Source Profile clip already carries its own `background_id` (falling back to the profile's
+`default_background_id`) — set per clip in the Source Profile editor, resolved by
+`SourceProfileClipPrompt` (`nodes/source_profiles.py`). The Composition options section above is a
+*separate* mechanism and is explicitly ignored in Source Profile mode (`composition_overrides_json`
+is only attached to the cast dict when no Source Profile is connected — see
+`SceneCastBuild.execute()`, `nodes/scene_casts.py`).
+
+While a Source Profile drives the node, a **Background Override** section appears above the cast
+tabs instead: a single dropdown — `Default (clip / profile)`, `(none, this run)`, then every
+background — backed by the plain-string `background_override_id` input (not JSON, unlike the
+composition section's override object). Travels on the cast dict as
+`scene_cast["background_override"]` and is read by `SourceProfileClipPrompt` ahead of the clip's own
+`background_id`: `resolve_effective_background_id()` (`utils/scene_casts.py`) implements the
+precedence (override > clip > profile default; `"none"` suppresses the background entirely for this
+run, same convention as the Composition section's `background` key). Use this to try a different
+background for one generation without editing the clip's stored `background_id`.
+
 ## The per-entry Dialogue field is Source-Profile-only
 
 Only `SourceProfileClipPrompt` reads a cast entry's `dialogue`: it matches the entry to a source
