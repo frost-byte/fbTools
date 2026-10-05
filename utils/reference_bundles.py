@@ -198,3 +198,68 @@ def validate_bundle(bundle: dict) -> list[str]:
         warnings.append("audio.source is 'file' but audio.file is empty")
 
     return warnings
+
+
+BUNDLE_AUDIO_SWITCH_BUNDLE = 1
+BUNDLE_AUDIO_SWITCH_FALLBACK = 2
+
+
+def bundle_audio_switch_select(audio_loaded: bool) -> int:
+    """1-based `select` value for an ImpactSwitch choosing between a Reference Bundle's own
+    audio (input1) and a fallback such as the footage's own audio (input2): 1 when the bundle's
+    audio actually loaded, 2 otherwise (no bundle picked, bundle not found, no audio configured,
+    or the load failed). Computed by BundleAudioReferenceLoad itself because a workflow-side
+    math node can't derive this -- ComfyMathExpression only accepts numeric inputs."""
+    return BUNDLE_AUDIO_SWITCH_BUNDLE if audio_loaded else BUNDLE_AUDIO_SWITCH_FALLBACK
+
+
+def resolve_bundle_audio_source(bundle: dict) -> dict | None:
+    """Resolve a bundle's audio.source into {"file", "dir", "start_time", "duration"} ready
+    for a caller to load (e.g. via ffmpeg), or None if the bundle has no audio configured
+    (source == "none"/unset, or the field its source needs is empty).
+
+    Mirrors the exact per-source field resolution already used server-side when building a
+    bundle's audio reference for a Scene Cast generation (nodes/source_profiles.py's
+    bundle_video_entries construction in SourceProfileClipPrompt.execute()):
+      "file"                -> audio.file / audio.start_time / audio.duration (own
+                                standalone clip, its own trim window)
+      "extract_from_visual" -> visual.file / visual.start_time / visual.duration (the SAME
+                                clip the bundle's own visual reference uses)
+      "extract_from_video"  -> audio.video_file / audio.start_time / audio.duration (a
+                                separate, audio-only reference video)
+      "none" (or missing)   -> None
+    """
+    if not isinstance(bundle, dict):
+        return None
+    audio = bundle.get("audio", {}) or {}
+    source = audio.get("source", "none")
+
+    if source == "file":
+        fname = audio.get("file", "")
+        if not fname:
+            return None
+        return {
+            "file": fname, "dir": "input",
+            "start_time": float(audio.get("start_time", 0.0) or 0.0),
+            "duration": float(audio.get("duration", 0.0) or 0.0),
+        }
+    if source == "extract_from_visual":
+        visual = bundle.get("visual", {}) or {}
+        fname = visual.get("file", "")
+        if not fname:
+            return None
+        return {
+            "file": fname, "dir": visual.get("video_dir", "input") or "input",
+            "start_time": float(visual.get("start_time", 0.0) or 0.0),
+            "duration": float(visual.get("duration", 0.0) or 0.0),
+        }
+    if source == "extract_from_video":
+        fname = audio.get("video_file", "")
+        if not fname:
+            return None
+        return {
+            "file": fname, "dir": audio.get("video_dir", "input") or "input",
+            "start_time": float(audio.get("start_time", 0.0) or 0.0),
+            "duration": float(audio.get("duration", 0.0) or 0.0),
+        }
+    return None

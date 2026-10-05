@@ -13,6 +13,7 @@ save_registry = rb.save_registry
 validate_bundle = rb.validate_bundle
 VISUAL_TYPES = rb.VISUAL_TYPES
 AUDIO_SOURCES = rb.AUDIO_SOURCES
+resolve_bundle_audio_source = rb.resolve_bundle_audio_source
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -372,3 +373,88 @@ def test_roundtrip_preserves_frame_params(tmp_path):
     assert b["visual"]["force_rate"] == 12
     assert b["audio"]["skip_first_frames"] == 30
     assert b["audio"]["start_time"] == 1.5
+
+
+# ── resolve_bundle_audio_source ──────────────────────────────────────────────────
+
+def test_audio_source_file():
+    bundle = {
+        "audio": {"source": "file", "file": "alice_voice.wav", "start_time": 1.0, "duration": 5.0},
+    }
+    assert resolve_bundle_audio_source(bundle) == {
+        "file": "alice_voice.wav", "dir": "input", "start_time": 1.0, "duration": 5.0,
+    }
+
+
+def test_audio_source_file_missing_filename_returns_none():
+    bundle = {"audio": {"source": "file", "file": ""}}
+    assert resolve_bundle_audio_source(bundle) is None
+
+
+def test_audio_source_extract_from_visual_uses_visual_window():
+    bundle = {
+        "visual": {"file": "alice.mp4", "video_dir": "output", "start_time": 2.0, "duration": 8.0},
+        "audio": {"source": "extract_from_visual"},
+    }
+    assert resolve_bundle_audio_source(bundle) == {
+        "file": "alice.mp4", "dir": "output", "start_time": 2.0, "duration": 8.0,
+    }
+
+
+def test_audio_source_extract_from_visual_missing_video_file_returns_none():
+    bundle = {"visual": {"file": ""}, "audio": {"source": "extract_from_visual"}}
+    assert resolve_bundle_audio_source(bundle) is None
+
+
+def test_audio_source_extract_from_visual_defaults_dir_to_input():
+    bundle = {"visual": {"file": "alice.mp4"}, "audio": {"source": "extract_from_visual"}}
+    assert resolve_bundle_audio_source(bundle)["dir"] == "input"
+
+
+def test_audio_source_extract_from_video_uses_its_own_window():
+    bundle = {
+        "visual": {"file": "alice.mp4", "start_time": 2.0, "duration": 8.0},
+        "audio": {
+            "source": "extract_from_video", "video_file": "alice_interview.mp4",
+            "video_dir": "output", "start_time": 10.0, "duration": 3.0,
+        },
+    }
+    # Must use audio.video_file's own window, NOT visual's -- these are deliberately
+    # different files/times in this fixture to catch a field-source mixup.
+    assert resolve_bundle_audio_source(bundle) == {
+        "file": "alice_interview.mp4", "dir": "output", "start_time": 10.0, "duration": 3.0,
+    }
+
+
+def test_audio_source_extract_from_video_missing_video_file_returns_none():
+    bundle = {"audio": {"source": "extract_from_video", "video_file": ""}}
+    assert resolve_bundle_audio_source(bundle) is None
+
+
+def test_audio_source_none_returns_none():
+    bundle = {"audio": {"source": "none"}}
+    assert resolve_bundle_audio_source(bundle) is None
+
+
+def test_audio_source_missing_audio_dict_returns_none():
+    assert resolve_bundle_audio_source({}) is None
+
+
+def test_audio_source_non_dict_bundle_returns_none():
+    assert resolve_bundle_audio_source(None) is None
+    assert resolve_bundle_audio_source([]) is None
+
+
+def test_audio_source_unknown_value_returns_none():
+    bundle = {"audio": {"source": "something_else", "file": "x.wav"}}
+    assert resolve_bundle_audio_source(bundle) is None
+
+
+# ── bundle_audio_switch_select ────────────────────────────────────────────────
+
+def test_switch_select_picks_bundle_audio_when_loaded():
+    assert rb.bundle_audio_switch_select(True) == 1
+
+
+def test_switch_select_falls_back_when_no_audio_loaded():
+    assert rb.bundle_audio_switch_select(False) == 2

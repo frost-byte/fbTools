@@ -17,10 +17,16 @@ import os
 from aiohttp import web
 import folder_paths
 from folder_paths import get_input_directory, get_output_directory
+from comfy_api.latest import io
 
-from .shared import routes, default_bundle_registry_path, user_data_dir, send_status_update
+from .shared import routes, default_bundle_registry_path, user_data_dir, send_status_update, prefixed_node_id
 from .composition_shared import _bundle_proxy_eligible, _BUNDLE_PROXY_SHORT_EDGE, _read_composition_settings, _h3_load_audio
-from ..utils.reference_bundles import load_registry as _load_bundle_registry, save_registry as _save_bundle_registry
+from ..utils.reference_bundles import (
+    load_registry as _load_bundle_registry,
+    save_registry as _save_bundle_registry,
+    resolve_bundle_audio_source as _resolve_bundle_audio_source,
+    bundle_audio_switch_select as _bundle_audio_switch_select,
+)
 from ..utils.proxy_cache import ensure_bundle_video_proxy as _ensure_bundle_proxy
 from ..utils.logging_utils import get_logger
 
@@ -466,7 +472,21 @@ async def _bundles_preprocess_audio(request):
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"audio_{fp}.wav")
 
+    def _remember_cache_path() -> None:
+        """Point the persisted bundle at the exact cache variant just selected."""
+        if not bundle_id:
+            return
+        registry_path = default_bundle_registry_path()
+        registry = _load_bundle_registry(registry_path)
+        bundle = registry.get(bundle_id)
+        if bundle is None:
+            logger.warning("preprocess_audio: bundle %r was not found; cache path was not persisted", bundle_id)
+            return
+        bundle.setdefault("audio", {})["audio_cache"] = cache_path
+        _save_bundle_registry(registry.upsert(bundle), registry_path)
+
     if os.path.isfile(cache_path):
+        _remember_cache_path()
         # Re-measure from cached file for the response metrics
         def _measure_cached():
             import torchaudio
@@ -501,6 +521,7 @@ async def _bundles_preprocess_audio(request):
         )
         import torchaudio
         torchaudio.save(cache_path, wf_out.squeeze(0), sr_out)
+        _remember_cache_path()
         return metrics, cache_path
 
     loop = asyncio.get_event_loop()
@@ -540,3 +561,128 @@ async def _bundles_audio_cache_stream(request):
     if not os.path.isfile(real_path):
         return web.Response(status=404, text="Not found")
     return web.FileResponse(real_path)
+
+
+# ── Node: BundleAudioReferenceLoad ──────────────────────────────────────────────
+
+def _bundle_get_ids() -> list[str]:
+    """Return available bundle IDs for combo population at schema time, always headed by ""
+    (no bundle). Unlike SceneCastLoad/SourceProfileLoad/CompositionLoad's own _get_ids()-style
+    helpers -- where picking a real entry is mandatory and "(none)" only ever appears as an
+    empty-registry fallback message -- this node is deliberately optional (see
+    background_override_id's own "" = no override precedent in nodes/scene_casts.py), and
+    OpenShot's own bundle picker submits a literal "" for "no bundle selected" (generate.py's
+    _populate_bundle_combo). ComfyUI validates a submitted COMBO value by strict membership in
+    this list regardless of the input's optional-ness, so "" must always be a real option here
+    or leaving the picker unset fails job submission outright -- the same class of bug fixed
+    for composition_name's own empty-value case (SceneCastBuild.execute()'s composition
+    wiring)."""
+    try:
+        registry = _load_bundle_registry(default_bundle_registry_path())
+        ids = list(registry.bundles.keys())
+    except Exception:
+        ids = []
+    return [""] + ids
+
+
+class BundleAudioReferenceLoad(io.ComfyNode):
+    """Load a Reference Bundle's own configured audio as a standalone AUDIO output.
+
+    Resolves whatever the bundle's audio.source points to (a standalone file, the same
+    clip its own visual reference uses, or a separate audio-only reference video) via
+    resolve_bundle_audio_source() (utils/reference_bundles.py) and decodes it with the
+    same ffmpeg-based loader CompositionToH3Conditioning uses for every other audio
+    reference (_h3_load_audio), so behavior matches the Scene Cast system exactly.
+
+    For wiring a Bundle's voice reference directly into any node with an AUDIO input --
+    e.g. MiniMaxH3ReferenceToVideo's ref_video_audios slots in a hand-built template
+    (such as OpenShot's Bridge Clips workflow, which has no Subject/Bundle concept of
+    its own) -- in place of extracting audio from the footage itself.
+    """
+
+    node_id = prefixed_node_id("BundleAudioReferenceLoad")
+    display_name = "Bundle Audio Reference Load"
+    category = "🧊 frost-byte/Scene"
+
+    @classmethod
+    def define_schema(cls):
+        bundle_ids = _bundle_get_ids()
+        return io.Schema(
+            node_id=cls.node_id,
+            display_name=cls.display_name,
+            category=cls.category,
+            inputs=[
+                io.Combo.Input(
+                    "bundle_id",
+                    options=bundle_ids,
+                    display_name="Bundle",
+                    tooltip="Reference bundle whose own audio.source to load. Press R to refresh after saving a new bundle.",
+                ),
+            ],
+            outputs=[
+                io.Audio.Output(
+                    "audio",
+                    display_name="Audio",
+                    tooltip="The bundle's resolved audio reference, or None if it has no audio configured (audio.source == 'none') or loading failed.",
+                ),
+                io.String.Output(
+                    "summary",
+                    display_name="Summary",
+                    tooltip="Human-readable description of what was loaded (or why nothing was).",
+                ),
+                io.Int.Output(
+                    "switch_select",
+                    display_name="Switch Select",
+                    tooltip=(
+                        "1 when the bundle's audio loaded, 2 otherwise. Wire into an ImpactSwitch "
+                        "'select' with this node's Audio on input1 and a fallback audio (e.g. the "
+                        "footage's own) on input2, so the bundle wins only when it actually "
+                        "provides audio."
+                    ),
+                ),
+            ],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, bundle_id: str = "", **_):
+        path = default_bundle_registry_path()
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0
+        return (path, bundle_id, mtime)
+
+    @classmethod
+    def execute(cls, bundle_id: str = "") -> io.NodeOutput:
+        no_audio_select = _bundle_audio_switch_select(False)
+
+        if not bundle_id or bundle_id == "(none)":
+            logger.warning("BundleAudioReferenceLoad: no bundle_id selected")
+            return io.NodeOutput(None, "No bundle selected.", no_audio_select)
+
+        registry = _load_bundle_registry(default_bundle_registry_path())
+        bundle = registry.get(bundle_id)
+        if bundle is None:
+            logger.warning("BundleAudioReferenceLoad: bundle %r not found", bundle_id)
+            return io.NodeOutput(None, f"Bundle not found: {bundle_id}", no_audio_select)
+
+        resolved = _resolve_bundle_audio_source(bundle)
+        if resolved is None:
+            source = bundle.get("audio", {}).get("source", "none")
+            summary = f"Bundle {bundle_id!r} has no audio reference configured (source={source!r})."
+            logger.info("BundleAudioReferenceLoad: %s", summary)
+            return io.NodeOutput(None, summary, no_audio_select)
+
+        base_dir = get_output_directory() if resolved["dir"] == "output" else get_input_directory()
+        src_path = os.path.join(base_dir, resolved["file"])
+        audio = _h3_load_audio(src_path, resolved["start_time"], resolved["duration"])
+        if audio is None:
+            summary = f"Failed to load audio for bundle {bundle_id!r} from {resolved['file']!r}."
+            logger.warning("BundleAudioReferenceLoad: %s", summary)
+            return io.NodeOutput(None, summary, no_audio_select)
+
+        dur = audio["waveform"].shape[-1] / max(audio["sample_rate"], 1)
+        source = bundle.get("audio", {}).get("source", "")
+        summary = f"Loaded {dur:.1f}s audio reference for bundle {bundle_id!r} (source={source})."
+        send_status_update(cls.node_id, summary)
+        return io.NodeOutput(audio, summary, _bundle_audio_switch_select(True))
