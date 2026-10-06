@@ -657,7 +657,7 @@ class BundleAudioReferenceLoad(io.ComfyNode):
         no_audio_select = _bundle_audio_switch_select(False)
 
         if not bundle_id or bundle_id == "(none)":
-            logger.warning("BundleAudioReferenceLoad: no bundle_id selected")
+            logger.info("BundleAudioReferenceLoad: no bundle_id selected")
             return io.NodeOutput(None, "No bundle selected.", no_audio_select)
 
         registry = _load_bundle_registry(default_bundle_registry_path())
