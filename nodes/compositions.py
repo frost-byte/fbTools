@@ -40,7 +40,10 @@ from .lora_stacks import LoraStackData
 from ..utils.logging_utils import get_logger
 from ..utils.subject_profiles import load_registry as _load_subject_registry
 from ..utils.source_profiles import load_registry as _load_source_registry
-from ..utils.reference_bundles import load_registry as _load_bundle_registry
+from ..utils.reference_bundles import (
+    load_registry as _load_bundle_registry,
+    bundle_audio_wanted as _bundle_audio_wanted,
+)
 from ..utils.outfit_registry import load_outfit_registry as _load_outfit_registry
 from ..utils.proxy_cache import ensure_bundle_video_proxy as _ensure_bundle_proxy
 from ..utils.h3_vram_estimator import tokens_for as h3_tokens_for, max_safe_scale as h3_max_safe_scale
@@ -508,8 +511,10 @@ def _resolve_cast_media(
                     reference_video = abs_vfile
                     video_params = entry_load_params
 
-                # Determine audio config for this video entry
-                a_src = audio.get("source", "none")
+                # Determine audio config for this video entry. Same rule as Source Profile
+                # mode (see bundle_audio_wanted()): the entry's audio checkbox must be on.
+                # Compositions have no per-clip allows_dialogue, so only the checkbox applies.
+                a_src = audio.get("source", "none") if _bundle_audio_wanted(entry, {}) else "none"
                 entry_audio_source = "none"
                 entry_audio_path   = ""
                 entry_audio_start  = 0.0
