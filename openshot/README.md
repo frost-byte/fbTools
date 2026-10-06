@@ -11,7 +11,7 @@ needed by fbTools itself; these are optional integration files.
 |---|---|---|---|
 | `video-scene-cast-generate.api.json` | Generate From Scene Cast (fbTools) | A Composition, optional per-slot Bundle/Subject overrides, optional background override | Builds an H3 reference-to-video generation from a Composition (Scene Cast Build + Composition Load). Takes no input clip; with a clip selected it pre-fills the cast from that clip's embedded metadata when it was generated through fbTools. |
 | `video-scene-cast-generate-source-profile.api.json` | Generate From Scene Cast - Source Profile (fbTools) | A Source Profile, one of its clip segments, optional cast entries, optional background override | Same idea, but driven by a Source Profile clip segment (Source Profile Load + Source Profile Clip Prompt). |
-| `video-bridge-two-clips-bundle-voice.api.json` | Bridge to Next Clip (Bundle Voice)... | Clip B, a subject description, dialogue, frame counts, and an **optional** Reference Bundle | A two-clip bridge like OpenShot's plain bridge template, plus an optional bundle voice: when a bundle is picked and has audio, that voice is the audio reference for both clips; otherwise each clip's own audio is used. |
+| `video-bridge-two-clips-bundle-voice.api.json` | Bridge to Next Clip (Bundle Voice)... | Clip B, a subject description, dialogue, frame counts, and an **optional** Reference Bundle | A two-clip bridge like OpenShot's plain bridge template, plus an optional bundle voice: when a bundle is picked and has audio, that voice is the audio reference for both clips; otherwise each clip's own audio is used. It also logs which references H3 is given (tag numbering, frames used, durations) to the ComfyUI log on every run. |
 
 The two Scene Cast templates use the `scene_cast` input group, which makes OpenShot show an
 **Edit Cast...** button (the Scene Cast builder) in place of plain text boxes. The bundle-voice
@@ -25,8 +25,10 @@ See `docs/scene_cast_build.md`.
 
 **On the machine running ComfyUI (the one OpenShot is configured to use)**
 
-- fbTools, current `main` (the bundle-voice template needs `BundleAudioReferenceLoad`; the
-  Source Profile template needs `background_override_id`).
+- fbTools, current `main` (the bundle-voice template needs `BundleAudioReferenceLoad` and
+  `H3ReferenceSummary`; the Source Profile template needs `background_override_id`). Restart
+  ComfyUI after updating fbTools: a template that references a node the running server doesn't
+  have yet fails validation (for example "list index out of range" on a missing output).
 - The ComfyUI custom nodes the templates use besides fbTools: VideoHelperSuite, Impact Pack,
   KJNodes, mtb nodes, pysssss custom scripts, and the "Basic data handling" nodes (needed by the
   bundle-voice template), plus the MiniMax H3 / LTXV nodes in your ComfyUI build.

@@ -555,6 +555,17 @@
       "class_type": "ImpactSwitch",
       "_meta": { "title": "Reference Video Audio 1 (Bundle vs Clip B)" }
     },
+    "h3_reference_summary": {
+      "inputs": {
+        "length": ["3920", 0],
+        "ref_videos.ref_video_0": ["clipA_ref_load", 0],
+        "ref_videos.ref_video_1": ["clipB_ref_load", 0],
+        "ref_video_audios.ref_video_audio_0": ["ref_video_audio_0_switch", 0],
+        "ref_video_audios.ref_video_audio_1": ["ref_video_audio_1_switch", 0]
+      },
+      "class_type": "fbt_H3ReferenceSummary",
+      "_meta": { "title": "H3 Reference Summary (logs the references used; same sources as the reference node)" }
+    },
     "3986": {
       "inputs": {
         "prompt": ["prompt_shorthand_expand", 0],
@@ -817,5 +828,5 @@
       "_meta": { "title": "Model Sparse Attention" }
     }
   },
-  "_setup_notes": "Personal variant of video-bridge-two-clips.api.json that adds an optional Reference Bundle voice. REQUIRES comfyui-fbTools (fbt_BundleAudioReferenceLoad, fbt_PromptShorthandExpander, fbt_LoraStack*). When a bundle is picked and its audio loads, that voice is the audio reference for both ref videos; with no bundle (or a bundle that has no audio) each ref video falls back to its own clip's audio. The per-guide-frame splice audio (MiniMaxH3AddGuide's 'audio' inputs, from clipA_load/clipB_load) is unaffected -- only the voice-identity reference changes. Not yet implemented: auto-detecting a bundle from the selected clips' metadata."
+  "_setup_notes": "Personal variant of video-bridge-two-clips.api.json that adds an optional Reference Bundle voice. REQUIRES comfyui-fbTools (fbt_BundleAudioReferenceLoad, fbt_PromptShorthandExpander, fbt_LoraStack*). When a bundle is picked and its audio loads, that voice is the audio reference for both ref videos; with no bundle (or a bundle that has no audio) each ref video falls back to its own clip's audio. The per-guide-frame splice audio (MiniMaxH3AddGuide's 'audio' inputs, from clipA_load/clipB_load) is unaffected -- only the voice-identity reference changes. Not yet implemented: auto-detecting a bundle from the selected clips' metadata. An fbt_H3ReferenceSummary output node logs which references H3 is given (tag numbering, frames used, durations, soundtrack pairing, warnings) to the ComfyUI log on every run."
 }
