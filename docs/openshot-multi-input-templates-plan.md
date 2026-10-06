@@ -164,6 +164,7 @@ Full suite: 895 tests passing, 1 skipped, unchanged from Phase 5.
 
 - Timeline integration (AI menu on timeline clips in `src/windows/views/timeline.py`; binding trimmed timeline spans as inputs). The AI menu is currently only in `files_listview.py` / `files_treeview.py`.
 - Any H3, bridge, or marker-frame logic. That lives in Bee's user templates and the fbTools ComfyUI node package.
+- Dropdown inputs whose options come from the ComfyUI server (a generic replacement for one-off input types such as the fork's `bundle`): see `docs/openshot-dynamic-choice-inputs.md`.
 
 ## Acceptance criteria
 
