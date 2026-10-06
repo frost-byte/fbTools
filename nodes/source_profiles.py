@@ -63,7 +63,11 @@ from ..utils.source_profile_analysis import (
     PASS_TYPES as _SPA_PASS_TYPES,
 )
 from ..utils.proxy_cache import ensure_source_profile_proxy as _ensure_proxy
-from ..utils.reference_bundles import load_registry as _load_bundle_registry
+from ..utils.reference_bundles import (
+    load_registry as _load_bundle_registry,
+    resolve_bundle_audio_source as _resolve_bundle_audio_source,
+    bundle_audio_wanted as _bundle_audio_wanted,
+)
 from ..utils.composition_resources import get_background as _get_background
 from ..utils.prompt_assembler import (
     assemble_prompt as _assemble_prompt,
@@ -717,6 +721,9 @@ class SourceProfileClipPrompt(io.ComfyNode):
 
                     audio        = bundle.get("audio", {})
                     audio_source = audio.get("source", "none")
+                    # One rule for every audio source: the cast entry's audio checkbox is on
+                    # AND the clip allows dialogue (see bundle_audio_wanted()).
+                    bun_audio_wanted = _bundle_audio_wanted(cast_entry, clip)
 
                     # Video path — add a video_entry for the bundle slot so the
                     # assembler emits a <Video N> reference for this subject.
@@ -738,18 +745,12 @@ class SourceProfileClipPrompt(io.ComfyNode):
                             # extract_from_visual: audio extracted from this same video.
                             # extract_from_video / file: separate source — handled as
                             # bun_voice below; this entry has no audio.
-                            # use_audio on the cast entry: treat bundle video's audio
-                            # track as the voice-timbre reference for this subject.
-                            # allows_dialogue=False on the clip means no audio
-                            # involvement for this shot at all, regardless of where
-                            # the bundle's audio would otherwise come from.
-                            ve_audio_src = (
-                                "extract_from_visual"
-                                if (clip.get("allows_dialogue", True)
-                                    and (audio_source == "extract_from_visual"
-                                         or cast_entry.get("use_audio")))
-                                else "none"
-                            )
+                            # With the cast entry's audio checkbox on (and the clip
+                            # allowing dialogue), the bundle video's audio track is the
+                            # voice-timbre reference for this subject. allows_dialogue=False
+                            # means no audio involvement for this shot at all, regardless
+                            # of where the bundle's audio would otherwise come from.
+                            ve_audio_src = "extract_from_visual" if bun_audio_wanted else "none"
                             bundle_video_entries.append({
                                 "subject_id":       cast_entry["bundle_id"],
                                 "subject_ids":      [cast_entry["bundle_id"]],
@@ -772,10 +773,10 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     # voice reference.  Add an audio_only video_entry linked to the
                     # bundle slot so the assembler emits <Audio N> without also
                     # assigning a spurious <Video N> visual reference to the slot.
-                    # Gated on allows_dialogue like the other audio paths above —
-                    # this is an independent file, but still audio for this clip's
-                    # shot, so the clip's "no audio" setting must still apply.
-                    if audio_source == "extract_from_video" and clip.get("allows_dialogue", True):
+                    # Same gate as the other audio paths (audio checkbox on AND the clip
+                    # allows dialogue) — this is an independent file, but still audio for
+                    # this clip's shot, so both settings must still apply.
+                    if audio_source == "extract_from_video" and bun_audio_wanted:
                         aud_vfile = audio.get("video_file", "")
                         if aud_vfile:
                             aud_vdir = audio.get("video_dir", "input")
@@ -816,17 +817,24 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     # Standalone audio voice reference (<Audio N>) — emitted when the
                     # bundle carries a separate audio file (source == "file").
                     # extract_from_visual / extract_from_video are handled via
-                    # video_entries above. Same allows_dialogue gate: a bundle's own
-                    # dedicated audio file is unrelated to the clip's footage, but
-                    # it's still audio attached to this clip's shot.
+                    # video_entries above. Same gate (audio checkbox on AND the clip
+                    # allows dialogue): a bundle's own dedicated audio file is unrelated
+                    # to the clip's footage, but it's still audio attached to this
+                    # clip's shot.
                     bun_voice: dict = {}
-                    if audio_source == "file" and audio.get("file") and clip.get("allows_dialogue", True):
+                    # The file may live in the input OR output folder (audio.audio_dir) --
+                    # resolve_bundle_audio_source() is the single place that decides which.
+                    _file_voice = (_resolve_bundle_audio_source(bundle)
+                                   if audio_source == "file" else None)
+                    if _file_voice and bun_audio_wanted:
                         bun_voice = {
                             "audio_reference_file": os.path.join(
-                                get_input_directory(), audio["file"]
+                                get_output_directory() if _file_voice["dir"] == "output"
+                                else get_input_directory(),
+                                _file_voice["file"],
                             ),
-                            "audio_start_time": float(audio.get("start_time", 0.0)),
-                            "audio_duration":   float(audio.get("duration", 0.0)),
+                            "audio_start_time": _file_voice["start_time"],
+                            "audio_duration":   _file_voice["duration"],
                             "audio_retention":  audio.get("retention", "timbre"),
                             "audio_role":       audio.get("role", ""),
                             "audio_cache":      audio.get("audio_cache", ""),

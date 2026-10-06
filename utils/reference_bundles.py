@@ -200,6 +200,16 @@ def validate_bundle(bundle: dict) -> list[str]:
     return warnings
 
 
+def bundle_audio_wanted(cast_entry: dict, clip: dict) -> bool:
+    """Whether a Source Profile clip generation should include a cast entry's bundle audio
+    reference, for ANY of the bundle's audio sources (file / extract_from_video /
+    extract_from_visual): the entry's audio checkbox (use_audio) must be on AND the clip
+    segment must allow dialogue (allows_dialogue, default True). allows_dialogue=False exists
+    to keep the model from inventing speech or gibberish for that shot, so it suppresses the
+    reference regardless of where the audio would otherwise come from."""
+    return bool((cast_entry or {}).get("use_audio")) and bool((clip or {}).get("allows_dialogue", True))
+
+
 BUNDLE_AUDIO_SWITCH_BUNDLE = 1
 BUNDLE_AUDIO_SWITCH_FALLBACK = 2
 
@@ -222,7 +232,9 @@ def resolve_bundle_audio_source(bundle: dict) -> dict | None:
     bundle's audio reference for a Scene Cast generation (nodes/source_profiles.py's
     bundle_video_entries construction in SourceProfileClipPrompt.execute()):
       "file"                -> audio.file / audio.start_time / audio.duration (own
-                                standalone clip, its own trim window)
+                                standalone clip, its own trim window), in audio.audio_dir
+                                ("input" by default, or "output" -- same field the
+                                Composition path in nodes/compositions.py honors)
       "extract_from_visual" -> visual.file / visual.start_time / visual.duration (the SAME
                                 clip the bundle's own visual reference uses)
       "extract_from_video"  -> audio.video_file / audio.start_time / audio.duration (a
@@ -239,7 +251,7 @@ def resolve_bundle_audio_source(bundle: dict) -> dict | None:
         if not fname:
             return None
         return {
-            "file": fname, "dir": "input",
+            "file": fname, "dir": audio.get("audio_dir", "input") or "input",
             "start_time": float(audio.get("start_time", 0.0) or 0.0),
             "duration": float(audio.get("duration", 0.0) or 0.0),
         }

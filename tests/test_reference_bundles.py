@@ -458,3 +458,38 @@ def test_switch_select_picks_bundle_audio_when_loaded():
 
 def test_switch_select_falls_back_when_no_audio_loaded():
     assert rb.bundle_audio_switch_select(False) == 2
+
+
+# ── resolve_bundle_audio_source: audio_dir for the "file" source ──────────────
+
+def test_audio_source_file_honors_output_audio_dir():
+    bundle = {"audio": {"source": "file", "file": "audio/moon_se_00001.flac", "audio_dir": "output"}}
+    assert resolve_bundle_audio_source(bundle)["dir"] == "output"
+
+
+def test_audio_source_file_empty_audio_dir_defaults_to_input():
+    bundle = {"audio": {"source": "file", "file": "voice.wav", "audio_dir": ""}}
+    assert resolve_bundle_audio_source(bundle)["dir"] == "input"
+
+
+# ── bundle_audio_wanted: one rule for every audio source ──────────────────────
+
+def test_audio_wanted_needs_checkbox_and_dialogue_allowed():
+    assert rb.bundle_audio_wanted({"use_audio": True}, {"allows_dialogue": True}) is True
+
+
+def test_audio_wanted_false_when_checkbox_off():
+    assert rb.bundle_audio_wanted({"use_audio": False}, {"allows_dialogue": True}) is False
+    assert rb.bundle_audio_wanted({}, {"allows_dialogue": True}) is False
+
+
+def test_audio_wanted_false_when_clip_disallows_dialogue():
+    assert rb.bundle_audio_wanted({"use_audio": True}, {"allows_dialogue": False}) is False
+
+
+def test_audio_wanted_defaults_to_dialogue_allowed():
+    assert rb.bundle_audio_wanted({"use_audio": True}, {}) is True
+
+
+def test_audio_wanted_tolerates_missing_entry_or_clip():
+    assert rb.bundle_audio_wanted(None, None) is False

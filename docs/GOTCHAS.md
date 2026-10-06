@@ -386,3 +386,44 @@ this reason (a `comfy-mcp` run of the same file, moments earlier, produced the b
 If this needs a permanent fix rather than a workaround, it likely belongs in `comfy-cli` itself (its
 generic UI→API converter), not in this repo.
 
+
+---
+
+## VHS's `VHS_LoadVideo` audio is a `Mapping`, not a `dict` — `isinstance(audio, dict)` rejects it
+
+**Symptom**: wiring `VHS_LoadVideo`'s AUDIO output straight into a third-party node fails with that
+node's own "Invalid AUDIO input"-style error (seen 2026-10-05 with `ComfyUI-QwenTTS`'s
+`AILab_Qwen3TTSVoiceClone`, `AILab_QwenTTS.py::_audio_to_tuple`), even though a `PreviewAudio` on the
+same wire plays fine and the audio has the right `waveform`/`sample_rate` keys. A misleading trap:
+a run that only executes a downstream `PreviewAudio` (output node requested = just that node)
+"succeeds" without ever invoking the consumer, so it proves nothing about the consumer.
+
+**Cause**: VideoHelperSuite returns a lazy `LazyAudioMap(collections.abc.Mapping)`
+(`videohelpersuite/utils.py`) that loads the audio on first key access. It behaves like a dict but
+`isinstance(audio, dict)` is `False`, so any consumer that type-checks with `dict` (rather than
+`Mapping`) matches no branch.
+
+**Fix pattern**: put a node that returns a real `{"waveform", "sample_rate"}` dict between the VHS
+output and the consumer — core `TrimAudioDuration` (start 0, duration >= the clip) is the cheapest;
+`fbt_BundleAudioReferenceLoad` also returns a plain dict. Better: in our own code, check
+`isinstance(audio, collections.abc.Mapping)` (or just index `audio["waveform"]`), never `dict`.
+Audit: no `isinstance(..., dict)` AUDIO check exists in this repo as of this entry.
+
+---
+
+## `ComfyUI-QwenTTS` "Voice Clone (QwenTTS)" (Basic) forces greedy decoding — output is a short, text-independent length
+
+**Symptom**: the Basic voice-clone node returns ~4 s of audio regardless of target-text length
+(measured 2026-10-05: 53 chars -> 4.15 s, 93 chars -> 4.31 s, from a 7.8 s reference). Not a token cap.
+
+**Cause**: `Qwen3TTSVoiceCloneBasic.generate` (`AILab_QwenTTS.py`) hardcodes `do_sample=False`
+(greedy), overriding the model's own `generation_config.json` (`do_sample: true`,
+`temperature: 0.9`, `top_p: 1.0`, `top_k: 50`). Greedy decoding makes the autoregressive talker emit
+its end-of-speech token early. (It also caps `max_new_tokens` at 2048, ~164 s at the 12.5 tokens/s
+codec rate — a separate, much higher limit.)
+
+**Fix**: use `Voice Clone (QwenTTS) Advanced` with `do_sample` ON and `repetition_penalty` 1.0 —
+confirmed to give ~7 s for the same input. Do NOT copy the model's own `repetition_penalty: 1.05`
+default: tested 2026-10-05, it made the cloned voice repeat/stutter on a word, while 1.0 was clean,
+so `do_sample` alone was the actual culprit. The Advanced widget caps (`max_new_tokens` 4096,
+`top_p` 1.0) are not limiting in practice.
