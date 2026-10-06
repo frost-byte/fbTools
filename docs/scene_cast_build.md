@@ -133,6 +133,20 @@ override) it needs a design first: composition dialogue is per shot with a speak
 dialogue is per subject, and it must cooperate with libber tokens and the `[silent]` / `[sounds]`
 markers.
 
+## When a bundle's audio reference is included
+
+One rule covers every bundle audio source (`file`, `extract_from_video`, `extract_from_visual`):
+
+- **Source Profile mode**: the cast entry's **audio checkbox must be on AND the clip segment must
+  allow dialogue**. A segment that disallows dialogue drops the reference entirely, regardless of
+  where the audio would come from -- that setting exists to stop the model inventing speech or
+  gibberish for the shot. Implemented by `bundle_audio_wanted()` (`utils/reference_bundles.py`).
+- **Composition mode**: compositions have no per-segment dialogue setting, so only the cast
+  entry's audio checkbox applies.
+
+The audio file may live in the ComfyUI `input` or `output` folder: a bundle's `file` audio honors
+its `audio_dir`, and `extract_from_video` honors `video_dir`.
+
 ## Audio references without scripted dialogue (avoiding invented chatter)
 
 `utils/prompt_assembler.py::_assemble_h3_ref2va` auto-detects, per subject slot, whether that slot
