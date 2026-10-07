@@ -7,7 +7,7 @@
   "open_dialog": true,
   "output_type": "video",
   "template_id": "video-bridge-two-clips-bundle-voice",
-  "default_prompt": "subject_definitions:\nS1 is the central subject, visible in both reference videos, whose appearance, wardrobe, and voice come from V1 and V2.\nV1 is the continuation starting point for the target video.\nV2 is the arrival point the target video must reach by its final frame.\nA1 is the voice-timbre reference for S1, retained for consistency without copying the original signal.\nA2 is the voice-timbre reference for S1, retained for consistency without copying the original signal.\n\nsummary:\nOne continuous shot that begins exactly where V1 leaves off and arrives exactly at the opening moment of V2.\n\nretention_analysis:\nS1's identity, wardrobe, and voice timbre remain unchanged throughout. Any other people, objects, props, or background elements visible in V1 or V2 are preserved exactly as shown in whichever reference they appear in — nothing is added that isn't visible in either reference.\n\ndetailed_description:\n[Shot 1] Continues directly from the action, pose, and camera motion established at the end of V1.\n[Shot 2] Bridges naturally toward the position, pose, and motion seen at the start of V2.\n[Shot 3] Arrives at V2's opening composition and motion, matching it exactly.\nThere is no scripted dialogue.\n\noverall_soundscape:\nThe ambient background sound at the end of V1 continues and transitions naturally into the ambient background sound at the start of V2.\n\nnon_diegetic_music: N/A",
+  "default_prompt": "subject_definitions:\nS1 is the central subject, visible in both reference videos, whose appearance, wardrobe, and voice come from V1 and V2.\nV1 is the continuation starting point for the target video.\nV2 is the arrival point the target video must reach by its final frame.\nA1 is the voice-timbre reference for S1, used for the whole bridge and retained for consistency without copying the original signal.\n\nsummary:\nOne continuous shot that begins exactly where V1 leaves off and arrives exactly at the opening moment of V2.\n\nretention_analysis:\nS1's identity, wardrobe, and voice timbre remain unchanged throughout. Any other people, objects, props, or background elements visible in V1 or V2 are preserved exactly as shown in whichever reference they appear in — nothing is added that isn't visible in either reference.\n\ndetailed_description:\n[Shot 1] Continues directly from the action, pose, and camera motion established at the end of V1.\n[Shot 2] Bridges naturally toward the position, pose, and motion seen at the start of V2.\n[Shot 3] Arrives at V2's opening composition and motion, matching it exactly.\nThere is no scripted dialogue.\n\noverall_soundscape:\nThe ambient background sound at the end of V1 continues and transitions naturally into the ambient background sound at the start of V2.\n\nnon_diegetic_music: N/A",
   "extra_inputs": [
     { "key": "clip_b", "type": "video", "label": "Arrival clip (Clip B)", "required": true },
     { "key": "subject_description", "type": "text", "label": "Subject description", "required": true, "default": "the central subject" },
@@ -217,13 +217,15 @@
     },
     "clipA_ref_skip_frames": {
       "inputs": {
-        "expression": "max(a * d / b - 192, 0)",
+        "expression": "max(a * d / b - (c - 1) * e - 1, 0)",
         "values.a": ["clipA_video_info", 1],
         "values.b": ["clipA_video_info", 0],
-        "values.d": ["3957", 0]
+        "values.c": ["ref_frame_cap", 1],
+        "values.d": ["3957", 0],
+        "values.e": ["ref_subsample_n", 0]
       },
       "class_type": "ComfyMathExpression",
-      "_meta": { "title": "Clip A Ref Skip (192-frame span, subsampled 2x -> 96 frames, video only)" }
+      "_meta": { "title": "Clip A Ref Skip (start so the LAST loaded frame is clip A's final frame; video only)" }
     },
     "clipA_ref_audio_skip_frames": {
       "inputs": {
@@ -256,11 +258,12 @@
     },
     "ref_frame_cap": {
       "inputs": {
-        "expression": "192 / a",
-        "values.a": ["ref_subsample_n", 0]
+        "expression": "floor(min(192 / a, b)) - ((floor(min(192 / a, b)) - 5) % 17)",
+        "values.a": ["ref_subsample_n", 0],
+        "values.b": ["3920", 0]
       },
       "class_type": "ComfyMathExpression",
-      "_meta": { "title": "Reference Video Frame Count (192 / subsample rate)" }
+      "_meta": { "title": "Reference Video Frame Count (min(192 / subsample rate, output length), rounded down to H3's 17k+5 clip length so nothing is trimmed from the end)" }
     },
     "clipA_ref_load": {
       "inputs": {
@@ -476,7 +479,7 @@
     },
     "3982": {
       "inputs": {
-        "string": "subject_definitions:\n<Subject 1> is __openshot_input:subject_description__, visible in both reference videos, whose appearance, wardrobe, and voice come from <Video 1> and <Video 2>.\n<Video 1> is the continuation starting point for the target video.\n<Video 2> is the arrival point the target video must reach by its final frame.\n<Audio 1> is the voice-timbre reference for <Subject 1>, retained for consistency without copying the original signal.\n<Audio 2> is the voice-timbre reference for <Subject 1>, retained for consistency without copying the original signal.\n\nsummary:\nOne continuous shot that begins exactly where <Video 1> leaves off and arrives exactly at the opening moment of <Video 2>.\n\nretention_analysis:\n<Subject 1>'s identity, wardrobe, and voice timbre remain unchanged throughout. Any other people, objects, props, or background elements visible in <Video 1> or <Video 2> are preserved exactly as shown in whichever reference they appear in — nothing is added that isn't visible in either reference.\n\ndetailed_description:\n[Shot 1] Continues directly from the action, pose, and camera motion established at the end of <Video 1>.\n[Shot 2] Bridges naturally toward the position, pose, and motion seen at the start of <Video 2>.\n[Shot 3] Arrives at <Video 2>'s opening composition and motion, matching it exactly.\n__openshot_input:dialogue__\n\noverall_soundscape:\nThe ambient background sound at the end of <Video 1> continues and transitions naturally into the ambient background sound at the start of <Video 2>.\n\nnon_diegetic_music: N/A",
+        "string": "subject_definitions:\n<Subject 1> is __openshot_input:subject_description__, visible in both reference videos, whose appearance, wardrobe, and voice come from <Video 1> and <Video 2>.\n<Video 1> is the continuation starting point for the target video.\n<Video 2> is the arrival point the target video must reach by its final frame.\n<Audio 1> is the voice-timbre reference for <Subject 1>, used for the whole bridge and retained for consistency without copying the original signal.\n\nsummary:\nOne continuous shot that begins exactly where <Video 1> leaves off and arrives exactly at the opening moment of <Video 2>.\n\nretention_analysis:\n<Subject 1>'s identity, wardrobe, and voice timbre remain unchanged throughout. Any other people, objects, props, or background elements visible in <Video 1> or <Video 2> are preserved exactly as shown in whichever reference they appear in — nothing is added that isn't visible in either reference.\n\ndetailed_description:\n[Shot 1] Continues directly from the action, pose, and camera motion established at the end of <Video 1>.\n[Shot 2] Bridges naturally toward the position, pose, and motion seen at the start of <Video 2>.\n[Shot 3] Arrives at <Video 2>'s opening composition and motion, matching it exactly.\n__openshot_input:dialogue__\n\noverall_soundscape:\nThe ambient background sound at the end of <Video 1> continues and transitions naturally into the ambient background sound at the start of <Video 2>.\n\nnon_diegetic_music: N/A",
         "strip_newlines": true
       },
       "class_type": "StringConstantMultiline",
@@ -539,21 +542,19 @@
       "inputs": {
         "select": ["bundle_audio_load", 2],
         "sel_mode": false,
-        "input1": ["bundle_audio_load", 0],
         "input2": ["clipA_ref_audio_load", 2]
       },
       "class_type": "ImpactSwitch",
-      "_meta": { "title": "Reference Video Audio 0 (Bundle vs Clip A)" }
+      "_meta": { "title": "Reference Video Audio 0 (clip A's own audio; none when a bundle voice is used)" }
     },
     "ref_video_audio_1_switch": {
       "inputs": {
         "select": ["bundle_audio_load", 2],
         "sel_mode": false,
-        "input1": ["bundle_audio_load", 0],
         "input2": ["clipB_ref_audio_load", 2]
       },
       "class_type": "ImpactSwitch",
-      "_meta": { "title": "Reference Video Audio 1 (Bundle vs Clip B)" }
+      "_meta": { "title": "Reference Video Audio 1 (clip B's own audio; none when a bundle voice is used)" }
     },
     "h3_reference_summary": {
       "inputs": {
@@ -561,7 +562,8 @@
         "ref_videos.ref_video_0": ["clipA_ref_load", 0],
         "ref_videos.ref_video_1": ["clipB_ref_load", 0],
         "ref_video_audios.ref_video_audio_0": ["ref_video_audio_0_switch", 0],
-        "ref_video_audios.ref_video_audio_1": ["ref_video_audio_1_switch", 0]
+        "ref_video_audios.ref_video_audio_1": ["ref_video_audio_1_switch", 0],
+        "ref_audios.ref_audio_0": ["bundle_audio_load", 0]
       },
       "class_type": "fbt_H3ReferenceSummary",
       "_meta": { "title": "H3 Reference Summary (logs the references used; same sources as the reference node)" }
@@ -579,7 +581,8 @@
         "ref_videos.ref_video_0": ["clipA_ref_load", 0],
         "ref_videos.ref_video_1": ["clipB_ref_load", 0],
         "ref_video_audios.ref_video_audio_0": ["ref_video_audio_0_switch", 0],
-        "ref_video_audios.ref_video_audio_1": ["ref_video_audio_1_switch", 0]
+        "ref_video_audios.ref_video_audio_1": ["ref_video_audio_1_switch", 0],
+        "ref_audios.ref_audio_0": ["bundle_audio_load", 0]
       },
       "class_type": "MiniMaxH3ReferenceToVideo",
       "_meta": { "title": "MiniMax H3 Reference to Video" }
@@ -828,5 +831,5 @@
       "_meta": { "title": "Model Sparse Attention" }
     }
   },
-  "_setup_notes": "Personal variant of video-bridge-two-clips.api.json that adds an optional Reference Bundle voice. REQUIRES comfyui-fbTools (fbt_BundleAudioReferenceLoad, fbt_PromptShorthandExpander, fbt_LoraStack*). When a bundle is picked and its audio loads, that voice is the audio reference for both ref videos; with no bundle (or a bundle that has no audio) each ref video falls back to its own clip's audio. The per-guide-frame splice audio (MiniMaxH3AddGuide's 'audio' inputs, from clipA_load/clipB_load) is unaffected -- only the voice-identity reference changes. Not yet implemented: auto-detecting a bundle from the selected clips' metadata. An fbt_H3ReferenceSummary output node logs which references H3 is given (tag numbering, frames used, durations, soundtrack pairing, warnings) to the ComfyUI log on every run."
+  "_setup_notes": "Personal variant of video-bridge-two-clips.api.json that adds an optional Reference Bundle voice. REQUIRES comfyui-fbTools (fbt_BundleAudioReferenceLoad, fbt_PromptShorthandExpander, fbt_LoraStack*). When a bundle is picked and its audio loads, that voice is passed to H3 as ONE standalone audio reference for the bridge (<Audio 1>) and the reference videos carry no soundtracks of their own; with no bundle (or a bundle that has no audio) each reference video keeps its own clip's soundtrack. The per-guide-frame splice audio (MiniMaxH3AddGuide's 'audio' inputs, from clipA_load/clipB_load) is unaffected -- only the voice-identity reference changes. Not yet implemented: auto-detecting a bundle from the selected clips' metadata. An fbt_H3ReferenceSummary output node logs which references H3 is given (tag numbering, frames used, durations, soundtrack pairing, warnings) to the ComfyUI log on every run."
 }
