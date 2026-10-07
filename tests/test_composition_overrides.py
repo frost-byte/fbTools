@@ -203,3 +203,84 @@ def test_soundscape_override_uses_default_background_when_not_swapped():
     comp = _comp(overall_soundscape="hotel hum")
     out, _ = apply_overrides(comp, {"background_soundscape": True}, _bgs())
     assert out["overall_soundscape"] == "murmur"   # the composition's own (cafe) background
+
+
+# ── {BG} when the background is not a reference subject ──────────────────────────
+
+_BG_SHOT = "{A} is in front of the camera, the shot takes place in {BG}."
+
+
+def _bg_prompt(background, as_ref, overrides=None, camera="wide", synopsis=""):
+    comp = _comp(background=background, background_as_reference=as_ref)
+    comp["shots"][0]["action"] = _BG_SHOT
+    comp["shots"][0]["camera"] = camera
+    if synopsis:
+        comp["scene_synopsis"] = synopsis
+    bgs = _bgs()
+    if overrides:
+        comp, _ = apply_overrides(comp, overrides, bgs)
+    return pa.assemble_composition(comp, {"A": _alice()}, pc.resolve_background(comp, bgs), "h3_ref2va")["prompt"]
+
+
+def test_bg_token_uses_description_for_a_text_only_background():
+    prompt = _bg_prompt("cafe", as_ref=False)
+    assert "the shot takes place in a warm cafe." in prompt
+    assert "{BG}" not in prompt and "<Subject 2>" not in prompt
+
+
+def test_bg_token_uses_description_when_images_exist_but_reference_is_off():
+    prompt = _bg_prompt("beach", as_ref=False)
+    assert "the shot takes place in a sunlit beach." in prompt
+    assert "{BG}" not in prompt and "<Picture" not in prompt
+
+
+def test_bg_token_uses_description_when_reference_is_on_but_the_background_has_no_images():
+    # The checkbox is on, but a text-only background cannot become a <Subject N> reference.
+    prompt = _bg_prompt("cafe", as_ref=True)
+    assert "the shot takes place in a warm cafe." in prompt
+    assert "{BG}" not in prompt and "<Subject 2>" not in prompt
+
+
+def test_bg_token_is_neutral_when_there_is_no_background():
+    prompt = _bg_prompt("", as_ref=False)
+    assert "the shot takes place in the setting." in prompt
+    assert "{BG}" not in prompt
+
+
+def test_override_to_a_text_only_background_replaces_a_reference_background():
+    # Composition: beach as a reference subject. Scene Cast Build override: the text-only cafe.
+    prompt = _bg_prompt("beach", as_ref=True, overrides={"background": "cafe"})
+    assert "the shot takes place in a warm cafe." in prompt
+    assert "{BG}" not in prompt and "<Subject 2>" not in prompt and "sunlit beach" not in prompt
+
+
+def test_override_to_none_gives_the_neutral_phrase():
+    prompt = _bg_prompt("beach", as_ref=True, overrides={"background": "none"})
+    assert "the shot takes place in the setting." in prompt
+    assert "{BG}" not in prompt
+
+
+def test_override_to_a_reference_background_still_becomes_a_subject():
+    prompt = _bg_prompt("cafe", as_ref=True, overrides={"background": "beach"})
+    assert "{BG}" not in prompt
+    assert "the shot takes place in <Subject 2>" in prompt
+
+
+def test_reference_background_behavior_is_unchanged():
+    prompt = _bg_prompt("beach", as_ref=True)
+    assert "the shot takes place in <Subject 2>" in prompt
+    assert "{BG}" not in prompt
+
+
+def test_bg_token_is_replaced_in_camera_and_synopsis_too():
+    prompt = _bg_prompt("cafe", as_ref=False, camera="{BG} wide shot", synopsis="{A} waits in {BG}.")
+    assert "{BG}" not in prompt
+    assert "a warm cafe wide shot" in prompt
+
+
+def test_background_phrase_prefers_description_then_name_then_neutral():
+    bp = pa._background_phrase
+    assert bp({"description": "a quiet barn.", "name": "Barn"}) == "a quiet barn"
+    assert bp({"description": "", "name": "Old_Barn"}) == "the old barn"
+    assert bp({"name": ""}) == "the setting"
+    assert bp(None) == "the setting"

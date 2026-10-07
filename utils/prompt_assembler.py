@@ -1944,6 +1944,12 @@ def assemble_composition(
             slot_map["BG"] = bg_letter
             slot_assignments[bg_letter] = bg_slot
 
+    # {BG} when the background is NOT a reference subject (checkbox off, no reference images, a
+    # text-only background -- including one swapped in by a Scene Cast Build override -- or no
+    # background at all): there is no <Subject N> to expand to, so substitute plain text instead
+    # of leaving a literal "{BG}" in the prompt.
+    bg_fallback = None if bg_letter else _background_phrase(resolved_background)
+
     # Outfit reference subjects: each assigned outfit whose reference_images contain
     # at least one entry with use_as_reference=True becomes its own <Subject N> slot.
     # Slots iterate in subject order (S1 → S2 …) so Fit_1 always maps to the
@@ -2025,7 +2031,7 @@ def assemble_composition(
             "lighting": background.get("lighting", ""),
         },
         "style": style,
-        "shots": _composition_shots_to_template(_shots_with_setting(composition.get("shots", []), bg_letter), slot_map),
+        "shots": _composition_shots_to_template(_shots_with_setting(composition.get("shots", []), bg_letter), slot_map, bg_fallback),
         "overall_soundscape": (
             composition.get("overall_soundscape")
             or background.get("soundscape", "")
@@ -2041,7 +2047,7 @@ def assemble_composition(
         "dialogue":         dialogue,
         "outfit_overrides": outfit_overrides,
         "dialogue_tags":    bool(composition.get("use_dialogue_tags", False)),
-        "scene_synopsis":   _remap_slots(composition.get("scene_synopsis", ""), slot_map),
+        "scene_synopsis":   _remap_slots(composition.get("scene_synopsis", ""), slot_map, bg_fallback),
     }
 
     # Pass user-configured task flags into scene_instance for h3_ref2va
@@ -2058,12 +2064,33 @@ def assemble_composition(
     return result
 
 
-def _remap_slots(text: str, slot_map: dict[str, str]) -> str:
+_NEUTRAL_SETTING_PHRASE = "the setting"
+
+
+def _background_phrase(resolved_background: dict | None) -> str:
+    """Plain-text stand-in for {BG} when the background is not a reference subject: its own
+    description, else "the <name>", else a neutral "the setting" (no background at all)."""
+    bg = resolved_background or {}
+    description = str(bg.get("description") or "").strip().rstrip(". ").strip()
+    if description:
+        return description
+    name = str(bg.get("name") or "").replace("_", " ").strip().lower()
+    if name:
+        return "the " + name
+    return _NEUTRAL_SETTING_PHRASE
+
+
+def _remap_slots(text: str, slot_map: dict[str, str], bg_fallback: str | None = None) -> str:
     """Replace synthetic slot keys (Fit_1, BG, <slot>_bundle, …) with their minted
     template letters. Base subject-slot keys are already letters and map to
-    themselves (identity), so this is a no-op for them."""
+    themselves (identity), so this is a no-op for them.
+
+    When {BG} was not minted into a slot (see assemble_composition) and `bg_fallback` is given,
+    {BG} becomes that plain text instead of being left in the prompt as a literal."""
     for sk, letter in slot_map.items():
         text = text.replace(f"{{{sk}}}", f"{{{letter}}}")
+    if bg_fallback is not None and "BG" not in slot_map:
+        text = text.replace("{BG}", bg_fallback)
     return text
 
 
@@ -2082,14 +2109,16 @@ def _shots_with_setting(shots: list[dict], bg_letter: str | None) -> list[dict]:
     return out
 
 
-def _composition_shots_to_template(shots: list[dict], slot_map: dict[str, str]) -> list[dict]:
+def _composition_shots_to_template(
+    shots: list[dict], slot_map: dict[str, str], bg_fallback: str | None = None,
+) -> list[dict]:
     """Convert composition shot dicts to the template shot format."""
     result = []
     for i, shot in enumerate(shots, 1):
         dlg = shot.get("dialogue") or {}
         has_dialogue = bool(dlg.get("text"))
-        action = _remap_slots(shot.get("action", ""), slot_map)
-        camera = _remap_slots(shot.get("camera", ""), slot_map)
+        action = _remap_slots(shot.get("action", ""), slot_map, bg_fallback)
+        camera = _remap_slots(shot.get("camera", ""), slot_map, bg_fallback)
         # Map the speaker slot key through slot_map (identity for base subject
         # slots) so the h3 assembler can look up language
         template_dlg = None
