@@ -1591,7 +1591,28 @@ class TestBuildBackgroundSlot:
             "name": "Office", "description": "a modern office", "lighting": "warm afternoon light",
             "reference_images": ["office1.png"],
         })
-        assert slot["appearance"]["summary"] == "a modern office. warm afternoon light"
+        assert slot["appearance"]["summary"] == "a modern office, warm afternoon light"
+
+    def test_lighting_join_ignores_trailing_periods_on_either_part(self):
+        slot = _build_background_slot({
+            "name": "Office", "description": "a modern office.", "lighting": "warm afternoon light.",
+            "reference_images": ["office1.png"],
+        })
+        assert slot["appearance"]["summary"] == "a modern office, warm afternoon light"
+
+    def test_lighting_without_a_description_is_used_alone(self):
+        slot = _build_background_slot({
+            "name": "Office", "description": "", "lighting": "warm afternoon light",
+            "reference_images": ["office1.png"],
+        })
+        assert slot["appearance"]["summary"] == "warm afternoon light"
+
+    def test_description_without_lighting_is_unchanged(self):
+        slot = _build_background_slot({
+            "name": "Office", "description": "a modern office.", "lighting": "",
+            "reference_images": ["office1.png"],
+        })
+        assert slot["appearance"]["summary"] == "a modern office."
 
     def test_short_name_falls_back_to_setting_when_unnamed(self):
         slot = _build_background_slot({"reference_images": ["x.png"]})

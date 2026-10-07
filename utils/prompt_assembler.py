@@ -1814,7 +1814,10 @@ def _build_background_slot(resolved_background: dict) -> dict | None:
         return None
     bg_desc = resolved_background.get("description", "")
     bg_lighting = resolved_background.get("lighting", "")
-    bg_appearance = (bg_desc.rstrip(". ") + ". " + bg_lighting).strip(". ") if bg_lighting else bg_desc
+    # Comma-joined, not "description. lighting": this text sits mid-sentence (e.g. "<Subject 2> is
+    # <appearance> whose appearance comes from <Picture 1>"), so an inner full stop breaks it.
+    bg_light = bg_lighting.strip(". ")
+    bg_appearance = ", ".join(part for part in (bg_desc.rstrip(". "), bg_light) if part) if bg_light else bg_desc
     return {
         "name": resolved_background.get("name", "Background"),
         "appearance": {"summary": bg_appearance},
