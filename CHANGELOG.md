@@ -1,6 +1,296 @@
 # CHANGELOG
 
 
+## v1.29.0 (2026-10-07)
+
+### Bug Fixes
+
+- **bundles**: Apply one audio-reference rule to every bundle audio source
+  ([`f637107`](https://github.com/frost-byte/fbTools/commit/f637107b70df0bf6311435d535fa4afbacf1f414))
+
+In Source Profile mode a bundle's audio reference is now included only when the cast entry's audio
+  checkbox is on AND the clip allows dialogue, for file, extract_from_video and extract_from_visual
+  alike (bundle_audio_wanted()). Previously file and extract_from_video ignored the checkbox.
+
+The standalone "file" voice also honors audio.audio_dir, so a voice file in the output folder is
+  found by both the Source Profile path and BundleAudioReferenceLoad
+  (resolve_bundle_audio_source()).
+
+Adds GOTCHAS entries for VHS's Mapping-typed AUDIO output and for the QwenTTS Basic voice-clone
+  node's greedy decoding.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **bundles**: Log "no bundle selected" at info level
+  ([`0e7c7bb`](https://github.com/frost-byte/fbTools/commit/0e7c7bb113a78bb041959ef13d00bcb7bc7438bc))
+
+BundleAudioReferenceLoad's bundle input is optional, so leaving it unset is a normal choice (each
+  reference falls back to its own clip's audio), not something to warn about.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **compose**: Respect image_selection and extract_from_video in cast enrichment
+  ([`85ba45e`](https://github.com/frost-byte/fbTools/commit/85ba45edbd1e90beff61d4a334dcfdec70faeeb6))
+
+_enrich_subject_with_bundle() (utils/prompt_compositions.py) was the one call site that never read a
+  Cast entry's image_selection, always including every image in a bundle's visual.files regardless
+  of what was picked in the Scene Cast Build tab — confirmed live via CompositionToH3's reference
+  log showing 10 images instead of the expected 5.
+
+Also fixes a related gap in the same function: extract_from_video (a separate video used purely as
+  an audio/voice-timbre source, with no visual reference of its own) was never handled here, only
+  source="file" was — so audio pulled from a standalone video silently never reached
+  voice.audio_reference_file, even with no video reference present at all.
+
+Both patterns were already correctly implemented in nodes/compositions.py's own separate
+  subject-resolution path; this call site was simply never updated to match. 6 new regression tests
+  added.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+- **compositions**: Fall back to plain text for {BG} when the background isn't a reference
+  ([`392a2a2`](https://github.com/frost-byte/fbTools/commit/392a2a25ec78f48c07850ff129dea298a63f2370))
+
+{BG} previously only worked when the background was used as a reference subject (checkbox on AND the
+  background has reference images); in every other case a literal "{BG}" was left in the prompt. It
+  now resolves against the effective background, after any Scene Cast Build override: a reference
+  background still expands to <Subject N>, otherwise it becomes the background's description (else
+  "the <name>"), and with no background at all, "the setting". Applies to shot action, shot camera
+  and the synopsis.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **compositions**: Join background lighting with a comma, not a sentence break
+  ([`bc3db64`](https://github.com/frost-byte/fbTools/commit/bc3db64e5fe4a301020fbd20c25177e833d4a792))
+
+The background text sits mid-sentence in the subject definition and shot prompts, so an inner full
+  stop broke it.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **compositions**: Require the audio checkbox for bundle audio on video entries
+  ([`370fce6`](https://github.com/frost-byte/fbTools/commit/370fce68763a85c69364cd8e891f5077550b1d38))
+
+In the Composition path a video-mode cast entry's bundle audio (extract_from_visual,
+  extract_from_video, file) is now attached only when the entry's audio checkbox is on, via the same
+  bundle_audio_wanted() rule Source Profile mode uses. Compositions have no per-clip
+  allows_dialogue, so the checkbox is the only condition. Image-mode entries were already gated in
+  _enrich_subject_with_bundle().
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **scene-cast**: Name composition output folders after the composition
+  ([`6070816`](https://github.com/frost-byte/fbTools/commit/60708166a673df17df6fd41cfc9b78349695e99f))
+
+filename_prefix's composition-driven branch used the fixed literal "compositions" for every run, so
+  every composition sharing a subject+bundle collided onto the same folder/stem, differentiated only
+  by ComfyUI's own counter. Now slugifies the composition's own name (falling back to its id),
+  matching how the sibling source_profiles branch already names its folder after the source profile.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+### Chores
+
+- **templates**: Add scrubbed H3 composition and source-profile API templates
+  ([`b876874`](https://github.com/frost-byte/fbTools/commit/b8768740765ebd84db0498e56be963ebfd9e5fef))
+
+Widget values that held personal subject/bundle IDs, prompt text and composition/profile names are
+  reset to the nodes' own defaults (cast_entries_json "[]", composition_overrides_json "{}", empty
+  action_preview/clip_id, "(none)" for the loader names); graph structure is unchanged. Personal
+  working copies live in templates/*.local.api.json, which is now gitignored.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+### Documentation
+
+- **openshot**: Add design note for dropdown inputs whose options come from ComfyUI
+  ([`91371c1`](https://github.com/frost-byte/fbTools/commit/91371c1b6d9baf6140a55bad41bec0823757e39d))
+
+Proposes extending the `choice` extra-input type with `options_from` (read a combo's options from a
+  workflow node via /object_info) instead of adding one input type per use case such as the fork's
+  `bundle`. Records verified facts (ComfyUI re-runs define_schema per object_info request; OpenShot
+  already has the combo-option extraction helper), open questions, and a staged plan whose first
+  steps are generic and upstream-friendly. Linked from the multi-input templates plan.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **openshot**: Add OpenShot template pack and install guide
+  ([`d8688f5`](https://github.com/frost-byte/fbTools/commit/d8688f5c27a16c59ba4ba6d88237a548c0f3b21d))
+
+Adds openshot/templates (Scene Cast, Scene Cast - Source Profile, and the optional bundle-voice
+  bridge) and openshot/README.md describing what each template does, what the ComfyUI server and
+  OpenShot build need, and how to install them from OpenShot's user template folder
+  (~/.openshot_qt/comfyui).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **openshot**: Use one bundle voice reference and keep clip A's end in the bridge template
+  ([`bcbcb5b`](https://github.com/frost-byte/fbTools/commit/bcbcb5b7a32d97f18d66ca77e54e54e03ef4448a))
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **openshot**: Wire the reference summary into the bundle-voice template
+  ([`15cd52d`](https://github.com/frost-byte/fbTools/commit/15cd52d902219e55bf76fac2a37e15b20a1a7cc0))
+
+The bundle-voice bridge template now includes an fbt_H3ReferenceSummary output node fed by the same
+  sources as the H3 reference node (audio taken after the bundle switches), so each run logs the
+  references the model is actually given. The install guide notes the new requirement and that
+  ComfyUI must be restarted after updating fbTools.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **scene-cast**: Document when a bundle's audio reference is included
+  ([`c82027c`](https://github.com/frost-byte/fbTools/commit/c82027cdaf2d077f4e89ecf20281412abf1f5a1e))
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+### Features
+
+- **backgrounds**: Let the user control VRAM after a "Remove People" run
+  ([`d556295`](https://github.com/frost-byte/fbTools/commit/d556295b5f79b36f56b0857c6dd307260c8cc2c8))
+
+The model stays resident after each H3 background-plate generation by default, since chaining
+  several passes back-to-back (the existing auto-reselect flow) is the common case and reloading
+  each time is slow. Adds a "Free VRAM" button in the Background editor and in Settings for
+  on-demand reclaiming, plus a "Unload model after each run" Settings toggle to flip the default for
+  anyone who'd rather reclaim memory automatically.
+
+utils/h3_job_runner.py's new free_vram() POSTs to ComfyUI's own core /free endpoint -- the same
+  mechanism behind the Manager UI's "Free model and node cache" button. Confirmed the underlying
+  flag is processed near-instantly (PromptQueue.set_flag() notifies the same condition variable the
+  main loop blocks on) rather than waiting on the next queued prompt, and verified live: the manual
+  button actually freed VRAM, and a chained pass without it stayed resident (a ~131s cold-start run
+  followed by a ~41s run needing no reload).
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+- **bundles**: Add BundleAudioReferenceLoad node for external-editor voice references
+  ([`ea119e0`](https://github.com/frost-byte/fbTools/commit/ea119e0672ecc4c3486d957a79927ec4cee6a01a))
+
+Loads a Reference Bundle's own audio (file / extract_from_visual / extract_from_video, resolved by
+  the new resolve_bundle_audio_source()) as a standalone AUDIO output, so hand-built templates such
+  as OpenShot's Bridge Clips workflow can use a bundle's voice instead of the footage's audio.
+
+- The bundle combo always offers "" so an unset OpenShot bundle picker doesn't fail ComfyUI's strict
+  combo validation at submission. - A third INT output, switch_select, is 1 when the bundle audio
+  loaded and 2 otherwise, for driving an ImpactSwitch with the footage audio as fallback
+  (ComfyMathExpression can't derive this from a string). - The audio preprocess route now persists
+  the selected audio_cache path on the bundle.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **compositions**: Add inspect_cast_metadata route for external editor pre-fill
+  ([`fad2b13`](https://github.com/frost-byte/fbTools/commit/fad2b13f87ae76927ff65d766924181e45265e79))
+
+Lets OpenShot (or any external client) resolve a clip's embedded ComfyUI "prompt" metadata, or the
+  lighter fbtools_cast summary tag, back to the Composition/Subject/Bundle that produced it, reusing
+  extract_cast_info() and load_composition() instead of duplicating that resolution logic
+  externally. Split into resolve_cast_metadata_request() in utils/generation_metadata.py so it stays
+  testable without nodes/compositions.py's heavy sibling-node import chain.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+- **compositions**: Generate H3 character/face sheets from Bundle references
+  ([`0d54884`](https://github.com/frost-byte/fbTools/commit/0d54884e4a269974644c11c5530b4d711dc9b1aa))
+
+Adds a Bundle-editor action that runs the H3 character/face-sheet workflow server-to-server against
+  up to 9 of a bundle's own reference images and/or on-demand video-reference frames, mirroring the
+  existing H3 Background Plate feature's proven pattern (title-based template contract,
+  submit-and-poll job runner, Settings-driven overrides).
+
+- nodes/h3_character_sheet.py: new routes to generate a sheet and report which optional template
+  overrides are available. - utils/h3_template_runner.py: patch_character_sheet_prompt() pads fewer
+  than 9 reference images by cycling them, since the workflow's fixed-index batch consumers crash
+  outright on a smaller batch. - Bundle editor: unified, order-preserving pick list across images
+  and video frames (the template's prompt treats the first pick as the sole outfit reference), an
+  optional outfit-hint text substitution, full-size preview, and a one-click "Add to Bundle" for the
+  result. - Settings: new "H3 Character Sheet" section mirroring the Background Plate one, including
+  a real aspect-ratio dropdown instead of a free-text field.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+- **openshot**: Add prompt shorthand expander for H3 bridge template
+  ([`6c67a48`](https://github.com/frost-byte/fbTools/commit/6c67a4877986a1600f1c28ff077f67f91225d93e))
+
+Add fbt_PromptShorthandExpander, expanding S1/S2/V1/V2/A1/A2 shorthand into the MiniMax H3 Ref2VA
+  native <Subject N>/<Video N>/<Audio N> labels, for use by the OpenShot-qt bridge-two-clips
+  template's Prompt field. Confirmed working live against a real 5-subject prompt.
+
+Also documents the shorthand convention and the openshot-qt extra_inputs design this template builds
+  on.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+- **scene-cast**: Add per-run background override for Source Profile mode
+  ([`d0e28ec`](https://github.com/frost-byte/fbTools/commit/d0e28ec6c064e9182c0493f1dcf27cbd19e17e9e))
+
+SceneCastBuild gains a background_override_id input, driven by a new Background Override dropdown
+  that shows while a Source Profile is connected. SourceProfileClipPrompt resolves the background as
+  override > clip background_id > profile default_background_id, and "none" suppresses it for that
+  run. Composition mode's composition_overrides_json is unchanged.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **templates**: Add Qwen 2.1 character sheet runner patch and API templates
+  ([`326cf45`](https://github.com/frost-byte/fbTools/commit/326cf45b7a5cded0208d9b6145bda33a3cf6ecb7))
+
+patch_qwen21_character_sheet_prompt() patches the unified restore / character / face Qwen-Image-2.1
+  template (IN:refs, IN:mode, IN:seed, OUT:save plus optional overrides). Adds the
+  qwen21_character_sheet, qwen21_image_blend and minimax_h3_r2v_bridge_clips API exports.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **tools**: Add Qwen-Image-2.1 photo restoration
+  ([`e8f9aba`](https://github.com/frost-byte/fbTools/commit/e8f9abaeaac30abd1fa3fd1e06cfdbdae005ed74))
+
+MiniMax H3's reference/image-to-video nodes always build an empty starting latent and only ever
+  condition on reference images, making genuine img2img restoration of real photo content
+  architecturally impossible (confirmed against comfy_extras/nodes_minimax_h3.py). Qwen-Image-2.1's
+  dedicated edit-encode node (TextEncodeQwenImage21) genuinely VAE-encodes the source photo instead,
+  so this ships restoration on that model.
+
+- utils/h3_template_runner.py: patch_qwen21_photo_restore_prompt(), replacing the earlier H3-based
+  patch_photo_restore_prompt (removed, unworkable) - nodes/qwen21_photo_restore.py:
+  /fbtools/tools/restore_photo + restore_photo_settings_options routes, with a {{RESTORE_HINT}}
+  prompt placeholder for optional per-run hints - new standalone "Tools" tab (js/ui/tools_panel.js)
+  and matching "Qwen Photo Restore" Settings section, mirroring the existing H3 feature patterns -
+  js/ui/lightbox.js: shared click-to-zoom image preview, wired into the new tab's source/result
+  previews (existing CSS for this was previously unused) - templates/qwen21_photo_restore.api.json +
+  README.md contract docs
+
+Confirmed working end-to-end live: generation, hint/prompt override, zoom preview, and
+  output-as-new-source chaining.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+- **video**: Add H3 Reference Summary node
+  ([`a2ea173`](https://github.com/frost-byte/fbTools/commit/a2ea173f033af237d4172a4d3f623b1b329098f8))
+
+Logs which references MiniMax H3 is given -- <Picture>/<Video>/<Audio> tag numbering, frames used
+  after H3's 17k+5 length rule, durations, soundtrack pairing, and warnings -- and returns the same
+  text as a STRING for an optional ShowText. Mirrors MiniMaxH3ReferenceToVideo's
+  ref_images/ref_videos/ref_video_audios/ref_audios input groups, so the same sources can be wired
+  into both, and is an output node so it logs even when its string output is unconnected.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+- **video**: Add MarkerFrameSplit and ImageTextOverlay nodes
+  ([`dc390cc`](https://github.com/frost-byte/fbTools/commit/dc390cc20e7458a95362bbd35909f627f883a1d0))
+
+MarkerFrameSplit locates a deliberately-inserted marker-color frame segment in a pre-concatenated
+  video and splits it into the before/after clip halves - the first building block for a
+  clip-bridging pipeline. ImageTextOverlay burns text onto an image batch, giving any
+  scalar/string-output node a real, screenshot-able proof image without a third-party display-node
+  dependency.
+
+Adds example_workflows/marker_frame_split.json demonstrating both nodes plus
+  SubjectLayerDefine/SubjectCompositor, verified live against a real ComfyUI instance. Documents a
+  real comfy-mcp/comfy-cli workflow-conversion interop gotcha with dynamic-widget-group nodes, hit
+  while generating this workflow's thumbnail.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+
 ## v1.28.0 (2026-09-27)
 
 ### Bug Fixes
