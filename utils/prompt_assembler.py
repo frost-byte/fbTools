@@ -815,8 +815,6 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         if slot_id in _dlg_speaking_slots and info.get("speaker_id") and label:
             if info.get("audio_num") is None and info.get("soundtrack_num") is None:
                 label = f"{label} ({info['speaker_id']})"
-        summary = info["appearance_summary"] or info["name"]
-
         # Build reference anchor using spec-compliant phrasing:
         #   pictures → "whose appearance comes from <Picture N>" (appearance reference, cited inline)
         #   video    → "from <Video N>" (visual identity)
@@ -963,12 +961,6 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     sections.append("subject_definitions:\n" + "\n".join(sd))
 
     # ── summary ────────────────────────────────────────────────────────────────
-    has_refs = any(info["picture_nums"] or info["video_num"] is not None for info in ref_map.values())
-    has_audio = any(
-        info["audio_num"] is not None or info["soundtrack_num"] is not None
-        for info in ref_map.values()
-    )
-
     # Task tag: merge user-provided flags with auto-detected ones.
     # user_flags supply intent-based tasks (video editing, video continuation, etc.)
     # that cannot be inferred from references alone.  Auto-detection always adds
@@ -1252,8 +1244,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                     )
                 else:
                     preserve_desc = (
-                        f"preserve setting details, scene composition, lighting, "
-                        f"camera motion, timing and framing"
+                        "preserve setting details, scene composition, lighting, "
+                        "camera motion, timing and framing"
                     )
                 if replacement_pairs:
                     originals_str = _join_labels([o for o, _ in replacement_pairs])
@@ -1683,7 +1675,7 @@ def _build_assembly_report(scene_instance: dict, ref_map: dict, model_type: str)
             f"sheets: {len(nums)} image{'s' if len(nums) != 1 else ''}"
             if nums else "no sheets"
         )
-        audio_str = f"voice: yes" if audio is not None else "voice: no"
+        audio_str = "voice: yes" if audio is not None else "voice: no"
         lines.append(
             f"  Slot {slot_id} → {info['name']} ({label}) as {info['speaker_id']} [{audio_str}, {pic_str}]"
         )
@@ -1711,7 +1703,7 @@ def _build_assembly_report(scene_instance: dict, ref_map: dict, model_type: str)
     )
 
     if concept_ids:
-        lines.append(f"Concepts for LoRA resolution:")
+        lines.append("Concepts for LoRA resolution:")
         for cid in concept_ids:
             lines.append(f"  {cid} ({model_type})")
 
