@@ -1500,11 +1500,16 @@ class CompositionToH3Conditioning(io.ComfyNode):
         ).hexdigest()
         file_mtimes = []
         for ref in (h3_refplan or {}).get("references", []):
-            path = _h3_resolve_path(ref.get("path", ""))
-            try:
-                file_mtimes.append(f"{path}:{os.path.getmtime(path):.3f}")
-            except OSError:
-                file_mtimes.append(f"{path}:missing")
+            # The processed audio cache is what gets loaded when present, so a file
+            # rewritten in place must invalidate the node too.
+            for key in ("path", "audio_cache"):
+                if key == "audio_cache" and not ref.get(key):
+                    continue
+                path = _h3_resolve_path(ref.get(key, ""))
+                try:
+                    file_mtimes.append(f"{path}:{os.path.getmtime(path):.3f}")
+                except OSError:
+                    file_mtimes.append(f"{path}:missing")
         return (bundle_hash, *file_mtimes, width, height, length, ref_image_size,
                 estimate_vram, vram_safety_buffer, desired_scale)
 
