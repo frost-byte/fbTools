@@ -1,6 +1,6 @@
 # fbTools Backlog
 
-Last updated: 2026-09-02
+Last updated: 2026-10-07
 
 ## Status
 
@@ -16,12 +16,10 @@ Requires a migration script before any code lands.
 See `docs/structured_prompt_editor_plan.md` and memory `[[project-structured-prompt-editor]]`.
 Prerequisite: settle scene JSON schema (ID-reference vs. embedded-data tension).
 
-### 3. End-to-end H3 verification (live ComfyUI required)
-`PromptCompositionLoader → CompositionToH3Conditioning → sampler`. Confirmed: mixed case (video char ref + extracted audio + image ref). Still needed:
-- images-only
-- single video + synchronized soundtrack
-- two videos (`<Video 1>`/`<Video 2>` ordinals + ref_image_size scaling)
-- video + standalone audio file
+### 3. End-to-end H3 verification — done (2026-10-07)
+Verified live by Bee across extended use: video, image and audio references all work through
+`PromptCompositionLoader → CompositionToH3Conditioning → sampler`. No separate per-combination
+checklist remains. Revisit only if a specific combination regresses.
 
 ### 4. Structural (subject-free) video references in H3 prompts
 `<Video N>` for camera movement / editorial rhythm with no subject attached.
@@ -43,26 +41,34 @@ When `_background_snapshot` has reference media, emit dedicated Subject line + i
 Scope: background profile schema (add `reference_images`, `reference_video`), background editor (media picker), `_build_ref_map()` + `_assemble_h3_ref2va()`.
 Spec: `docs/prompt_assembly.md` § B-2.
 
-### 8. Audio reference pipeline (partial — D/E/F remaining)
-A–C already shipped. Remaining:
+### 8. Audio reference pipeline (D done; E/F mostly shipped)
+A–C shipped earlier. Status checked 2026-10-07:
 
-**D. CompositionToH3Conditioning validation** (§1 invariants):
-- Per-clip: 2–15 s (fail if < 2 or > 15)
-- Total audio ≤ 15 s; count ≤ 3 audio refs
-- Pairing required (audio must accompany image/video)
-- Total mixed files ≤ 12; Turbo LoRA warning when voice audio ref present
-- Hard error, not silent truncation
+**D. CompositionToH3Conditioning validation — done.** All raise in `execute`
+(`nodes/compositions.py`), helpers in `utils/prompt_assembler.py`:
+- ≤ 3 standalone audio, audio must accompany an image/video, ≤ 12 total refs, `trim_to` ≥ 2 s
+  (`validate_h3_refs_pre`)
+- per-clip 2–15 s after trim (`validate_h3_audio_clip`), total ≤ 15 s (`validate_h3_audio_total`)
+- any reference that fails to load (image, video, soundtrack, standalone audio) is a hard error that
+  lists every failure (`validate_h3_load_failures`), instead of being silently skipped
+- Turbo LoRA + audio reference → warning (log + status line)
 
-**E. Audio preprocessing pipeline:**
-- Bundle schema: `audio_processing: {vocal_isolation, cleanup, mastering, normalize_lufs}` + `audio_cache`
-- Pipeline: MelBand Roformer → VRGDG_CleanAudio → MusicTools mastering → LUFS normalize → loop/truncate [2s, 15s]
-- Cache: `user_data_dir()/bundles/<id>/audio_proc_<fingerprint8>.wav`
-- REST: `POST /fbtools/bundles/preprocess_audio`
-- UI: processing toggles, LUFS slider, "Process Audio" button, status badge in Bundle Editor
+Not enforced (deliberately left out): soundtrack audio is not duration-checked or counted toward the
+audio count/total; the Turbo warning does not look at `role`; ≤ 9 images / ≤ 3 videos / video
+2–15 s only warn in `H3ReferenceSummary`. The local native node enforces no audio durations.
 
-**F. Global settings** (Prompt Compositions tab):
-- chars_per_second (or slow/normal/fast WPM)
-- Melband model path selector; default audio processing flags
+**E. Audio preprocessing — mostly shipped.** MelBand Roformer vocal extraction (spectral denoise
+fallback), LUFS normalize, loop-to-2 s / truncate-to-15 s (silent), cache at
+`user_data_dir()/bundles_cache/<bundle_id>/audio_<fp8>.wav`, `POST /fbtools/bundles/preprocess_audio`,
+Bundle Editor toggles + "Process Audio" button + status badge. Real schema keys are
+`audio_processing: {noise_removal, normalize_lufs, target_lufs}` plus `audio.audio_cache`.
+Remaining: VRGDG_CleanAudio and MusicTools mastering steps; separate vocal_isolation/cleanup flags.
+
+**F. Global settings — partly shipped.** `default_speech_pace` (slow/normal/fast),
+`melband_model_path` (text field), `default_audio_noise_removal` / `default_audio_normalize_lufs` /
+`default_audio_target_lufs` exist. Remaining: numeric `chars_per_second` override (presets are
+hard-coded in `utils/prompt_assembler.py`), a MelBand model dropdown, and confirming the
+`default_audio_*` values actually seed new bundles.
 
 Observations log: `docs/audio_reference_observations.md`
 
