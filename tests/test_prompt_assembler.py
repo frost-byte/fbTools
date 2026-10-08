@@ -1443,6 +1443,35 @@ class TestValidateH3AudioTotal:
         assert err is not None
 
 
+# ── validate_h3_load_failures ───────────────────────────────────────────────────
+
+validate_h3_load_failures = pa.validate_h3_load_failures
+
+
+class TestValidateH3LoadFailures:
+    def test_no_failures_ok(self):
+        assert validate_h3_load_failures([]) is None
+
+    def test_names_label_and_path(self):
+        err = validate_h3_load_failures([("<Picture 2>", "chars/a.png")])
+        assert "<Picture 2>" in err
+        assert "chars/a.png" in err
+
+    def test_lists_every_failure_in_order(self):
+        err = validate_h3_load_failures([
+            ("<Picture 1>", "a.png"), ("<Video 1>", "b.mp4"), ("<Audio 1>", "c.wav"),
+        ])
+        assert err.index("a.png") < err.index("b.mp4") < err.index("c.wav")
+
+    def test_count_in_message(self):
+        err = validate_h3_load_failures([("<Picture 1>", "a.png"), ("<Audio 1>", "c.wav")])
+        assert "2 reference(s)" in err
+
+    def test_missing_path_is_labelled(self):
+        err = validate_h3_load_failures([("<Audio 1>", "")])
+        assert "(no path)" in err
+
+
 # ── assemble_composition: slot_descriptors + appearance_overrides ───────────────
 
 assemble_composition = pa.assemble_composition

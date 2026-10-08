@@ -70,6 +70,7 @@ from ..utils.prompt_assembler import (
     validate_h3_refs_pre as _validate_h3_refs_pre,
     validate_h3_audio_clip as _validate_h3_audio_clip,
     validate_h3_audio_total as _validate_h3_audio_total,
+    validate_h3_load_failures as _validate_h3_load_failures,
 )
 
 logger = get_logger(__name__)
@@ -1553,6 +1554,7 @@ class CompositionToH3Conditioning(io.ComfyNode):
         ref_audios       = {}
         standalone_idx   = 0
         loaded_audio_durations: list[float] = []
+        load_failures: list[tuple[str, str]] = []
 
         # VRAM estimate: reference token count. With ref_image_size=="match",
         # MiniMaxH3ReferenceToVideo rescales every reference to the generation
@@ -1587,6 +1589,7 @@ class CompositionToH3Conditioning(io.ComfyNode):
                 else:
                     logger.warning("  <Picture %d>  image  %s  FAILED TO LOAD",
                                    ref["picture_ordinal"], fname)
+                    load_failures.append((f"<Picture {ref['picture_ordinal']}>", path))
 
             elif modality == "video":
                 frames = _h3_load_video_frames(path, ref.get("load_params", {}))
@@ -1606,6 +1609,7 @@ class CompositionToH3Conditioning(io.ComfyNode):
                 else:
                     logger.warning("  <Video %d>    video  %s  FAILED TO LOAD",
                                    ref["video_ordinal"], fname)
+                    load_failures.append((f"<Video {ref['video_ordinal']}>", path))
 
             elif modality == "soundtrack_audio":
                 _cache = ref.get("audio_cache", "")
@@ -1626,6 +1630,7 @@ class CompositionToH3Conditioning(io.ComfyNode):
                 else:
                     logger.warning("  <Audio %d>    soundtrack  %s  FAILED TO LOAD",
                                    ref["audio_ordinal"], src_note)
+                    load_failures.append((f"<Audio {ref['audio_ordinal']}> (soundtrack)", path))
 
             elif modality == "audio":
                 _cache = ref.get("audio_cache", "")
@@ -1639,6 +1644,7 @@ class CompositionToH3Conditioning(io.ComfyNode):
                 if audio is None:
                     logger.warning("  <Audio %d>    standalone  %s  FAILED TO LOAD",
                                    ref["audio_ordinal"], src_note)
+                    load_failures.append((f"<Audio {ref['audio_ordinal']}>", path))
                     continue
 
                 # Apply trim_to: shorten waveform to estimated dialogue line duration
@@ -1666,6 +1672,11 @@ class CompositionToH3Conditioning(io.ComfyNode):
                 loaded_audio_durations.append(actual_dur)
                 ref_audios[f"ref_audio_{standalone_idx}"] = audio
                 standalone_idx += 1
+
+        # A reference that failed to load would leave its tag in the prompt with no media.
+        load_err = _validate_h3_load_failures(load_failures)
+        if load_err:
+            raise ValueError(load_err)
 
         # Total audio duration check (uses actual loaded/trimmed durations)
         total_audio = sum(loaded_audio_durations)

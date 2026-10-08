@@ -149,6 +149,23 @@ def validate_h3_audio_total(durations: list) -> str | None:
     return None
 
 
+def validate_h3_load_failures(failures: list) -> str | None:
+    """Report every reference that could not be loaded.
+
+    ``failures`` is a list of ``(label, path)`` pairs, e.g. ``("<Picture 2>", "a.png")``.
+    Returns an error string, or None when nothing failed.  A skipped reference leaves its
+    ``<Picture N>`` / ``<Video N>`` / ``<Audio N>`` tag in the prompt with no media behind it.
+    """
+    if not failures:
+        return None
+    lines = "\n".join(f"  • {label}: {path or '(no path)'}" for label, path in failures)
+    return (
+        f"H3 Ref2VA: {len(failures)} reference(s) could not be loaded:\n{lines}\n"
+        f"Check that each file exists in the ComfyUI input/output folder and see the "
+        f"log above for the cause."
+    )
+
+
 # ── Formatting helpers ─────────────────────────────────────────────────────────
 
 _LANG_LABELS: dict[str, str] = {
