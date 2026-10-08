@@ -493,3 +493,26 @@ def test_audio_wanted_defaults_to_dialogue_allowed():
 
 def test_audio_wanted_tolerates_missing_entry_or_clip():
     assert rb.bundle_audio_wanted(None, None) is False
+
+
+# ── video_entry_audio_source: a separate voice must not also come from the video ──
+
+def test_video_entry_uses_its_own_track_when_that_is_the_voice():
+    assert rb.video_entry_audio_source("extract_from_visual", True) == "extract_from_visual"
+
+
+def test_video_entry_uses_its_own_track_when_no_voice_is_configured():
+    assert rb.video_entry_audio_source("none", True) == "extract_from_visual"
+
+
+def test_video_entry_has_no_audio_when_the_voice_is_a_file():
+    assert rb.video_entry_audio_source("file", True) == "none"
+
+
+def test_video_entry_has_no_audio_when_the_voice_is_another_video():
+    assert rb.video_entry_audio_source("extract_from_video", True) == "none"
+
+
+def test_video_entry_has_no_audio_when_audio_is_not_wanted():
+    for src in ("extract_from_visual", "none", "file", "extract_from_video"):
+        assert rb.video_entry_audio_source(src, False) == "none"

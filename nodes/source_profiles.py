@@ -72,6 +72,7 @@ from ..utils.proxy_cache import ensure_source_profile_proxy as _ensure_proxy
 from ..utils.reference_bundles import (
     load_registry as _load_bundle_registry,
     resolve_bundle_audio_source as _resolve_bundle_audio_source,
+    video_entry_audio_source as _video_entry_audio_source,
     bundle_audio_wanted as _bundle_audio_wanted,
 )
 from ..utils.composition_resources import get_background as _get_background
@@ -800,7 +801,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
                             # voice-timbre reference for this subject. allows_dialogue=False
                             # means no audio involvement for this shot at all, regardless
                             # of where the bundle's audio would otherwise come from.
-                            ve_audio_src = "extract_from_visual" if bun_audio_wanted else "none"
+                            ve_audio_src = _video_entry_audio_source(audio_source, bun_audio_wanted)
                             bundle_video_entries.append({
                                 "subject_id":       cast_entry["bundle_id"],
                                 "subject_ids":      [cast_entry["bundle_id"]],

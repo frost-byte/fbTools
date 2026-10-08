@@ -210,6 +210,19 @@ def bundle_audio_wanted(cast_entry: dict, clip: dict) -> bool:
     return bool((cast_entry or {}).get("use_audio")) and bool((clip or {}).get("allows_dialogue", True))
 
 
+def video_entry_audio_source(audio_source: str, wanted: bool) -> str:
+    """Audio source for a bundle's own reference-video entry in Source Profile mode.
+
+    The video's audio track serves as the voice reference only when the bundle's voice IS that
+    track (extract_from_visual) or none is configured. A bundle whose voice is a separate file
+    (file / extract_from_video) supplies it through its own entry; adding the video's track too
+    sends the same voice as two audio references.
+    """
+    if not wanted or audio_source in ("file", "extract_from_video"):
+        return "none"
+    return "extract_from_visual"
+
+
 BUNDLE_AUDIO_SWITCH_BUNDLE = 1
 BUNDLE_AUDIO_SWITCH_FALLBACK = 2
 
