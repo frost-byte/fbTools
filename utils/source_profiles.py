@@ -114,6 +114,18 @@ def _normalize_proxy_short_edge(value) -> int:
     return round(v / 32) * 32
 
 
+def resolve_proxy_short_edge(profile_edge, override=0) -> int:
+    """Proxy short edge for a run: the profile's setting unless an override (> 0) is given.
+
+    Both are rounded to a multiple of 32 and clamped to 320-1080, like the stored setting.
+    """
+    try:
+        wanted = int(override or 0)
+    except (TypeError, ValueError):
+        wanted = 0
+    return _normalize_proxy_short_edge(wanted if wanted > 0 else profile_edge)
+
+
 def _normalize_profile(pid: str, entry: dict) -> dict:
     seg_dur = entry.get("default_segment_duration")
     return {

@@ -877,3 +877,24 @@ class TestEstimateReferenceFrames:
     def test_zero_duration_falls_back_to_cap(self):
         assert sp.estimate_reference_frames(0.0, 2, 120) == 120
         assert sp.estimate_reference_frames(0.0, 2, 0) == 0
+
+
+class TestResolveProxyShortEdge:
+    def test_profile_value_without_override(self):
+        assert sp.resolve_proxy_short_edge(768) == 768
+        assert sp.resolve_proxy_short_edge(768, 0) == 768
+
+    def test_override_wins(self):
+        assert sp.resolve_proxy_short_edge(768, 480) == 480
+
+    def test_override_rounded_to_multiple_of_32(self):
+        assert sp.resolve_proxy_short_edge(768, 500) == 512
+
+    def test_override_clamped(self):
+        assert sp.resolve_proxy_short_edge(768, 100) == 320
+        # 1080 is the ceiling before rounding to a multiple of 32, which gives 1088
+        assert sp.resolve_proxy_short_edge(768, 4000) == 1088
+
+    def test_bad_override_falls_back_to_profile(self):
+        assert sp.resolve_proxy_short_edge(576, "abc") == 576
+        assert sp.resolve_proxy_short_edge(576, None) == 576
