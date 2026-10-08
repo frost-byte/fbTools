@@ -834,3 +834,46 @@ def test_wrapper_matches_from_list_over_the_clips_subjects():
     ordered = [s for sid in ["cara", "bob", "amy"] for s in _roster() if s["id"] == sid]
     for pronoun, n in (("feminine", 1), ("feminine", 2), ("masculine", 1), ("feminine", 3)):
         assert resolve_ordinal_subject(profile, "c1", pronoun, n) == resolve_ordinal_from_list(ordered, pronoun, n)
+
+
+# ── reference sampling overrides ───────────────────────────────────────────────
+
+class TestResolveReferenceSampling:
+    def test_clip_values_used_when_no_override(self):
+        assert sp.resolve_reference_sampling(2, 120) == (2, 120)
+
+    def test_zero_override_means_use_clip(self):
+        assert sp.resolve_reference_sampling(2, 120, 0, 0) == (2, 120)
+
+    def test_override_wins(self):
+        assert sp.resolve_reference_sampling(2, 120, 4, 48) == (4, 48)
+
+    def test_nth_and_cap_override_independently(self):
+        assert sp.resolve_reference_sampling(2, 120, 4, 0) == (4, 120)
+        assert sp.resolve_reference_sampling(2, 120, 0, 60) == (2, 60)
+
+    def test_clip_without_cap_stays_uncapped(self):
+        assert sp.resolve_reference_sampling(1, 0) == (1, 0)
+
+    def test_stride_never_below_one(self):
+        assert sp.resolve_reference_sampling(0, 0) == (1, 0)
+        assert sp.resolve_reference_sampling(None, None) == (1, 0)
+
+
+class TestEstimateReferenceFrames:
+    def test_full_rate_uncapped(self):
+        assert sp.estimate_reference_frames(10.0, 1, 0) == 240
+
+    def test_stride_reduces_frames(self):
+        assert sp.estimate_reference_frames(10.0, 2, 0) == 120
+        assert sp.estimate_reference_frames(10.0, 4, 0) == 60
+
+    def test_cap_applies_when_smaller(self):
+        assert sp.estimate_reference_frames(10.0, 1, 100) == 100
+
+    def test_cap_ignored_when_larger(self):
+        assert sp.estimate_reference_frames(10.0, 2, 500) == 120
+
+    def test_zero_duration_falls_back_to_cap(self):
+        assert sp.estimate_reference_frames(0.0, 2, 120) == 120
+        assert sp.estimate_reference_frames(0.0, 2, 0) == 0

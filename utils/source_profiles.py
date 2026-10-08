@@ -32,6 +32,29 @@ DEFAULT_SELECT_EVERY_NTH: int   = 2
 DEFAULT_FRAME_LOAD_CAP:   int   = 120
 
 
+def resolve_reference_sampling(clip_nth, clip_cap, override_nth: int = 0, override_cap: int = 0) -> tuple[int, int]:
+    """Reference-video sampling for a clip: ``(select_every_nth, frame_load_cap)``.
+
+    The clip's own values are used unless a per-run override is given; 0 means "use the clip's".
+    A cap of 0 means no cap, and the clip's stride can never drop below 1.
+    """
+    nth = int(override_nth) if int(override_nth or 0) > 0 else int(clip_nth or 1)
+    cap = int(override_cap) if int(override_cap or 0) > 0 else int(clip_cap or 0)
+    return max(1, nth), max(0, cap)
+
+
+def estimate_reference_frames(duration_s: float, nth: int, cap: int, fps: int = 24) -> int:
+    """Frames the H3 reference loader reads for a clip (before it pads to 17k+5).
+
+    Mirrors ``_h3_load_video_frames``: the clip duration is converted to an output-frame count after
+    the stride, and the frame cap applies on top when it is smaller.
+    """
+    if duration_s <= 0:
+        return max(0, int(cap))
+    n = max(1, int(duration_s * fps / max(1, nth)))
+    return min(n, cap) if cap > 0 else n
+
+
 _PRONOUN_STYLES = {"neutral", "feminine", "masculine", "object", "location"}
 
 

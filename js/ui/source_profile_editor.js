@@ -1710,9 +1710,20 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             dlgCb.checked = clip.allows_dialogue !== false;
             dlgCb.onchange = () => { clips[i] = { ...clips[i], allows_dialogue: dlgCb.checked }; commitClip(i); };
 
+            // Read-only: these drive the H3 reference video. Override per run on the Clip Prompt node.
+            const refNth = clip.select_every_nth ?? 2;
+            const refCap = clip.frame_load_cap ?? 120;
+            const refInfo = _mk("div", {
+                cls: "spe-clip-field-label",
+                style: { opacity: "0.7", fontSize: "11px", margin: "2px 0 4px" },
+                title: "Reference video sampling used by Source Profile Clip Prompt. " +
+                       "Override with Reference Every Nth / Reference Frame Cap on that node.",
+            }, [`H3 reference: every ${refNth} frame(s), cap ${refCap || "none"}`]);
+
             const clipBody = _mk("div", { cls: "spe-clip-card-body" }, [
                 _mk("div", { cls: "spe-clip-row", style: { marginBottom: "6px" } }, [labelInp]),
                 boundsRow,
+                refInfo,
                 actionEl,
                 subjects.length ? subjWrap : null,
                 _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px", marginTop: "4px" } }, [

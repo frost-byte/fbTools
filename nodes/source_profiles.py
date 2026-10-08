@@ -41,6 +41,8 @@ from ..utils.source_profiles import (
     save_registry as _save_source_registry,
     MEDIA_TYPES as _SOURCE_MEDIA_TYPES,
     MEDIA_DIRS as _SOURCE_MEDIA_DIRS,
+    resolve_reference_sampling as _resolve_reference_sampling,
+    estimate_reference_frames as _estimate_reference_frames,
 )
 from ..utils.scene_casts import resolve_effective_background_id as _resolve_effective_background_id
 from ..utils.source_profile_analysis import (
@@ -467,6 +469,33 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     ),
                     optional=True,
                 ),
+                io.Int.Input(
+                    "ref_every_nth",
+                    display_name="Reference Every Nth",
+                    default=0,
+                    min=0,
+                    max=30,
+                    tooltip=(
+                        "Use every Nth frame of the source clip as the H3 reference video. 0 = use the "
+                        "clip's own value (shown in the Source Profile editor). Higher values load fewer "
+                        "frames and run faster, but the reference covers the same span in less time, "
+                        "so its motion looks N times faster to the model."
+                    ),
+                    optional=True,
+                ),
+                io.Int.Input(
+                    "ref_frame_cap",
+                    display_name="Reference Frame Cap",
+                    default=0,
+                    min=0,
+                    max=9999,
+                    tooltip=(
+                        "Most reference frames to load, after the stride. 0 = use the clip's own value. "
+                        "A cap below the clip's length cuts off the END of the clip. Use a large value "
+                        "(e.g. 9999) to lift a clip's cap."
+                    ),
+                    optional=True,
+                ),
             ],
             outputs=[
                 io.String.Output(
@@ -535,6 +564,8 @@ class SourceProfileClipPrompt(io.ComfyNode):
         include_original_subject_tags: bool = False,
         clip_duration_multiplier: int = 1,
         max_clip_frames: int = 360,
+        ref_every_nth: int = 0,
+        ref_frame_cap: int = 0,
     ) -> io.NodeOutput:
         if source_profile is None:
             return io.NodeOutput("", None, [], "", 0, 0, 0, "No source profile connected.", "")
@@ -1024,13 +1055,17 @@ class SourceProfileClipPrompt(io.ComfyNode):
         clip_end    = clip.get("end_time", 0.0)
         clip_dur    = max(0.0, clip_end - clip_start)
 
+        ref_nth, ref_cap = _resolve_reference_sampling(
+            clip.get("select_every_nth", 2), clip.get("frame_load_cap", 120),
+            ref_every_nth, ref_frame_cap,
+        )
         load_params = {
             "start_time":        clip_start,
             "duration":          clip_dur,
             "force_rate":        24,  # H3 requires 24fps reference video
-            "frame_load_cap":    clip.get("frame_load_cap", 120),
+            "frame_load_cap":    ref_cap,
             "skip_first_frames": 0,
-            "select_every_nth":  clip.get("select_every_nth", 2),
+            "select_every_nth":  ref_nth,
         }
 
         # ── Per-segment proxy ──────────────────────────────────────────────────
@@ -1223,9 +1258,16 @@ class SourceProfileClipPrompt(io.ComfyNode):
         res_str = f"{vid_w}×{vid_h}" if vid_w and vid_h else "unknown"
         proxy_used = video_file_for_entry != video_abs and video_file_for_entry
         proxy_note = f"\nProxy: {os.path.basename(video_file_for_entry)}" if proxy_used else ""
+        ref_frames = _estimate_reference_frames(clip_dur, ref_nth, ref_cap)
+        ref_origin = "node override" if (ref_every_nth or ref_frame_cap) else "clip setting"
+        ref_note = (
+            f"Reference: every {ref_nth} frame(s), cap {ref_cap or 'none'} ({ref_origin}) → "
+            f"~{ref_frames} frames = {ref_frames / 24:.1f}s covering {min(clip_dur, ref_frames * ref_nth / 24):.1f}s of the clip\n"
+        )
         clip_summary = (
             f"Profile: {profile_name} | Clip: {clip_label} ({clip_id_used})\n"
             f"Duration: {duration_s:.1f}s → {clip_frames} frames | Resolution: {res_str}\n"
+            f"{ref_note}"
             f"Slots: {slot_map_str}\n"
             f"Model: {model_type} | LoRAs: {len(lora_stack_data)}\n"
             f"Concept IDs: {concept_ids_str or '(none)'}"
