@@ -32,6 +32,7 @@ from .nodes.compose import SceneCompose, PromptAssemble
 from .nodes.scene_casts import SceneCastLoad, SceneCastBuild
 from .nodes.compositions import CompositionLoad, PromptCompositionLoader, CompositionToH3Conditioning
 from .nodes.marker_frame_split import MarkerFrameSplit
+from .nodes.h3_source_guides import H3SourceGuides
 from .nodes.image_text_overlay import ImageTextOverlay
 from .nodes.prompt_shorthand import PromptShorthandExpander
 from .nodes import kdenlive_archive as _kdenlive_archive_routes  # noqa: F401  (registers /fbtools/kdenlive/* routes on import)
@@ -602,6 +603,7 @@ class FBToolsExtension(ComfyExtension):
             CompositionLoad,
             PromptCompositionLoader,
             CompositionToH3Conditioning,
+            H3SourceGuides,
             MarkerFrameSplit,
             ImageTextOverlay,
             PromptShorthandExpander,
