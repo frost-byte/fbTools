@@ -115,6 +115,9 @@ def _normalize_proxy_short_edge(value) -> int:
 
 
 PROXY_SHORT_EDGE_CHOICES = _PROXY_SHORT_EDGE_CHOICES
+# Every size a run may use: multiples of 32 from the lowest the profile setting allows up to the
+# highest it can round to (1080 rounds to 1088).
+RUN_PROXY_SHORT_EDGE_OPTIONS = tuple(range(320, 1089, 32))
 USE_PROFILE_PROXY_EDGE = "Use profile setting"
 
 

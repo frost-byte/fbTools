@@ -45,7 +45,7 @@ from ..utils.source_profiles import (
     estimate_reference_frames as _estimate_reference_frames,
     resolve_proxy_short_edge as _resolve_proxy_short_edge,
     proxy_edge_choice_to_override as _proxy_edge_choice_to_override,
-    PROXY_SHORT_EDGE_CHOICES as _PROXY_EDGE_CHOICES,
+    RUN_PROXY_SHORT_EDGE_OPTIONS as _PROXY_EDGE_OPTIONS,
     USE_PROFILE_PROXY_EDGE as _USE_PROFILE_EDGE,
 )
 from ..utils.scene_casts import resolve_effective_background_id as _resolve_effective_background_id
@@ -504,11 +504,12 @@ class SourceProfileClipPrompt(io.ComfyNode):
                 io.Combo.Input(
                     "ref_proxy_short_edge",
                     display_name="Reference Proxy Short Edge",
-                    options=[_USE_PROFILE_EDGE, *[str(v) for v in _PROXY_EDGE_CHOICES]],
+                    options=[_USE_PROFILE_EDGE, *[str(v) for v in _PROXY_EDGE_OPTIONS]],
                     default=_USE_PROFILE_EDGE,
                     tooltip=(
                         "Resolution (shorter edge, px) of the reference video proxy for this run. "
-                        "'Use profile setting' keeps the Source Profile's own value. Lower is faster "
+                        "'Use profile setting' keeps the Source Profile's own value. Any multiple of 32 is "
+                        "listed (320-1088). Lower is faster "
                         "and uses less memory (480 is about 39% of the tokens of 768). A proxy at a "
                         "new size is built once and cached next to the profile's own; the profile "
                         "setting and its existing proxies are not changed."

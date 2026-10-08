@@ -913,3 +913,24 @@ class TestProxyEdgeChoice:
     def test_every_choice_resolves_to_a_valid_edge(self):
         for v in sp.PROXY_SHORT_EDGE_CHOICES:
             assert sp.resolve_proxy_short_edge(768, sp.proxy_edge_choice_to_override(str(v))) % 32 == 0
+
+
+class TestRunProxyEdgeOptions:
+    def test_every_option_is_a_multiple_of_32(self):
+        assert all(v % 32 == 0 for v in sp.RUN_PROXY_SHORT_EDGE_OPTIONS)
+
+    def test_range_matches_what_the_profile_setting_allows(self):
+        assert min(sp.RUN_PROXY_SHORT_EDGE_OPTIONS) == 320
+        assert max(sp.RUN_PROXY_SHORT_EDGE_OPTIONS) == 1088
+
+    def test_options_include_a_value_that_worked_in_practice(self):
+        assert 608 in sp.RUN_PROXY_SHORT_EDGE_OPTIONS
+
+    def test_options_are_unchanged_by_normalisation(self):
+        for v in sp.RUN_PROXY_SHORT_EDGE_OPTIONS:
+            assert sp.resolve_proxy_short_edge(768, v) == v
+
+    def test_editor_choices_are_all_selectable(self):
+        # 1080 rounds to 1088, which is in the list
+        for v in sp.PROXY_SHORT_EDGE_CHOICES:
+            assert sp.resolve_proxy_short_edge(768, v) in sp.RUN_PROXY_SHORT_EDGE_OPTIONS
