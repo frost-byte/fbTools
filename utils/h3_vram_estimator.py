@@ -41,6 +41,12 @@ from __future__ import annotations
 PIXELS_PER_SPATIAL_TOKEN = 1024   # 32 * 32
 FRAMES_PER_TEMPORAL_TOKEN = 4
 
+# Mirrors comfy_extras/nodes_minimax_h3.py: how the native reference node resizes what it is given.
+CANVAS_MULTIPLE = 32
+BASE_SHORT_EDGE = 768
+MAX_PIXELS = 768 * 1344
+REF_IMAGE_SHORT_EDGE = 2048
+
 # k in: attention_gib ~= k * total_tokens^2
 ATTENTION_GIB_PER_TOKEN_SQUARED = 9.40 / (62_900 ** 2)
 
@@ -56,6 +62,60 @@ def tokens_for(width: int, height: int, frames: int) -> float:
     """Approximate H3 token count for a WxH, `frames`-long clip."""
     latent_frames = -(-max(int(frames), 1) // FRAMES_PER_TEMPORAL_TOKEN)  # ceil div
     return (max(width, 0) * max(height, 0) / PIXELS_PER_SPATIAL_TOKEN) * latent_frames
+
+
+def _round_to_multiple(value: float) -> int:
+    return max(CANVAS_MULTIPLE, round(value / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+
+
+def _adapt_canvas(width: int, height: int) -> tuple[int, int]:
+    """768-short-edge canvas with a 768*1344 area cap, rounded to 32 (the native node's adapt_canvas)."""
+    ratio = width / height
+    nom_w, nom_h = (BASE_SHORT_EDGE * ratio, BASE_SHORT_EDGE) if ratio >= 1.0 else (BASE_SHORT_EDGE, BASE_SHORT_EDGE / ratio)
+    if nom_w * nom_h > MAX_PIXELS:
+        s = (MAX_PIXELS / (nom_w * nom_h)) ** 0.5
+        nom_w, nom_h = nom_w * s, nom_h * s
+    return _round_to_multiple(nom_w), _round_to_multiple(nom_h)
+
+
+def reference_video_size(width: int, height: int) -> tuple[int, int]:
+    """Size the native node resizes a reference video to.
+
+    It does not follow the generation canvas: a video is brought to the 768-short-edge canvas,
+    except that one already smaller than that canvas keeps its own size (rounded to 32).
+    """
+    cw, ch = _adapt_canvas(width, height)
+    if width * height < cw * ch:
+        return _round_to_multiple(width), _round_to_multiple(height)
+    return cw, ch
+
+
+def reference_image_size(width: int, height: int, canvas_w: int, canvas_h: int, mode: str = "match") -> tuple[int, int]:
+    """Size the native node resizes a reference image to (scaled down only)."""
+    if mode == "match":
+        scale = min(1.0, ((canvas_w * canvas_h) / (width * height)) ** 0.5)
+    else:
+        scale = min(1.0, REF_IMAGE_SHORT_EDGE / min(width, height))
+    return _round_to_multiple(width * scale), _round_to_multiple(height * scale)
+
+
+def aligned_length(length: int) -> int:
+    """Generated frame count: ``length`` snapped up to the 17k+5 grid."""
+    n = max(5, int(length))
+    while n % 17 != 5:
+        n += 1
+    return n
+
+
+def reference_video_frames(loaded_frames: int, output_frames: int) -> int:
+    """Frames of a reference video the native node keeps: capped at the output length, then
+    trimmed down to a 17k+5 count."""
+    n = min(int(loaded_frames), int(output_frames))
+    if n < 5:
+        return 0
+    while n % 17 != 5:
+        n -= 1
+    return n
 
 
 def estimate_attention_gib(total_tokens: float) -> float:

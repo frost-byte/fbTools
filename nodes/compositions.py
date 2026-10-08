@@ -46,7 +46,14 @@ from ..utils.reference_bundles import (
 )
 from ..utils.outfit_registry import load_outfit_registry as _load_outfit_registry
 from ..utils.proxy_cache import ensure_bundle_video_proxy as _ensure_bundle_proxy
-from ..utils.h3_vram_estimator import tokens_for as h3_tokens_for, max_safe_scale as h3_max_safe_scale
+from ..utils.h3_vram_estimator import (
+    tokens_for as h3_tokens_for,
+    max_safe_scale as h3_max_safe_scale,
+    reference_image_size as h3_reference_image_size,
+    reference_video_size as h3_reference_video_size,
+    reference_video_frames as h3_reference_video_frames,
+    aligned_length as h3_aligned_length,
+)
 from ..utils.composition_track_summary import summarize_scene_cast, summarize_loras, summarize_composition_meta
 from ..utils.composition_resources import load_backgrounds as _load_backgrounds_dict
 from ..utils.prompt_compositions import (
@@ -1441,8 +1448,9 @@ class CompositionToH3Conditioning(io.ComfyNode):
                 io.Combo.Input(
                     "ref_image_size", options=["match", "max"], default="match",
                     tooltip=(
-                        "'match' scales refs to the generation canvas area (faster). "
-                        "'max' uses full 2048px short-edge fidelity (slower)."
+                        "Applies to reference images. 'match' scales them to the generation canvas "
+                        "area (faster); 'max' uses full 2048px short-edge fidelity (slower). "
+                        "Reference videos are not affected: their size is set by the source proxy."
                     ),
                 ),
                 io.Boolean.Input(
@@ -1561,14 +1569,12 @@ class CompositionToH3Conditioning(io.ComfyNode):
         loaded_audio_durations: list[float] = []
         load_failures: list[tuple[str, str]] = []
 
-        # VRAM estimate: reference token count. With ref_image_size=="match",
-        # MiniMaxH3ReferenceToVideo rescales every reference to the generation
-        # canvas's own pixel area, so approximate each reference frame's cost
-        # as the canvas's own per-frame token cost rather than the reference's
-        # original (pre-rescale) resolution. With "max" (full 2048px-short-edge
-        # fidelity), use the reference's actual loaded resolution instead.
+        # VRAM estimate: reference token count, using the size MiniMaxH3ReferenceToVideo
+        # actually resizes each reference to (see utils/h3_vram_estimator.py): images follow
+        # ref_image_size, videos are brought to the node's own 768-short-edge canvas (a video
+        # already smaller keeps its size) and trimmed to the output length / 17k+5.
         reference_tokens = 0.0
-        canvas_tokens_per_frame = h3_tokens_for(width, height, 1) if estimate_vram else 0.0
+        output_frames = h3_aligned_length(length)
 
         logger.info("CompositionToH3: loading %d reference item(s) — canvas %dx%d, %d frames",
                     len(references), width, height, length)
@@ -1587,10 +1593,8 @@ class CompositionToH3Conditioning(io.ComfyNode):
                     logger.info("  <Picture %d>  image  %s  %dx%d",
                                 ref["picture_ordinal"], fname, w, h)
                     if estimate_vram:
-                        reference_tokens += (
-                            canvas_tokens_per_frame if ref_image_size == "match"
-                            else h3_tokens_for(w, h, 1)
-                        )
+                        reference_tokens += h3_tokens_for(
+                            *h3_reference_image_size(w, h, width, height, ref_image_size), 1)
                 else:
                     logger.warning("  <Picture %d>  image  %s  FAILED TO LOAD",
                                    ref["picture_ordinal"], fname)
@@ -1603,14 +1607,15 @@ class CompositionToH3Conditioning(io.ComfyNode):
                     ref_videos[f"ref_video_{n}"] = frames
                     lp = ref.get("load_params", {})
                     n_frames = frames.shape[0]
-                    logger.info("  <Video %d>    video  %s  %d frames  start=%.1fs dur=%.1fs",
+                    sent_w, sent_h = h3_reference_video_size(frames.shape[2], frames.shape[1])
+                    sent_frames = h3_reference_video_frames(n_frames, output_frames)
+                    logger.info("  <Video %d>    video  %s  %d frames  start=%.1fs dur=%.1fs  "
+                                "(%dx%d loaded; sent as %dx%d, %d frames)",
                                 ref["video_ordinal"], fname, n_frames,
-                                lp.get("start_time", 0.0), lp.get("duration", 0.0))
+                                lp.get("start_time", 0.0), lp.get("duration", 0.0),
+                                frames.shape[2], frames.shape[1], sent_w, sent_h, sent_frames)
                     if estimate_vram:
-                        reference_tokens += (
-                            canvas_tokens_per_frame * n_frames if ref_image_size == "match"
-                            else h3_tokens_for(frames.shape[2], frames.shape[1], n_frames)
-                        )
+                        reference_tokens += h3_tokens_for(sent_w, sent_h, sent_frames)
                 else:
                     logger.warning("  <Video %d>    video  %s  FAILED TO LOAD",
                                    ref["video_ordinal"], fname)

@@ -70,3 +70,50 @@ def test_max_safe_scale_safety_buffer_reduces_recommendation():
     loose, _ = est.max_safe_scale(main_tokens=39_000, reference_tokens=1_500, budget_gib=23.5, safety_buffer=1.0)
     tight, _ = est.max_safe_scale(main_tokens=39_000, reference_tokens=1_500, budget_gib=23.5, safety_buffer=0.5)
     assert tight < loose
+
+
+# ── reference sizing (mirrors the native MiniMaxH3ReferenceToVideo) ────────────
+
+def test_adapt_canvas_caps_at_768_by_1344():
+    assert est._adapt_canvas(1920, 1080) == (1344, 768)
+
+
+def test_reference_video_larger_than_canvas_is_brought_to_the_canvas():
+    # a 1080p source proxy is resized to the node's own 768 canvas, not the generation canvas
+    assert est.reference_video_size(1920, 1080) == (1344, 768)
+
+
+def test_reference_video_smaller_than_canvas_keeps_its_size():
+    # a 480p proxy is sent as 480p, rounded to 32
+    assert est.reference_video_size(854, 480) == (864, 480)
+
+
+def test_reference_video_size_depends_on_the_proxy_not_the_generation_canvas():
+    big = est.tokens_for(*est.reference_video_size(1366, 768), 243)
+    small = est.tokens_for(*est.reference_video_size(854, 480), 243)
+    assert small < big
+    assert 0.35 < small / big < 0.45   # ~ (480/768)^2
+
+
+def test_reference_image_match_scales_down_to_canvas_area_only():
+    w, h = est.reference_image_size(2048, 1152, 832, 640, "match")
+    assert w * h <= 832 * 640 * 1.15
+    # an image smaller than the canvas is not scaled up
+    assert est.reference_image_size(320, 320, 832, 640, "match") == (320, 320)
+
+
+def test_reference_image_max_uses_the_2048_short_edge_cap():
+    assert est.reference_image_size(4096, 2304, 832, 640, "max") == (3648, 2048)
+
+
+def test_aligned_length_snaps_up_to_17k_plus_5():
+    assert est.aligned_length(238) == 243
+    assert est.aligned_length(243) == 243
+    assert est.aligned_length(1) == 5
+
+
+def test_reference_video_frames_capped_to_output_then_trimmed():
+    assert est.reference_video_frames(243, 243) == 243
+    assert est.reference_video_frames(300, 243) == 243
+    assert est.reference_video_frames(118, 243) == 107
+    assert est.reference_video_frames(4, 243) == 0
