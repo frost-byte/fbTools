@@ -44,6 +44,9 @@ from ..utils.source_profiles import (
     resolve_reference_sampling as _resolve_reference_sampling,
     estimate_reference_frames as _estimate_reference_frames,
     resolve_proxy_short_edge as _resolve_proxy_short_edge,
+    proxy_edge_choice_to_override as _proxy_edge_choice_to_override,
+    PROXY_SHORT_EDGE_CHOICES as _PROXY_EDGE_CHOICES,
+    USE_PROFILE_PROXY_EDGE as _USE_PROFILE_EDGE,
 )
 from ..utils.scene_casts import resolve_effective_background_id as _resolve_effective_background_id
 from ..utils.source_profile_analysis import (
@@ -497,19 +500,17 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     ),
                     optional=True,
                 ),
-                io.Int.Input(
+                io.Combo.Input(
                     "ref_proxy_short_edge",
                     display_name="Reference Proxy Short Edge",
-                    default=0,
-                    min=0,
-                    max=1080,
-                    step=32,
+                    options=[_USE_PROFILE_EDGE, *[str(v) for v in _PROXY_EDGE_CHOICES]],
+                    default=_USE_PROFILE_EDGE,
                     tooltip=(
                         "Resolution (shorter edge, px) of the reference video proxy for this run. "
-                        "0 = use the Source Profile's own setting. Lower is faster and uses less "
-                        "memory (480 is about 39% of the tokens of 768). Rounded to a multiple of 32, "
-                        "range 320-1080. A proxy at a new size is built once and cached next to the "
-                        "profile's own; the profile setting and its existing proxies are not changed."
+                        "'Use profile setting' keeps the Source Profile's own value. Lower is faster "
+                        "and uses less memory (480 is about 39% of the tokens of 768). A proxy at a "
+                        "new size is built once and cached next to the profile's own; the profile "
+                        "setting and its existing proxies are not changed."
                     ),
                     optional=True,
                 ),
@@ -583,7 +584,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         max_clip_frames: int = 360,
         ref_every_nth: int = 0,
         ref_frame_cap: int = 0,
-        ref_proxy_short_edge: int = 0,
+        ref_proxy_short_edge: str = _USE_PROFILE_EDGE,
     ) -> io.NodeOutput:
         if source_profile is None:
             return io.NodeOutput("", None, [], "", 0, 0, 0, "No source profile connected.", "")
@@ -1090,7 +1091,9 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # Trim + downscale once so CompositionToH3Conditioning doesn't need to
         # seek inside a large source file on every generation run.
         video_file_for_entry = video_abs
-        proxy_edge = _resolve_proxy_short_edge(source_profile.get("proxy_short_edge", 768), ref_proxy_short_edge)
+        proxy_edge = _resolve_proxy_short_edge(
+            source_profile.get("proxy_short_edge", 768), _proxy_edge_choice_to_override(ref_proxy_short_edge),
+        )
         if video_abs:
             try:
                 proxy_path = _ensure_proxy(
@@ -1278,7 +1281,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         proxy_used = video_file_for_entry != video_abs and video_file_for_entry
         proxy_note = f"\nProxy: {os.path.basename(video_file_for_entry)}" if proxy_used else ""
         ref_frames = _estimate_reference_frames(clip_dur, ref_nth, ref_cap)
-        ref_origin = "node override" if (ref_every_nth or ref_frame_cap or ref_proxy_short_edge) else "profile/clip setting"
+        ref_origin = "node override" if (ref_every_nth or ref_frame_cap or _proxy_edge_choice_to_override(ref_proxy_short_edge)) else "profile/clip setting"
         ref_note = (
             f"Reference: every {ref_nth} frame(s), cap {ref_cap or 'none'}, proxy {proxy_edge}px ({ref_origin}) → "
             f"~{ref_frames} frames = {ref_frames / 24:.1f}s covering {min(clip_dur, ref_frames * ref_nth / 24):.1f}s of the clip\n"

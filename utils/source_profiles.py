@@ -114,6 +114,18 @@ def _normalize_proxy_short_edge(value) -> int:
     return round(v / 32) * 32
 
 
+PROXY_SHORT_EDGE_CHOICES = _PROXY_SHORT_EDGE_CHOICES
+USE_PROFILE_PROXY_EDGE = "Use profile setting"
+
+
+def proxy_edge_choice_to_override(choice) -> int:
+    """Combo value -> override for ``resolve_proxy_short_edge`` (0 = use the profile's)."""
+    try:
+        return int(choice)
+    except (TypeError, ValueError):
+        return 0
+
+
 def resolve_proxy_short_edge(profile_edge, override=0) -> int:
     """Proxy short edge for a run: the profile's setting unless an override (> 0) is given.
 

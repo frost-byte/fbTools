@@ -898,3 +898,18 @@ class TestResolveProxyShortEdge:
     def test_bad_override_falls_back_to_profile(self):
         assert sp.resolve_proxy_short_edge(576, "abc") == 576
         assert sp.resolve_proxy_short_edge(576, None) == 576
+
+
+class TestProxyEdgeChoice:
+    def test_choices_match_the_editor_options(self):
+        assert sp.PROXY_SHORT_EDGE_CHOICES == (480, 576, 640, 768, 1080)
+
+    def test_use_profile_label_means_no_override(self):
+        assert sp.proxy_edge_choice_to_override(sp.USE_PROFILE_PROXY_EDGE) == 0
+
+    def test_numeric_choice_becomes_override(self):
+        assert sp.proxy_edge_choice_to_override("576") == 576
+
+    def test_every_choice_resolves_to_a_valid_edge(self):
+        for v in sp.PROXY_SHORT_EDGE_CHOICES:
+            assert sp.resolve_proxy_short_edge(768, sp.proxy_edge_choice_to_override(str(v))) % 32 == 0
