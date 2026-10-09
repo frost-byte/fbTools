@@ -1,6 +1,143 @@
 # CHANGELOG
 
 
+## v1.30.0 (2026-10-09)
+
+### Bug Fixes
+
+- **bundles**: Don't send a bundle's voice twice when its video also supplies an audio track
+  ([`5ecae05`](https://github.com/frost-byte/fbTools/commit/5ecae051640c5319225486955e1626233567387d))
+
+In Source Profile mode a bundle with a reference video and a separate voice (a file or another
+  video) got two audio references: the video entry's soundtrack, which loads the bundle's processed
+  audio cache, and the standalone voice. The video entry now carries its own audio only when that
+  track is the bundle's voice.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+- **h3**: Fail instead of skipping reference media that cannot be loaded
+  ([`f257d0a`](https://github.com/frost-byte/fbTools/commit/f257d0a476a3e5b25a27186ee92763181c38c9bf))
+
+A missing or unreadable image, video, soundtrack or standalone audio was logged and skipped, so the
+  prompt kept its <Picture N>/<Video N>/<Audio N> tag with no media behind it.
+  CompositionToH3Conditioning now collects every load failure and raises one error listing them all.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+- **h3**: Re-run the conditioning node when a processed audio cache file changes
+  ([`c40c727`](https://github.com/frost-byte/fbTools/commit/c40c727ef1966bcb9fe16da274a0eca959e14654))
+
+The cache path already encodes its settings, but a file rewritten in place at the same path was not
+  noticed. Track the audio_cache mtime alongside the source path's.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+- **h3**: Size the VRAM estimate from what the reference node actually sends
+  ([`5c0eb0f`](https://github.com/frost-byte/fbTools/commit/5c0eb0fee27273e294ee3d52e0ffc7ccd90c29a4))
+
+The estimate priced every reference at the generation canvas, so changing a Source Profile proxy's
+  resolution never moved it. Videos are now priced at the native node's own 768-based size (a
+  smaller proxy keeps its size), capped to the output length and trimmed to 17k+5, and images follow
+  ref_image_size. The Video log line shows the size actually sent.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+- **source-profiles**: List every valid multiple of 32 for the reference proxy short edge
+  ([`78b09e7`](https://github.com/frost-byte/fbTools/commit/78b09e7ea47074a607f90ae27f35be38f3112d6a))
+
+The dropdown offered only the editor's five sizes, but any multiple of 32 from 320 to 1088 works
+  (608 gave good results). The node now lists them all, so there is nothing to guess.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+- **source-profiles**: Offer the reference proxy short edge as a dropdown
+  ([`c0ea093`](https://github.com/frost-byte/fbTools/commit/c0ea093cc967e3286b1a98c6a59fb612095b2bf5))
+
+The free-form number gave no hint of valid values. It now lists the same sizes the Source Profile
+  editor offers, plus "Use profile setting".
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+- **source-profiles**: Send a bundle's separate voice as its own audio reference in video modes
+  ([`451637e`](https://github.com/frost-byte/fbTools/commit/451637e839bc45d748f4ccc0e2ae661a5d3a7f5f))
+
+A bundle whose voice came from another video (extract_from_video) lost its audio when its visual
+  mode was video or both: the voice was queued under a made-up subject id no slot owns, so the
+  assembler ignored it. The voice now goes to the bundle's slot as a standalone audio reference, the
+  same route as a dedicated audio file and the Composition path, in every visual mode and unpaired
+  with any reference video.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+### Chores
+
+- **lint**: Remove unused variables and placeholder-less f-strings in prompt assembler
+  ([`88ed709`](https://github.com/frost-byte/fbTools/commit/88ed709023a2106a0b92212908f6c7929cc210b1))
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+### Documentation
+
+- **backlog**: Mark H3 verification done and bring the audio pipeline item up to date
+  ([`610cfc8`](https://github.com/frost-byte/fbTools/commit/610cfc85f446757bc5e5dd4b3fe2722f49f877ce))
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+### Features
+
+- **h3**: Add H3 Source Guides node to anchor Source Profile clip frames at their own times
+  ([`62ab8a3`](https://github.com/frost-byte/fbTools/commit/62ab8a3ac55778a727d13ac12f7263b77287cfec))
+
+Reads the <Video N> reference of a Source Profile clip prompt, picks one frame (or a short run)
+  every N output frames and adds each with MiniMaxH3AddGuide, so a few frames carry the clip's
+  progression at real timing instead of a time-compressed reference video. Wire it after Composition
+  -> H3 Conditioning, before the guider.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+- **source-profiles**: Override the reference every-nth and frame cap on the Clip Prompt node
+  ([`9589ab8`](https://github.com/frost-byte/fbTools/commit/9589ab83e884218509130561c5d8cf2980aa9d0d))
+
+Source Profile Clip Prompt gains Reference Every Nth and Reference Frame Cap inputs (0 = use the
+  clip's own value) so the H3 reference video can be thinned per run without editing stored clips.
+  The clip summary reports the stride, cap and resulting frame count, and the Source Profile editor
+  shows each clip's stored reference sampling.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+- **source-profiles**: Override the reference proxy short edge on the Clip Prompt node
+  ([`21b222b`](https://github.com/frost-byte/fbTools/commit/21b222b2601058c11892d953279bec7307c9b8cb))
+
+Reference Proxy Short Edge (0 = use the profile's setting) builds and caches a proxy at a different
+  resolution for the run, leaving the profile setting and its existing proxies alone.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+
 ## v1.29.0 (2026-10-07)
 
 ### Bug Fixes
