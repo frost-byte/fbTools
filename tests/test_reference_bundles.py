@@ -516,3 +516,44 @@ def test_video_entry_has_no_audio_when_the_voice_is_another_video():
 def test_video_entry_has_no_audio_when_audio_is_not_wanted():
     for src in ("extract_from_visual", "none", "file", "extract_from_video"):
         assert rb.video_entry_audio_source(src, False) == "none"
+
+
+# ── bundle_standalone_voice: a separate voice is its own <Audio N>, in every visual mode ──
+
+def _voice_bundle(source, visual_type="video", **audio):
+    return {
+        "visual": {"type": visual_type, "file": "clips/ref.mkv", "video_dir": "output"},
+        "audio": {"source": source, "retention": "timbre", "role": "lead", "language": "en-us",
+                  "audio_cache": "/cache/a.wav", **audio},
+    }
+
+
+def test_standalone_voice_from_a_separate_video_in_both_mode():
+    b = _voice_bundle("extract_from_video", "both", video_file="voice/sample.mp4",
+                      video_dir="output", start_time=2.3, duration=8)
+    v = rb.bundle_standalone_voice(b, True, "/in", "/out")
+    assert v["audio_reference_file"] == "/out/voice/sample.mp4"
+    assert (v["audio_start_time"], v["audio_duration"]) == (2.3, 8.0)
+    assert v["audio_cache"] == "/cache/a.wav"
+    assert v["audio_role"] == "lead" and v["audio_retention"] == "timbre"
+
+
+def test_standalone_voice_from_a_file_uses_its_audio_dir():
+    b = _voice_bundle("file", "images", file="voice.wav", audio_dir="input")
+    v = rb.bundle_standalone_voice(b, True, "/in", "/out")
+    assert v["audio_reference_file"] == "/in/voice.wav"
+
+
+def test_standalone_voice_empty_when_not_wanted():
+    b = _voice_bundle("extract_from_video", video_file="v.mp4")
+    assert rb.bundle_standalone_voice(b, False, "/in", "/out") == {}
+
+
+def test_standalone_voice_empty_for_the_bundles_own_video_track_and_for_none():
+    assert rb.bundle_standalone_voice(_voice_bundle("extract_from_visual"), True, "/in", "/out") == {}
+    assert rb.bundle_standalone_voice(_voice_bundle("none"), True, "/in", "/out") == {}
+
+
+def test_standalone_voice_empty_when_the_source_file_is_unset():
+    assert rb.bundle_standalone_voice(_voice_bundle("extract_from_video"), True, "/in", "/out") == {}
+    assert rb.bundle_standalone_voice(None, True, "/in", "/out") == {}

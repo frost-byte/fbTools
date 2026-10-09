@@ -71,9 +71,9 @@ from ..utils.source_profile_analysis import (
 from ..utils.proxy_cache import ensure_source_profile_proxy as _ensure_proxy
 from ..utils.reference_bundles import (
     load_registry as _load_bundle_registry,
-    resolve_bundle_audio_source as _resolve_bundle_audio_source,
     video_entry_audio_source as _video_entry_audio_source,
     bundle_audio_wanted as _bundle_audio_wanted,
+    bundle_standalone_voice as _bundle_standalone_voice,
 )
 from ..utils.composition_resources import get_background as _get_background
 from ..utils.prompt_assembler import (
@@ -821,78 +821,19 @@ class SourceProfileClipPrompt(io.ComfyNode):
                                 "include_video_background": bool(cast_entry.get("include_video_background", False)),
                             })
 
-                    # extract_from_video: a SEPARATE video whose audio track is the
-                    # voice reference.  Add an audio_only video_entry linked to the
-                    # bundle slot so the assembler emits <Audio N> without also
-                    # assigning a spurious <Video N> visual reference to the slot.
-                    # Same gate as the other audio paths (audio checkbox on AND the clip
-                    # allows dialogue) — this is an independent file, but still audio for
-                    # this clip's shot, so both settings must still apply.
-                    if audio_source == "extract_from_video" and bun_audio_wanted:
-                        aud_vfile = audio.get("video_file", "")
-                        if aud_vfile:
-                            aud_vdir = audio.get("video_dir", "input")
-                            aud_base = (get_output_directory() if aud_vdir == "output"
-                                        else get_input_directory())
-                            aud_load = {
-                                "start_time":        float(audio.get("start_time", 0.0)),
-                                "duration":          float(audio.get("duration", 0.0)),
-                                "force_rate":        audio.get("force_rate", 0),
-                                "frame_load_cap":    audio.get("frame_load_cap", 0) or 4,
-                                "skip_first_frames": audio.get("skip_first_frames", 0),
-                                "select_every_nth":  audio.get("select_every_nth", 1),
-                            }
-                            # When visual mode is images, link to the bundle slot via
-                            # bundle_id so the assembler can resolve soundtrack_num.
-                            # audio_only=True tells the assembler to assign <Audio N>
-                            # only (no <Video N> added to the slot's visual refs).
-                            # When visual mode is video or both the visual entry already
-                            # holds bundle_id; use a distinct id to avoid collisions.
-                            has_vid_entry = bun_visual_mode in ("video", "both")
-                            aud_sid = (cast_entry["bundle_id"] + "_audvid" if has_vid_entry
-                                       else cast_entry["bundle_id"])
-                            bundle_video_entries.append({
-                                "subject_id":       aud_sid,
-                                "subject_ids":      [aud_sid],
-                                "video_file":       os.path.join(aud_base, aud_vfile),
-                                "load_params":      aud_load,
-                                "audio_source":     "extract_from_visual",
-                                "audio_only":       not has_vid_entry,
-                                "audio_path":       "",
-                                "audio_start_time": 0.0,
-                                "audio_duration":   0.0,
-                                "audio_retention":  audio.get("retention", "timbre"),
-                                "audio_role":       audio.get("role", ""),
-                                "audio_cache":      audio.get("audio_cache", ""),
-                            })
-
-                    # Standalone audio voice reference (<Audio N>) — emitted when the
-                    # bundle carries a separate audio file (source == "file").
-                    # extract_from_visual / extract_from_video are handled via
-                    # video_entries above. Same gate (audio checkbox on AND the clip
-                    # allows dialogue): a bundle's own dedicated audio file is unrelated
-                    # to the clip's footage, but it's still audio attached to this
-                    # clip's shot.
-                    bun_voice: dict = {}
-                    # The file may live in the input OR output folder (audio.audio_dir) --
-                    # resolve_bundle_audio_source() is the single place that decides which.
-                    _file_voice = (_resolve_bundle_audio_source(bundle)
-                                   if audio_source == "file" else None)
-                    if _file_voice and bun_audio_wanted:
-                        bun_voice = {
-                            "audio_reference_file": os.path.join(
-                                get_output_directory() if _file_voice["dir"] == "output"
-                                else get_input_directory(),
-                                _file_voice["file"],
-                            ),
-                            "audio_start_time": _file_voice["start_time"],
-                            "audio_duration":   _file_voice["duration"],
-                            "audio_retention":  audio.get("retention", "timbre"),
-                            "audio_role":       audio.get("role", ""),
-                            "audio_cache":      audio.get("audio_cache", ""),
-                            "description":      audio.get("description", ""),
-                            "language":         audio.get("language", "en-us"),
-                        }
+                    # Standalone audio voice reference (<Audio N>) -- emitted when the
+                    # bundle's voice is separate from its visuals: a dedicated audio file
+                    # (source == "file") or a different video used only as a voice sample
+                    # (source == "extract_from_video"). Either way it goes to the bundle's
+                    # slot as voice.audio_reference_file, in every visual mode, and is not
+                    # paired with any <Video N> (same route as the Composition path in
+                    # utils/prompt_compositions.py). extract_from_visual is the one source
+                    # that rides on the bundle's own video entry above. Same gate as the
+                    # other audio paths (audio checkbox on AND the clip allows dialogue).
+                    # The file may live in the input OR output folder -- the helper decides.
+                    bun_voice = _bundle_standalone_voice(
+                        bundle, bun_audio_wanted, get_input_directory(), get_output_directory(),
+                    )
 
                     bun_pronoun = (bun_subj.get("pronoun_style")
                                    or _ENTITY_PRONOUN_DEFAULTS.get(

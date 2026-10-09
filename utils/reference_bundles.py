@@ -210,6 +210,34 @@ def bundle_audio_wanted(cast_entry: dict, clip: dict) -> bool:
     return bool((cast_entry or {}).get("use_audio")) and bool((clip or {}).get("allows_dialogue", True))
 
 
+def bundle_standalone_voice(bundle: dict, wanted: bool, input_dir: str, output_dir: str) -> dict:
+    """The slot ``voice`` dict for a bundle whose voice is separate from its visuals, else {}.
+
+    A dedicated audio file (source "file") or a different video used only as a voice sample
+    (source "extract_from_video") becomes the slot's standalone ``voice.audio_reference_file``,
+    whatever the bundle's visual mode: it is its own <Audio N>, not paired with any <Video N>.
+    "extract_from_visual" is not handled here -- that voice is the bundle's own video track.
+    Empty when audio is not wanted or the source has nothing to load.
+    """
+    audio = (bundle or {}).get("audio", {}) or {}
+    if not wanted or audio.get("source") not in ("file", "extract_from_video"):
+        return {}
+    src = resolve_bundle_audio_source(bundle)
+    if not src:
+        return {}
+    base = output_dir if src["dir"] == "output" else input_dir
+    return {
+        "audio_reference_file": os.path.join(base, src["file"]),
+        "audio_start_time": src["start_time"],
+        "audio_duration":   src["duration"],
+        "audio_retention":  audio.get("retention", "timbre"),
+        "audio_role":       audio.get("role", ""),
+        "audio_cache":      audio.get("audio_cache", ""),
+        "description":      audio.get("description", ""),
+        "language":         audio.get("language", "en-us"),
+    }
+
+
 def video_entry_audio_source(audio_source: str, wanted: bool) -> str:
     """Audio source for a bundle's own reference-video entry in Source Profile mode.
 
@@ -241,9 +269,8 @@ def resolve_bundle_audio_source(bundle: dict) -> dict | None:
     for a caller to load (e.g. via ffmpeg), or None if the bundle has no audio configured
     (source == "none"/unset, or the field its source needs is empty).
 
-    Mirrors the exact per-source field resolution already used server-side when building a
-    bundle's audio reference for a Scene Cast generation (nodes/source_profiles.py's
-    bundle_video_entries construction in SourceProfileClipPrompt.execute()):
+    The per-source field resolution used for a bundle's audio reference in a Scene Cast
+    generation (SourceProfileClipPrompt.execute()):
       "file"                -> audio.file / audio.start_time / audio.duration (own
                                 standalone clip, its own trim window), in audio.audio_dir
                                 ("input" by default, or "output" -- same field the
