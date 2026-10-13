@@ -1,6 +1,70 @@
 # CHANGELOG
 
 
+## v1.31.0 (2026-10-13)
+
+### Bug Fixes
+
+- **h3**: Name replacements in the clip preamble and describe its subjects
+  ([`23365a4`](https://github.com/frost-byte/fbTools/commit/23365a4ab920821f65a8d73cd4f4b15ed2756418))
+
+The preamble substituted {A}/{B} with the subject being replaced instead of the subject replacing
+  it. It now follows the same redirect as the shot text and includes each subject's description
+  after its tag on first mention, as the first shot already does. Soundscape and music stay bare.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+### Features
+
+- **import**: Turn legacy scenes and stories into Source Profile data
+  ([`8e0d44a`](https://github.com/frost-byte/fbTools/commit/8e0d44abf2e681ce0edeea0066a549ec2d1deee9))
+
+Pure, ComfyUI-free modules that plan an import of Scenes and Stories as an image-series Source
+  Profile: one frame per scene, one clip per scene in story order, the mask as the subject, and the
+  resolved video prompt as the action.
+
+- utils/scene_prompts.py: the prompt resolution StoryVideoBatch did inline (libber substitution,
+  compositions, prompt source selection). - utils/scene_story_import.py: the import planner, with a
+  dry-run plan, warnings and idempotent re-import that keeps hand-written actions. It removes
+  image-model control-image instructions from imported prompts, turns the reference character into
+  {A}, and moves the scene-style opener into the clip preamble. - docs/scene_story_import.md
+  documents the convention.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+- **source-profiles**: Image-series profiles, import, and profile-ordered subject letters
+  ([`74d3421`](https://github.com/frost-byte/fbTools/commit/74d3421abf7f043a8bfd78b4a4d07ceaa82613d0))
+
+Image-series profiles - A profile with image media can hold several frames; each clip picks one.
+  Still clips are laid end to end by length in the editor and in Scene Cast Build, and a clip's
+  frame previews there with click-to-enlarge. - Import panel and REST routes (importable /
+  import_preview / import_apply) to turn legacy Scenes and Stories into such a profile, with a dry
+  run first. - story.py calls the extracted prompt resolver.
+
+Subject letters - A clip's {A}/{B}/... are the rank of each ticked subject in the profile's subject
+  list; tick order no longer matters. The Clip Prompt node, ordinal matching, editor labels,
+  Describe and the Scene Cast Build preview all read the order through clip_subjects_in_order /
+  clipSubjectsInOrder, ending the mismatch where the editor and the node disagreed. - Ticking or
+  unticking a subject, "-> all", "x all", deleting a subject and merging clips ask before shifting
+  letters the clip's text uses, and can rewrite the text so each subject keeps its meaning. -
+  docs/clip_subject_letters.md and a GOTCHAS entry describe the rule.
+
+Audio - A cast entry whose bundle already sends its own standalone voice no longer also adds a
+  fallback reference from the source clip. The clip proxy has no audio track, so that entry could
+  never load and failed the run with an <Audio N> that had no path.
+
+Tests: module_load.test.js imports every frontend module so a top-level error in one cannot silently
+  break the whole extension again.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_016URszCL3deuwf7g3rSPoYu
+
+
 ## v1.30.0 (2026-10-09)
 
 ### Bug Fixes
