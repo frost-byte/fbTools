@@ -392,6 +392,14 @@ def _build_ref_map(
             for i, s in enumerate(sheets)
         ]
         picture_counter += len(sheets)
+        # A replaced subject's own picture in the "scene layout" role is the still the subject
+        # is being replaced in (a Source Profile with image media): it fixes pose, orientation,
+        # position and setting but never identity. Any other picture stays an appearance
+        # reference, so a retained subject's scene image keeps its normal wording.
+        layout_picture_nums = (
+            [e["picture_num"] for e in character_sheet_entries if e["role"] == SCENE_LAYOUT_ROLE]
+            if subject.get("_cast_retention") == "replaced" else []
+        )
 
         ve = video_lookup.get(subject_id) if subject_id else None
         video_num: int | None = None
@@ -458,6 +466,7 @@ def _build_ref_map(
             "speaker_id": pre_speaker_ids.get(slot_id, f"S{subject_num or 1}"),
             "subject_label": subject_label,
             "picture_nums": picture_nums,
+            "layout_picture_nums": layout_picture_nums,
             "video_num": video_num,
             "video_file": video_file,
             "include_video_background": bool(ve.get("include_video_background", False)) if ve else False,
@@ -636,6 +645,18 @@ def _build_h3_refplan(
 
 # ── Placeholder replacement ────────────────────────────────────────────────────
 
+def _redirect_replaced(ref_map: dict, slot_id: str) -> "tuple[str, dict]":
+    """``(slot, info)`` a ``{X}`` placeholder should name: a replaced source slot points at the
+    bundle subject that replaces it (so descriptions never name the subject being removed)."""
+    info = ref_map[slot_id]
+    if info.get("retention_marker") == "replaced" and info.get("transfer_to_slot"):
+        target = info["transfer_to_slot"]   # bundle slot, e.g. "E"
+        repl_info = ref_map.get(target)
+        if repl_info:
+            return target, repl_info
+    return slot_id, info
+
+
 def _replace_h3(
     text: str,
     ref_map: dict,
@@ -662,13 +683,7 @@ def _replace_h3(
         # Redirect replaced source slots to their bundle replacement in descriptions.
         # effective_slot tracks the bundle slot for seen_globally so first-appearance
         # detection is consistent across multiple {A} references in the same shot.
-        effective_slot = slot_id
-        if info.get("retention_marker") == "replaced" and info.get("transfer_to_slot"):
-            redirect_target = info["transfer_to_slot"]   # bundle slot, e.g. "E"
-            repl_info = ref_map.get(redirect_target)
-            if repl_info:
-                info = repl_info
-                effective_slot = redirect_target
+        effective_slot, info = _redirect_replaced(ref_map, slot_id)
         label = info["subject_label"]
         # A replaced source slot refers to the same entity as its bundle replacement,
         # so treat it as speaking if the bundle slot is the active speaker.
@@ -681,7 +696,7 @@ def _replace_h3(
                 return f"{base}, {ap}"
         return base
 
-    return re.sub(r"\{([A-H])\}", _sub, text)
+    return re.sub(r"\{([A-Z])\}", _sub, text)
 
 
 def _replace_named(text: str, ref_map: dict) -> str:
@@ -709,6 +724,30 @@ _SHEET_ROLE_H3: dict[str, str] = {
     "head turnaround":  "a three-angle head turnaround (slight-left, frontal, and slight-right three-quarter headshots; facial structure and feature reference only; do not use as scene composition)",
 }
 
+# Role of the scene still in a Source Profile with image media. Only meaningful on a replaced
+# subject (see _build_ref_map): the picture is the layout the replacement is placed into.
+SCENE_LAYOUT_ROLE = "scene layout"
+
+
+def attach_scene_layout(slot_assignments: dict, source_slots: list[str], image_path: str) -> str:
+    """Give the scene still to one source slot as its first picture; returns that slot ('' if none).
+
+    The slot is the first replaced source subject (the still is where its replacement is placed),
+    else the first source slot. Source slots sort ahead of bundle slots and carry no pictures of
+    their own, so the still is always <Picture 1>. Mutates ``slot_assignments``.
+    """
+    present = [s for s in source_slots if s in slot_assignments]
+    if not present or not image_path:
+        return ""
+    target = next(
+        (s for s in present if slot_assignments[s].get("_cast_retention") == "replaced"), present[0]
+    )
+    existing = list(slot_assignments[target].get("character_sheet_images") or [])
+    slot_assignments[target]["character_sheet_images"] = (
+        [{"file": image_path, "role": SCENE_LAYOUT_ROLE}] + existing
+    )
+    return target
+
 # Natural-language inline descriptions for character sheet roles, used inside
 # subject_definitions sentences: "appearance comes from <Picture N>, <desc>."
 # Single-sheet only — multi-sheet references omit the inline description.
@@ -721,6 +760,17 @@ _SHEET_ROLE_INLINE: dict[str, str] = {
     "reference":        "an appearance reference image",
     "head turnaround":  "three adjacent headshots showing slight-left, frontal, and slight-right three-quarter views (facial structure and feature consistency reference)",
 }
+
+
+def _cast_setting_label(ref_map: dict, ordered_slots: list[str], scene_instance: dict | None = None) -> str:
+    """What replaces the source media's own setting: the <Subject N> label of a background cast
+    as a reference (a location slot), else the plain-text description of a text-only background
+    (scene_instance["setting_text"]), else ""."""
+    for sid in ordered_slots:
+        info = ref_map[sid]
+        if info.get("entity_type") == "location" and info.get("subject_label"):
+            return info["subject_label"]
+    return str((scene_instance or {}).get("setting_text") or "").strip()
 
 
 def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
@@ -820,9 +870,14 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         #   video    → "from <Video N>" (visual identity)
         #   both     → "whose appearance comes from <Picture N> and whose motion comes from <Video N>"
         vid_ref = f"<Video {info['video_num']}>" if info["video_num"] is not None else ""
-        pic_ref_str = _join_labels([f"<Picture {p}>" for p in info["picture_nums"]]) if info["picture_nums"] else ""
+        # A replaced subject's scene-layout picture says where the subject was, not what it
+        # looks like, so it is cited as "in <Picture N>" rather than as an appearance source.
+        _layout_nums = info.get("layout_picture_nums", [])
+        _appearance_nums = [p for p in info["picture_nums"] if p not in _layout_nums]
+        pic_ref_str = _join_labels([f"<Picture {p}>" for p in _appearance_nums]) if _appearance_nums else ""
 
-        cs_entries = info.get("character_sheet_entries", [])
+        cs_entries = [e for e in info.get("character_sheet_entries", [])
+                      if e["picture_num"] not in _layout_nums]
         if len(cs_entries) == 1:
             _cs_role = cs_entries[0].get("role", "character sheet")
             _cs_desc = _SHEET_ROLE_INLINE.get(_cs_role, "")
@@ -830,7 +885,13 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         else:
             pic_role_suffix = ""
 
-        if vid_ref and pic_ref_str:
+        # A bundle subject replacing a subject shown in a scene-layout picture takes pose and
+        # position from that picture, so its video only supplies identity, not motion.
+        _xfer_src = ref_map.get(info.get("transfer_to_slot", "")) if info.get("retention_marker") == "attribute_transfer" else None
+        _video_is_identity = bool(_xfer_src and _xfer_src.get("layout_picture_nums"))
+        if vid_ref and pic_ref_str and _video_is_identity:
+            ref_anchor = f" whose appearance comes from {vid_ref} and {pic_ref_str}{pic_role_suffix}"
+        elif vid_ref and pic_ref_str:
             ref_anchor = f" whose appearance comes from {pic_ref_str}{pic_role_suffix} and whose motion comes from {vid_ref}"
         elif pic_ref_str:
             ref_anchor = f" whose appearance comes from {pic_ref_str}{pic_role_suffix}"
@@ -838,6 +899,8 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             ref_anchor = f" from {vid_ref}"
         else:
             ref_anchor = ""
+        if _layout_nums:
+            ref_anchor += " in " + _join_labels([f"<Picture {p}>" for p in _layout_nums])
 
         # Appearance details as flowing prose (from separate structured fields)
         detail_parts = [
@@ -867,11 +930,18 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             src_info = ref_map.get(src_slot_id)
             if src_info:
                 src_vnum = src_info.get("video_num")
+                src_layout = src_info.get("layout_picture_nums", [])
                 src_name = src_info.get("appearance_summary") or src_info.get("name") or "the replaced subject"
                 if src_vnum is not None:
                     motion_clause = (
                         f" Their pose, movement, and screen position in the scene "
                         f"match those of {src_name} in <Video {src_vnum}>."
+                    )
+                elif src_layout:
+                    motion_clause = (
+                        f" Their pose, body orientation, and screen position in the scene "
+                        f"match those of {src_name} in "
+                        f"{_join_labels([f'<Picture {p}>' for p in src_layout])}."
                     )
                 else:
                     motion_clause = (
@@ -1029,20 +1099,42 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     scene_synopsis: str = scene_instance.get("scene_synopsis", "").strip()
     narrative: list[str] = []
 
+    # A still scene image with replaced subjects (Source Profile with image media) defines the
+    # target by layout; any <Video N> is only a bundle's identity reference, so the "video
+    # editing" tag does not make it the edit source.
+    _layout_pics = sorted(p for info in ref_map.values() for p in info.get("layout_picture_nums", []))
+
     # video editing tasks must open with a fixed sentence naming the source video
-    if "video editing" in active_flags:
+    if "video editing" in active_flags and not _layout_pics:
         first_video = next(
             (info["video_num"] for info in ref_map.values() if info["video_num"] is not None),
             None,
         )
         if first_video is not None:
-            narrative.append(f"The target video is an edited version of <Video {first_video}>.")
+            _setting = _cast_setting_label(ref_map, ordered_slots, scene_instance)
+            if _setting:
+                narrative.append(
+                    f"The target video is an edited version of <Video {first_video}>, "
+                    f"set in {_setting} instead of its original setting."
+                )
+            else:
+                narrative.append(f"The target video is an edited version of <Video {first_video}>.")
+
+    if _layout_pics:
+        _setting = _cast_setting_label(ref_map, ordered_slots, scene_instance)
+        if _setting:
+            narrative.append(
+                f"The target video recreates the composition shown in <Picture {_layout_pics[0]}> "
+                f"in the setting of {_setting}."
+            )
+        else:
+            narrative.append(f"The target video recreates the scene shown in <Picture {_layout_pics[0]}>.")
 
     if scene_synopsis:
         # User-supplied synopsis: replace {A}/{B}/… with bare <Subject N> labels.
         # Prepend "The target video shows" only when not already a video-editing opener.
         replaced = _bare(scene_synopsis).rstrip(".")
-        if "video editing" not in active_flags:
+        if "video editing" not in active_flags and not _layout_pics:
             narrative.append(f"The target video shows {replaced}.")
         else:
             # video editing already opened above; synopsis is an additional description
@@ -1162,9 +1254,19 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             poss = _possessive(info)
             # Clause overrides shot-appearance: replaced subjects are identified by source media.
             vnum = info.get("video_num")
-            appears_clause = f"originally in <Video {vnum}>" if vnum is not None else "original"
+            lnums = info.get("layout_picture_nums", [])
+            if vnum is not None:
+                appears_clause = f"originally in <Video {vnum}>"
+            elif lnums:
+                appears_clause = "originally in " + _join_labels([f"<Picture {p}>" for p in lnums])
+            else:
+                appears_clause = "original"
+            # A still has no gestures or movements to transfer, only pose, orientation, position.
+            moves = "pose, body orientation and position" if lnums and vnum is None else (
+                "postures, gestures, position and body movements"
+            )
             preserve_desc = (
-                f"transfer {poss} postures, gestures, position and body movements to {bun_label}; "
+                f"transfer {poss} {moves} to {bun_label}; "
                 f"discard {poss} visual identity including head, face, body, hair and wardrobe"
             )
             ra_retention = "attribute_transfer"
@@ -1229,18 +1331,22 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
                             replacement_pairs.append((_src_inf["name"], _inf["subject_label"]))
                     elif _inf.get("video_num") == vnum and _inf.get("retention_marker") != "replaced":
                         retained_originals.append(_inf["subject_label"])
-                # A composition whose background is a reference subject replaces the source
-                # video's setting; only Source Profile / plain edits keep it.
-                _bg_slots = [
-                    s for s in ordered_slots
-                    if (template.get("slots", {}).get(s) or {}).get("role") == "background"
-                    and ref_map[s].get("subject_label")
-                ]
-                if _bg_slots:
+                # The source video's setting is the default background. A background cast as a
+                # reference subject (composition {BG}, or a Scene Cast Build / clip background)
+                # replaces it, and the prompt says so.
+                _bg_label = _cast_setting_label(ref_map, ordered_slots, scene_instance)
+                if not _bg_label:
+                    _bg_slots = [
+                        s for s in ordered_slots
+                        if (template.get("slots", {}).get(s) or {}).get("role") == "background"
+                        and ref_map[s].get("subject_label")
+                    ]
+                    _bg_label = ref_map[_bg_slots[0]]["subject_label"] if _bg_slots else ""
+                if _bg_label:
                     preserve_desc = (
                         f"preserve scene composition, camera motion, timing and framing; "
                         f"the original setting and lighting of <Video {vnum}> are replaced by "
-                        f"{ref_map[_bg_slots[0]]['subject_label']}"
+                        f"{_bg_label}"
                     )
                 else:
                     preserve_desc = (
@@ -1286,9 +1392,33 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
         if not pnums:
             continue
         _ra_pic_emitted.update(pnums)
+        # The scene still of a replaced subject: its layout is kept, its people are not.
+        lnums = [p for p in info.get("layout_picture_nums", []) if p in pnums]
+        if lnums:
+            originals = _join_labels([
+                ref_map[s].get("appearance_summary") or ref_map[s]["name"] for s in ordered_slots
+                if ref_map[s].get("retention_marker") == "replaced"
+            ])
+            _setting = _cast_setting_label(ref_map, ordered_slots, scene_instance)
+            if _setting:
+                # A cast background replaces whatever setting the scene still shows.
+                _keep = ("preserve each subject's pose, body orientation and position, scene "
+                         "composition and framing; the original setting and lighting of "
+                         f"{_join_labels([f'<Picture {p}>' for p in lnums])} are replaced by {_setting}")
+            else:
+                _keep = ("preserve each subject's pose, body orientation and position, setting "
+                         "details, scene composition, lighting and framing")
+            ra.append(
+                f"{_join_labels([f'<Picture {p}>' for p in lnums])} (scene layout reference): "
+                f"partially_preserved - {_keep}; discard the original appearance of {originals}."
+            )
+            pnums = [p for p in pnums if p not in lnums]
+            if not pnums:
+                continue
         # A background reference's picture is already cited in its Subject definition, and
         # "facial features, hair, and clothing" is meaningless for a setting.
-        if (template.get("slots", {}).get(slot_id) or {}).get("role") == "background":
+        if (template.get("slots", {}).get(slot_id) or {}).get("role") == "background" \
+                or info.get("entity_type") == "location":
             continue
         subj_label = info["subject_label"]
         pic_tags = _join_labels([f"<Picture {p}>" for p in pnums])
@@ -1360,7 +1490,29 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     use_dialogue_tags: bool = scene_instance.get("dialogue_tags", False)
     dd: list[str] = []
 
-    style = template.get("style", "")
+    def _bare_or_name(text: str, describe: bool = False) -> str:
+        """{A}/{B}/… -> <Subject N>, resolved exactly as in the shots (a replaced source slot
+        names its replacement); a slot with no label falls back to its name so no placeholder
+        is left behind. With ``describe``, each subject's first mention in ``text`` is followed
+        by its appearance phrase ("<Subject 1>, the young woman with…"), as in a shot."""
+        introduced: set[str] = set()
+
+        def _sub(m: re.Match) -> str:
+            sid = m.group(1)
+            if sid not in ordered_slots:
+                return m.group(0)
+            eff, info = _redirect_replaced(ref_map, sid)
+            label = info.get("subject_label") or info.get("name") or ""
+            if describe and label and eff not in introduced:
+                introduced.add(eff)
+                phrase = info.get("appearance_phrase", "")
+                if phrase:
+                    return f"{label}, {phrase}"
+            return label
+
+        return re.sub(r"\{([A-Z])\}", _sub, text)
+
+    style = _bare_or_name(template.get("style", ""), describe=True)
     env_summary = template.get("environment", {}).get("summary", "")
     opening: list[str] = []
     if style:
@@ -1373,7 +1525,9 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     # Video-editing preamble: opening quality directive followed by one sentence per
     # bundle replacement pair, identifying the source subject by appearance so the
     # model can locate them in the video, then naming the bundle subject replacing them.
-    if "video editing" in active_flags:
+    if "video editing" in active_flags and not any(
+        info.get("layout_picture_nums") for info in ref_map.values()
+    ):
         _bun_slots = [
             s for s in ordered_slots
             if ref_map[s].get("retention_marker") == "attribute_transfer"
@@ -1390,11 +1544,19 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
             if _edit_vnums:
                 _video_ref = _join_labels([f"<Video {v}>" for v in sorted(_edit_vnums)])
                 _whose = "their" if len(_edit_vnums) > 1 else "its"
-                dd.append(
-                    f"The target video represents a photorealistic recreation of "
-                    f"{_video_ref} while retaining {_whose} original lighting, motion "
-                    f"and camera work."
-                )
+                _bg_label = _cast_setting_label(ref_map, ordered_slots, scene_instance)
+                if _bg_label:
+                    dd.append(
+                        f"The target video represents a photorealistic recreation of "
+                        f"{_video_ref} while retaining {_whose} original motion and camera work, "
+                        f"set in {_bg_label}."
+                    )
+                else:
+                    dd.append(
+                        f"The target video represents a photorealistic recreation of "
+                        f"{_video_ref} while retaining {_whose} original lighting, motion "
+                        f"and camera work."
+                    )
             else:
                 dd.append(
                     "The target video is a photorealistic, seamless identity-replacement edit "
@@ -1452,12 +1614,12 @@ def _assemble_h3_ref2va(scene_instance: dict, ref_map: dict) -> str:
     sections.append("detailed_description:\n" + "\n".join(dd))
 
     # ── overall_soundscape ─────────────────────────────────────────────────────
-    soundscape = template.get("overall_soundscape", "")
+    soundscape = _bare_or_name(template.get("overall_soundscape", ""))
     if soundscape:
         sections.append(f"overall_soundscape:\n{soundscape}")
 
     # ── non_diegetic_music ─────────────────────────────────────────────────────
-    music = template.get("non_diegetic_music", "")
+    music = _bare_or_name(template.get("non_diegetic_music", ""))
     if music:
         sections.append(f"non_diegetic_music:\n{music}")
 

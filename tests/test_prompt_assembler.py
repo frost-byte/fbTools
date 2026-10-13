@@ -1799,3 +1799,288 @@ class TestHybridCastRetentionInAssembledPrompt:
         # Definite-article substitution turns "a woman…" into "the woman…" when a
         # picture/video reference is cited, so match on the descriptive tail only.
         assert "woman with short dark hair" in result["prompt"]
+
+
+# ── Scene still as the swap source (Source Profile with image media) ───────────
+#
+# A replaced subject's picture in the "scene layout" role is the still the replacement is placed
+# into: it fixes pose, orientation, position and setting, never identity. The scene image is
+# attached to the first source slot, so it sorts ahead of the bundle's images (K, L, ...) and is
+# always <Picture 1>.
+
+_SCENE_STILL = "/out/scenes/s1/base.png"
+
+
+def _scene_still_instance(include_tags=True, layout_role=None):
+    return {
+        "template_id": "sp", "template_name": "sp",
+        "task_flags": ["video editing", "reference generation"],
+        "scene_synopsis": "",
+        "include_original_subject_tags": include_tags,
+        "slot_assignments": {
+            "A": {
+                "subject_id": "girl", "name": "girl", "concept_id": None,
+                "character_sheet_images": [
+                    {"file": _SCENE_STILL, "role": layout_role or pa.SCENE_LAYOUT_ROLE}
+                ],
+                "appearance": {"summary": "the girl", "hair": "", "face": "", "body": "",
+                               "default_outfit": ""},
+                "voice": {}, "_cast_retention": "replaced", "_transfer_to_slot": "K",
+                "_pronoun_style": "feminine", "entity_type": "person",
+            },
+            "K": {
+                "subject_id": "bun", "name": "Bun", "concept_id": None,
+                "character_sheet_images": [{"file": "bun.png", "role": "character sheet"}],
+                "appearance": {"summary": "a young woman with platinum braided hair", "hair": "",
+                               "face": "", "body": "", "default_outfit": ""},
+                "voice": {}, "_cast_retention": "attribute_transfer", "_transfer_to_slot": "A",
+                "_pronoun_style": "feminine",
+            },
+        },
+        "dialogue": {}, "outfit_overrides": {},
+        "template": {
+            "shots": [{"id": "c_shot_1", "action": "{A} sits on a chair facing right.",
+                       "camera": "", "dialogue": None}],
+            "environment": {}, "style": "", "overall_soundscape": "Silence.",
+            "non_diegetic_music": "N/A",
+        },
+    }
+
+
+class TestSceneStillAsSwapSource:
+    def test_scene_still_is_picture_1_and_bundle_images_follow(self):
+        refs = pa._build_h3_refplan(_scene_still_instance(), [])["references"]
+        assert [(r["picture_ordinal"], r["path"]) for r in refs] == [
+            (1, _SCENE_STILL), (2, "bun.png"),
+        ]
+
+    def test_replaced_subject_is_placed_in_the_picture_not_sourced_from_it(self):
+        prompt = pa.assemble_prompt(_scene_still_instance(), "h3_ref2va", [])["prompt"]
+        # The original person is "in" the still; no subject takes its appearance from it.
+        assert "<Subject 2> is the girl in <Picture 1>." in prompt
+        assert "appearance comes from <Picture 1>" not in prompt
+        # The bundle subject's identity comes from its own picture and nothing else.
+        assert "<Subject 1> is the young woman with platinum braided hair whose appearance comes from <Picture 2>" in prompt
+
+    def test_bundle_subject_takes_pose_orientation_and_position_from_the_picture(self):
+        prompt = pa.assemble_prompt(_scene_still_instance(), "h3_ref2va", [])["prompt"]
+        assert "match those of the girl in <Picture 1>" in prompt
+        assert (
+            "<Subject 2> (originally in <Picture 1>): attribute_transfer - transfer her pose, "
+            "body orientation and position to <Subject 1>; discard her visual identity "
+            "including head, face, body, hair and wardrobe."
+        ) in prompt
+
+    def test_scene_still_has_its_own_retention_line_and_is_not_an_identity_reference(self):
+        prompt = pa.assemble_prompt(_scene_still_instance(), "h3_ref2va", [])["prompt"]
+        ra = prompt.split("retention_analysis:")[1].split("detailed_description:")[0]
+        assert "<Picture 1> (scene layout reference): partially_preserved" in ra
+        assert "discard the original appearance of the girl" in ra
+        # Only the bundle's picture carries the "facial features, hair, and clothing" line.
+        assert "<Picture 1>: fully_preserved" not in ra
+        assert "<Picture 2>: fully_preserved - <Subject 1>'s facial features" in ra
+
+    def test_summary_names_the_picture_the_scene_is_recreated_from(self):
+        prompt = pa.assemble_prompt(_scene_still_instance(), "h3_ref2va", [])["prompt"]
+        assert "The target video recreates the scene shown in <Picture 1>." in prompt
+
+    def test_bundle_video_is_identity_only_not_the_edit_source(self):
+        ve = [{"subject_id": "bun", "video_file": "bun.mp4"}]
+        inst = _scene_still_instance()
+        inst["scene_synopsis"] = "Replace {A} in <Picture 1> with {K}"
+        prompt = pa.assemble_prompt(inst, "h3_ref2va", ve)["prompt"]
+        assert "<Video 1>" in prompt
+        assert "edited version" not in prompt
+        assert "motion comes from" not in prompt
+        assert "[video editing + reference generation" in prompt
+        assert "The target video recreates the scene shown in <Picture 1>. Replace" in prompt
+
+    def test_cast_background_replaces_the_setting_of_the_scene_still(self):
+        inst = _scene_still_instance()
+        inst["slot_assignments"]["O"] = pa._build_background_slot({
+            "name": "Beach", "description": "a sunlit beach", "lighting": "golden hour",
+            "reference_images": ["beach.png"],
+        })
+        prompt = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"]
+        layout = next(l for l in prompt.splitlines() if "(scene layout reference)" in l)
+        assert "setting details" not in layout and "lighting and framing" not in layout
+        assert "original setting and lighting of <Picture 1> are replaced by <Subject" in layout
+        assert "pose, body orientation and position" in layout
+        assert "recreates the composition shown in <Picture 1> in the setting of <Subject" in prompt
+        assert "<Picture 3>: fully_preserved" not in prompt
+
+    def _video_edit_instance(self, with_bg):
+        inst = _scene_still_instance()
+        inst["task_flags"] = ["video editing", "reference generation"]
+        inst["slot_assignments"]["A"]["character_sheet_images"] = []
+        if with_bg:
+            inst["slot_assignments"]["O"] = pa._build_background_slot({
+                "name": "Beach", "description": "a sunlit beach", "lighting": "golden hour",
+                "reference_images": ["beach.png"],
+            })
+        return inst
+
+    def test_cast_background_replaces_the_setting_of_a_source_video(self):
+        ve = [{"subject_id": "girl", "video_file": "src.mp4"}]
+        prompt = pa.assemble_prompt(self._video_edit_instance(True), "h3_ref2va", ve)["prompt"]
+        assert "edited version of <Video 1>, set in <Subject" in prompt
+        assert "the original setting and lighting of <Video 1> are replaced by <Subject" in prompt
+        assert "preserve setting details" not in prompt
+
+    def test_source_video_setting_is_kept_without_a_cast_background(self):
+        ve = [{"subject_id": "girl", "video_file": "src.mp4"}]
+        prompt = pa.assemble_prompt(self._video_edit_instance(False), "h3_ref2va", ve)["prompt"]
+        assert "preserve setting details, scene composition, lighting" in prompt
+        assert "instead of its original setting" not in prompt
+
+    def test_text_only_background_replaces_the_setting_as_a_description(self):
+        inst = _scene_still_instance()
+        inst["setting_text"] = "a sunlit beach"
+        prompt = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"]
+        layout = next(l for l in prompt.splitlines() if "(scene layout reference)" in l)
+        assert "original setting and lighting of <Picture 1> are replaced by a sunlit beach" in layout
+        assert "recreates the composition shown in <Picture 1> in the setting of a sunlit beach." in prompt
+        assert prompt.count("<Subject ") == pa.assemble_prompt(_scene_still_instance(), "h3_ref2va", [])["prompt"].count("<Subject ")
+
+    def test_text_only_background_replaces_the_setting_of_a_source_video(self):
+        inst = self._video_edit_instance(False)
+        inst["setting_text"] = "a sunlit beach"
+        ve = [{"subject_id": "girl", "video_file": "src.mp4"}]
+        prompt = pa.assemble_prompt(inst, "h3_ref2va", ve)["prompt"]
+        assert "the original setting and lighting of <Video 1> are replaced by a sunlit beach" in prompt
+        assert "preserve setting details" not in prompt
+
+    def test_detailed_description_starts_at_shot_1_without_a_style(self):
+        for setting in ("", "a sunlit beach"):
+            inst = _scene_still_instance()
+            inst["setting_text"] = setting
+            dd = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"].split("detailed_description:")[1]
+            assert dd.lstrip().startswith("[Shot 1]")
+
+    def test_style_opens_detailed_description_and_converts_placeholders(self):
+        inst = _scene_still_instance()
+        inst["template"]["style"] = "a photorealistic recreation of <Picture 1> featuring {K}"
+        dd = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"].split("detailed_description:")[1]
+        assert dd.lstrip().startswith("A photorealistic recreation of <Picture 1> featuring <Subject 1>, ")
+        assert dd.index("featuring") < dd.index("[Shot 1]")
+
+    def test_preamble_describes_each_subject_after_its_first_tag_only(self):
+        inst = _scene_still_instance()
+        inst["template"]["style"] = "{A} waits. Later {A} smiles"
+        dd = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"].split("detailed_description:")[1]
+        pre = dd.split("[Shot 1]")[0]
+        phrase = "the young woman with platinum braided hair"
+        assert f"<Subject 1>, {phrase} waits. Later <Subject 1> smiles." in pre
+        assert pre.count(phrase) == 1
+        assert "<Subject 2>" not in pre
+
+    def test_shot_one_still_describes_the_subject_after_a_described_preamble(self):
+        inst = _scene_still_instance()
+        inst["template"]["style"] = "{A} waits"
+        shots = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"].split("detailed_description:")[1].split("[Shot 1]")[1]
+        assert "<Subject 1>, the young woman with platinum braided hair sits on a chair" in shots
+
+    def test_soundscape_and_music_stay_bare_labels(self):
+        inst = _scene_still_instance()
+        inst["template"]["overall_soundscape"] = "Room tone around {A}."
+        prompt = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"]
+        assert "Room tone around <Subject 1>." in prompt
+
+    def test_still_source_has_no_video_edit_preamble_with_the_editing_tag(self):
+        ve = [{"subject_id": "bun", "video_file": "bun.mp4"}]
+        dd = pa.assemble_prompt(_scene_still_instance(), "h3_ref2va", ve)["prompt"].split("detailed_description:")[1]
+        assert "identity-replacement" not in dd and "recreation of" not in dd
+
+    def test_video_preamble_names_the_cast_setting_without_the_original(self):
+        ve = [{"subject_id": "girl", "video_file": "src.mp4"}]
+        dd = pa.assemble_prompt(self._video_edit_instance(True), "h3_ref2va", ve)["prompt"].split("detailed_description:")[1].split("[Shot 1]")[0]
+        assert "retaining its original motion and camera work, set in <Subject" in dd
+        assert "lighting" not in dd
+
+    def test_soundscape_and_music_convert_subject_placeholders(self):
+        inst = _scene_still_instance()
+        inst["template"]["overall_soundscape"] = "{K} hums softly while {A} listens."
+        inst["template"]["non_diegetic_music"] = "A theme for {K}."
+        prompt = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"]
+        sc = prompt.split("overall_soundscape:")[1].split("non_diegetic_music:")[0]
+        assert "<Subject 1> hums softly while <Subject 1> listens." in sc
+        assert "A theme for <Subject 1>." in prompt
+        assert "{" not in sc
+
+    def test_preamble_soundscape_and_music_name_the_replacement_not_the_replaced_subject(self):
+        # {A} is the replaced source subject (<Subject 2>); like the shot text, every other
+        # section must name the bundle subject that replaces it (<Subject 1>).
+        inst = _scene_still_instance()
+        inst["template"]["style"] = "a close portrait of {A}"
+        inst["template"]["overall_soundscape"] = "Quiet room tone around {A}."
+        inst["template"]["non_diegetic_music"] = "A theme for {A}."
+        prompt = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"]
+        dd = prompt.split("detailed_description:")[1]
+        assert dd.lstrip().startswith("A close portrait of <Subject 1>, the young woman with platinum braided hair.")
+        assert "Quiet room tone around <Subject 1>." in prompt
+        assert "A theme for <Subject 1>." in prompt
+        for section in (dd.split("[Shot 1]")[0], prompt.split("overall_soundscape:")[1]):
+            assert "<Subject 2>" not in section
+
+    def test_without_a_cast_background_the_scene_setting_is_kept(self):
+        prompt = pa.assemble_prompt(_scene_still_instance(), "h3_ref2va", [])["prompt"]
+        assert "setting details, scene composition, lighting and framing" in prompt
+        assert "in the setting of" not in prompt
+
+    def test_works_without_tagging_the_original_subject(self):
+        prompt = pa.assemble_prompt(_scene_still_instance(include_tags=False), "h3_ref2va", [])["prompt"]
+        assert "<Subject 2>" not in prompt
+        assert "<Picture 1> (scene layout reference)" in prompt
+        assert "match those of the girl in <Picture 1>" in prompt
+
+    def test_action_placeholder_resolves_to_the_bundle_subject(self):
+        prompt = pa.assemble_prompt(_scene_still_instance(), "h3_ref2va", [])["prompt"]
+        assert "<Subject 1>, the young woman with platinum braided hair sits on a chair" in prompt
+
+    def test_other_picture_roles_keep_the_appearance_wording(self):
+        # A scene image that is not tagged as layout, or whose subject is retained, is still
+        # an ordinary appearance reference.
+        inst = _scene_still_instance(layout_role="character sheet")
+        prompt = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"]
+        assert "scene layout reference" not in prompt
+        assert "<Picture 1>: fully_preserved" in prompt
+
+        inst = _scene_still_instance()
+        inst["slot_assignments"]["A"]["_cast_retention"] = "fully_preserved"
+        inst["slot_assignments"]["A"].pop("_transfer_to_slot")
+        prompt = pa.assemble_prompt(inst, "h3_ref2va", [])["prompt"]
+        assert "scene layout reference" not in prompt
+        assert "recreates the scene shown" not in prompt
+
+
+class TestAttachSceneLayout:
+    def _slots(self, a="fully_preserved", b="fully_preserved"):
+        return {
+            "A": {"_cast_retention": a, "character_sheet_images": []},
+            "B": {"_cast_retention": b, "character_sheet_images": []},
+            "K": {"_cast_retention": "attribute_transfer", "character_sheet_images": ["bun.png"]},
+        }
+
+    def test_goes_to_the_first_replaced_source_slot(self):
+        slots = self._slots(b="replaced")
+        assert pa.attach_scene_layout(slots, ["A", "B"], "s.png") == "B"
+        assert slots["B"]["character_sheet_images"] == [{"file": "s.png", "role": pa.SCENE_LAYOUT_ROLE}]
+        assert slots["A"]["character_sheet_images"] == []
+
+    def test_falls_back_to_the_first_source_slot(self):
+        slots = self._slots()
+        assert pa.attach_scene_layout(slots, ["A", "B"], "s.png") == "A"
+
+    def test_is_picture_1_ahead_of_the_bundle_images(self):
+        slots = self._slots(b="replaced")
+        pa.attach_scene_layout(slots, ["A", "B"], "s.png")
+        inst = {"slot_assignments": slots}
+        paths = [r["path"] for r in pa._build_h3_refplan(inst, [])["references"]]
+        assert paths == ["s.png", "bun.png"]
+
+    def test_nothing_to_attach(self):
+        slots = self._slots()
+        assert pa.attach_scene_layout(slots, [], "s.png") == ""
+        assert pa.attach_scene_layout(slots, ["A"], "") == ""
+        assert pa.attach_scene_layout(slots, ["Z"], "s.png") == ""
+        assert slots["A"]["character_sheet_images"] == []
