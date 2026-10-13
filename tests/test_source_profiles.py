@@ -499,6 +499,11 @@ def test_normalize_clip_fills_defaults():
     assert c["subjects"] == []
     assert c["action"] == ""
     assert c["background_id"] == ""
+    assert c["style"] == ""
+
+def test_normalize_clip_keeps_the_preamble():
+    c = sp._normalize_clip({"id": "c3", "style": "A photorealistic scene featuring {K}"})
+    assert c["style"] == "A photorealistic scene featuring {K}"
 
 def test_normalize_clip_preserves_values():
     c = sp._normalize_clip({
@@ -731,7 +736,7 @@ def test_resolve_ordinal_subject_finds_first_match():
     assert resolve_ordinal_subject(profile, "c1", "feminine", 1) == "s1"
 
 
-def test_resolve_ordinal_subject_finds_second_match_in_clip_order():
+def test_resolve_ordinal_subject_finds_second_match_in_profile_order():
     profile = _profile_with_clip_subjects(
         subjects=[
             {"id": "s1", "entity_type": "person", "pronoun_style": "feminine"},
@@ -740,6 +745,27 @@ def test_resolve_ordinal_subject_finds_second_match_in_clip_order():
         clip_subject_ids=["s1", "s2"],
     )
     assert resolve_ordinal_subject(profile, "c1", "feminine", 2) == "s2"
+
+
+def test_resolve_ordinal_subject_uses_the_profiles_order_not_the_click_order():
+    # s2 was ticked first in the clip, but the profile lists s1 first, so s1 is the clip's first
+    # feminine subject ({A}).
+    profile = _profile_with_clip_subjects(
+        subjects=[
+            {"id": "s1", "entity_type": "person", "pronoun_style": "feminine"},
+            {"id": "s2", "entity_type": "person", "pronoun_style": "feminine"},
+        ],
+        clip_subject_ids=["s2", "s1"],
+    )
+    assert resolve_ordinal_subject(profile, "c1", "feminine", 1) == "s1"
+    assert resolve_ordinal_subject(profile, "c1", "feminine", 2) == "s2"
+
+
+def test_clip_subjects_in_order_follows_the_profile_and_skips_stale_ids():
+    profile = {"subjects": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}
+    clip = {"subjects": ["c", "gone", "a", "c"]}
+    assert [s["id"] for s in sp.clip_subjects_in_order(profile, clip)] == ["a", "c"]
+    assert sp.clip_subjects_in_order(profile, {}) == []
 
 
 def test_resolve_ordinal_subject_no_match_returns_empty():
@@ -831,7 +857,8 @@ def test_wrapper_matches_from_list_over_the_clips_subjects():
     profile = _profile_with_clip_subjects(
         subjects=_roster(), clip_subject_ids=["cara", "bob", "amy", "missing"],
     )
-    ordered = [s for sid in ["cara", "bob", "amy"] for s in _roster() if s["id"] == sid]
+    # Profile order (amy, bob, cara), whatever order the clip lists them in.
+    ordered = [s for sid in ["amy", "bob", "cara"] for s in _roster() if s["id"] == sid]
     for pronoun, n in (("feminine", 1), ("feminine", 2), ("masculine", 1), ("feminine", 3)):
         assert resolve_ordinal_subject(profile, "c1", pronoun, n) == resolve_ordinal_from_list(ordered, pronoun, n)
 
@@ -934,3 +961,82 @@ class TestRunProxyEdgeOptions:
         # 1080 rounds to 1088, which is in the list
         for v in sp.PROXY_SHORT_EDGE_CHOICES:
             assert sp.resolve_proxy_short_edge(768, v) in sp.RUN_PROXY_SHORT_EDGE_OPTIONS
+
+
+# ── frames / frame_id / origin (image-series profiles) ───────────────────────────
+
+def _image_profile(**extra):
+    base = {
+        "name": "Series", "media_type": "image", "media_filename": "scenes/a/base.png", "media_dir": "output",
+        "frames": [
+            {"id": "f1", "filename": "scenes/a/base.png", "dir": "output", "label": "A"},
+            {"id": "f2", "filename": "scenes/b/base.png", "dir": "output", "label": "B"},
+        ],
+    }
+    base.update(extra)
+    return sp._normalize_profile("series", base)
+
+
+def test_normalize_profile_keeps_frames_and_assigns_ids():
+    p = sp._normalize_profile("x", {"media_type": "image", "frames": [
+        {"filename": "a.png"}, {"filename": ""}, {"id": "dup", "filename": "b.png"}, {"id": "dup", "filename": "c.png"},
+    ]})
+    assert [f["filename"] for f in p["frames"]] == ["a.png", "b.png", "c.png"]
+    assert len({f["id"] for f in p["frames"]}) == 3
+    assert all(f["dir"] == "input" for f in p["frames"])
+
+
+def test_normalize_profile_defaults_have_no_frames_or_origin():
+    p = sp._normalize_profile("x", {})
+    assert p["frames"] == [] and p["origin"] == {}
+
+
+def test_normalize_clip_keeps_frame_id_and_origin():
+    c = sp._normalize_clip({"id": "c", "frame_id": "f2",
+                            "origin": {"scene": "s1", "story": "st", "scene_order": "3",
+                                       "action_source": "image_prompt", "junk": 1}})
+    assert c["frame_id"] == "f2"
+    assert c["origin"] == {"scene": "s1", "story": "st", "scene_order": 3, "action_source": "image_prompt"}
+
+
+def test_normalize_clip_origin_rejects_unknown_action_source():
+    assert sp._normalize_clip({"id": "c", "origin": {"action_source": "bogus"}})["origin"] == {}
+
+
+def test_resolve_clip_media_picks_the_clips_frame():
+    p = _image_profile()
+    assert sp.resolve_clip_media(p, {"frame_id": "f2"}) == ("scenes/b/base.png", "output")
+
+
+def test_resolve_clip_media_falls_back_to_primary():
+    p = _image_profile()
+    assert sp.resolve_clip_media(p, {}) == ("scenes/a/base.png", "output")
+    assert sp.resolve_clip_media(p, {"frame_id": "missing"}) == ("scenes/a/base.png", "output")
+    assert sp.resolve_clip_media(p, None) == ("scenes/a/base.png", "output")
+
+
+def test_resolve_clip_media_ignores_frames_for_video_profiles():
+    p = sp._normalize_profile("v", {"media_type": "video", "media_filename": "v.mp4",
+                                     "frames": [{"id": "f1", "filename": "x.png"}]})
+    assert sp.resolve_clip_media(p, {"frame_id": "f1"}) == ("v.mp4", "input")
+
+
+def test_define_profile_mirrors_first_frame_into_primary_media():
+    reg = sp.SourceProfileRegistry().define_profile(
+        "series", media_type="image",
+        frames=[{"filename": "scenes/z/base.png", "dir": "output"}, {"filename": "other.png"}],
+    )
+    prof = reg.get_profile("series")
+    assert (prof["media_filename"], prof["media_dir"]) == ("scenes/z/base.png", "output")
+    assert len(prof["frames"]) == 2
+
+
+def test_define_profile_keeps_frames_origin_and_proxy_edge_when_not_passed():
+    reg = sp.SourceProfileRegistry().define_profile(
+        "series", media_type="image", frames=[{"filename": "a.png"}], origin={"story": "st"}, proxy_short_edge=576,
+    )
+    reg = reg.define_profile("series", name="Renamed", media_type="image", media_filename="a.png")
+    prof = reg.get_profile("series")
+    assert prof["frames"][0]["filename"] == "a.png"
+    assert prof["origin"] == {"story": "st"}
+    assert prof["proxy_short_edge"] == 576

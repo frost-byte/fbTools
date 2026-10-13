@@ -102,13 +102,28 @@ export class SourceProfilesAPI extends BaseAPI {
                    captioner_type = "auto", device = "auto",
                    use_8bit = false, subjects = [],
                    existing_action = "", prompt_override = "",
-                   max_frames = 5, select_every_nth = 1 }) {
+                   max_frames = 5, select_every_nth = 1, frame_id = "" }) {
         return this.post("/source_profiles/describe_clip", {
             profile_id, start_time, end_time,
             captioner_type, device, use_8bit,
             subjects, existing_action, prompt_override,
-            max_frames, select_every_nth,
+            max_frames, select_every_nth, frame_id,
         });
+    }
+
+    /** Stories and story-less scenes that can be imported: { stories, scenes }. */
+    importable() {
+        return this.get("/source_profiles/importable");
+    }
+
+    /** Dry run of a Scene/Story import. body: { story } or { scenes, profile_name }, + clip_length. */
+    importPreview(body) {
+        return this.post("/source_profiles/import_preview", body);
+    }
+
+    /** Apply a Scene/Story import (same body as importPreview). Returns { id, plan }. */
+    importApply(body) {
+        return this.post("/source_profiles/import_apply", body);
     }
 
     /**

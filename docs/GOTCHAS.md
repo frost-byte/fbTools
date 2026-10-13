@@ -427,3 +427,52 @@ confirmed to give ~7 s for the same input. Do NOT copy the model's own `repetiti
 default: tested 2026-10-05, it made the cloned voice repeat/stutter on a word, while 1.0 was clean,
 so `do_sample` alone was the actual culprit. The Advanced widget caps (`max_new_tokens` 4096,
 `top_p` 1.0) are not limiting in practice.
+
+---
+
+## A new Source Profile / clip field "doesn't save" -- the normalisers are whitelists
+
+**Symptom**: a field set in the editor (or posted to `/fbtools/source_profiles/save`) is gone after reload;
+a node reading `clip.get("x")` always sees the default. Seen with clip `style` (the node read it for months;
+nothing ever stored it) and with `proxy_short_edge` (every saved profile sat at 768).
+
+**Cause**: `_normalize_clip` / `_normalize_profile` in `utils/source_profiles.py` rebuild each record from a
+fixed key list, and `SourceProfileRegistry.define_profile` rebuilds the profile dict again from its own
+parameters (it also drops anything not passed). Unknown keys are dropped silently at load AND at save.
+
+**Fix pattern**: add the key to the normaliser, to `define_profile` (parameter + "keep existing when not
+passed"), and to the `/save` route's call. Add a test that round-trips the field.
+
+
+## A clip's `{A}`/`{B}` letters follow the PROFILE's subject order, never the stored array order
+
+**Symptom**: the clip action reads correctly in the editor / Scene Cast Build preview but the assembled
+prompt has subjects (and their bundle replacements) swapped.
+
+**Rule**: of the subjects ticked in a clip, the one the profile lists first is `{A}`, the next `{B}`, ...
+The order they were ticked in (the order of `clip["subjects"]`) is irrelevant. The editor labels showed
+profile order after the "refactor(styles)" commit `4444e0f` (2026-09-07) while the Clip Prompt node
+used the stored array order, so a clip could show one mapping and assemble another.
+
+**Fix pattern**: use `clip_subjects_in_order(profile, clip)` (`utils/source_profiles.py`) or
+`clipSubjectsInOrder` / `clipSlotLetters` (`js/utils/clip_subjects.js`); never read letters from the
+raw `clip["subjects"]` order. Be suspicious of "style/CSS" refactors that rewrite logic as they move
+code. Full write-up (what changes the letters, the edit dialogs, history): `docs/clip_subject_letters.md`.
+
+
+## An `<Audio N>` with "(no path)": a fallback entry that used to be masked by first-wins lookup
+
+**Symptom**: `H3 Ref2VA: 1 reference(s) could not be loaded: <Audio 1>: (no path)` while the bundle's own
+voice loads fine as the next `<Audio N>`. No file is missing: the reference has no path at all.
+
+**Cause**: `SourceProfileClipPrompt` adds an `audio_only` entry from the source clip for every cast entry
+with the Audio box on (the "use_audio" block, `audio_path: ""`, `audio_cache: ""`). `prompt_assembler`
+indexes video entries by subject id **first-wins**, so while a bundle also added its own `audio_only` entry
+the empty one was never used. When commit `451637e` moved the bundle's separate voice to a standalone
+`voice.audio_reference_file`, the empty fallback became the only match and surfaced as a second `<Audio N>`;
+`f257d0a` had already turned unloadable references into hard errors. The clip proxies carry no audio
+track, so that fallback can never load from them.
+
+**Fix pattern**: the fallback skips a bundle that already sent its own voice (`own_voice_bundles`).
+When a "silent" duplicate input stops causing trouble, check whether something else was shadowing it.
+A source-subject or voiceless-bundle entry with Audio on still produces the same unloadable entry.

@@ -30,6 +30,7 @@ from folder_paths import get_input_directory, get_output_directory
 from .shared import (
     prefixed_node_id, routes, send_status_update, user_data_dir, bump_reload, reload_counter,
     default_source_profiles_path, default_subject_profiles_path, default_bundle_registry_path,
+    default_scenes_dir, default_stories_dir,
 )
 from .libber import LibberStateManager
 from .lora_stacks import LoraStackData
@@ -47,8 +48,15 @@ from ..utils.source_profiles import (
     proxy_edge_choice_to_override as _proxy_edge_choice_to_override,
     RUN_PROXY_SHORT_EDGE_OPTIONS as _PROXY_EDGE_OPTIONS,
     USE_PROFILE_PROXY_EDGE as _USE_PROFILE_EDGE,
+    DEFAULT_SEGMENT_DURATION as _DEFAULT_SEGMENT_DURATION,
+    resolve_clip_media as _resolve_clip_media,
+    clip_subjects_in_order as _clip_subjects_in_order,
 )
 from ..utils.scene_casts import resolve_effective_background_id as _resolve_effective_background_id
+from ..utils import scene_story_import as _import
+from ..utils.scene_prompts import resolve_scene_prompts as _resolve_scene_prompts, resolve_video_prompt as _resolve_video_prompt
+from ..utils.io import load_prompt_json as _load_prompt_json
+from ..prompt_models import PromptCollection as _PromptCollection
 from ..utils.source_profile_analysis import (
     build_segment_detection_prompt as _spa_build_segment_prompt,
     build_clip_description_prompt as _spa_build_clip_desc_prompt,
@@ -81,6 +89,8 @@ from ..utils.prompt_assembler import (
     MODEL_TYPES as _PROMPT_MODEL_TYPES,
     _build_h3_refplan,
     _build_background_slot,
+    _background_phrase,
+    attach_scene_layout as _attach_scene_layout,
 )
 from ..utils.libber_resolve import extract_libber_names, apply_slot_dialogue
 from ..utils.logging_utils import get_logger
@@ -378,7 +388,8 @@ class SourceProfileClipPrompt(io.ComfyNode):
 
     For H3 models: outputs a full 6-section H3 prompt with task_flags=["video editing"],
     so the model treats <Video 1> as the source material to edit. Preserves
-    {A}/{B}/{C}/{D} → <Subject 1>/<Subject 2>/… mapping from clip.subjects order.
+    {A}/{B}/{C}/{D} → <Subject 1>/<Subject 2>/… mapping, with letters assigned in PROFILE order among
+    the clip's ticked subjects (the ticked subject listed first in the profile is {A}).
 
     clip_duration_frames = ceil(duration_s × 24) — the H3 output length in frames.
     LoRAs defined on the clip are emitted as LORA_STACK_DATA for direct connection
@@ -598,6 +609,10 @@ class SourceProfileClipPrompt(io.ComfyNode):
         subjects_all   = source_profile.get("subjects", [])
         media_filename = source_profile.get("media_filename", "")
         media_dir      = source_profile.get("media_dir", "input")
+        # A still image is not motion to follow: it is the layout (pose, orientation, position,
+        # setting) the cast is placed into, sent as <Picture 1> rather than as <Video 1>.
+        is_image_source = source_profile.get("media_type", "video") == "image"
+        source_ref      = "<Picture 1>" if is_image_source else "<Video 1>"
 
         # scene_cast.clip_ids takes priority — wiring scene_cast is the primary
         # path and must override the serialized widget value, which can be stale.
@@ -622,6 +637,8 @@ class SourceProfileClipPrompt(io.ComfyNode):
 
         clip_id_used = clip.get("id", "")
         clip_label   = clip.get("label", clip_id_used)
+        # An image profile's clip may pick one of the profile's frames; otherwise the primary media.
+        media_filename, media_dir = _resolve_clip_media(source_profile, clip)
 
         # ── Resolve clip subjects ──────────────────────────────────────────────
         # ALL entity types (people, environments, objects) go into slots so that
@@ -631,9 +648,9 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # clips or clips auto-partitioned before subjects were added), use all
         # profile subjects in definition order so nothing is silently dropped.
         subject_index = {s["id"]: s for s in subjects_all}
+        # Profile order: the ticked subject listed first in the profile is {A}, then {B}, ... (click order is irrelevant)
         source_subject_ids: list[str] = [
-            sid for sid in clip.get("subjects", [])
-            if sid in subject_index
+            s["id"] for s in _clip_subjects_in_order(source_profile, clip) if s.get("id") in subject_index
         ][:10]
         if not source_subject_ids:
             source_subject_ids = [s["id"] for s in subjects_all if s.get("id")][:10]
@@ -670,6 +687,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         bundle_slot_pairs: list[tuple[str, str]] = []   # (bundle_slot, source_slot)
         bundle_slot_idx = 0
         bundle_video_entries: list[dict] = []           # video refs for bundle slots
+        own_voice_bundles: set[str] = set()             # bundles that send their own standalone voice
 
         _ENTITY_PRONOUN_DEFAULTS = {
             "location":   "location",
@@ -834,6 +852,8 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     bun_voice = _bundle_standalone_voice(
                         bundle, bun_audio_wanted, get_input_directory(), get_output_directory(),
                     )
+                    if bun_voice:
+                        own_voice_bundles.add(cast_entry["bundle_id"])
 
                     bun_pronoun = (bun_subj.get("pronoun_style")
                                    or _ENTITY_PRONOUN_DEFAULTS.get(
@@ -873,17 +893,19 @@ class SourceProfileClipPrompt(io.ComfyNode):
                 _s_idx = SOURCE_SLOTS.index(_s)
                 _src_sid = source_subject_ids[_s_idx]
                 if include_original_subject_tags:
+                    _kept = "pose and screen position" if is_image_source else "motion, pose and screen position"
                     repl_parts.append(
-                        f"Replace {{{_s}}} in <Video 1> with {{{_b}}}, adopting "
+                        f"Replace {{{_s}}} in {source_ref} with {{{_b}}}, adopting "
                         f"{{{_b}}}'s full appearance and outfit while retaining "
-                        f"{{{_s}}}'s original motion, pose and screen position "
+                        f"{{{_s}}}'s original {_kept} "
                         f"throughout the shot"
                     )
                 else:
                     _src_name = subject_index[_src_sid].get("label", _src_sid)
+                    _kept = "pose, orientation, and screen position" if is_image_source else "pose, movement, and screen position"
                     repl_parts.append(
                         f"{{{_b}}} takes the place of {_src_name}, "
-                        f"replicating their pose, movement, and screen position"
+                        f"replicating their {_kept}"
                     )
             retained = [
                 SOURCE_SLOTS[i] for i, sid in enumerate(source_subject_ids)
@@ -891,11 +913,13 @@ class SourceProfileClipPrompt(io.ComfyNode):
             ]
             if retained:
                 if len(retained) == 1:
-                    ret_str = f"{{{retained[0]}}} performs the same actions from <Video 1>"
+                    ret_str = (f"{{{retained[0]}}} stays as shown in {source_ref}" if is_image_source
+                               else f"{{{retained[0]}}} performs the same actions from {source_ref}")
                 else:
                     parts = [f"{{{s}}}" for s in retained]
                     ret_str = (", ".join(parts[:-1]) + " and " + parts[-1]
-                               + " perform the same actions from <Video 1>")
+                               + (f" stay as shown in {source_ref}" if is_image_source
+                                  else f" perform the same actions from {source_ref}"))
                 scene_synopsis = ". ".join(repl_parts) + ". " + ret_str + "."
             else:
                 scene_synopsis = ". ".join(repl_parts) + "."
@@ -948,6 +972,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # beats the profile's default_background_id -- see
         # resolve_effective_background_id() in utils/scene_casts.py.
         BACKGROUND_SLOT = "O"
+        setting_text = ""
         _bg_override = scene_cast.get("background_override", "") if isinstance(scene_cast, dict) else ""
         effective_bg_id = _resolve_effective_background_id(
             _bg_override, clip.get("background_id", ""), source_profile.get("default_background_id", "")
@@ -961,6 +986,10 @@ class SourceProfileClipPrompt(io.ComfyNode):
                 bg_slot = _build_background_slot(resolved_background)
                 if bg_slot is not None:
                     slot_assignments[BACKGROUND_SLOT] = bg_slot
+                else:
+                    # Text-only background (no reference images): not a subject, but it still
+                    # replaces the source media's own setting, stated by its description.
+                    setting_text = _background_phrase(resolved_background)
 
         # ── Build scene_instance ────────────────────────────────────────────────
         _shot_id = f"{clip_id_used}_shot_1"
@@ -973,6 +1002,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
             "dialogue":                     {},
             "outfit_overrides":             {},
             "include_original_subject_tags": include_original_subject_tags,
+            "setting_text":                 setting_text,
             "template": {
                 "shots": [
                     {
@@ -1016,6 +1046,12 @@ class SourceProfileClipPrompt(io.ComfyNode):
         clip_start  = clip.get("start_time", 0.0)
         clip_end    = clip.get("end_time", 0.0)
         clip_dur    = max(0.0, clip_end - clip_start)
+        # A still has no timeline: the clip's length is the length of video to generate, and an
+        # unset (0) one falls back to the profile's default segment length.
+        if is_image_source and clip_dur <= 0:
+            clip_dur = float(source_profile.get("default_segment_duration") or _DEFAULT_SEGMENT_DURATION)
+        if is_image_source and video_abs:
+            _attach_scene_layout(slot_assignments, SOURCE_SLOTS[:len(source_subject_ids)], video_abs)
 
         ref_nth, ref_cap = _resolve_reference_sampling(
             clip.get("select_every_nth", 2), clip.get("frame_load_cap", 120),
@@ -1033,11 +1069,11 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # ── Per-segment proxy ──────────────────────────────────────────────────
         # Trim + downscale once so CompositionToH3Conditioning doesn't need to
         # seek inside a large source file on every generation run.
-        video_file_for_entry = video_abs
+        video_file_for_entry = "" if is_image_source else video_abs
         proxy_edge = _resolve_proxy_short_edge(
             source_profile.get("proxy_short_edge", 768), _proxy_edge_choice_to_override(ref_proxy_short_edge),
         )
-        if video_abs:
+        if video_abs and not is_image_source:
             try:
                 proxy_path = _ensure_proxy(
                     source_path=video_abs,
@@ -1071,7 +1107,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
             "audio_retention":  "timbre",
             "audio_role":       "",
             "audio_cache":      "",
-        }] if source_subject_ids else []
+        }] if source_subject_ids and not is_image_source else []
 
         # Bundle slots that have visual_mode="video" contribute their own video
         # reference entries (separate from the source profile's motion-donor video).
@@ -1097,6 +1133,11 @@ class SourceProfileClipPrompt(io.ComfyNode):
                     continue
                 _bid  = _ce.get("bundle_id", "")
                 _ssid = _ce.get("source_subject_id", "")
+                # The bundle already sends its own voice as a standalone <Audio N>. The clip's
+                # proxy has no audio track, so this fallback would only add a second, unloadable
+                # reference (an <Audio N> with no path).
+                if _bid and _bid in own_voice_bundles:
+                    continue
                 # VIDEO/BOTH mode bundle: audio handled by bundle video entry — skip.
                 if _bid and _ce.get("visual_mode") in ("video", "both"):
                     continue
@@ -1159,7 +1200,7 @@ class SourceProfileClipPrompt(io.ComfyNode):
         # clip_frames is the H3 output length: how many frames the model should
         # generate.  frame_load_cap and select_every_nth are VHS reference-loading
         # constraints and must NOT affect the output frame count.
-        duration_s  = max(0.0, clip.get("end_time", 0.0) - clip.get("start_time", 0.0))
+        duration_s  = clip_dur
         clip_frames = math.ceil(duration_s * max(1, int(clip_duration_multiplier or 1)) * 24)
         _max = int(max_clip_frames or 0)
         if _max > 0:
@@ -1229,6 +1270,8 @@ class SourceProfileClipPrompt(io.ComfyNode):
             f"Reference: every {ref_nth} frame(s), cap {ref_cap or 'none'}, proxy {proxy_edge}px ({ref_origin}) → "
             f"~{ref_frames} frames = {ref_frames / 24:.1f}s covering {min(clip_dur, ref_frames * ref_nth / 24):.1f}s of the clip\n"
         )
+        if is_image_source:
+            ref_note = f"Reference: scene still {os.path.basename(media_filename)} as <Picture 1> (layout only)\n"
         clip_summary = (
             f"Profile: {profile_name} | Clip: {clip_label} ({clip_id_used})\n"
             f"Duration: {duration_s:.1f}s → {clip_frames} frames | Resolution: {res_str}\n"
@@ -1326,6 +1369,9 @@ async def _source_profiles_save(request):
             media_type=data.get("media_type", "video"),
             default_segment_duration=float(seg_dur_raw) if seg_dur_raw is not None else None,
             default_background_id=data.get("default_background_id", ""),
+            frames=data.get("frames"),
+            origin=data.get("origin"),
+            proxy_short_edge=data.get("proxy_short_edge"),
         )
         if "subjects" in data:
             registry = registry.set_subjects(pid, data["subjects"])
@@ -2103,6 +2149,7 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         use_8bit          bool
         max_frames        int     — max frames to sample (default 5)
         select_every_nth  int     — frame stride before applying max_frames cap (default 1)
+        frame_id          str     — optional; image profiles: describe this frame, not the primary one
 
     Returns:
         { "action": "1-2 sentence action description", "frame_count": int }
@@ -2122,6 +2169,7 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
         existing_action  = str(body.get("existing_action", "")).strip()
         max_frames       = int(body.get("max_frames", 5)) or 5
         select_every_nth = int(body.get("select_every_nth", 1)) or 1
+        frame_id         = str(body.get("frame_id", "")).strip()
         raw_subjects     = body.get("subjects") or []
         subjects: list[tuple[str, str, str]] = [
             (str(s.get("slot", "")).strip(),
@@ -2141,8 +2189,8 @@ async def _source_profiles_describe_clip(request: web.Request) -> web.Response:
     if profile is None:
         return web.json_response({"error": f"Source profile '{profile_id}' not found"}, status=404)
 
-    media_filename = profile.get("media_filename", "")
-    media_dir      = profile.get("media_dir", "input")
+    # An image profile's clip describes the frame it was built from, not the profile's primary one.
+    media_filename, media_dir = _resolve_clip_media(profile, {"frame_id": frame_id})
     media_type     = profile.get("media_type", "video")
     if not media_filename:
         return web.json_response({"error": "Profile has no media_filename set"}, status=400)
@@ -2331,6 +2379,136 @@ async def _source_profiles_set_clips(request: web.Request) -> web.Response:
         return web.json_response({"profile": registry.get_profile(profile_id)})
     except Exception as exc:
         logger.exception("set_clips failed for profile %r", profile_id)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+# ── Scene / Story import ──────────────────────────────────────────────────────
+# A Story becomes one image-driven profile (scene base images as frames, scenes as clips); scenes
+# that belong to no story can be imported as a set. Convention: docs/scene_story_import.md.
+
+def _import_plan_from_body(body: dict):
+    """``(plan, registry, profile_id)`` for an import request; raises ValueError with a user message."""
+    story = str(body.get("story", "")).strip()
+    scene_names = [str(s).strip() for s in (body.get("scenes") or []) if str(s).strip()]
+    profile_name = str(body.get("profile_name", "")).strip()
+    try:
+        clip_length = float(body.get("clip_length") or _import.DEFAULT_CLIP_LENGTH)
+    except (TypeError, ValueError):
+        raise ValueError("clip_length must be a number")
+    if clip_length <= 0:
+        raise ValueError("clip_length must be greater than 0")
+
+    scenes_dir = default_scenes_dir()
+    scenes_rel = os.path.relpath(scenes_dir, get_output_directory())
+    if scenes_rel.startswith(".."):
+        raise ValueError(
+            "The scenes folder is outside ComfyUI's output folder, so scene images cannot be "
+            "referenced as profile media."
+        )
+    scenes_rel = scenes_rel.replace(os.sep, "/")
+
+    if story:
+        entries = _import.read_story_entries(default_stories_dir(), story)
+        if not entries:
+            raise ValueError(f"Story '{story}' not found or has no scenes")
+        profile_name = profile_name or story
+    elif scene_names:
+        bad = [n for n in scene_names if not _import.safe_name(n)]
+        if bad:
+            raise ValueError(f"Invalid scene name(s): {', '.join(bad)}")
+        if not profile_name:
+            raise ValueError("profile_name is required when importing scenes without a story")
+        entries = _import.loose_scene_entries(scene_names)
+    else:
+        raise ValueError("Pass either 'story' or a list of 'scenes'")
+
+    profile_id = str(body.get("profile_id", "")).strip() or _import.profile_id_for(story or profile_name)
+    registry = _load_source_registry(default_source_profiles_path())
+    libber_manager = LibberStateManager.instance()
+
+    def scene_prompts(scene: str):
+        raw = _load_prompt_json(os.path.join(scenes_dir, scene, "prompts.json")) or {}
+        return _resolve_scene_prompts(raw, _PromptCollection.from_dict, libber_manager)
+
+    plan = _import.plan_import(
+        entries,
+        scene_info=_import.make_scene_info(scenes_dir),
+        scene_prompts=scene_prompts,
+        resolve_video_prompt=_resolve_video_prompt,
+        story_name=story, profile_name=profile_name, profile_id=profile_id,
+        existing_profile=registry.get_profile(profile_id),
+        clip_length=clip_length, scenes_rel=scenes_rel,
+    )
+    return plan, registry, profile_id
+
+
+@routes.get("/fbtools/source_profiles/importable")
+async def _source_profiles_importable(request: web.Request) -> web.Response:
+    """Stories and story-less scenes that can be imported.
+
+    Returns: { stories: [{name, scenes: [..], profile_id, imported}], scenes: [{name, has_base}] }
+    """
+    try:
+        stories = _import.list_stories(default_stories_dir())
+        registry = _load_source_registry(default_source_profiles_path())
+        for st in stories:
+            st["profile_id"] = _import.profile_id_for(st["name"])
+            st["imported"] = registry.get_profile(st["profile_id"]) is not None
+        return web.json_response({
+            "stories": stories,
+            "scenes": _import.list_loose_scenes(default_scenes_dir(), stories),
+        })
+    except Exception as exc:
+        logger.exception("importable failed")
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/import_preview")
+async def _source_profiles_import_preview(request: web.Request) -> web.Response:
+    """Dry run: what importing a story (or scenes) would create. Writes nothing.
+
+    JSON body: story (str) OR scenes ([str]); profile_name, profile_id, clip_length (optional).
+    Returns: { plan: {profile, scenes, warnings, stats}, profile_exists: bool }
+    """
+    try:
+        body = await request.json()
+        plan, registry, profile_id = _import_plan_from_body(body)
+        return web.json_response({"plan": plan, "profile_exists": registry.get_profile(profile_id) is not None})
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        logger.exception("import_preview failed")
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@routes.post("/fbtools/source_profiles/import_apply")
+async def _source_profiles_import_apply(request: web.Request) -> web.Response:
+    """Import a story (or scenes) as an image-driven profile. Same body as import_preview.
+
+    The plan is rebuilt here from disk (the client's preview is never trusted). Re-importing
+    updates the same profile and keeps hand-written actions. source_profiles.json is backed up.
+    """
+    try:
+        body = await request.json()
+        plan, registry, profile_id = _import_plan_from_body(body)
+        if not plan["stats"]["imported"]:
+            return web.json_response({"error": "Nothing to import", "plan": plan}, status=400)
+        prof = plan["profile"]
+        registry = registry.define_profile(
+            profile_id=profile_id, name=prof["name"],
+            media_filename=prof["media_filename"], media_dir="output", media_type="image",
+            default_segment_duration=prof.get("default_segment_duration"),
+            default_background_id=prof.get("default_background_id", ""),
+            frames=prof["frames"], origin=prof.get("origin"),
+        )
+        registry = registry.set_subjects(profile_id, prof["subjects"]).set_clips(profile_id, prof["clips"])
+        _save_source_registry(registry, default_source_profiles_path())
+        bump_reload("source_profile")
+        return web.json_response({"success": True, "id": profile_id, "plan": plan})
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        logger.exception("import_apply failed")
         return web.json_response({"error": str(exc)}, status=500)
 
 

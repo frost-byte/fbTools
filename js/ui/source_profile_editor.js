@@ -15,6 +15,13 @@ import { api }                      from "../../../scripts/api.js";
 import { groupSuggestionsBySetting, normalizeSettingLabel } from "../utils/segment_grouping.js";
 import { openBackgroundEditor }     from "./background_editor.js";
 import { isVideoFile }              from "./library_common.js";
+import { renderImportPanel }        from "./source_profile_import.js";
+import { layoutStillClips }         from "../utils/still_clips.js";
+import { makeImageZoomable }        from "./lightbox.js";
+import {
+    clipSubjectsInOrder, clipSlotLetters, CLIP_SLOT_LETTERS, letterMoves, movesAffectText, setClipSubjects,
+} from "../utils/clip_subjects.js";
+import { openClipLettersDialog, openBulkLettersDialog } from "./clip_letters_dialog.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -558,6 +565,17 @@ function _buildClipLoraSection(clip, onCommit, onApplyToAll = null) {
     return section;
 }
 
+// An imported clip whose action was typed or described in the editor is no longer a draft:
+// marking it "manual" stops a re-import from overwriting it.
+function _markManual(clip) {
+    return clip.origin ? { origin: { ...clip.origin, action_source: "manual" } } : {};
+}
+
+const _ACTION_SOURCE_BADGE = {
+    image_prompt: ["draft: image prompt", "Imported from the scene's image prompt, not a video prompt. Review the action."],
+    empty:        ["needs action", "The scene had no prompt. Write the action or use Describe."],
+};
+
 function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, onSelect = null, getVideoTime = null) {
     const wrap = _mk("div", { cls: "spe-clips" });
     container.appendChild(wrap);
@@ -588,7 +606,10 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
     let detectProgress = null;  // { windows:[[s,e]], status:[], segs:[], elapsed:[], frames:[] }
     let lastRawResponse = "";
     let hiddenVideo = null;
-    let clips = [...(profile.clips || [])];
+    // A still has no footage timeline: its clips sit end to end by length (imports once gave every
+    // clip 0..N, which drew them all on top of each other).
+    const isStill = profile.media_type === "image";
+    let clips = isStill ? layoutStillClips(profile.clips || []) : [...(profile.clips || [])];
 
     // ── Title row (toggle) ────────────────────────────────────────────────────
     const chevron = _mk("i", { cls: "pi pi-chevron-down", style: { marginLeft: "auto" } });
@@ -1163,6 +1184,49 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         onclick: addNewClip }, ["+ Add clip"]);
     body.appendChild(addClipBtn);
 
+    // Image profiles: describe every clip that still has no action (vision LLM, one at a time).
+    if (profile.media_type === "image") {
+        let describing = false;
+        const describeEmptyBtn = _mk("button", { cls: "spe-btn sm", style: { marginTop: "4px", marginLeft: "6px" },
+            title: "Run Describe on every clip with an empty action, using that clip's frame",
+            onclick: async () => {
+                if (describing) return;
+                const todo = clips.map((c, i) => [c, i]).filter(([c]) => !(c.action || "").trim());
+                if (!todo.length) { _toast("No clips with an empty action", "info"); return; }
+                describing = true;
+                describeEmptyBtn.disabled = true;
+                try {
+                    await onEnsureSaved?.();
+                    for (let n = 0; n < todo.length; n++) {
+                        describeEmptyBtn.textContent = `Describing ${n + 1}/${todo.length}…`;
+                        // describeClipAction only writes .value / .textContent / .disabled on these.
+                        await describeClipAction(todo[n][1], { value: "" }, { textContent: "", disabled: false });
+                    }
+                    redraw();
+                } finally {
+                    describing = false;
+                    describeEmptyBtn.disabled = false;
+                    describeEmptyBtn.textContent = "Describe empty clips";
+                }
+            } }, ["Describe empty clips"]);
+        body.appendChild(describeEmptyBtn);
+    }
+
+    // A still source has no timeline to probe, segment or proxy: keep only the clip length and
+    // default background, and relabel the group.
+    if (profile.media_type === "image") {
+        const keep = new Set([segDurInput, defaultBgSel]);
+        [...videoSettingsBody.children].forEach(row => {
+            if (![...keep].some(el => row.contains(el))) row.style.display = "none";
+        });
+        durationInput.style.display = "none";
+        durationInput.previousElementSibling?.style.setProperty("display", "none");
+        autoSegBtn.style.display = "none";
+        segDurInput.previousElementSibling.textContent = "Clip length (s):";
+        videoSettingsTitle.firstChild.textContent = "▸ Clip settings (length, default background)";
+        videoSettingsTitle.title = "Settings for clips built from this still image.";
+    }
+
     // ── Toggle ────────────────────────────────────────────────────────────────
     // ── Build-all-proxies button (sits in the title row) ─────────────────────
     const proxyBuildStatusEl = _mk("span", {
@@ -1193,8 +1257,10 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 buildAllBtn.textContent = "build proxies";
             }
         } }, ["build proxies"]);
-    titleRow.insertBefore(proxyBuildStatusEl, chevron);
-    titleRow.insertBefore(buildAllBtn, chevron);
+    if (profile.media_type !== "image") {
+        titleRow.insertBefore(proxyBuildStatusEl, chevron);
+        titleRow.insertBefore(buildAllBtn, chevron);
+    }
 
     titleRow.onclick = () => {
         clipsOpen = !clipsOpen;
@@ -1467,6 +1533,10 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 value: clip.start_time.toFixed(1), min: 0, step: 0.1 });
             const endEl   = _mk("input", { type: "number", cls: "spe-clip-inp",
                 value: clip.end_time.toFixed(1),   min: 0, step: 0.1 });
+            if (isStill) {   // position follows list order; only the length is yours to set
+                startEl.disabled = true;
+                startEl.title = "Clips of a still image run one after another; change End to change the length.";
+            }
             const applyTimes = () => {
                 const s = parseFloat(startEl.value) || 0;
                 const e = parseFloat(endEl.value)   || 0;
@@ -1474,6 +1544,7 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                     clips[i] = { ...clips[i], start_time: s, end_time: e };
                     _markTimesDirty(i);
                     commitClip(i);
+                    if (isStill) clips = layoutStillClips(clips);
                     renderClipList();  // rebuilds the card, so boundary thumbnails
                                        // below refresh at the newly committed times
                 }
@@ -1517,10 +1588,45 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             const actionEl = _mk("textarea", { cls: "spe-clip-ta", rows: 2,
                 placeholder: "Action description — edit manually or click Describe" });
             actionEl.value = clip.action || "";
-            actionEl.onchange = () => { clips[i] = { ...clips[i], action: actionEl.value }; commitClip(i); };
+            actionEl.onchange = () => { clips[i] = { ...clips[i], action: actionEl.value, ..._markManual(clips[i]) }; commitClip(i); };
 
             const describeBtn = _mk("button", { cls: "spe-btn sm ghost",
                 onclick: () => describeClipAction(i, actionEl, describeBtn) }, ["Describe"]);
+
+            // Image profiles: which of the profile's frames this clip is built from.
+            let frameRow = null;
+            if (profile.media_type === "image" && (profile.frames || []).length) {
+                const frames = profile.frames;
+                const thumb = _mk("img", { style: { height: "64px", maxWidth: "110px", objectFit: "cover",
+                                                    borderRadius: "3px", marginLeft: "6px" } });
+                makeImageZoomable(thumb);
+                const showThumb = () => {
+                    const f = frames.find(fr => fr.id === clips[i].frame_id) || frames[0];
+                    thumb.src = f ? _mediaUrl(f.filename, f.dir) : "";
+                    thumb.alt = f ? (f.label || f.filename) : "";
+                    thumb.title = f ? `${f.filename} — click to enlarge` : "";
+                };
+                const frameSel = _mk("select", { cls: "spe-clip-sel" }, frames.map(f => {
+                    const o = _mk("option", { value: f.id }, [f.label || f.filename]);
+                    o.selected = f.id === (clips[i].frame_id || frames[0].id);
+                    return o;
+                }));
+                frameSel.onchange = () => {
+                    clips[i] = { ...clips[i], frame_id: frameSel.value };
+                    showThumb();
+                    commitClip(i);
+                };
+                showThumb();
+                frameRow = _mk("div", { style: { display: "flex", alignItems: "center", gap: "4px", margin: "4px 0" } }, [
+                    _mk("span", { cls: "spe-clip-field-label", style: { marginBottom: "0" } }, ["Frame"]),
+                    frameSel, thumb,
+                ]);
+            }
+
+            const styleEl = _mk("textarea", { cls: "spe-clip-ta", rows: 2,
+                placeholder: "Optional. Opens detailed_description before [Shot 1]; leave empty to start at the shot. {A}, {B}… become <Subject N>." });
+            styleEl.value = clip.style || "";
+            styleEl.onchange = () => { clips[i] = { ...clips[i], style: styleEl.value }; commitClip(i); };
 
             const soundscapeEl = _mk("textarea", { cls: "spe-clip-ta", rows: 2,
                 placeholder: "Overall soundscape (ambient audio, room tone, environment sounds…)" });
@@ -1533,20 +1639,15 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
             musicEl.onchange = () => { clips[i] = { ...clips[i], non_diegetic_music: musicEl.value }; commitClip(i); };
 
             const subjWrap = _mk("div", { cls: "spe-clip-subj-list" });
-            const CLIP_SLOTS = ["A","B","C","D","E","F","G","H","I","J"];
             const slotSpans = {};  // subjectId → span element showing "{A}" etc.
 
+            // Letters follow the PROFILE's subject order among the ticked subjects, not the order they
+            // were ticked in; see js/utils/clip_subjects.js.
             const updateSlotLabels = () => {
-                const tagged = new Set(clips[i].subjects || []);
-                let slotIdx = 0;
+                const letters = clipSlotLetters(profile, clips[i]);
                 subjects.forEach(s => {
                     const span = slotSpans[s.id];
-                    if (!span) return;
-                    if (tagged.has(s.id) && slotIdx < CLIP_SLOTS.length) {
-                        span.textContent = ` {${CLIP_SLOTS[slotIdx++]}}`;
-                    } else {
-                        span.textContent = "";
-                    }
+                    if (span) span.textContent = letters[s.id] ? ` {${letters[s.id]}}` : "";
                 });
             };
 
@@ -1555,10 +1656,27 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 cb.checked = (clip.subjects || []).includes(s.id);
                 const slotSpan = _mk("span", { style: { opacity: "0.6", fontFamily: "monospace", fontSize: "10px" } });
                 slotSpans[s.id] = slotSpan;
-                cb.onchange = () => {
-                    const cur = new Set(clips[i].subjects || []);
-                    if (cb.checked) cur.add(s.id); else cur.delete(s.id);
-                    clips[i] = { ...clips[i], subjects: [...cur] };
+                cb.onchange = async () => {
+                    // Letters are ranks within the profile's subject list, so ticking a subject listed
+                    // before others, or unticking one, moves the letters after it. If this clip's text
+                    // uses those letters, ask how to handle it instead of silently re-pointing it.
+                    const oldIds = clipSubjectsInOrder(profile, clips[i]).map(x => x.id);
+                    const want = new Set(clips[i].subjects || []);
+                    if (cb.checked) want.add(s.id); else want.delete(s.id);
+                    const newIds = clipSubjectsInOrder(profile, { subjects: [...want] }).map(x => x.id);
+                    if (movesAffectText(clips[i], letterMoves(oldIds, newIds))) {
+                        const res = await openClipLettersDialog({
+                            profile, clip: clips[i], newIds,
+                            title: `${cb.checked ? "Add" : "Remove"} "${s.label || s.id}" ${cb.checked ? "to" : "from"} this clip`,
+                            intro: `${cb.checked ? "Adding" : "Removing"} a subject moves the letters of the subjects listed after it.`,
+                        });
+                        if (!res) { cb.checked = !cb.checked; return; }
+                        clips[i] = setClipSubjects(profile, clips[i], res.ids, { remap: res.remap });
+                        commitClip(i);
+                        renderClipList();   // the text boxes may have been rewritten
+                        return;
+                    }
+                    clips[i] = { ...clips[i], subjects: [...want] };
                     commitClip(i);
                     updateSlotLabels();
                 };
@@ -1569,17 +1687,34 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                     textContent: "→ all",
                     style: { padding: "1px 5px", fontSize: "10px", opacity: "0.6" },
                 });
-                addAllBtn.addEventListener("click", e => {
+                addAllBtn.addEventListener("click", async e => {
                     e.preventDefault();
+                    // Clips that gain this subject, and which of them use letters that would shift.
+                    const items = [];
                     clips.forEach((c, j) => {
-                        const cur = new Set(c.subjects || []);
-                        if (cur.has(s.id)) return;
-                        cur.add(s.id);
-                        clips[j] = { ...clips[j], subjects: [...cur] };
-                        commitClip(j);
+                        if ((c.subjects || []).includes(s.id)) return;
+                        const oldIds = clipSubjectsInOrder(profile, c).map(x => x.id);
+                        const newIds = clipSubjectsInOrder(profile, { subjects: [...(c.subjects || []), s.id] }).map(x => x.id);
+                        items.push({ j, clip: c, newIds, affects: movesAffectText(c, letterMoves(oldIds, newIds)) });
+                    });
+                    let approved = new Set();
+                    const affected = items.filter(it => it.affects);
+                    if (affected.length) {
+                        approved = await openBulkLettersDialog({
+                            profile, items: affected,
+                            title: `Add "${s.label || s.id}" to all segments`,
+                        });
+                        if (!approved) return;
+                    }
+                    items.forEach(it => {
+                        clips[it.j] = approved.has(it.clip.id)
+                            ? setClipSubjects(profile, it.clip, it.newIds)
+                            : { ...it.clip, subjects: [...(it.clip.subjects || []), s.id] };
+                        commitClip(it.j);
                     });
                     renderClipList();
-                    _toast(`"${s.label || s.id}" added to all segments`, "success");
+                    _toast(`"${s.label || s.id}" added to all segments`
+                        + (approved.size ? ` (text rewritten in ${approved.size})` : ""), "success");
                 });
 
                 const rmAllBtn = _mk("button", {
@@ -1588,17 +1723,34 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                     textContent: "✕ all",
                     style: { padding: "1px 5px", fontSize: "10px", opacity: "0.6", color: "var(--p-red-400,#f87171)" },
                 });
-                rmAllBtn.addEventListener("click", e => {
+                rmAllBtn.addEventListener("click", async e => {
                     e.preventDefault();
+                    // Clips that lose this subject, and which of them use letters that would shift.
+                    const items = [];
                     clips.forEach((c, j) => {
-                        const cur = new Set(c.subjects || []);
-                        if (!cur.has(s.id)) return;
-                        cur.delete(s.id);
-                        clips[j] = { ...clips[j], subjects: [...cur] };
-                        commitClip(j);
+                        if (!(c.subjects || []).includes(s.id)) return;
+                        const oldIds = clipSubjectsInOrder(profile, c).map(x => x.id);
+                        const newIds = oldIds.filter(id => id !== s.id);
+                        items.push({ j, clip: c, newIds, affects: movesAffectText(c, letterMoves(oldIds, newIds)) });
+                    });
+                    let approved = new Set();
+                    const affected = items.filter(it => it.affects);
+                    if (affected.length) {
+                        approved = await openBulkLettersDialog({
+                            profile, items: affected,
+                            title: `Remove "${s.label || s.id}" from all segments`,
+                        });
+                        if (!approved) return;
+                    }
+                    items.forEach(it => {
+                        clips[it.j] = approved.has(it.clip.id)
+                            ? setClipSubjects(profile, it.clip, it.newIds)
+                            : { ...it.clip, subjects: (it.clip.subjects || []).filter(id => id !== s.id) };
+                        commitClip(it.j);
                     });
                     renderClipList();
-                    _toast(`"${s.label || s.id}" removed from all segments`, "success");
+                    _toast(`"${s.label || s.id}" removed from all segments`
+                        + (approved.size ? ` (text rewritten in ${approved.size})` : ""), "success");
                 });
 
                 subjWrap.appendChild(
@@ -1724,6 +1876,9 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 _mk("div", { cls: "spe-clip-row", style: { marginBottom: "6px" } }, [labelInp]),
                 boundsRow,
                 refInfo,
+                frameRow,
+                _mk("span", { cls: "spe-clip-field-label" }, ["Preamble (opens detailed_description)"]),
+                styleEl,
                 actionEl,
                 subjects.length ? subjWrap : null,
                 _mk("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px", marginTop: "4px" } }, [
@@ -1786,10 +1941,18 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 _mk("span", { cls: "spe-clip-color-dot", style: { background: color } }),
                 _mk("span", { style: { flex: "1", fontWeight: "600", fontSize: "12px" } },
                     [clip.label || `Clip ${i + 1}`]),
+                (_ACTION_SOURCE_BADGE[clip.origin?.action_source]
+                    ? _mk("span", { title: _ACTION_SOURCE_BADGE[clip.origin.action_source][1],
+                                    style: { color: "#d9b45a", fontSize: "10px", border: "1px solid #d9b45a",
+                                             borderRadius: "3px", padding: "0 4px" } },
+                          [_ACTION_SOURCE_BADGE[clip.origin.action_source][0]])
+                    : null),
                 _mk("span", { style: { color: "#888", fontSize: "11px" } },
-                    [`${clip.start_time.toFixed(1)}–${clip.end_time.toFixed(1)}s`]),
+                    [profile.media_type === "image"
+                        ? `${Math.max(0, clip.end_time - clip.start_time).toFixed(1)}s`
+                        : `${clip.start_time.toFixed(1)}–${clip.end_time.toFixed(1)}s`]),
                 proxyBadge,
-                buildProxyBtn,
+                profile.media_type === "image" ? null : buildProxyBtn,
                 _mk("button", { cls: "spe-btn sm danger",
                     onclick: e => { e.stopPropagation(); removeClip(i); } }, ["×"]),
             ]);
@@ -1828,15 +1991,19 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         if (i >= clips.length - 1) return;
         const a = clips[i];
         const b = clips[i + 1];
-        const aSubjects = a.subjects || [];
+        // The merged clip has both clips' subjects. Each clip's text was written against its own
+        // letters, and the merged set can move them, so rewrite both into the merged letters.
+        const mergedIds = clipSubjectsInOrder(profile, { subjects: [...(a.subjects || []), ...(b.subjects || [])] }).map(x => x.id);
+        const aText = setClipSubjects(profile, a, mergedIds);
+        const bText = setClipSubjects(profile, b, mergedIds);
         const merged = {
-            ...a,
+            ...aText,
             end_time:           b.end_time,
-            action:             [a.action, b.action].filter(Boolean).join("\n\n"),
-            subjects:           [...aSubjects, ...(b.subjects || []).filter(id => !aSubjects.includes(id))],
+            action:             [aText.action, bText.action].filter(Boolean).join("\n\n"),
+            subjects:           mergedIds,
             allows_dialogue:    (a.allows_dialogue !== false) || (b.allows_dialogue !== false),
-            overall_soundscape: [a.overall_soundscape, b.overall_soundscape].filter(Boolean).join("\n\n") || undefined,
-            non_diegetic_music: [a.non_diegetic_music, b.non_diegetic_music].filter(Boolean).join("\n\n") || undefined,
+            overall_soundscape: [aText.overall_soundscape, bText.overall_soundscape].filter(Boolean).join("\n\n") || undefined,
+            non_diegetic_music: [aText.non_diegetic_music, bText.non_diegetic_music].filter(Boolean).join("\n\n") || undefined,
             loras:              _mergeLoras(a.loras || [], b.loras || []),
         };
         const removedId = b.id;
@@ -2077,14 +2244,11 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
 
         // Map the subjects tagged in this clip to slot letters (A–J).
         // The VLM will use {A}, {B} etc. instead of repeating appearance inline.
-        const SLOTS = ["A","B","C","D","E","F","G","H","I","J"];
-        const taggedSet = new Set(clip.subjects || []);
-        const allSubjects = profile.subjects || [];
-        const subjects = allSubjects
-            .filter(s => taggedSet.has(s.id))
-            .slice(0, SLOTS.length)
+        // Letters follow the clip's own activation order (see js/utils/clip_subjects.js).
+        const subjects = clipSubjectsInOrder(profile, clip)
+            .slice(0, CLIP_SLOT_LETTERS.length)
             .map((s, idx) => ({
-                slot:       SLOTS[idx],
+                slot:       CLIP_SLOT_LETTERS[idx],
                 name:       s.label || s.id,
                 appearance: s.role_description || "",
             }));
@@ -2101,9 +2265,10 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
                 prompt_override:  profile.describe_prompt_override || "",
                 max_frames:       profile.describe_max_frames       ?? 5,
                 select_every_nth: profile.describe_select_every_nth ?? 1,
+                frame_id:         clip.frame_id || "",
             });
             if (res.action) {
-                clips[i] = { ...clips[i], action: res.action };
+                clips[i] = { ...clips[i], action: res.action, ..._markManual(clips[i]) };
                 actionEl.value = res.action;
                 commitClip(i);
                 _toast("Action filled", "success");
@@ -2116,7 +2281,17 @@ function _renderClipsSection(container, profile, onClipsChanged, onEnsureSaved, 
         }
     }
 
-    return { redraw };
+    /** Replace clips (matched by id) with updated copies, persist them and redraw. */
+    function applyClipUpdates(updates) {
+        const byId = new Map(updates.map(u => [u.id, u]));
+        clips = clips.map(c => byId.get(c.id) || c);
+        profile.clips = clips;
+        onClipsChanged(clips);
+        updates.forEach(_persistClip);
+        redraw();
+    }
+
+    return { redraw, applyClipUpdates };
 }
 
 function _renderMediaPreview(profile) {
@@ -2141,6 +2316,7 @@ function _renderMediaPreview(profile) {
     } else {
         const img = _mk("img", { alt: fn });
         img.src = _mediaUrl(fn, dir);
+        makeImageZoomable(img);
         wrap.appendChild(img);
     }
     return wrap;
@@ -2316,6 +2492,13 @@ async function _renderDetail(root) {
     settingsBody.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Media dir"]), dirEl]));
     settingsBody.appendChild(_mk("div", { cls: "spe-form-row" }, [_mk("label", {}, ["Media file"]), fileEl, fileDl]));
 
+    // Frames (image profiles): the set of images clips choose from. The first frame is also the
+    // profile's primary media, so single-image consumers keep working.
+    const framesHost = _mk("div");
+    settingsBody.appendChild(framesHost);
+    let drawFrames = () => {};
+    typeEl.addEventListener("change", () => drawFrames());
+
     // Wire save
     const collectMeta = () => ({
         ...profile,
@@ -2324,6 +2507,79 @@ async function _renderDetail(root) {
         media_dir:      dirEl.value,
         media_type:     typeEl.value,
     });
+
+    drawFrames = () => {
+        framesHost.innerHTML = "";
+        if (typeEl.value !== "image") return;
+        profile.frames = profile.frames || [];
+        const frames = profile.frames;
+        const saveFrames = () => {
+            if (frames.length) {
+                profile.media_filename = frames[0].filename;
+                profile.media_dir      = frames[0].dir;
+                fileEl.value = frames[0].filename;
+                dirEl.value  = frames[0].dir;
+            }
+            _refreshPreview();
+            _saveProfile(root, collectMeta());
+            clipsSection?.redraw();
+            drawFrames();
+        };
+        framesHost.appendChild(_mk("div", { cls: "spe-form-row" }, [
+            _mk("label", {}, ["Frames"]),
+            _mk("span", { style: { fontSize: "11px", color: "#888" } },
+                [`${frames.length} image(s) clips can choose from`]),
+        ]));
+        frames.forEach((f, idx) => {
+            const labelEl = _mk("input", { type: "text", value: f.label || "", placeholder: f.filename, style: { flex: "1" } });
+            labelEl.onchange = () => { f.label = labelEl.value; saveFrames(); };
+            const move = (d) => () => {
+                const j = idx + d;
+                if (j < 0 || j >= frames.length) return;
+                [frames[idx], frames[j]] = [frames[j], frames[idx]];
+                saveFrames();
+            };
+            framesHost.appendChild(_mk("div", { style: { display: "flex", alignItems: "center", gap: "4px", margin: "2px 0" } }, [
+                makeImageZoomable(_mk("img", { src: _mediaUrl(f.filename, f.dir), alt: f.label || f.filename,
+                             title: `${f.filename} — click to enlarge`,
+                             style: { height: "36px", width: "52px", objectFit: "cover", borderRadius: "3px" } })),
+                labelEl,
+                _mk("button", { cls: "spe-btn sm ghost", title: "Move up", onclick: move(-1) }, ["↑"]),
+                _mk("button", { cls: "spe-btn sm ghost", title: "Move down", onclick: move(1) }, ["↓"]),
+                _mk("button", { cls: "spe-btn sm danger", title: "Remove frame", onclick: () => {
+                    const used = (profile.clips || []).filter(c => c.frame_id === f.id).length;
+                    if (used && !window.confirm(`${used} clip(s) use this frame; they will fall back to the first frame. Remove it?`)) return;
+                    frames.splice(idx, 1);
+                    (profile.clips || []).forEach(c => { if (c.frame_id === f.id) c.frame_id = ""; });
+                    saveFrames();
+                } }, ["×"]),
+            ]));
+        });
+        const addUid = Math.random().toString(36).slice(2, 8);
+        const addDl  = _mk("datalist", { id: `spe-frame-dl-${addUid}` });
+        const addDirEl = _mk("select", {}, MEDIA_DIRS.map(d => _mk("option", { value: d }, [d])));
+        const addEl = _mk("input", { type: "text", placeholder: "image filename or subdir/filename…", style: { flex: "1" } });
+        addEl.setAttribute("list", `spe-frame-dl-${addUid}`);
+        const fillDl = () => {
+            addDl.innerHTML = "";
+            _allMedia("image", addDirEl.value).forEach(fn => addDl.appendChild(_mk("option", { value: fn })));
+        };
+        fillDl();
+        addDirEl.addEventListener("change", fillDl);
+        const addFrame = () => {
+            const fn = addEl.value.trim();
+            if (!fn) return;
+            if (frames.some(f => f.filename === fn && f.dir === addDirEl.value)) { _toast("That image is already a frame", "warn"); return; }
+            frames.push({ id: "frame_" + Date.now().toString(36).slice(-5) + frames.length, filename: fn, dir: addDirEl.value, label: "" });
+            addEl.value = "";
+            saveFrames();
+        };
+        addEl.addEventListener("keydown", e => { if (e.key === "Enter") addFrame(); });
+        framesHost.appendChild(_mk("div", { style: { display: "flex", gap: "4px", marginTop: "4px" } }, [
+            addDirEl, addEl, addDl, _mk("button", { cls: "spe-btn sm", onclick: addFrame }, ["Add frame"]),
+        ]));
+    };
+    drawFrames();
 
     // ── Subjects section (collapsible)
     body.appendChild(_mk("div", { cls: "spe-divider" }));
@@ -2378,9 +2634,31 @@ async function _renderDetail(root) {
                             () => { _S.editingSubject = null; subjFormEl.innerHTML = ""; }
                         );
                     }}, ["Edit"]),
-                    _mk("button", { cls: "spe-btn sm danger", onclick: () => {
+                    _mk("button", { cls: "spe-btn sm danger", onclick: async () => {
+                        // Deleting a subject shifts the later subjects' letters in every clip that has it.
+                        const removed = profile.subjects[idx];
+                        const items = [];
+                        (profile.clips || []).forEach(c => {
+                            if (!(c.subjects || []).includes(removed.id)) return;
+                            const oldIds = clipSubjectsInOrder(profile, c).map(x => x.id);
+                            const newIds = oldIds.filter(id => id !== removed.id);
+                            if (movesAffectText(c, letterMoves(oldIds, newIds))) items.push({ clip: c, newIds });
+                        });
+                        let updates = [];
+                        if (items.length) {
+                            const approved = await openBulkLettersDialog({
+                                profile, items,
+                                title: `Delete subject "${removed.label || removed.id}"`,
+                                intro: "Deleting a subject removes it from every clip that uses it.",
+                            });
+                            if (!approved) return;
+                            // Built before the subject leaves the profile: the rewrite needs its label.
+                            updates = items.filter(it => approved.has(it.clip.id))
+                                .map(it => setClipSubjects(profile, it.clip, it.newIds));
+                        }
                         profile.subjects.splice(idx, 1);
                         renderSubjList();
+                        if (updates.length) clipsSection?.applyClipUpdates(updates);
                     }}, ["×"]),
                 ]),
             ]);
@@ -2407,26 +2685,25 @@ async function _renderDetail(root) {
     };
     renderSubjList();
 
-    // ── Clips section (video only)
-    if ((profile.media_type || "video") === "video") {
-        body.appendChild(_mk("div", { cls: "spe-divider" }));
-        clipsSection = _renderClipsSection(body, profile, (_clips) => {
-            profile.clips = _clips;
-        }, async () => {
-            // Auto-save the profile (with current form values) before
-            // backend calls that require the profile to exist on disk.
-            const current = collectMeta();
-            await _saveProfile(root, current);
-            // Keep the in-memory profile in sync so further calls get the updated id.
-            Object.assign(profile, current);
-        }, (startTime) => {
-            const vid = previewWrap.querySelector("video");
-            if (vid) vid.currentTime = startTime;
-        }, () => {
-            const vid = previewWrap.querySelector("video");
-            return vid ? vid.currentTime : 0;
-        });
-    }
+    // ── Clips section (video: timeline tools; image: one clip per action, no playhead)
+    const _isVideoMedia = (profile.media_type || "video") === "video";
+    body.appendChild(_mk("div", { cls: "spe-divider" }));
+    clipsSection = _renderClipsSection(body, profile, (_clips) => {
+        profile.clips = _clips;
+    }, async () => {
+        // Auto-save the profile (with current form values) before
+        // backend calls that require the profile to exist on disk.
+        const current = collectMeta();
+        await _saveProfile(root, current);
+        // Keep the in-memory profile in sync so further calls get the updated id.
+        Object.assign(profile, current);
+    }, _isVideoMedia ? (startTime) => {
+        const vid = previewWrap.querySelector("video");
+        if (vid) vid.currentTime = startTime;
+    } : null, _isVideoMedia ? () => {
+        const vid = previewWrap.querySelector("video");
+        return vid ? vid.currentTime : 0;
+    } : null);
 
     // ── Analyze section
     _renderAnalyzeSection(body, profile, root, renderSubjList);
@@ -2894,7 +3171,22 @@ function _renderList(root) {
     searchEl.oninput = () => { _S.filterText = searchEl.value; _populateProfileList(root, listEl); };
 
     const newBtn = _mk("button", { cls: "spe-btn primary", onclick: () => _createNewProfile(root) }, ["+ New"]);
-    root.appendChild(_mk("div", { cls: "spe-toolbar" }, [searchEl, newBtn]));
+    const importBtn = _mk("button", { cls: "spe-btn", title: "Turn a Story, or scenes without one, into an image-driven profile",
+        onclick: async () => {
+            if (importHost.firstChild) { importHost.innerHTML = ""; return; }
+            await renderImportPanel(importHost, {
+                toast: _toast, errMsg: _errMsg,
+                onClose: () => { importHost.innerHTML = ""; },
+                onImported: async (id) => {
+                    await _loadAll();
+                    _S.selected = id; _S.editingSubject = null; _S.analyzeCandidates = [];
+                    _renderDetail(root);
+                },
+            });
+        } }, ["Import…"]);
+    root.appendChild(_mk("div", { cls: "spe-toolbar" }, [searchEl, importBtn, newBtn]));
+    const importHost = _mk("div");
+    root.appendChild(importHost);
 
     // List
     const listEl = _mk("div", { cls: "spe-list" });

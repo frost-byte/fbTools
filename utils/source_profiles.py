@@ -79,6 +79,70 @@ def _normalize_lora(entry: dict) -> dict:
     }
 
 
+ACTION_SOURCES: tuple[str, ...] = ("resolved", "image_prompt", "empty", "manual")
+
+
+def _normalize_origin(entry) -> dict:
+    """Provenance of an imported clip/profile: {scene, story, scene_order, action_source}.
+
+    Only known keys survive; an empty dict means "not imported".
+    """
+    if not isinstance(entry, dict):
+        return {}
+    out: dict = {}
+    for key in ("scene", "story"):
+        if entry.get(key):
+            out[key] = str(entry[key])
+    if entry.get("scene_order") is not None:
+        try:
+            out["scene_order"] = int(entry["scene_order"])
+        except (TypeError, ValueError):
+            pass
+    if entry.get("action_source") in ACTION_SOURCES:
+        out["action_source"] = entry["action_source"]
+    return out
+
+
+def _normalize_frame(entry: dict) -> dict:
+    return {
+        "id":       str(entry.get("id", "")),
+        "filename": str(entry.get("filename", "")),
+        "dir":      entry.get("dir") if entry.get("dir") in MEDIA_DIRS else "input",
+        "label":    str(entry.get("label", "")),
+    }
+
+
+def _normalize_frames(entries) -> list[dict]:
+    """Frames with a filename, each given an id (frame_<n>) when it has none, ids unique."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for entry in entries or []:
+        if not isinstance(entry, dict) or not entry.get("filename"):
+            continue
+        frame = _normalize_frame(entry)
+        fid = frame["id"] or f"frame_{len(out) + 1}"
+        while fid in seen:
+            fid += "_"
+        frame["id"] = fid
+        seen.add(fid)
+        out.append(frame)
+    return out
+
+
+def resolve_clip_media(profile: dict, clip: dict | None) -> tuple[str, str]:
+    """``(filename, dir)`` of the image a clip is built from.
+
+    An image profile's clip may select one of the profile's frames via ``frame_id``; anything
+    else (no frame chosen, unknown frame, video profile) uses the profile's primary media.
+    """
+    fid = (clip or {}).get("frame_id", "")
+    if fid and profile.get("media_type") == "image":
+        for frame in profile.get("frames", []) or []:
+            if frame.get("id") == fid:
+                return frame.get("filename", ""), frame.get("dir", "input")
+    return profile.get("media_filename", ""), profile.get("media_dir", "input")
+
+
 def _normalize_clip(entry: dict) -> dict:
     return {
         "id":                  str(entry.get("id", "")),
@@ -89,6 +153,9 @@ def _normalize_clip(entry: dict) -> dict:
         "frame_load_cap":      int(entry.get("frame_load_cap", DEFAULT_FRAME_LOAD_CAP)),
         "subjects":            [str(s) for s in entry.get("subjects", []) if s],
         "action":              str(entry.get("action", "")),
+        # Opens detailed_description (same field as a Composition's style). Empty = the
+        # section starts at [Shot 1].
+        "style":               str(entry.get("style", "")),
         "overall_soundscape":  str(entry.get("overall_soundscape", "")),
         "non_diegetic_music":  str(entry.get("non_diegetic_music", "")),
         "allows_dialogue":     bool(entry.get("allows_dialogue", True)),
@@ -97,6 +164,11 @@ def _normalize_clip(entry: dict) -> dict:
         # clip specifically. Empty (default) preserves today's behavior entirely: background is
         # either described in free text or via a location-typed subject, never image-backed.
         "background_id":       str(entry.get("background_id", "")),
+        # Image-driven profiles only: which of the profile's frames this clip is built from.
+        # Empty falls back to the profile's primary media (single-image profiles, unchanged).
+        "frame_id":            str(entry.get("frame_id", "")),
+        # Where the clip came from (Scene/Story import) and how its action text was obtained.
+        "origin":              _normalize_origin(entry.get("origin")),
     }
 
 
@@ -158,6 +230,10 @@ def _normalize_profile(pid: str, entry: dict) -> dict:
         # Fallback background for any clip that doesn't set its own background_id. Empty
         # (default) means no profile-level default -- unset clips stay text-only as today.
         "default_background_id":   str(entry.get("default_background_id", "")),
+        # Image-driven profiles: the set of frames clips choose from. media_filename/media_dir
+        # stay as the primary frame so single-image consumers keep working unchanged.
+        "frames":                  _normalize_frames(entry.get("frames")),
+        "origin":                  _normalize_origin(entry.get("origin")),
     }
 
 
@@ -203,23 +279,40 @@ class SourceProfileRegistry:
         media_type: str = "video",
         default_segment_duration: float | None = None,
         default_background_id: str = "",
+        frames: list[dict] | None = None,
+        origin: dict | None = None,
+        proxy_short_edge: int | None = None,
     ) -> "SourceProfileRegistry":
         """Return a NEW registry with the profile created or updated.
 
-        Existing subjects and clips within the profile are preserved on update.
+        Existing subjects and clips within the profile are preserved on update, as are frames
+        and origin unless new ones are passed. For an image profile with frames, the first
+        frame is mirrored into media_filename/media_dir.
         """
         new_reg = copy.deepcopy(self)
         existing = new_reg.profiles.get(profile_id, {})
+        norm_frames = (_normalize_frames(frames) if frames is not None
+                       else existing.get("frames", []))
+        media_type = media_type if media_type in MEDIA_TYPES else "video"
+        if media_type == "image" and norm_frames:
+            media_filename, media_dir = norm_frames[0]["filename"], norm_frames[0]["dir"]
         new_reg.profiles[profile_id] = {
             "id":                       profile_id,
             "name":                     name or profile_id,
             "media_filename":           media_filename,
             "media_dir":                media_dir if media_dir in MEDIA_DIRS else "input",
-            "media_type":               media_type if media_type in MEDIA_TYPES else "video",
+            "media_type":               media_type,
             "subjects":                 existing.get("subjects", []),
             "clips":                    existing.get("clips", []),
             "default_segment_duration": default_segment_duration,
+            # Kept across saves: passing None leaves the stored value (or the default) alone.
+            "proxy_short_edge":         _normalize_proxy_short_edge(
+                                            proxy_short_edge if proxy_short_edge is not None
+                                            else existing.get("proxy_short_edge", _PROXY_SHORT_EDGE_DEFAULT)),
             "default_background_id":   default_background_id,
+            "frames":                  norm_frames,
+            "origin":                  (_normalize_origin(origin) if origin is not None
+                                        else existing.get("origin", {})),
         }
         return new_reg
 
@@ -551,15 +644,34 @@ def resolve_ordinal_from_list(subjects: list[dict], want_pronoun: str, ordinal: 
     return ""
 
 
+def clip_subjects_in_order(profile: dict, clip: dict) -> list[dict]:
+    """The profile subjects active in ``clip``, in PROFILE order.
+
+    A clip's ``{A}``/``{B}``/... letters are the rank of each ticked subject within the profile's
+    own subject list: the ticked subject listed first in the profile is ``{A}``, the next ``{B}``,
+    and so on. The order in which they were ticked does not matter. Every place that maps those
+    letters to subjects must use this order (the Clip Prompt node, ordinal matching, and in the JS
+    the editor's labels, Describe and the Scene Cast Build preview via js/utils/clip_subjects.js).
+    Ids the profile no longer has are skipped; repeats are ignored.
+    """
+    active = set((clip or {}).get("subjects", []))
+    out: list[dict] = []
+    seen: set[str] = set()
+    for s in profile.get("subjects", []):
+        sid = s.get("id")
+        if sid in active and sid not in seen:
+            seen.add(sid)
+            out.append(s)
+    return out
+
+
 def resolve_ordinal_subject(profile: dict, clip_id: str, want_pronoun: str, ordinal: int) -> str:
     """Source Profile wrapper around resolve_ordinal_from_list: the `ordinal`-th
-    subject in the given clip (in the clip's own subject order) whose resolved
-    pronoun_style matches `want_pronoun`. Empty string if the clip is missing
-    or fewer matches exist.
+    subject in the given clip (profile order, see ``clip_subjects_in_order``)
+    whose resolved pronoun_style matches `want_pronoun`. Empty string if the clip
+    is missing or fewer matches exist.
     """
     clip = next((c for c in profile.get("clips", []) if c.get("id") == clip_id), None)
     if clip is None:
         return ""
-    by_id = {s.get("id"): s for s in profile.get("subjects", [])}
-    ordered = [by_id[sid] for sid in clip.get("subjects", []) if sid in by_id]
-    return resolve_ordinal_from_list(ordered, want_pronoun, ordinal)
+    return resolve_ordinal_from_list(clip_subjects_in_order(profile, clip), want_pronoun, ordinal)

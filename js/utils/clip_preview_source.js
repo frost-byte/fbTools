@@ -4,18 +4,28 @@
  * to show. No DOM, no ComfyUI imports — see js/nodes/scene_cast_build.js for the caller.
  */
 
+import { clipFrame } from "./still_clips.js";
+
 /**
  * @param {{clips: Array<{clip_id: string, fresh: boolean, proxy_path: string|null}>}|null} proxyStatus
  *   The result of sourceProfilesApi.proxyStatus(profile_id), or null if that call hasn't
  *   resolved yet / failed.
  * @param {{id: string, start_time: number, end_time: number}|null} clip
- * @param {{media_filename: string, media_dir: string}|null} profileMeta
- * @returns {{kind: "proxy"|"fallback"|"unavailable", proxyPath?: string, filename?: string,
+ * @param {{media_type?: string, media_filename: string, media_dir: string,
+ *   frames?: Array<{id: string, filename: string, dir: string, label?: string}>}|null} profileMeta
+ * @returns {{kind: "proxy"|"fallback"|"frame"|"unavailable", proxyPath?: string, filename?: string,
  *   dir?: string, startTime?: number, endTime?: number, caption: string}}
  */
 export function resolveClipPreviewSource(proxyStatus, clip, profileMeta) {
     if (!clip) {
         return { kind: "unavailable", caption: "No clip selected." };
+    }
+
+    // A still-image profile has no footage to play: show the clip's frame instead.
+    if (profileMeta?.media_type === "image") {
+        const frame = clipFrame(profileMeta, clip);
+        if (!frame) return { kind: "unavailable", caption: "This profile has no frame image." };
+        return { kind: "frame", filename: frame.filename, dir: frame.dir, caption: `Frame: ${frame.label}` };
     }
 
     const entry = proxyStatus?.clips?.find(c => c.clip_id === clip.id);

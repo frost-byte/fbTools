@@ -38,6 +38,7 @@ from ...prompt_models import PromptCollection
 from ...story_models import SceneInStory, StoryInfo, save_story, load_story
 from ...utils.util import update_ui_widget
 from ...utils.io import load_prompt_json
+from ...utils.scene_prompts import resolve_scene_prompts, resolve_video_prompt
 from ...utils.images import make_empty_image
 from ...utils.logging_utils import get_logger
 
@@ -1556,32 +1557,11 @@ class StoryVideoBatch(io.ComfyNode):
             prompt_path = os.path.join(scene_dir, "prompts.json")
             prompt_data_raw = load_prompt_json(prompt_path) or {}
             
-            # Process prompts using the v2 system with compositions
-            prompt_dict = {}
-            composition_dict = {}
-            
-            if "version" in prompt_data_raw and prompt_data_raw.get("version") == 2:
-                prompt_collection = PromptCollection.from_dict(prompt_data_raw)
-                
-                # Process individual prompts
-                for key, metadata in prompt_collection.prompts.items():
-                    value = metadata.value
-                    if metadata.processing_type == "libber" and metadata.libber_name:
-                        libber = libber_manager.get_libber(metadata.libber_name)
-                        if libber:
-                            value = libber.substitute(value)
-                    prompt_dict[key] = value
-                
-                # Process compositions
-                if prompt_collection.compositions:
-                    composition_dict = prompt_collection.compose_prompts(
-                        prompt_collection.compositions,
-                        libber_manager
-                    )
-            else:
-                # Legacy format
-                prompt_dict = prompt_data_raw
-            
+            # Libbers + compositions resolved the same way the Scene/Story importer does.
+            prompt_dict, composition_dict = resolve_scene_prompts(
+                prompt_data_raw, PromptCollection.from_dict, libber_manager,
+            )
+
             # Load LoRA stack and aggregate unique entries
             scene_lora_stack = load_lora_stack(scene_dir) or []
             for entry in scene_lora_stack:
@@ -1604,27 +1584,9 @@ class StoryVideoBatch(io.ComfyNode):
             prompt_dict = current_desc["prompt_dict"]
             composition_dict = current_desc["composition_dict"]
             
-            # Resolve video prompt based on video_prompt_source
-            video_prompt = ""
-            
-            if current_scene.video_prompt_source == "auto":
-                # Use the image prompt based on prompt_source and prompt_key
-                if current_scene.prompt_source == "custom":
-                    video_prompt = current_scene.custom_prompt
-                elif current_scene.prompt_source == "prompt" and current_scene.prompt_key:
-                    video_prompt = prompt_dict.get(current_scene.prompt_key, "")
-                elif current_scene.prompt_source == "composition" and current_scene.prompt_key:
-                    video_prompt = composition_dict.get(current_scene.prompt_key, "")
-            
-            elif current_scene.video_prompt_source == "custom":
-                video_prompt = current_scene.video_custom_prompt
-            
-            elif current_scene.video_prompt_source == "prompt" and current_scene.video_prompt_key:
-                video_prompt = prompt_dict.get(current_scene.video_prompt_key, "")
-            
-            elif current_scene.video_prompt_source == "composition" and current_scene.video_prompt_key:
-                video_prompt = composition_dict.get(current_scene.video_prompt_key, "")
-            
+            # Resolve video prompt based on video_prompt_source ("auto" reuses the image prompt)
+            video_prompt, _video_source = resolve_video_prompt(current_scene, prompt_dict, composition_dict)
+
             video_prompts.append(video_prompt)
             
             logger.debug(

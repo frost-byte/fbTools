@@ -61,3 +61,33 @@ test("defaults media_dir to input when the profile omits it", () => {
     const r = resolveClipPreviewSource(status, CLIP, { media_filename: "raw.mp4" });
     expect(r.dir).toBe("input");
 });
+
+describe("still-image profiles", () => {
+    const frames = [
+        { id: "f1", filename: "scenes/a/base.png", dir: "output", label: "a" },
+        { id: "f2", filename: "scenes/b/base.png", dir: "output", label: "b" },
+    ];
+    const IMG = { media_type: "image", media_filename: "scenes/a/base.png", media_dir: "output", frames };
+
+    test("shows the clip's own frame, never a proxy or seeked video", () => {
+        const status = { clips: [{ clip_id: "c1", fresh: true, proxy_path: "/x.mp4" }] };
+        const r = resolveClipPreviewSource(status, { ...CLIP, frame_id: "f2" }, IMG);
+        expect(r.kind).toBe("frame");
+        expect(r.filename).toBe("scenes/b/base.png");
+        expect(r.dir).toBe("output");
+        expect(r.caption).toContain("b");
+    });
+
+    test("a clip without a frame uses the first frame", () => {
+        expect(resolveClipPreviewSource(null, CLIP, IMG).filename).toBe("scenes/a/base.png");
+    });
+
+    test("a single-image profile (no frames list) uses its primary media", () => {
+        const r = resolveClipPreviewSource(null, CLIP, { media_type: "image", media_filename: "p.png", media_dir: "input" });
+        expect(r).toMatchObject({ kind: "frame", filename: "p.png", dir: "input" });
+    });
+
+    test("no image at all is unavailable", () => {
+        expect(resolveClipPreviewSource(null, CLIP, { media_type: "image", media_filename: "" }).kind).toBe("unavailable");
+    });
+});

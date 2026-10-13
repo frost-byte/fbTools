@@ -15,6 +15,9 @@ import { compositionsApi }  from "../api/compositions.js";
 import { sourceProfilesApi } from "../api/source_profiles.js";
 import { shotsToSegments, substituteSlotPlaceholders } from "../utils/composition_timeline.js";
 import { resolveClipPreviewSource } from "../utils/clip_preview_source.js";
+import { layoutStillClips } from "../utils/still_clips.js";
+import { makeImageZoomable } from "../ui/lightbox.js";
+import { clipSubjectsInOrder } from "../utils/clip_subjects.js";
 import { app }               from "../../../scripts/app.js";
 import { api }               from "../../../scripts/api.js";
 
@@ -1624,7 +1627,7 @@ function _buildCastBuildUI(node, app) {
         clipPreviewArea.innerHTML = '<span class="fbt-scb-preview-note">Loading…</span>';
 
         let status = null;
-        if (_connectedProfileMeta?.id) {
+        if (_connectedProfileMeta?.id && _connectedProfileMeta.media_type !== "image") {
             try { status = await sourceProfilesApi.proxyStatus(_connectedProfileMeta.id); } catch { /* fall back */ }
         }
         // The clip (and possibly the profile connection) may have changed while awaiting the
@@ -1642,14 +1645,26 @@ function _buildCastBuildUI(node, app) {
             return;
         }
 
+        const caption = document.createElement("div");
+        caption.className = "fbt-scb-ref-meta";
+        caption.textContent = src.caption;
+
+        if (src.kind === "frame") {
+            const img = document.createElement("img");
+            img.className = "fbt-scb-preview-img";
+            img.src = bundlesApi.streamUrl(src.filename, src.dir);
+            img.alt = src.caption;
+            img.title = "Click to enlarge";
+            makeImageZoomable(img);
+            img.addEventListener("load", () => _updateHeight(), { once: true });
+            clipPreviewArea.append(img, caption);
+            return;
+        }
+
         const video = document.createElement("video");
         video.className = "fbt-scb-preview-video";
         video.controls = true;
         video.preload  = "none";
-
-        const caption = document.createElement("div");
-        caption.className = "fbt-scb-ref-meta";
-        caption.textContent = src.caption;
 
         if (src.kind === "proxy") {
             video.src = sourceProfilesApi.proxyStreamUrl(src.proxyPath);
@@ -1754,8 +1769,8 @@ function _buildCastBuildUI(node, app) {
 
     function _resolveOrdinalSubjectId(clip, subjects, wantPronoun, ordinal) {
         if (!clip) return "";
-        const byId = new Map(subjects.map(s => [s.id, s]));
-        const ordered = (clip.subjects || []).map(sid => byId.get(sid)).filter(Boolean);
+        // Profile order among the clip's ticked subjects ({A} is the first one the profile lists).
+        const ordered = clipSubjectsInOrder({ subjects }, clip);
         return _resolveOrdinalFromList(ordered, wantPronoun, ordinal);
     }
 
@@ -1795,11 +1810,9 @@ function _buildCastBuildUI(node, app) {
             return { text: substituteSlotPlaceholders(action, compSlotLabel), conflicts: compConflicts };
         }
 
-        const clipSubjectIds  = new Set(clip.subjects ?? []);
         const spData          = _connectedSPSubjects[0];
-        const orderedSubjects = spData
-            ? spData.subjects.filter(s => clipSubjectIds.has(s.id))
-            : [];
+        // {A} is the first ticked subject in the profile's list, whatever order they were ticked in.
+        const orderedSubjects = spData ? clipSubjectsInOrder(spData, clip) : [];
 
         // Resolve every cast entry (explicit or ordinal) to the subject id it
         // currently applies to in this clip. Two entries landing on the same
@@ -1873,6 +1886,11 @@ function _buildCastBuildUI(node, app) {
         // Clip video preview toggle: only meaningful for a Source-Profile-driven clip.
         const clipPreviewApplicable = !_compositionActive() && _clipMap.has(_activeClipId);
         clipPreviewToggle.style.display = clipPreviewApplicable ? "" : "none";
+        const stillProfile = _connectedProfileMeta?.media_type === "image";
+        clipPreviewToggle.textContent = stillProfile ? "⊙ Frame Preview" : "⊙ Clip Preview";
+        clipPreviewToggle.title = stillProfile
+            ? "Show the frame image the selected clip is built from"
+            : "Preview the source footage for the selected clip";
         if (!clipPreviewApplicable) {
             if (_clipPreviewOpen) {
                 _clipPreviewOpen = false;
@@ -1960,10 +1978,14 @@ function _buildCastBuildUI(node, app) {
             if (resp.ok) {
                 const profile = await resp.json();
                 clips = profile.clips ?? [];
+                // A still has no footage timeline: lay its clips end to end by length.
+                if (profile.media_type === "image") clips = layoutStillClips(clips);
                 _connectedProfileMeta = {
                     id: profile.id,
+                    media_type: profile.media_type || "video",
                     media_filename: profile.media_filename || "",
                     media_dir: profile.media_dir || "input",
+                    frames: profile.frames || [],
                 };
             }
         } catch { /* leave empty */ }
